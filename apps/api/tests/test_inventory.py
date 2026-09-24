@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from sqlalchemy import func, select
 
@@ -17,6 +19,7 @@ from robopark_api.models import (
 from robopark_api.security import hash_password
 from robopark_api.services import inventory as inventory_svc
 from robopark_api.services import inventory_stock
+from robopark_api.task_workflow_models import ReliableAction, TaskMessage
 
 
 def _user(db, slug, username, parks=()):
@@ -216,7 +219,7 @@ def test_operator_and_royal_can_open_every_park_inventory(
     assert client.get(f"/inventory?park_id={other.id}").status_code == 200
 
 
-def test_task_writeoff_requires_owner_and_writes_technical_tracker_comment(
+def test_task_writeoff_requires_owner_and_queues_business_tracker_comment(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):
     mechanic = _user(db_session, "mechanic", "tracker-mechanic", [seed_park_with_tracker])
@@ -250,11 +253,14 @@ def test_task_writeoff_requires_owner_and_writes_technical_tracker_comment(
     )
     assert response.status_code == 201, response.text
     assert response.json()["balance_after"] == 3
-    assert comments[0]["key"] == "RP-42"
-    assert "TY-001" in comments[0]["text"]
-    assert "tracker-mechanic" in comments[0]["text"]
-    assert "Время:" in comments[0]["text"]
-    assert "Инициатор: tracker-mechanic" in comments[0]["text"]
+    assert comments == []
+    action = db_session.scalar(
+        select(ReliableAction).where(
+            ReliableAction.resource_id == "RP-42", ReliableAction.action == "comment"
+        )
+    )
+    assert action is not None and action.state == "pending"
+    assert "TY-001" in json.loads(action.payload_json)["text"]
     movement = db_session.scalar(
         select(InventoryMovement).where(InventoryMovement.kind == "task_writeoff")
     )
@@ -363,14 +369,20 @@ def test_task_writeoff_idempotency_key_has_one_movement_decrement_comment_and_au
         )
         == 1
     )
-    assert len(comments) == 1
+    assert comments == []
     assert (
         db_session.scalar(
-            select(func.count(AuditLog.id)).where(
-                AuditLog.action == "tracker.comment", AuditLog.target_id == "RP-IDEMPOTENT"
+            select(func.count(ReliableAction.id)).where(
+                ReliableAction.resource_id == "RP-IDEMPOTENT", ReliableAction.action == "comment"
             )
         )
         == 1
+    )
+    assert any(
+        '"issue_key": "RP-IDEMPOTENT"' in (row.detail or "")
+        for row in db_session.scalars(
+            select(AuditLog).where(AuditLog.action == "inventory.stock.moved")
+        )
     )
 
     mismatch = client.post(
@@ -379,10 +391,122 @@ def test_task_writeoff_idempotency_key_has_one_movement_decrement_comment_and_au
     )
     assert mismatch.status_code == 409
     assert mismatch.json()["detail"]["code"] == "inventory_idempotency_conflict"
-    assert len(comments) == 1
+    assert comments == []
 
 
-def test_task_writeoff_audit_failure_does_not_make_committed_operation_retryable(
+def test_task_writeoff_commits_stock_receipt_and_outbox_comment_before_delivery(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    mechanic = _user(db_session, "mechanic", "durable-writeoff", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=mechanic,
+        owner=mechanic,
+        issue_key="RP-DURABLE",
+        park_id=seed_park_with_tracker.id,
+    )
+    monkeypatch.setattr(inventory_svc.platform_settings, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        inventory_svc.tracker_cache,
+        "get_issue",
+        lambda **_kwargs: {"key": "RP-DURABLE", "tags": [seed_park_with_tracker.tag]},
+    )
+    monkeypatch.setattr(
+        inventory_svc.tracker_client,
+        "add_comment",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("request sent Tracker comment")),
+    )
+
+    response = client.post(
+        "/inventory/tasks/RP-DURABLE/writeoff",
+        json={"part_id": part["id"], "quantity": 2, "idempotency_key": "durable-42"},
+    )
+
+    assert response.status_code == 201
+    assert db_session.scalar(select(InventoryParkStock.quantity)) == 3
+    movement = db_session.scalar(
+        select(InventoryMovement).where(InventoryMovement.idempotency_key == "durable-42")
+    )
+    action = db_session.scalar(
+        select(ReliableAction).where(
+            ReliableAction.resource_id == "RP-DURABLE", ReliableAction.action == "comment"
+        )
+    )
+    assert movement is not None
+    assert action is not None and action.state == "pending"
+    assert action.idempotency_key == f"inventory-writeoff:{movement.id}"
+    message = db_session.scalar(select(TaskMessage).where(TaskMessage.action_id == action.id))
+    assert message is not None and "2" in message.text
+
+
+def test_writeoff_outbox_reconciles_remote_comment_after_response_loss(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    mechanic = _user(db_session, "mechanic", "writeoff-replay", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    from robopark_api.services import tracker_outbox
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=mechanic,
+        owner=mechanic,
+        issue_key="RP-REPLAY",
+        park_id=seed_park_with_tracker.id,
+    )
+    monkeypatch.setattr(inventory_svc.platform_settings, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        inventory_svc.tracker_cache,
+        "get_issue",
+        lambda **_kwargs: {"key": "RP-REPLAY", "tags": [seed_park_with_tracker.tag]},
+    )
+    response = client.post(
+        "/inventory/tasks/RP-REPLAY/writeoff",
+        json={"part_id": part["id"], "quantity": 1, "idempotency_key": "replay-42"},
+    )
+    assert response.status_code == 201
+    action = db_session.scalar(
+        select(ReliableAction).where(
+            ReliableAction.resource_id == "RP-REPLAY", ReliableAction.action == "comment"
+        )
+    )
+    remote_comments = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda _db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **_kwargs: {"key": "RP-REPLAY", "tags": [seed_park_with_tracker.tag]},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client, "list_comments", lambda **_kwargs: remote_comments
+    )
+
+    def accept_comment(**kwargs):
+        remote_comments.append({"id": "remote-1", "text": kwargs["text"]})
+        raise tracker_outbox.tracker_client.TrackerError("connection lost after acceptance")
+
+    monkeypatch.setattr(tracker_outbox.tracker_client, "add_comment", accept_comment)
+    with pytest.raises(tracker_outbox.DeliveryError) as uncertain:
+        tracker_outbox._deliver_action(db_session, action)
+    accepted = remote_comments.pop()
+    action.error_code = "tracker_comment_unconfirmed"
+    with pytest.raises(tracker_outbox.DeliveryError) as still_uncertain:
+        tracker_outbox._deliver_action(db_session, action)
+    assert still_uncertain.value.code == "tracker_comment_unconfirmed"
+    remote_comments.append(accepted)
+    second = tracker_outbox._deliver_action(db_session, action)
+
+    assert uncertain.value.code == "tracker_comment_unconfirmed"
+    assert second == {"external_id": "remote-1"}
+    assert len(remote_comments) == 1
+
+
+def test_task_writeoff_replay_does_not_depend_on_tracker_delivery(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):
     mechanic = _user(db_session, "mechanic", "writeoff-audit-failure", [seed_park_with_tracker])
@@ -425,7 +549,15 @@ def test_task_writeoff_audit_failure_does_not_make_committed_operation_retryable
     assert first.json()["id"] == retried.json()["id"]
     db_session.expire_all()
     assert db_session.scalar(select(InventoryParkStock.quantity)) == 3
-    assert len(comments) == 1
+    assert comments == []
+    assert (
+        db_session.scalar(
+            select(func.count(ReliableAction.id)).where(
+                ReliableAction.resource_id == "RP-AUDIT-FAIL", ReliableAction.action == "comment"
+            )
+        )
+        == 1
+    )
 
 
 def test_task_writeoff_does_not_comment_when_stock_is_insufficient(
@@ -515,9 +647,9 @@ def test_task_writeoff_version_overflow_rejects_before_tracker_comment(
     assert comments == []
 
 
-@pytest.mark.parametrize("tracker_fails", [False, True], ids=["success", "tracker-failure"])
-def test_task_writeoff_flushes_before_tracker_and_commits_only_after_success(
-    client, db_session, db_engine, seed_park_with_tracker, monkeypatch, tracker_fails
+@pytest.mark.parametrize("staging_fails", [False, True], ids=["success", "outbox-failure"])
+def test_task_writeoff_stock_receipt_and_outbox_commit_together(
+    client, db_session, db_engine, seed_park_with_tracker, monkeypatch, staging_fails
 ):
     mechanic = _user(db_session, "mechanic", "transaction-writeoff", [seed_park_with_tracker])
     login_as(client, mechanic.username, "secret")
@@ -553,58 +685,61 @@ def test_task_writeoff_flushes_before_tracker_and_commits_only_after_success(
             "assignee": {"login": mechanic.tracker_login},
         },
     )
-    comments = []
+    begin_action = inventory_svc.begin_action
 
-    def add_comment(**kwargs):
-        comments.append(kwargs)
-        # Raw connection reads cannot autoflush pending ORM changes for the service.
+    def stage_action(*args, **kwargs):
         assert db_session.connection().execute(stock_state).one() == (0, 2)
         assert db_session.connection().execute(task_movement).one() == (
             part["catalog_part_id"],
             -1,
             0,
         )
-        # A separate reader must still see the old committed inventory until Tracker succeeds.
         with db_engine.connect() as reader:
             assert reader.execute(stock_state).one() == (1, 1)
             assert reader.execute(task_movement).all() == []
             assert list(reader.scalars(select(AuditLog.id))) == audit_ids
-        if tracker_fails:
-            raise inventory_svc.tracker_client.TrackerError("tracker unavailable")
+        if staging_fails:
+            raise ValueError("outbox_stage_failed")
+        return begin_action(*args, **kwargs)
 
-    monkeypatch.setattr(inventory_svc.tracker_client, "add_comment", add_comment)
+    monkeypatch.setattr(inventory_svc, "begin_action", stage_action)
+    monkeypatch.setattr(
+        inventory_svc.tracker_client,
+        "add_comment",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("request sent Tracker comment")),
+    )
 
     response = client.post(
         "/inventory/tasks/RP-TRANSACTION/writeoff",
         json={
             "part_id": part["id"],
             "quantity": 1,
-            "idempotency_key": f"transaction-{tracker_fails}",
+            "idempotency_key": f"transaction-{staging_fails}",
         },
     )
 
-    assert response.status_code == (502 if tracker_fails else 201), response.text
-    assert len(comments) == 1
-    assert comments[0]["token"] == "bot-token"
-    assert comments[0]["key"] == "RP-TRANSACTION"
-    assert "Техническое сообщение · Склад" in comments[0]["text"]
-    assert "Инициатор: transaction-writeoff" in comments[0]["text"]
+    assert response.status_code == (400 if staging_fails else 201), response.text
     db_session.expire_all()
-    assert (stock.quantity, stock.version) == ((1, 1) if tracker_fails else (0, 2))
+    assert (stock.quantity, stock.version) == ((1, 1) if staging_fails else (0, 2))
     with db_engine.connect() as reader:
-        assert reader.execute(stock_state).one() == ((1, 1) if tracker_fails else (0, 2))
-        if tracker_fails:
-            assert response.json()["detail"] == "tracker_upstream_error"
+        assert reader.execute(stock_state).one() == ((1, 1) if staging_fails else (0, 2))
+        if staging_fails:
+            assert response.json()["detail"] == "outbox_stage_failed"
             assert list(reader.scalars(select(InventoryMovement.id))) == movement_ids
             assert list(reader.scalars(select(AuditLog.id))) == audit_ids
+            assert (
+                reader.execute(
+                    select(ReliableAction.id).where(ReliableAction.resource_id == "RP-TRANSACTION")
+                ).all()
+                == []
+            )
         else:
             assert reader.execute(task_movement).one() == (part["catalog_part_id"], -1, 0)
             assert reader.execute(
-                select(AuditLog.action, AuditLog.actor_user_id, AuditLog.park_id).where(
-                    AuditLog.target_id == "RP-TRANSACTION",
-                    AuditLog.action == "tracker.comment",
+                select(ReliableAction.action, ReliableAction.state).where(
+                    ReliableAction.resource_id == "RP-TRANSACTION"
                 )
-            ).one() == ("tracker.comment", mechanic.id, seed_park_with_tracker.id)
+            ).one() == ("comment", "pending")
 
 
 def test_legacy_movement_requires_park_when_global_part_has_multiple_accessible_stocks(

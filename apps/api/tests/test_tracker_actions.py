@@ -205,6 +205,7 @@ def test_keyed_operator_comment_notification_recovers_after_local_failure(
 def test_mechanic_claims_locally_without_tracker_login_or_upstream_assignment(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
+    _seed_operator(db_session, seed_park_with_tracker)
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     seed_mechanic.tracker_login = None
     db_session.commit()
@@ -272,9 +273,10 @@ def test_legacy_assign_cannot_bypass_durable_workflow(
     assert db_session.scalars(select(ReliableAction)).all() == []
 
 
-def test_mechanic_can_take_over_a_shiftmates_local_claim(
+def test_mechanic_cannot_take_over_a_shiftmates_local_claim(
     client, db_session, seed_mechanic, seed_royal, seed_park_with_tracker, monkeypatch
 ):
+    _seed_operator(db_session, seed_park_with_tracker)
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     issue = {
         "key": "ROBOPARK-10",
@@ -303,10 +305,11 @@ def test_mechanic_can_take_over_a_shiftmates_local_claim(
         headers={"Idempotency-Key": "claim-shiftmate-0001"},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 409
+    assert response.json()["detail"] == "tracker_issue_already_claimed"
     assert (
         client.get(f"/tracker/issues/{issue['key']}").json()["assignee"]["login"]
-        == seed_mechanic.username
+        == seed_royal.username
     )
 
 

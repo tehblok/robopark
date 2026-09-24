@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
 from robopark_api.models import (
+    AuditLog,
     InventoryCatalogComponent,
     InventoryCatalogPart,
     InventoryMovement,
@@ -29,9 +31,9 @@ from robopark_api.services import (
     platform_settings,
     tracker_cache,
     tracker_client,
-    tracker_signatures,
 )
 from robopark_api.services.inventory_identity import resolve_catalog_part, resolve_legacy_part
+from robopark_api.services.reliable_actions import begin_action
 from robopark_api.services.report_attachments import sanitize_filename
 from robopark_api.services.tracker_claims import get_claim, mechanic_owns_issue
 from robopark_api.services.tracker_client import (
@@ -40,6 +42,7 @@ from robopark_api.services.tracker_client import (
     guess_image_content_type,
     normalize_attachment_content_type,
 )
+from robopark_api.task_workflow_models import TaskMessage
 
 
 def accessible_park_ids(db: Session, user: User) -> set[int]:
@@ -585,19 +588,7 @@ def task_writeoff(
     tags = {str(tag).strip().casefold() for tag in (issue or {}).get("tags") or []}
     if issue is None or park.tag.casefold() not in tags or not mechanic_owns_issue(db, user, issue):
         raise PermissionError("inventory_issue_not_owned")
-    body = (
-        "Техническое сообщение · Склад\n"
-        f"Запчасть: {part.name}\nАртикул: {part.article}\n"
-        f"Количество: {quantity}\nМеханик: {user.username}"
-    )
-    ctx = tracker_signatures.build_signature_context(db, user, issue)
-    comment = tracker_signatures.format_signed_comment(
-        body=body,
-        park_name=ctx.park_name,
-        mechanic_login=ctx.mechanic_login,
-        operator_login=ctx.operator_login,
-        actor_login=ctx.actor_login,
-    )
+    body = f"Списано со склада: {part.name} ({part.article}) × {quantity}"
     try:
         movement = inventory_stock.apply_stock_delta(
             db,
@@ -613,13 +604,48 @@ def task_writeoff(
             note=None,
         )
         movement.part_id = legacy_part_id
-        # Validate and flush every local write before the irreversible bot comment.
-        # Keep the stock transaction open so an upstream failure can roll it back.
         db.flush()
-        tracker_client.add_comment(token=token, key=issue_key, text=comment)
-    except tracker_client.TrackerError as exc:
-        db.rollback()
-        raise RuntimeError("tracker_upstream_error") from exc
+        action = begin_action(
+            db,
+            actor=user,
+            resource_type="tracker_issue",
+            resource_id=issue_key,
+            action="comment",
+            idempotency_key=f"inventory-writeoff:{movement.id}",
+            payload={"text": body, "movement_id": movement.id},
+        )
+        now = time.time()
+        db.add(
+            TaskMessage(
+                id=str(uuid4()),
+                issue_key=issue_key,
+                kind="system",
+                author_user_id=user.id,
+                author_name=user.username,
+                text=body,
+                action_id=action.row.id,
+                sync_state="pending",
+                visibility="participants",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            AuditLog(
+                action="inventory.stock.moved",
+                actor_user_id=user.id,
+                actor_username=user.username,
+                actor_role=user.role,
+                park_id=park.id,
+                target_type="inventory_part",
+                target_id=str(part.id),
+                outcome="success",
+                detail=json.dumps(
+                    {"issue_key": issue_key, "quantity": quantity, "movement_id": movement.id}
+                ),
+            )
+        )
+        db.flush()
     except IntegrityError:
         db.rollback()
         existing = db.scalar(
@@ -642,18 +668,6 @@ def task_writeoff(
         raise
     db.commit()
     tracker_cache.invalidate_issue(issue_key)
-    try:
-        audit.record(
-            db,
-            action=audit.ACTION_TRACKER_COMMENT,
-            actor=user,
-            park_id=park.id,
-            target_type="tracker_issue",
-            target_id=issue_key,
-            detail=f"inventory {part.article} x{quantity}",
-        )
-    except Exception:
-        db.rollback()
     db.refresh(movement)
     return movement
 

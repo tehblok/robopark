@@ -252,6 +252,7 @@ def claim_task(
                 issue_key=key,
                 park=task_lifecycle.issue_park(db, issue),
                 idempotency_key=idempotency_key,
+                issue=issue,
             )
         )
 

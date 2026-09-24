@@ -353,6 +353,84 @@ def test_second_mechanic_cannot_replace_pending_claim_reservation(
     assert db_session.query(ReliableAction).count() == 4
 
 
+def test_active_claim_cannot_be_replaced_by_another_mechanic(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    other = _mechanic(db_session, seed_park_with_tracker, username="active-claim-rival")
+    assert _claim(client, seed_mechanic).status_code == 200
+    _activate_claim(db_session)
+    login_as(client, other.username, "secret")
+
+    response = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/claim",
+        headers={"Idempotency-Key": "active-claim-rival-key"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "tracker_issue_already_claimed"
+    assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == seed_mechanic.id
+    assert db_session.query(ReliableAction).count() == 4
+
+
+def test_claim_same_owner_with_new_key_returns_existing_chain(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    first = _claim(client, seed_mechanic)
+    _activate_claim(db_session)
+
+    second = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/claim",
+        headers={"Idempotency-Key": "same-owner-new-key"},
+    )
+
+    assert second.status_code == 200
+    assert second.json()["performed_at"] == first.json()["performed_at"]
+    assert second.json()["workflow"]["owner"]["login"] == seed_mechanic.username
+    assert db_session.query(ReliableAction).count() == 4
+
+
+def test_claim_skips_component_action_when_tracker_has_components(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {**_issue(), "components": ["EXISTING"]},
+    )
+    response = _claim(client, seed_mechanic)
+
+    assert response.status_code == 200
+    actions = list(db_session.scalars(select(ReliableAction).order_by(ReliableAction.created_at)))
+    assert [row.action for row in actions] == ["assign_operator", "ensure_tag", "start"]
+    assert json.loads(actions[-1].payload_json)["depends_on_action_ids"] == [actions[-2].id]
+
+
+def test_handoff_requires_current_mechanic_owner(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    other = _mechanic(db_session, seed_park_with_tracker, username="handoff-target")
+    operator = db_session.scalar(select(User).where(User.username == "operator51"))
+    assert _claim(client, seed_mechanic).status_code == 200
+    _activate_claim(db_session)
+    login_as(client, operator.username, "secret")
+
+    response = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/handoff",
+        headers={"Idempotency-Key": "operator-handoff-key"},
+        json={"assignee": other.username, "reason": "Новая смена"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "task_handoff_owner_required"
+    assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == seed_mechanic.id
+
+
 def test_concurrent_claims_serialize_at_issue_boundary(
     db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
@@ -392,10 +470,10 @@ def test_concurrent_claims_serialize_at_issue_boundary(
         with Session(db_engine) as db:
             try:
                 task_lifecycle.claim(
-                        db,
-                        actor=db.get(User, user_id),
-                        issue_key=ISSUE_KEY,
-                        park=db.get(Park, park_id),
+                    db,
+                    actor=db.get(User, user_id),
+                    issue_key=ISSUE_KEY,
+                    park=db.get(Park, park_id),
                     idempotency_key=idempotency_key,
                 )
             except HTTPException as exc:
@@ -420,7 +498,7 @@ def test_concurrent_claims_serialize_at_issue_boundary(
     )
 
 
-def test_claim_takeover_changes_owner_once_and_names_both_mechanics(
+def test_claim_rejects_existing_active_owner_without_reassignment(
     client, db_session, seed_mechanic, seed_royal, seed_park_with_tracker, monkeypatch
 ):
     _prepare_tracker(db_session, monkeypatch)
@@ -435,12 +513,11 @@ def test_claim_takeover_changes_owner_once_and_names_both_mechanics(
     )
     response = _claim(client, seed_mechanic)
 
-    assert response.status_code == 200
+    assert response.status_code == 409
+    assert response.json()["detail"] == "tracker_issue_already_claimed"
     claim = db_session.get(TrackerClaim, ISSUE_KEY)
-    assert claim.owner_user_id == seed_mechanic.id
-    message = db_session.query(TaskMessage).one()
-    assert seed_royal.username in message.text
-    assert seed_mechanic.username in message.text
+    assert claim.owner_user_id == seed_royal.id
+    assert db_session.query(TaskMessage).count() == 0
 
 
 def test_claim_requires_tracker_write_permission(

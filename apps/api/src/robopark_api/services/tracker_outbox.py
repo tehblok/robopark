@@ -347,6 +347,13 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
                 if temp_id is not None:
                     result["attachment_id"] = temp_id
             return result
+    if (
+        payload.get("movement_id") is not None
+        and action.error_code == "tracker_comment_unconfirmed"
+    ):
+        # A timeout after Tracker accepts a stock note has an unknown outcome.
+        # Wait for the marker to become visible; never send a second note.
+        raise DeliveryError("tracker_comment_unconfirmed")
 
     # This intentionally bypasses tracker_cache: replay safety needs fresh state.
     issue = tracker_client.get_issue(token=token, key=action.resource_id)
@@ -357,11 +364,16 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         body = str(payload.get("text") or "").strip()
         if not body:
             raise DeliveryError("invalid_payload")
-        result = tracker_client.add_comment(
-            token=token,
-            key=action.resource_id,
-            text=_signed_text(db, action, actor, issue, body),
-        )
+        try:
+            result = tracker_client.add_comment(
+                token=token,
+                key=action.resource_id,
+                text=_signed_text(db, action, actor, issue, body),
+            )
+        except tracker_client.TrackerError as exc:
+            if payload.get("movement_id") is not None:
+                raise DeliveryError("tracker_comment_unconfirmed") from exc
+            raise
         return {"external_id": _external_id(result)}
     if action.action == "attach":
         return _deliver_attachment(db, action, token=token, issue=issue, actor=actor)

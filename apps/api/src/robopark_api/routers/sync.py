@@ -18,9 +18,13 @@ def sync_batch(
     db: Session = Depends(get_db),
 ) -> SyncBatchOut:
     rbac.assert_approved_or_staff(user)
-    return offline_sync.synchronize(
-        db,
-        user,
-        body,
-        revision_store=request.app.state.change_revision_store,
-    )
+    db.info["sync_push_service"] = request.app.state.push_service
+    try:
+        return offline_sync.synchronize(
+            db,
+            user,
+            body,
+            revision_store=request.app.state.change_revision_store,
+        )
+    finally:
+        db.info.pop("sync_push_service", None)

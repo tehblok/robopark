@@ -1,13 +1,18 @@
+import hashlib
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from conftest import login_as
-from robopark_api.models import Park, User
+from conftest import login_as, role_id_for
+from robopark_api.models import AccessStatus, Park, User, UserPark
+from robopark_api.schedule_models import NotificationEvent
+from robopark_api.security import hash_password
+from robopark_api.task_workflow_models import MediaUploadSession, TaskReview
 
 
 def _action(
@@ -203,6 +208,178 @@ def test_unassigned_park_is_rejected_before_dispatch(
     assert response.json()["results"][0]["state"] == "rejected"
     assert response.json()["results"][0]["code"] == "park_forbidden"
     assert f"work:park:{other.id}" in response.json()["revoked_scopes"]
+
+
+def test_offline_claim_rejects_submitted_park_that_differs_from_fresh_issue(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import platform_settings, tracker_client
+
+    other = Park(name="Other", tag="Other", tracker_queue="ROBOPARK", is_active=True)
+    db_session.add(other)
+    db_session.flush()
+    db_session.add(UserPark(user_id=seed_mechanic.id, park_id=other.id))
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-51",
+            "status": "В очереди",
+            "status_key": "queued",
+            "queue": "ROBOPARK",
+            "tags": [seed_park_with_tracker.tag],
+        },
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.post(
+        "/sync/batch",
+        json=_batch(_action("wrong-park", action="claim", park_id=other.id, payload={})),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["state"] == "conflict"
+    assert response.json()["results"][0]["code"] == "sync_park_mismatch"
+
+
+def test_offline_claim_uses_fresh_closed_state_instead_of_cached_open_state(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import platform_settings, tracker_cache, tracker_client
+
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-51",
+            "summary": "blocker [447]",
+            "status": "В очереди",
+            "status_key": "queued",
+            "queue": "ROBOPARK",
+            "tags": ["Alpha"],
+        },
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-51",
+            "summary": "blocker [447]",
+            "status": "Закрыта",
+            "status_key": "closed",
+            "queue": "ROBOPARK",
+            "tags": ["Alpha"],
+        },
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.post(
+        "/sync/batch",
+        json=_batch(
+            _action("fresh-close", action="claim", park_id=seed_park_with_tracker.id, payload={})
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["state"] == "conflict"
+    assert response.json()["results"][0]["code"] == "task_already_closed"
+
+
+def test_offline_review_persists_operator_notification_with_review(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch, tmp_path
+):
+    from robopark_api.services import media_uploads, platform_settings, tracker_client
+    from robopark_api.services.tracker_claims import claim_issue
+
+    operator = User(
+        username="offline-review-operator",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(operator)
+    db_session.flush()
+    db_session.add(UserPark(user_id=operator.id, park_id=seed_park_with_tracker.id))
+    claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key="ROBOPARK-51",
+        park_id=seed_park_with_tracker.id,
+    )
+    photo = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+    photo_path = tmp_path / "review.png"
+    photo_path.write_bytes(photo)
+    db_session.add(
+        MediaUploadSession(
+            actor_user_id=seed_mechanic.id,
+            media_id="offline-review-photo",
+            issue_key="ROBOPARK-51",
+            original_name="review.png",
+            mime_type="image/png",
+            size_bytes=len(photo),
+            sha256=hashlib.sha256(photo).hexdigest(),
+            received_offset=len(photo),
+            blob_name="review-photo",
+            completed=True,
+            expires_at=time.time() + 3600,
+        )
+    )
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(media_uploads, "content_path", lambda _row: photo_path)
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-51",
+            "summary": "blocker [447]",
+            "status": "В работе",
+            "status_key": "in_progress",
+            "queue": "ROBOPARK",
+            "tags": [seed_park_with_tracker.tag],
+        },
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.post(
+        "/sync/batch",
+        json=_batch(
+            _action(
+                "offline-review",
+                action="submit_review",
+                park_id=seed_park_with_tracker.id,
+                payload={
+                    "media_id": "offline-review-photo",
+                    "defect_code": "BD-01",
+                    "comment": "Исправлено",
+                },
+            )
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["state"] == "confirmed"
+    assert (
+        db_session.scalar(select(TaskReview).where(TaskReview.issue_key == "ROBOPARK-51"))
+        is not None
+    )
+    assert (
+        db_session.scalar(
+            select(NotificationEvent).where(
+                NotificationEvent.user_id == operator.id,
+                NotificationEvent.event_type == "review_task",
+            )
+        )
+        is not None
+    )
 
 
 def test_mixed_batch_classifies_closed_task_stale_stock_and_server_failure(

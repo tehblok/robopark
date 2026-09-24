@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
@@ -14,6 +15,7 @@ from robopark_api.services import (
     media_uploads,
     platform_settings,
     rbac,
+    schedules,
     task_lifecycle,
     tracker_cache,
     tracker_client,
@@ -62,12 +64,16 @@ def _park_allowed(db: Session, user: User, park_id: int | None) -> bool:
     )
 
 
-def _issue(db: Session, user: User, item: SyncActionIn) -> dict:
+def _issue(db: Session, user: User, item: SyncActionIn, *, fresh: bool = False) -> dict:
     token = platform_settings.get_tracker_token(db)
     if not token:
         raise HTTPException(503, "tracker_token_not_configured")
     try:
-        issue = tracker_cache.get_issue(token=token, key=item.resource_id)
+        issue = (
+            tracker_client.get_issue(token=token, key=item.resource_id)
+            if fresh
+            else tracker_cache.get_issue(token=token, key=item.resource_id)
+        )
     except tracker_client.TrackerError as exc:
         raise HTTPException(503, "tracker_upstream_error") from exc
     if issue is None:
@@ -93,7 +99,7 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
         )
         return {"message_id": row.id, "sync_state": row.sync_state}
     if item.action == "claim":
-        issue = _issue(db, user, item)
+        issue = _issue(db, user, item, fresh=True)
         if task_lifecycle.tracker_issue_is_closed(issue):
             raise HTTPException(409, "task_already_closed")
         if item.park_id is None:
@@ -101,12 +107,15 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
         park = db.get(Park, item.park_id)
         if park is None:
             raise HTTPException(404, "park_not_found")
+        if task_lifecycle.issue_park(db, issue).id != park.id:
+            raise HTTPException(409, "sync_park_mismatch")
         return task_lifecycle.claim(
             db,
             actor=user,
             issue_key=item.resource_id,
             park=park,
             idempotency_key=item.idempotency_key,
+            issue=issue,
         )
     if item.action == "handoff":
         _issue(db, user, item)
@@ -135,6 +144,15 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
         return {"movement_id": row.id, "balance_after": row.balance_after}
     if item.action == "submit_review":
         issue = _issue(db, user, item)
+        park = task_lifecycle.issue_park(db, issue)
+        if item.park_id is not None and item.park_id != park.id:
+            raise HTTPException(409, "sync_park_mismatch")
+        reviewer = schedules.resolve_active_operator(db, park_id=park.id)
+        if reviewer is None:
+            raise HTTPException(409, "task_review_operator_unavailable")
+        push_service = db.info.get("sync_push_service")
+        if push_service is None:
+            raise HTTPException(503, "sync_notification_service_unavailable")
         media_id = str(item.payload.get("media_id") or "")
         upload = db.scalar(
             select(MediaUploadSession).where(
@@ -158,7 +176,16 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
             content_type=upload.mime_type,
             comment=str(item.payload.get("comment") or "") or None,
             operator_login=context.operator_login,
+            reviewer=reviewer,
             idempotency_key=item.idempotency_key,
+            notification_hook=lambda tx, performed_at: push_service.emit_in_transaction(
+                tx,
+                event_type="review_task",
+                park_id=park.id,
+                protected_text=f"Задача {item.resource_id} ожидает проверки",
+                target_user_ids={reviewer.id},
+                event_key=f"review:{item.resource_id}:{item.idempotency_key or datetime.fromtimestamp(performed_at, UTC).isoformat()}",
+            ),
         )
     raise HTTPException(400, "sync_action_unsupported")
 

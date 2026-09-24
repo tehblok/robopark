@@ -437,6 +437,7 @@ def claim(
     issue_key: str,
     park: Park,
     idempotency_key: str | None,
+    issue: dict | None = None,
 ) -> dict:
     with database_idempotency_lock(db, f"tracker-claim:{issue_key.strip()}"):
         return _claim_locked(
@@ -445,6 +446,7 @@ def claim(
             issue_key=issue_key,
             park=park,
             idempotency_key=idempotency_key,
+            issue=issue,
         )
 
 
@@ -455,9 +457,12 @@ def _claim_locked(
     issue_key: str,
     park: Park,
     idempotency_key: str | None,
+    issue: dict | None,
 ) -> dict:
     if _role(actor) != rbac.RoleSlug.MECHANIC:
         raise HTTPException(403, "task_claim_mechanic_required")
+    if not idempotency_key or not 8 <= len(idempotency_key) <= 128:
+        raise HTTPException(400, "reliable_action_key_invalid")
     pending_close = db.scalar(
         select(ReliableAction.id)
         .where(
@@ -489,8 +494,27 @@ def _claim_locked(
         )
     )
     previous = get_claim(db, issue_key)
-    if previous is not None and previous.state == "pending" and existing_assign is None:
-        raise HTTPException(409, "tracker_issue_claim_pending")
+    if previous is not None:
+        if previous.owner_user_id != actor.id:
+            raise HTTPException(
+                409,
+                "tracker_issue_claim_pending"
+                if previous.state == "pending"
+                else "tracker_issue_already_claimed",
+            )
+        if existing_assign is None:
+            original = (
+                db.get(ReliableAction, previous.start_action_id)
+                if previous.start_action_id
+                else None
+            )
+            return _result(
+                db,
+                issue_key=issue_key,
+                actor=actor,
+                command="claim",
+                performed_at=original.created_at if original is not None else previous.updated_at,
+            )
     operator = None
     if existing_assign is not None:
         try:
@@ -522,21 +546,33 @@ def _claim_locked(
         idempotency_key=idempotency_key,
         payload={"tag": "diag_complete", "depends_on_action_ids": [assign.row.id]},
     )
-    component = _action(
-        db,
-        actor=actor,
-        issue_key=issue_key,
-        action="ensure_components",
-        idempotency_key=idempotency_key,
-        payload={
-            "value": ["ROBOT_SUSPENSION"],
-            "depends_on_action_ids": [tag.row.id],
-        },
-    )
+    component = None
+    if existing_assign is not None:
+        component = db.scalar(
+            select(ReliableAction).where(
+                ReliableAction.actor_user_id == actor.id,
+                ReliableAction.resource_type == "tracker_issue",
+                ReliableAction.resource_id == issue_key,
+                ReliableAction.action == "ensure_components",
+                ReliableAction.idempotency_key == idempotency_key,
+            )
+        )
+    elif not (issue or {}).get("components"):
+        component = _action(
+            db,
+            actor=actor,
+            issue_key=issue_key,
+            action="ensure_components",
+            idempotency_key=idempotency_key,
+            payload={
+                "value": ["ROBOT_SUSPENSION"],
+                "depends_on_action_ids": [tag.row.id],
+            },
+        ).row
     payload = {
         "owner_user_id": actor.id,
         "park_id": park.id,
-        "depends_on_action_ids": [component.row.id],
+        "depends_on_action_ids": [component.id if component is not None else tag.row.id],
     }
     if existing_assign is not None and existing_start is not None:
         try:
@@ -660,10 +696,10 @@ def handoff(
             command="handoff",
             performed_at=existing.created_at,
         )
-    if _role(actor) == rbac.RoleSlug.MECHANIC and current.owner_user_id != actor.id:
+    if _role(actor) != rbac.RoleSlug.MECHANIC or current.owner_user_id != actor.id:
         raise HTTPException(403, "task_handoff_owner_required")
-    if _role(actor) not in _REVIEW_ROLES | {rbac.RoleSlug.MECHANIC}:
-        raise HTTPException(403, "task_handoff_forbidden")
+    if current.state != "active":
+        raise HTTPException(409, "tracker_issue_claim_not_active")
     begun = _action(
         db,
         actor=actor,
