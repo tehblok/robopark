@@ -80,7 +80,7 @@ test('royal can edit a team schedule entry', async ({ page }) => {
     start_at: '2026-09-02T09:00:00+03:00',
     end_at: '2026-09-02T22:00:00+03:00',
   })
-  await expect(page.getByText('09:00 — 22:00')).toBeVisible()
+  await expect(page.getByTestId('schedule-team-grid').getByText('09:00 — 22:00')).toBeVisible()
 })
 
 for (const width of [360, 390] as const) {

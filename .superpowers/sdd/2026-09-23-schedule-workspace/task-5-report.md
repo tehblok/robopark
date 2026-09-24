@@ -39,3 +39,8 @@ The first out-of-sandbox browser run executed all four scenarios and exposed two
 The one permitted repeat then produced 1 PASS and 3 FAIL: the desktop sticky/range scenario passed, while royal edit and both phone scenarios exposed the date mismatch above. No additional browser run was made.
 
 Independent review also found that the original sticky assertion checked only computed CSS. The scenario now supplies enough employee rows for vertical overflow, scrolls the team container horizontally and vertically, and asserts that header, corner and employee coordinates remain pinned within a 1 px tolerance. The correction keeps the range, royal-edit and phone content/geometry assertions intact.
+
+The subsequent four-scenario verification passed desktop sticky/range and both phone widths. Royal edit reached and saved the update, but its final global text assertion matched both the visible desktop matrix and the intentionally hidden mobile cards. The final assertion is scoped to the visible `schedule-team-grid` so it verifies the updated desktop entry without violating Playwright strict locator semantics.
+
+- `npx playwright test e2e/operational/schedule-workspace.spec.ts --project=chromium --workers=1 --grep "royal can edit" --output=/private/tmp/robopark-schedule-royal-edit`
+  - PASS: 1 test.
