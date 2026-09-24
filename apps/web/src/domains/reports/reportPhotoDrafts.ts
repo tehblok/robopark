@@ -121,6 +121,17 @@ export function writeReportPhotoDraft(draft: ReportPhotoDraft): Promise<void> {
             fail(new Error('Хранилище черновиков заполнено. Удалите ненужные черновики.'))
             return
           }
+          const occupied = (request.result as ReportPhotoDraft[]).find(item => item.key === draft.key)
+          if (occupied && occupied.ownerKey !== draft.ownerKey) {
+            // A new principal may inherit the physical account/park key after
+            // a browser restart. Preserve the previous owner before replacing it.
+            store.put({ ...occupied, key: retiredKey(draft.key, occupied.ownerKey) })
+            const nextScopeLease = crypto.randomUUID()
+            meta.put(nextScopeLease, `scope:${draft.key}`)
+            const [globalLease] = JSON.parse(lease) as [string, string]
+            leases.set(draft.key, JSON.stringify([globalLease, nextScopeLease]))
+            scopeEpoch.set(draft.key, (scopeEpoch.get(draft.key) ?? 0) + 1)
+          }
           store.put(draft)
           done()
         }
@@ -174,7 +185,9 @@ function belongsToScope(draft: ReportPhotoDraft, scope: OfflineScope): boolean {
     return String(owner[0]) === scope.account && owner[1] === scope.principal && owner[3] === scope.role
       && Array.isArray(owner[6]) && (owner[6] as string[]).join(',') === scope.permissions
       && Array.isArray(parks) && parks.map(item => String((item as unknown[])[0])).join(',') === scope.parkAccess
-      && String(selected?.[0]) === scope.park
+      && (selected === null
+        ? (scope.role === 'admin' || scope.role === 'royal') && scope.park === 'all'
+        : String(selected?.[0]) === scope.park)
   } catch { return false }
 }
 

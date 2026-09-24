@@ -8,7 +8,7 @@ import {
 import { api, ApiError, clearApiValidators, type User } from './api'
 import { AuthContext } from './auth-context'
 import { pruneLegacyResourceSnapshots, resourceStore } from './lib/resource'
-import { clearProtectedBrowserStorage } from './shared/auth/protectedBrowserStorage'
+import { clearLegacyRecentRobots, clearProtectedBrowserStorage } from './shared/auth/protectedBrowserStorage'
 import { InterfaceModeProvider } from './app/interface/InterfaceModeProvider'
 import { interfaceModeStore } from './app/interface/interfaceModeStore'
 import { activateDeviceResourceCache, offlineScopeForUser, purgeDeviceResourceCache } from './lib/deviceResourceCache'
@@ -57,6 +57,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     pruneLegacyResourceSnapshots()
+    clearLegacyRecentRobots()
     const generation = advanceSessionGeneration()
     api
       .me()

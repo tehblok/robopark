@@ -17,6 +17,12 @@ function resolveStorage(storage?: Storage): Storage | null {
   }
 }
 
+export function clearLegacyRecentRobots(storage?: Storage): void {
+  const target = resolveStorage(storage)
+  if (!target) return
+  try { target.removeItem('robopark.recentRobots') } catch { /* Optional browser storage. */ }
+}
+
 export function clearProtectedBrowserStorage(storage?: Storage): void {
   const target = resolveStorage(storage)
   if (!target) return

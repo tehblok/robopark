@@ -371,6 +371,19 @@ function mayMigrate(oldScope: string, nextScope: string): boolean {
   return parts[2] === '' && parts[6] === '' && old.base === legacyBaseOf(nextScope)
 }
 
+function sourceSupersedes(storeName: StoreName, source: ScopedRecord, destination: ScopedRecord): boolean {
+  const old = source as ScopedRecord & { updatedAt?: number, state?: string, baseRevision?: string | null, revision?: string }
+  const current = destination as typeof old
+  if (storeName === 'actions' || storeName === 'media') {
+    const terminal = (state?: string) => state === 'confirmed' || (storeName === 'actions' && state === 'cancelled')
+    if (terminal(old.state) !== terminal(current.state)) return terminal(old.state)
+    if (storeName === 'actions' && old.baseRevision !== current.baseRevision) return false
+  }
+  if (storeName === 'revisions' && old.revision !== current.revision) return false
+  if (storeName === 'meta') return false
+  return typeof old.updatedAt === 'number' && typeof current.updatedAt === 'number' && old.updatedAt > current.updatedAt
+}
+
 async function migrateOlderSchema(db: IDBDatabase, scope: string): Promise<void> {
   for (const storeName of STORES) {
     const transaction = db.transaction(storeName, 'readwrite')
@@ -381,14 +394,14 @@ async function migrateOlderSchema(db: IDBDatabase, scope: string): Promise<void>
       if (record.scope === scope) continue
       if (!mayMigrate(record.scope, scope)) continue
       const destinationId = recordId(scope, record.dbId.slice(record.scope.length + 1))
-      const destination = byId.get(destinationId) as (ScopedRecord & { updatedAt?: number }) | undefined
-      const source = record as ScopedRecord & { updatedAt?: number }
-      // Unknown timestamps favour the destination; never erase pending old work
-      // when a destination collision cannot be resolved with certainty.
-      if (destination && !(typeof source.updatedAt === 'number' && typeof destination.updatedAt === 'number' && source.updatedAt > destination.updatedAt)) continue
-      const migrated = { ...record, scope, dbId: destinationId }
-      store.put(migrated)
-      byId.set(destinationId, migrated)
+      const destination = byId.get(destinationId)
+      if (!destination || sourceSupersedes(storeName, record, destination)) {
+        const migrated = { ...record, scope, dbId: destinationId }
+        store.put(migrated)
+        byId.set(destinationId, migrated)
+      }
+      // The destination represents the same logical record. Tombstone the
+      // losing lower-schema copy in this transaction so cleanup cannot revive it.
       store.delete(record.dbId)
     }
     await transactionDone(transaction)

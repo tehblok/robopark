@@ -5,6 +5,7 @@ import { SyncCoordinator } from './syncCoordinator'
 import { NetworkOnlySyncEngine, SyncEngine } from './syncEngine'
 import type { OfflineAction, OfflineScope } from './offlineTypes'
 import type { SyncBatchRequest } from '../api'
+import { activateServiceWorkerWhenSafe } from './registerServiceWorker'
 
 const scope: OfflineScope = { account: '1', role: 'mechanic', permissions: 'tracker.read', park: '1', schema: 1 }
 const input = (id: string, dependencies: string[] = []): Omit<OfflineAction, 'state' | 'attempts' | 'createdAt' | 'updatedAt'> => ({
@@ -111,6 +112,23 @@ describe('SyncEngine', () => {
     expect(calls).toEqual([])
     await Promise.all([first, second])
     expect(calls).toEqual([['one', 'two']])
+    engine.dispose()
+  })
+
+  it('keeps durable actions, media, and conflicts in state after a quota fallback confirms', async () => {
+    const db = await openOfflineDb(scope)
+    await db.putAction({ ...input('durable'), state: 'ready', attempts: 0, createdAt: 1, updatedAt: 1 })
+    await db.putAction({ ...input('conflict'), state: 'conflict', attempts: 1, createdAt: 1, updatedAt: 1 })
+    await db.putMedia({ id: 'photo', actionId: 'durable', issueKey: 'TASK-1', name: 'private.jpg', blob: new Blob(['x']), mimeType: 'image/jpeg', sha256: 'x', sizeBytes: 1, state: 'local', createdAt: 1, updatedAt: 1 })
+    vi.spyOn(db, 'putAction').mockRejectedValueOnce(new DOMException('full', 'QuotaExceededError'))
+    const engine = new SyncEngine({ db, coordinator: coordinator(db), deviceId: 'phone', sendBatch: async batch => ({
+      results: batch.actions.map(item => ({ client_action_id: item.client_action_id, state: 'confirmed' as const, code: null, result: null })), deltas: {}, revisions: {}, revoked_scopes: [],
+    }) })
+    await engine.enqueueAction(input('network'))
+    expect(engine.getState()).toMatchObject({ status: 'attention', pending: 3, conflicts: 1 })
+    const postMessage = vi.fn()
+    expect(activateServiceWorkerWhenSafe({ waiting: { postMessage } }, engine.getState())).toBe(false)
+    expect(postMessage).not.toHaveBeenCalled()
     engine.dispose()
   })
 

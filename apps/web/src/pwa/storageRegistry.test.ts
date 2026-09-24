@@ -1,11 +1,12 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { storageRegistry } from './storageRegistry'
-import { readReportPhotoDraft, writeReportPhotoDraft } from '../domains/reports/reportPhotoDrafts'
+import { clearReportPhotoDrafts, readReportPhotoDraft, writeReportPhotoDraft } from '../domains/reports/reportPhotoDrafts'
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.stubGlobal('indexedDB', new IDBFactory())
   localStorage.clear()
+  await clearReportPhotoDrafts()
 })
 
 describe('storage registry', () => {
@@ -58,6 +59,37 @@ describe('storage registry', () => {
     expect(await readReportPhotoDraft(key)).toBeNull()
     storageRegistry.activateScope(scope)
     expect((await readReportPhotoDraft(key))?.attachment?.name).toBe('private.jpg')
+  })
+
+  it.each(['admin', 'royal'])('quarantines an unmounted %s photo with null selected park before a reused account can overwrite it', async role => {
+    const original = { account: '1', principal: 'alice', parkAccess: '7', role, permissions: 'reports.create', park: 'all', schema: 1 }
+    const replacement = { ...original, principal: 'bob' }
+    const key = 'robopark:report-draft:1:7'
+    const owner = (principal: string) => JSON.stringify([1, principal, null, role, 'approved', false, ['reports.create'], [[7, 'North']], null])
+    const draft = (principal: string, name: string) => ({ key, ownerKey: owner(principal), revision: name, activeForm: 'problem' as const, trackerKey: '', title: name, body: '', createdReportId: 42, attachmentKind: 'device_photo' as const, attachment: { blob: new Blob([name]), name, lastModified: 1 } })
+    await writeReportPhotoDraft(draft('alice', 'alice.jpg'))
+    await storageRegistry.purgeScope(original)
+    expect(await readReportPhotoDraft(key)).toBeNull()
+
+    storageRegistry.activateScope(replacement)
+    await writeReportPhotoDraft(draft('bob', 'bob.jpg'))
+    expect((await readReportPhotoDraft(key))?.attachment?.name).toBe('bob.jpg')
+    await storageRegistry.purgeScope(replacement)
+    storageRegistry.activateScope(original)
+    expect((await readReportPhotoDraft(key))?.attachment?.name).toBe('alice.jpg')
+  })
+
+  it('archives an occupied photo before a replacement principal writes the reused physical key', async () => {
+    const key = 'robopark:report-draft:1:7'
+    const scope = (principal: string) => ({ account: '1', principal, parkAccess: '7', role: 'admin', permissions: 'reports.create', park: 'all', schema: 1 })
+    const draft = (principal: string) => ({ key, ownerKey: JSON.stringify([1, principal, null, 'admin', 'approved', false, ['reports.create'], [[7, 'North']], null]), revision: principal, activeForm: 'problem' as const, trackerKey: '', title: principal, body: '', createdReportId: 42, attachmentKind: 'device_photo' as const, attachment: { blob: new Blob([principal]), name: `${principal}.jpg`, lastModified: 1 } })
+    await writeReportPhotoDraft(draft('alice'))
+    await writeReportPhotoDraft(draft('bob'))
+    expect((await readReportPhotoDraft(key))?.attachment?.name).toBe('bob.jpg')
+    await expect(writeReportPhotoDraft({ ...draft('bob'), title: 'continued', revision: 'bob-2' })).resolves.toBeUndefined()
+    await storageRegistry.purgeScope(scope('bob'))
+    storageRegistry.activateScope(scope('alice'))
+    expect((await readReportPhotoDraft(key))?.attachment?.name).toBe('alice.jpg')
   })
 
   it('keeps an archived draft when its original key is occupied', async () => {

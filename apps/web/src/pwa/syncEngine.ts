@@ -79,6 +79,8 @@ export class SyncEngine {
   private readonly batcher = new ClientBatcher(() => this.syncNow('batch'))
   private networkFallback: NetworkOnlySyncEngine | null = null
   private state: SyncState = { status: 'idle', pending: 0, conflicts: 0 }
+  private durableState: SyncState = { status: 'idle', pending: 0, conflicts: 0 }
+  private fallbackState: SyncState = { status: 'idle', pending: 0, conflicts: 0 }
   private started = false
   private disposed = false
   private running = false
@@ -176,9 +178,15 @@ export class SyncEngine {
         this.networkFallback = new NetworkOnlySyncEngine({ deviceId: this.deviceId, sendBatch: this.sendBatch })
         this.networkFallback.subscribe(() => {
           const fallback = this.networkFallback?.getState()
-          if (fallback) this.setState({ status: fallback.status, pending: fallback.pending, conflicts: fallback.conflicts })
+          if (fallback) {
+            this.fallbackState = fallback
+            this.publishCombinedState()
+          }
         })
       }
+      // A quota failure does not imply that earlier durable actions/media are
+      // gone. Count them before the transient network batch is accepted.
+      await this.refreshState().catch(() => {})
       const { state: _state, attempts: _attempts, createdAt: _createdAt, updatedAt: _updatedAt, ...input } = action
       const stop = this.networkFallback.subscribeAction(action.id, next => {
         this.actionSubscribers.get(action.id)?.forEach(listener => listener(next))
@@ -264,7 +272,7 @@ export class SyncEngine {
   private async pump(): Promise<boolean> {
     const pendingMedia = (await this.db.listMedia()).filter(item => item.state === 'local' || item.state === 'ready' || item.state === 'attention')
     if (pendingMedia.length && this.uploadMedia) {
-      this.setState({ ...this.state, status: 'syncing' })
+      this.setState({ ...this.durableState, status: 'syncing' })
       this.abortController = new AbortController()
       try {
         for (const media of pendingMedia.slice(0, this.weakLink() ? 1 : MEDIA_CONCURRENCY)) {
@@ -285,7 +293,7 @@ export class SyncEngine {
         }
         await this.refreshState()
         if (!permanent) {
-          this.setState({ ...this.state, status: 'offline' })
+          this.setState({ ...this.durableState, status: 'offline' })
           const delay = Math.min(60_000, 1_000 * 2 ** (maxAttempts - 1)) * (1 + this.random() * 0.25)
           if (!this.disposed) this.retryTimer = this.scheduleRetry(() => { this.retryTimer = null; void this.syncNow('media-retry') }, delay)
         }
@@ -300,7 +308,7 @@ export class SyncEngine {
     const batch = ready.slice(0, this.weakLink() ? WEAK_LINK_BATCH_LIMIT : SYNC_BATCH_LIMIT)
     const sending = batch.map(item => ({ ...item, state: 'sending' as const, updatedAt: this.now() }))
     for (const item of sending) await this.db.putAction(item)
-    this.setState({ ...this.state, status: 'syncing' })
+    this.setState({ ...this.durableState, status: 'syncing' })
     this.abortController = new AbortController()
     try {
       const response = await this.sendBatch({
@@ -339,7 +347,7 @@ export class SyncEngine {
         maxAttempts = Math.max(maxAttempts, attempts)
         await this.db.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() })
       }
-      this.setState({ ...this.state, status: 'offline' })
+      this.setState({ ...this.durableState, status: 'offline' })
       const delay = Math.min(60_000, 1_000 * 2 ** (maxAttempts - 1)) * (1 + this.random() * 0.25)
       if (!this.disposed) this.retryTimer = this.scheduleRetry(() => { this.retryTimer = null; void this.syncNow('retry') }, delay)
       return false
@@ -355,7 +363,7 @@ export class SyncEngine {
       + media.filter(item => item.state === 'attention').length
     const pending = actions.filter(item => !['confirmed', 'cancelled'].includes(item.state)).length
       + media.filter(item => item.state !== 'confirmed').length
-    this.setState({ status: conflicts ? 'attention' : pending ? this.state.status === 'offline' ? 'offline' : 'idle' : 'idle', pending, conflicts })
+    this.setState({ status: conflicts ? 'attention' : pending && this.durableState.status === 'offline' ? 'offline' : 'idle', pending, conflicts })
     for (const [id, listeners] of this.actionSubscribers) {
       const action = actions.find(item => item.id === id)
       listeners.forEach(listener => listener(action))
@@ -363,7 +371,18 @@ export class SyncEngine {
   }
 
   private setState(state: SyncState): void {
-    this.state = state
+    this.durableState = state
+    this.publishCombinedState()
+  }
+
+  private publishCombinedState(): void {
+    const durable = this.durableState
+    const fallback = this.fallbackState
+    const conflicts = durable.conflicts + fallback.conflicts
+    const status: SyncStatus = conflicts || durable.status === 'attention' || fallback.status === 'attention' ? 'attention'
+      : durable.status === 'syncing' || fallback.status === 'syncing' ? 'syncing'
+        : durable.status === 'offline' || fallback.status === 'offline' ? 'offline' : 'idle'
+    this.state = { status, pending: durable.pending + fallback.pending, conflicts }
     this.subscribers.forEach(listener => listener())
   }
 }

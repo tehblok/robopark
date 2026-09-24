@@ -111,6 +111,16 @@ describe('AuthProvider session boundaries', () => {
     expect(localStorage.getItem(newKey)).toBeNull()
   })
 
+  it('purges provenance-free legacy robot recents before a successful bootstrap publishes a user', async () => {
+    localStorage.setItem(legacyRecentKey, '["447"]')
+    localStorage.setItem(recentKey, '["owned"]')
+    vi.spyOn(api, 'me').mockResolvedValue(replacementAccount)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('replacement-account')
+    expect(localStorage.getItem(legacyRecentKey)).toBeNull()
+    expect(localStorage.getItem(recentKey)).toBe('["owned"]')
+  })
+
   it('keeps the auth refresh callback stable across a same-user refresh', async () => {
     vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockResolvedValueOnce({ ...oldAccount })
     render(<AuthProvider><AuthProbe /></AuthProvider>)

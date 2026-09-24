@@ -30,3 +30,14 @@ Status: all eight review findings addressed with focused regressions.
 Verification: bounded Vitest selection (8 files, 209 tests passed), `npx tsc --noEmit -p tsconfig.app.json` passed, `git diff --check` passed. No E2E or long-running tests were run.
 
 Remaining limitation: records written under the original five-field offline scope format cannot be safely attributed to a principal or park-access set; they are retained for explicit recovery rather than auto-claimed. Network-only fallback still cannot durably queue a failed transport.
+
+## Round 2 re-review fixes
+
+Status: all four re-review findings addressed with focused red/green regressions.
+
+- Registry retirement now matches admin and royal report-photo drafts whose selected park is null to the exact `all` scope. A replacement principal writing the same physical account/park draft key first archives the previous owner's photo and keeps the replacement draft writable.
+- Schema migration now resolves collisions by terminal state and revision before timestamps. The losing lower-schema record is deleted in the same IndexedDB transaction, preventing cleanup from resurrecting stale actions, media, or entities on reopen.
+- Sync state combines durable action/media counts and conflicts with the 150 ms quota-fallback batch. A confirmed network-only action cannot hide a durable queue or falsely enable a service-worker update.
+- Successful bootstrap clears only the provenance-free legacy recent-robot key before publishing the authenticated user; account-scoped v2 recents remain untouched.
+
+Verification: bounded Vitest selection (9 files, 217 tests passed), `npx tsc --noEmit -p tsconfig.app.json` passed, `git diff --check` passed. No E2E or long-running tests were run.
