@@ -269,6 +269,32 @@ def _capabilities(public_health: dict) -> dict:
     }
 
 
+def _cpu_health() -> dict:
+    """Load average is a bounded local read, not a blocking CPU probe."""
+    try:
+        load_1m = os.getloadavg()[0]
+        cores = os.cpu_count()
+    except (OSError, ValueError):
+        return {"state": "unknown", "load_1m": None, "cores": None}
+    return {
+        "state": "ok" if cores else "unknown",
+        "load_1m": load_1m,
+        "cores": cores,
+    }
+
+
+def _public_service_health(public_health: dict, name: str) -> dict:
+    services = public_health.get("services", {})
+    if not isinstance(services, dict):
+        return {"state": "unknown"}
+    value = services.get(name)
+    if value == "ok":
+        return {"state": "ok"}
+    if value in {"failed", "warning"}:
+        return {"state": "degraded"}
+    return {"state": "unknown"}
+
+
 def cached_host_snapshot(
     data_dir: Path, ops_dir: Path, public_health_path: Path | None = None
 ) -> dict:
@@ -306,6 +332,11 @@ def cached_host_snapshot(
                 cleanup_state=None,
             ),
             "capabilities": _capabilities(public_health),
+            "cpu": _cpu_health(),
+            "postgresql": {"state": "unknown"},
+            "container": _public_service_health(public_health, "docker"),
+            "tuna": _public_service_health(public_health, "tuna"),
+            "internet": _public_service_health(public_health, "internet"),
         }
         cleanup = public_health.get("storage", {})
         api_cleanup = _read_json(ops_dir / "api-storage-retention.json")

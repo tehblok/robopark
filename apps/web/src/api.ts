@@ -1474,6 +1474,11 @@ export const api = {
       await clearTaskAttachmentCache()
     }
   },
+  presenceHeartbeat: (timezone: string) =>
+    request<void>('/presence/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({ timezone }),
+    }),
   changePassword: (current_password: string, new_password: string) =>
     request<void>('/auth/change-password', {
       method: 'POST',

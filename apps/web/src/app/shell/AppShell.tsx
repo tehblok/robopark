@@ -282,6 +282,24 @@ function NavigationLink({
 
 export function AppShell() {
   const { user, logout, refreshUser } = useAuth()
+  const presenceIdentity = user?.id
+  useEffect(() => {
+    if (presenceIdentity == null) return
+    const beat = () => {
+      if (document.visibilityState !== 'visible' || !navigator.onLine) return
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+      void api.presenceHeartbeat(timezone).catch(() => {})
+    }
+    beat()
+    const timer = window.setInterval(beat, 60_000)
+    document.addEventListener('visibilitychange', beat)
+    window.addEventListener('online', beat)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', beat)
+      window.removeEventListener('online', beat)
+    }
+  }, [presenceIdentity])
   const {
     parkId,
     selectedPark,

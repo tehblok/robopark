@@ -279,10 +279,26 @@ describe('AppShell', () => {
     media = installMatchMedia({ width: 1200 })
     vi.spyOn(api, 'reportsBadge').mockResolvedValue({ count: 0 })
     vi.spyOn(api, 'changeRevision').mockResolvedValue({ revision: 0 })
+    vi.spyOn(api, 'presenceHeartbeat').mockResolvedValue(undefined)
     vi.spyOn(api, 'dashboardSummary').mockResolvedValue({ park_id: 7, generated_at: '2026-09-02T09:00:00Z', arrived: 0, done: 0, queued: 0, in_transit: 0, moving: [] })
     vi.spyOn(api, 'operatorBlockers').mockResolvedValue({ park_id: 7, park_tag: 'north', status: 'all', counts: {}, items: [] })
     vi.spyOn(api, 'trackerIssues').mockResolvedValue({ items: [], total: 0, limit: 30, offset: 0, has_more: false })
     vi.spyOn(api, 'operationsOverview').mockResolvedValue({ park_id: 7, generated_at: '2026-09-02T09:00:00Z', timezone: 'Europe/Moscow', selected_status: 'all', status_options: [{ key: 'all', label: 'Все доступные' }, { key: 'new', label: 'Новые' }], counts: { all: 1, new: 1 }, tasks: [{ key: 'ROBOPARK-1', summary: 'Проверить робота', status: 'Новый', bucket: 'new', robot: '447', created_at: null, hours_created: null, url: '' }], tasks_total: 1, tasks_truncated: false, flow: { definition_version: 2, window_start: '2026-09-01T09:00:00Z', window_end: '2026-09-02T09:00:00Z', expected_buckets: 12, observed_buckets: 0, complete: false, legacy_buckets: 0, points: [] }, sla: { target_hours: null, evaluated_count: 0, unknown_count: 1, at_risk_count: null, overdue_count: null, overdue: [], overdue_truncated: false }, workload: null, operators: null })
+  })
+
+  it('heartbeats only for a visible authenticated shell and cleans up on unmount', async () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    const shell = renderShellPath('/overview')
+    expect(api.presenceHeartbeat).not.toHaveBeenCalled()
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    fireEvent(document, new Event('visibilitychange'))
+    await waitFor(() => expect(api.presenceHeartbeat).toHaveBeenCalledWith(
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ))
+    shell.unmount()
+    vi.mocked(api.presenceHeartbeat).mockClear()
+    fireEvent(document, new Event('visibilitychange'))
+    expect(api.presenceHeartbeat).not.toHaveBeenCalled()
   })
 
   it('checks only the visible work version and refreshes mounted resources on change', async () => {

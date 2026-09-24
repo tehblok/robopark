@@ -1,8 +1,9 @@
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 from conftest import login_as, role_id_for
 from robopark_api.collaboration_models import TrackerClaim
-from robopark_api.models import AuditLog, AuthSession, User
+from robopark_api.models import AuditLog, AuthSession, Report, User
 from robopark_api.schedule_models import ScheduleEntry
 from robopark_api.security import hash_password
 
@@ -79,3 +80,51 @@ def test_delete_user_with_active_claims_and_future_schedules_requires_reassignme
     assert claim.owner_user_id == seed_mechanic.id
     assert db_session.get(ScheduleEntry, entry.id).owner_user_id == seed_mechanic.id
     assert db_session.get(User, seed_mechanic.id).is_active
+
+
+def test_returned_report_blocks_author_deactivation(
+    client, db_session, seed_royal, seed_mechanic, seed_park_with_tracker
+):
+    db_session.add(
+        Report(
+            kind="mechanic",
+            status="returned",
+            park_id=seed_park_with_tracker.id,
+            author_user_id=seed_mechanic.id,
+            target_role="operator",
+            title="Need revision",
+            body="",
+        )
+    )
+    db_session.commit()
+    login_as(client, "royal", "secret")
+    response = client.delete(f"/admin/users/{seed_mechanic.id}")
+    assert response.status_code == 409
+    assert db_session.get(User, seed_mechanic.id).is_active
+
+
+def test_royal_deactivation_serializes_last_royal_invariant(
+    client, db_session, seed_royal, monkeypatch
+):
+    from robopark_api.routers import admin_users
+
+    second = User(
+        username="second-royal",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "royal"),
+        access_status="approved",
+        is_active=True,
+    )
+    db_session.add(second)
+    db_session.commit()
+    held = []
+
+    @contextmanager
+    def record_lock(_db, key):
+        held.append(key)
+        yield
+
+    monkeypatch.setattr(admin_users, "database_idempotency_lock", record_lock, raising=False)
+    login_as(client, "royal", "secret")
+    assert client.delete(f"/admin/users/{second.id}").status_code == 204
+    assert held == ["royal-account-transition"]

@@ -732,6 +732,111 @@ def test_outbox_retention_keeps_unresolved_and_unconfirmed_attachment(
     )
 
 
+def test_normal_and_pressure_retention_advance_past_protected_prefix(
+    db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    now = time.time()
+    old = now - 8 * 86400
+    pending = TaskMessage(
+        id="prefix-pending",
+        issue_key="ROBOPARK-9",
+        kind="user",
+        author_name="worker",
+        text="pending",
+        sync_state="pending",
+        created_at=old,
+        updated_at=old,
+    )
+    synced = TaskMessage(
+        id="prefix-synced",
+        issue_key="ROBOPARK-9",
+        kind="system",
+        author_name="system",
+        text="synced",
+        sync_state="synced",
+        created_at=old,
+        updated_at=old,
+    )
+    db_session.add_all([pending, synced])
+    for index in range(502):
+        confirmed = index >= 500
+        action = ReliableAction(
+            id=f"prefix-{index:04d}",
+            actor_user_id=seed_mechanic.id,
+            resource_type="tracker_issue",
+            resource_id="ROBOPARK-9",
+            action="attach",
+            idempotency_key=f"prefix-key-{index}",
+            payload_hash="0" * 64,
+            payload_json="{}",
+            state="succeeded",
+            result_json='{"attachment_id":"remote","external_id":"link"}' if confirmed else "{}",
+            next_attempt_at=0,
+            created_at=old,
+            updated_at=old,
+        )
+        db_session.add(action)
+        db_session.add(
+            TaskAttachment(
+                id=action.id,
+                message_id=synced.id,
+                blob_name=f"prefix-{index:04d}.blob",
+                original_name="upload.bin",
+                mime_type="application/octet-stream",
+                size_bytes=1,
+                sha256="0" * 64,
+                created_at=old,
+                uploaded_at=old + index,
+            )
+        )
+    db_session.commit()
+    monkeypatch.setattr(cache_cleanup, "staged_attachments_root", lambda: tmp_path)
+    for index in range(500, 502):
+        (tmp_path / f"prefix-{index:04d}.blob").write_bytes(b"x")
+    assert cache_cleanup.prune_tracker_outbox(db_session, now=now)[1] == 2
+    assert db_session.get(TaskAttachment, "prefix-0000") is not None
+
+    # A new confirmed copy behind the same protected prefix must also be reachable in pressure mode.
+    extra = ReliableAction(
+        id="prefix-pressure",
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-9",
+        action="attach",
+        idempotency_key="prefix-pressure-key",
+        payload_hash="0" * 64,
+        payload_json="{}",
+        state="succeeded",
+        result_json='{"attachment_id":"remote","external_id":"link"}',
+        next_attempt_at=0,
+        created_at=old,
+        updated_at=old,
+    )
+    db_session.add(extra)
+    db_session.add(
+        TaskAttachment(
+            id=extra.id,
+            message_id=synced.id,
+            blob_name="prefix-pressure.blob",
+            original_name="upload.bin",
+            mime_type="application/octet-stream",
+            size_bytes=1,
+            sha256="0" * 64,
+            created_at=old,
+            uploaded_at=old + 1000,
+        )
+    )
+    db_session.commit()
+    (tmp_path / "prefix-pressure.blob").write_bytes(b"x")
+    report = cache_cleanup.cleanup_confirmed_tracker_copies(
+        db_session,
+        budget=cache_cleanup.StorageBudget(100, 0, minimum_free_bytes=1),
+        max_deletions=1,
+    )
+    assert report["deleted_count"] == 1
+    assert db_session.get(TaskAttachment, extra.id) is None
+
+
 def test_outbox_retention_preserves_active_claim_start_action(
     db_session, seed_mechanic, seed_park_with_tracker
 ):

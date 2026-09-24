@@ -15,10 +15,13 @@ from sqlalchemy import (
     Index,
     Integer,
     UniqueConstraint,
+    case,
     delete,
     func,
     select,
 )
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from robopark_api.models import AccessStatus, Base, Role, User, UserPark
@@ -82,21 +85,26 @@ def _bucket(now: datetime) -> datetime:
 
 def heartbeat(db: Session, user: User, *, now: datetime | None = None) -> None:
     current = now or datetime.now(UTC)
-    row = db.get(UserPresence, user.id)
-    if row is None:
-        db.add(UserPresence(user_id=user.id, last_seen_at=current))
-    else:
-        row.last_seen_at = current
-    bucket = _bucket(current)
-    if (
-        db.scalar(
-            select(PresenceSample.id).where(
-                PresenceSample.user_id == user.id, PresenceSample.bucket_at == bucket
-            )
+    dialect = db.get_bind().dialect.name
+    insert = pg_insert if dialect == "postgresql" else sqlite_insert
+    presence = insert(UserPresence).values(user_id=user.id, last_seen_at=current)
+    db.execute(
+        presence.on_conflict_do_update(
+            index_elements=[UserPresence.user_id],
+            set_={
+                "last_seen_at": case(
+                    (UserPresence.last_seen_at < current, current),
+                    else_=UserPresence.last_seen_at,
+                )
+            },
         )
-        is None
-    ):
-        db.add(PresenceSample(user_id=user.id, bucket_at=bucket))
+    )
+    bucket = _bucket(current)
+    db.execute(
+        insert(PresenceSample)
+        .values(user_id=user.id, bucket_at=bucket)
+        .on_conflict_do_nothing(index_elements=[PresenceSample.user_id, PresenceSample.bucket_at])
+    )
     db.commit()
 
 
@@ -138,12 +146,14 @@ def online_counts(db: Session, *, actor: User, now: datetime | None = None) -> d
     return {"total": len(ids), "by_role": by_role, "by_park": by_park}
 
 
-def active_user_history(db: Session, *, actor: User, now: datetime | None = None) -> list[dict]:
+def active_user_history(
+    db: Session, *, actor: User, now: datetime | None = None, days: int = 7
+) -> list[dict]:
     from robopark_api.services.rbac import is_royal
 
     current = now or datetime.now(UTC)
     query = select(PresenceSample.user_id, PresenceSample.bucket_at).where(
-        PresenceSample.bucket_at >= current - AGGREGATE_TTL
+        PresenceSample.bucket_at >= current - min(AGGREGATE_TTL, timedelta(days=days))
     )
     if not is_royal(actor):
         allowed = select(UserPark.user_id).where(
@@ -187,6 +197,12 @@ def collect_system_metrics(db: Session, *, now: datetime | None = None, settings
             resolved_ops_dir(settings),
             Path(settings.host_health_path),
         )
+        data["host"] = {
+            **data["host"],
+            "postgresql": {
+                "state": "ok" if db.get_bind().dialect.name == "postgresql" else "unknown"
+            },
+        }
     numeric = {
         "outbox_pending": float(health["pending_action_count"]),
         "outbox_attention": float(health["needs_attention_count"]),

@@ -13,7 +13,8 @@ def test_presence_is_database_backed_and_expires_after_two_minutes(
     client, db_session, seed_royal, seed_mechanic, seed_park_with_tracker
 ):
     login_as(client, "mech1", "secret")
-    assert client.post("/presence/heartbeat").status_code == 204
+    assert client.post("/presence/heartbeat", json={"timezone": "Europe/Moscow"}).status_code == 204
+    assert client.post("/presence/heartbeat", json={"timezone": "not/a-zone"}).status_code == 422
     login_as(client, "royal", "secret")
     summary = client.get("/admin/system/summary")
     assert summary.status_code == 200
@@ -26,6 +27,20 @@ def test_presence_is_database_backed_and_expires_after_two_minutes(
     presence.last_seen_at = datetime.now(UTC) - timedelta(minutes=3)
     db_session.commit()
     assert client.get("/admin/system/summary").json()["online"]["total"] == 0
+
+
+def test_heartbeat_retries_conflicting_insert_and_never_moves_presence_backwards(
+    db_engine, db_session, seed_mechanic
+):
+    from robopark_api.services.system_observability import PresenceSample, UserPresence, heartbeat
+
+    later = datetime(2026, 9, 24, 12, 1, tzinfo=UTC)
+    with sessionmaker(bind=db_engine)() as first, sessionmaker(bind=db_engine)() as second:
+        heartbeat(first, seed_mechanic, now=later)
+        heartbeat(second, seed_mechanic, now=later - timedelta(seconds=30))
+    db_session.expire_all()
+    assert db_session.get(UserPresence, seed_mechanic.id).last_seen_at.replace(tzinfo=UTC) == later
+    assert db_session.query(PresenceSample).filter_by(user_id=seed_mechanic.id).count() == 1
 
 
 def test_admin_system_history_requires_admin_and_bounds_days(client, seed_mechanic, seed_royal):
@@ -127,6 +142,28 @@ def test_metric_collector_retries_after_transient_database_failure(db_engine, mo
     assert calls == 2
 
 
+def test_summary_reports_metric_sample_time_and_staleness(client, db_session, seed_royal):
+    from robopark_api.services.system_observability import MetricRaw
+
+    sampled = datetime.now(UTC) - timedelta(hours=1)
+    db_session.add(MetricRaw(sampled_at=sampled, data={"sync": {"pending_action_count": 0}}))
+    db_session.commit()
+    login_as(client, "royal", "secret")
+    body = client.get("/admin/system/summary").json()
+    assert datetime.fromisoformat(body["sampled_at"]) == sampled
+    assert body["metrics_stale"] is True
+
+
+def test_active_user_history_obeys_requested_day_window(db_session, seed_royal, seed_mechanic):
+    from robopark_api.services.system_observability import PresenceSample, active_user_history
+
+    now = datetime.now(UTC)
+    db_session.add(PresenceSample(user_id=seed_mechanic.id, bucket_at=now - timedelta(days=6)))
+    db_session.commit()
+    assert active_user_history(db_session, actor=seed_royal, now=now, days=1) == []
+    assert len(active_user_history(db_session, actor=seed_royal, now=now, days=7)) == 1
+
+
 def test_summary_exposes_payload_free_worker_tracker_outbox_and_push_health(
     client, db_session, seed_royal, test_settings
 ):
@@ -141,6 +178,8 @@ def test_summary_exposes_payload_free_worker_tracker_outbox_and_push_health(
     assert body["push"] == {"pending": 0, "needs_attention": 0}
     assert "disk" in body["metrics"]["host"]
     assert "requests" in body["metrics"]["host"]
+    for field in ("cpu", "postgresql", "container", "tuna", "internet"):
+        assert body["metrics"]["host"][field]["state"] in {"ok", "degraded", "unknown"}
     assert "version" in body["release"]
 
 

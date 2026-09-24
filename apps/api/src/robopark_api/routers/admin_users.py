@@ -16,6 +16,7 @@ from robopark_api.schedule_models import ScheduleEntry
 from robopark_api.schemas import ParkOut
 from robopark_api.security import PasswordPolicyError, hash_password, validate_password
 from robopark_api.services import audit, rbac
+from robopark_api.services.database_locks import database_idempotency_lock
 from robopark_api.services.user_activity import public_ip
 from robopark_api.task_workflow_models import TaskReview
 
@@ -219,13 +220,31 @@ def create_user(
     return _user_out(db, user, _user_parks(db, user.id), settings)
 
 
-@router.patch("/{user_id}", response_model=UserAdminOut)
 def update_user(
     user_id: int,
     payload: UserUpdate,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
     actor: User = Depends(require_user),
+) -> UserAdminOut:
+    with database_idempotency_lock(db, "royal-account-transition"):
+        db.expire_all()
+        return _update_user_locked(user_id, payload, db, settings, actor)
+
+
+@router.patch("/{user_id}", response_model=UserAdminOut)
+def update_user_route(
+    user_id: int,
+    payload: UserUpdate,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    actor: User = Depends(require_user),
+) -> UserAdminOut:
+    return update_user(user_id, payload, db, settings, actor)
+
+
+def _update_user_locked(
+    user_id: int, payload: UserUpdate, db: Session, settings: Settings, actor: User
 ) -> UserAdminOut:
     if not _can_manage_users(db, actor):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
@@ -339,6 +358,12 @@ def reject_user(
     db: Session = Depends(get_db),
     actor: User = Depends(require_royal),
 ) -> None:
+    with database_idempotency_lock(db, "royal-account-transition"):
+        db.expire_all()
+        _reject_user_locked(user_id, db)
+
+
+def _reject_user_locked(user_id: int, db: Session) -> None:
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -354,6 +379,12 @@ def delete_user(
     db: Session = Depends(get_db),
     actor: User = Depends(require_user),
 ) -> None:
+    with database_idempotency_lock(db, "royal-account-transition"):
+        db.expire_all()
+        _delete_user_locked(user_id, db, actor)
+
+
+def _delete_user_locked(user_id: int, db: Session, actor: User) -> None:
     if not _can_manage_users(db, actor):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     user = _load_user(db, user_id)
@@ -381,7 +412,10 @@ def delete_user(
                     ScheduleEntry,
                     (ScheduleEntry.owner_user_id == user.id) & (ScheduleEntry.end_at > now),
                 ),
-                (Report, (Report.author_user_id == user.id) & (Report.status == "open")),
+                (
+                    Report,
+                    (Report.author_user_id == user.id) & (Report.status.in_(("open", "returned"))),
+                ),
                 (
                     TaskReview,
                     (TaskReview.actor_user_id == user.id) & (TaskReview.state != "closed"),

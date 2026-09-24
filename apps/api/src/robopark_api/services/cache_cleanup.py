@@ -9,12 +9,13 @@ import logging
 import os
 import stat
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import delete, exists, select
+from sqlalchemy import and_, delete, exists, or_, select
 from sqlalchemy.orm import Session
 
 from robopark_api.collaboration_models import TrackerClaim
@@ -68,6 +69,64 @@ _STORAGE_MAX_DELETIONS = 512
 _STORAGE_MAX_ITERATIONS = 16
 _STORAGE_MAX_SCANNED_ENTRIES = 4096
 _STORAGE_TIME_BUDGET_SECONDS = 0.5
+_ATTACHMENT_SCAN_LIMIT = 4096
+_attachment_scan_cursors: dict[str, tuple[float, str]] = {}
+_attachment_scan_lock = threading.Lock()
+
+
+def _confirmed_attachment_rows(
+    db: Session, *, cutoff: float, limit: int, owner: str
+) -> list[tuple[TaskAttachment, ReliableAction, TaskMessage]]:
+    """Keyset-scan a bounded window; remember progress past protected rows."""
+    selected = []
+    scanned = 0
+    cursor_key = f"{owner}:{db.get_bind().url}"
+    with _attachment_scan_lock:
+        cursor = _attachment_scan_cursors.get(cursor_key)
+        while len(selected) < limit and scanned < _ATTACHMENT_SCAN_LIMIT:
+            query = (
+                select(TaskAttachment, ReliableAction, TaskMessage)
+                .join(ReliableAction, ReliableAction.id == TaskAttachment.id)
+                .join(TaskMessage, TaskMessage.id == TaskAttachment.message_id)
+                .where(
+                    TaskAttachment.uploaded_at.is_not(None),
+                    TaskAttachment.uploaded_at < cutoff,
+                    ReliableAction.state == "succeeded",
+                    ReliableAction.action == "attach",
+                    TaskMessage.sync_state == "synced",
+                )
+                .order_by(TaskAttachment.uploaded_at, TaskAttachment.id)
+                .limit(min(_RETENTION_BATCH_SIZE, _ATTACHMENT_SCAN_LIMIT - scanned))
+            )
+            if cursor is not None:
+                query = query.where(
+                    or_(
+                        TaskAttachment.uploaded_at > cursor[0],
+                        and_(
+                            TaskAttachment.uploaded_at == cursor[0],
+                            TaskAttachment.id > cursor[1],
+                        ),
+                    )
+                )
+            rows = list(db.execute(query).all())
+            if not rows:
+                _attachment_scan_cursors.pop(cursor_key, None)
+                break
+            for row in rows:
+                scanned += 1
+                cursor = (row[0].uploaded_at, row[0].id)
+                _attachment_scan_cursors[cursor_key] = cursor
+                if confirmed_staged_attachment(
+                    state=row[1].state,
+                    action=row[1].action,
+                    sync_state=row[2].sync_state,
+                    result_json=row[1].result_json,
+                    uploaded_at=row[0].uploaded_at,
+                ):
+                    selected.append(row)
+                    if len(selected) >= limit:
+                        break
+    return selected
 
 
 def _evict_application_caches() -> None:
@@ -117,35 +176,17 @@ def memory_pressure_status() -> dict[str, bool]:
 
 def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
     """Bound reliable-action rows and uploaded staging blobs without losing audit."""
-    attachments = list(
-        db.execute(
-            select(TaskAttachment, ReliableAction, TaskMessage)
-            .join(ReliableAction, ReliableAction.id == TaskAttachment.id)
-            .join(TaskMessage, TaskMessage.id == TaskAttachment.message_id)
-            .where(
-                TaskAttachment.uploaded_at.is_not(None),
-                TaskAttachment.uploaded_at < now - _UPLOADED_BLOB_RETENTION_SECONDS,
-                ReliableAction.state == "succeeded",
-            )
-            .order_by(TaskAttachment.uploaded_at, TaskAttachment.id)
-            .limit(_RETENTION_BATCH_SIZE)
-        ).all()
+    attachments = _confirmed_attachment_rows(
+        db,
+        cutoff=now - _UPLOADED_BLOB_RETENTION_SECONDS,
+        limit=_RETENTION_BATCH_SIZE,
+        owner="normal",
     )
     root = staged_attachments_root()
     pinned_blobs: list[tuple[str, os.stat_result]] = []
     manager = pinned_directory(root) if root.exists() else contextlib.nullcontext(None)
     with manager as root_fd:
-        confirmed = [
-            attachment
-            for attachment, action, message in attachments
-            if confirmed_staged_attachment(
-                state=action.state,
-                action=action.action,
-                sync_state=message.sync_state,
-                result_json=action.result_json,
-                uploaded_at=attachment.uploaded_at,
-            )
-        ]
+        confirmed = [attachment for attachment, _, _ in attachments]
         for attachment in confirmed:
             name = attachment.blob_name
             if name != Path(name).name:
@@ -294,29 +335,13 @@ def cleanup_confirmed_tracker_copies(
     deadline_monotonic: float | None = None,
 ) -> dict:
     """Delete only local copies already confirmed by a succeeded delivery."""
-    attachments = list(
-        db.execute(
-            select(TaskAttachment, ReliableAction, TaskMessage)
-            .join(ReliableAction, ReliableAction.id == TaskAttachment.id)
-            .join(TaskMessage, TaskMessage.id == TaskAttachment.message_id)
-            .where(
-                TaskAttachment.uploaded_at.is_not(None),
-                TaskAttachment.uploaded_at < time.time() - _UPLOADED_BLOB_RETENTION_SECONDS,
-                ReliableAction.state == "succeeded",
-            )
-            .order_by(TaskAttachment.uploaded_at, TaskAttachment.id)
-            .limit(max(0, max_deletions))
-        ).all()
-    )
     attachments = [
         attachment
-        for attachment, action, message in attachments
-        if confirmed_staged_attachment(
-            state=action.state,
-            action=action.action,
-            sync_state=message.sync_state,
-            result_json=action.result_json,
-            uploaded_at=attachment.uploaded_at,
+        for attachment, _, _ in _confirmed_attachment_rows(
+            db,
+            cutoff=time.time() - _UPLOADED_BLOB_RETENTION_SECONDS,
+            limit=max(0, max_deletions),
+            owner="pressure",
         )
     ]
     names = {attachment.blob_name for attachment in attachments}
