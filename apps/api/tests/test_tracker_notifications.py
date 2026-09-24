@@ -183,6 +183,8 @@ def test_closure_refresh_rotates_past_permanent_tracker_failure_and_reports_it(
     assert tracker_notifications.reconcile_closed_claims(factory, limit=1) == 1
     db_session.expire_all()
     assert db_session.get(TrackerClaim, "ROBOPARK-2") is None
+    assert tracker_notifications._poll_failed(factory)
+    assert sync_health.sync_health(db_session).last_error == "tracker_unavailable"
     assert seen == ["ROBOPARK-1", "ROBOPARK-2"]
 
 
@@ -227,6 +229,50 @@ def test_closure_error_clears_when_other_path_removes_last_candidate(
         cursor = db.get(TrackerNotificationCursor, "closures")
         assert cursor.last_error is None
         assert cursor.last_success_at is not None
+
+
+def test_closure_error_clears_when_failed_key_disappears_but_other_claim_remains(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import sync_health, task_lifecycle, tracker_claims
+
+    failed_key = "ROBOPARK-A"
+    healthy_key = "ROBOPARK-B"
+    for key in (failed_key, healthy_key):
+        tracker_claims.claim_issue(
+            db_session,
+            actor=seed_mechanic,
+            owner=seed_mechanic,
+            issue_key=key,
+            park_id=seed_park_with_tracker.id,
+        )
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    calls = []
+
+    def read_issue(**kwargs):
+        key = kwargs["key"]
+        calls.append(key)
+        if key == failed_key:
+            raise tracker_client.TrackerError("temporarily unavailable")
+        return {"key": key, "status_key": "open"}
+
+    monkeypatch.setattr(tracker_client, "get_issue", read_issue)
+    factory = _factory(db_engine)
+    assert tracker_notifications.reconcile_closed_claims(factory, limit=1) == 0
+    assert tracker_notifications.reconcile_closed_claims(factory, limit=1) == 0
+    assert tracker_notifications._poll_failed(factory)
+
+    with Session(db_engine) as db:
+        task_lifecycle.reconcile_external_closure(
+            db, {"key": failed_key, "status_key": "closed"}
+        )
+    assert tracker_notifications.reconcile_closed_claims(factory, limit=1) == 0
+    assert calls == [failed_key, healthy_key, healthy_key]
+    assert not tracker_notifications._poll_failed(factory)
+    with Session(db_engine) as db:
+        assert db.get(TrackerClaim, healthy_key) is not None
+        assert sync_health.sync_health(db).last_error is None
 
 
 def test_closure_candidate_queries_limit_rows_before_materialization(

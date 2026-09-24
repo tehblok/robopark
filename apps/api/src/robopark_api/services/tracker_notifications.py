@@ -104,6 +104,28 @@ def _advance_closure_cursor(
         db.commit()
 
 
+def _clear_removed_closure_error(session_factory: Callable[[], Session]) -> None:
+    """A failed key may have been reconciled by another path since its poll."""
+    with session_factory() as db:
+        cursor = db.get(TrackerNotificationCursor, _CLOSURE_SCOPE_KEY)
+        if cursor is None or not cursor.last_error:
+            return
+        _code, separator, key = cursor.last_error.partition(":")
+        if not separator or not key or db.get(TrackerClaim, key) is not None:
+            return
+        if db.scalar(
+            select(TaskReview.id).where(
+                TaskReview.issue_key == key,
+                TaskReview.state == "closed",
+                TaskReview.closed_at.is_(None),
+            ).limit(1)
+        ) is not None:
+            return
+        cursor.last_error = None
+        cursor.last_success_at = datetime.now(UTC)
+        db.commit()
+
+
 def reconcile_closed_claims(
     session_factory: Callable[[], Session], *, limit: int = 25
 ) -> int:
@@ -129,11 +151,13 @@ def reconcile_closed_claims(
             cursor.last_success_at = datetime.now(UTC)
         db.commit()
     reconciled = 0
+    cycle_failed = False
     for key in selected:
         try:
             issue = tracker_client.get_issue(token=token, key=key)
         except tracker_client.TrackerError:
             logger.warning("Tracker closure refresh failed", exc_info=True)
+            cycle_failed = True
             _advance_closure_cursor(session_factory, key, error="tracker_unavailable")
             continue
         if issue is None or issue.get("key") != key:
@@ -157,9 +181,12 @@ def reconcile_closed_claims(
                     reconciled += 1
         except Exception:
             logger.exception("Tracker closure reconciliation failed")
+            cycle_failed = True
             _advance_closure_cursor(session_factory, key, error="poll_failed")
             continue
         _advance_closure_cursor(session_factory, key)
+    if not cycle_failed:
+        _clear_removed_closure_error(session_factory)
     return reconciled
 
 
