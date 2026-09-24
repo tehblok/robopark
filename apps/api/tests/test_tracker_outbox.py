@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from conftest import login_as
 from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import Campaign, CampaignSubmission, Report, User, UserPark
+from robopark_api.notification_delivery_models import NotificationDelivery
+from robopark_api.schedule_models import NotificationEvent
 from robopark_api.security import hash_password
 from robopark_api.task_workflow_models import ReliableAction, TaskAttachment, TaskMessage
 
@@ -38,6 +40,70 @@ def _action(db, actor, *, action="comment", payload=None, state="pending", lease
     db.add(row)
     db.commit()
     return row
+
+
+@pytest.mark.parametrize(
+    ("remote_comments", "expected_error"),
+    [
+        ([], "tracker_comment_unconfirmed"),
+        (
+            [{"id": "older-1", "text": "exact signed text", "created_at": "1970-01-01T00:00:00Z"}],
+            "tracker_comment_unconfirmed",
+        ),
+        (
+            [
+                {
+                    "id": "remote-1",
+                    "text": "exact signed text",
+                    "created_at": "1970-01-01T00:00:02Z",
+                },
+                {
+                    "id": "remote-2",
+                    "text": "exact signed text",
+                    "created_at": "1970-01-01T00:00:03Z",
+                },
+            ],
+            "duplicate_remote_action",
+        ),
+    ],
+)
+def test_uncertain_operator_comment_requires_unique_exact_remote_match(
+    db_engine, db_session, seed_mechanic, monkeypatch, remote_comments, expected_error
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(
+        db_session,
+        seed_mechanic,
+        payload={
+            "text": "hello",
+            "_notification_intent": {
+                "event_type": "operator_comment",
+                "park_id": None,
+                "recipient_user_ids": [seed_mechanic.id],
+                "protected_text": "Operator commented",
+                "tracker_text": "exact signed text",
+                "tracker_status": "Open",
+            },
+        },
+    )
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda _db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client, "list_comments", lambda **_kwargs: remote_comments
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "add_comment",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not post again")),
+    )
+
+    assert tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True)) == 1
+    db_session.expire_all()
+    saved = db_session.get(ReliableAction, action.id)
+    assert saved.state == "needs_attention"
+    assert saved.error_code == expected_error
+    assert db_session.scalars(select(NotificationEvent)).all() == []
+    assert db_session.scalars(select(NotificationDelivery)).all() == []
 
 
 @pytest.mark.parametrize("purpose", ["start", "return", "review"])
@@ -566,8 +632,9 @@ def test_unmarked_persisted_chained_start_does_not_repeat_component_mutation(
     monkeypatch.setattr(
         tracker_outbox.tracker_client,
         "get_issue",
-        lambda **kwargs: reads.append(kwargs)
-        or {"key": "ROBOPARK-1", "status": "В очереди", "components": []},
+        lambda **kwargs: (
+            reads.append(kwargs) or {"key": "ROBOPARK-1", "status": "В очереди", "components": []}
+        ),
     )
     monkeypatch.setattr(
         tracker_outbox,
@@ -898,13 +965,15 @@ def test_claim_preparation_actions_use_fresh_state_and_skip_satisfied_mutations(
     monkeypatch.setattr(
         tracker_outbox.tracker_client,
         "get_issue",
-        lambda **kwargs: reads.append(kwargs)
-        or {
-            "key": "ROBOPARK-1",
-            "assignee": {"login": "operator-login"},
-            "tags": ["existing", "diag_complete"],
-            "components": ["WHEELS"],
-        },
+        lambda **kwargs: (
+            reads.append(kwargs)
+            or {
+                "key": "ROBOPARK-1",
+                "assignee": {"login": "operator-login"},
+                "tags": ["existing", "diag_complete"],
+                "components": ["WHEELS"],
+            }
+        ),
     )
     monkeypatch.setattr(
         tracker_outbox.tracker_client,
@@ -1003,9 +1072,7 @@ def test_claim_chain_retries_failed_step_without_repeating_successful_assignment
 
     monkeypatch.setattr(tracker_outbox.tracker_client, "assign_issue", assign_issue)
     monkeypatch.setattr(tracker_outbox.tracker_client, "set_issue_tags", set_issue_tags)
-    monkeypatch.setattr(
-        tracker_outbox.tracker_client, "set_issue_components", set_issue_components
-    )
+    monkeypatch.setattr(tracker_outbox.tracker_client, "set_issue_components", set_issue_components)
     monkeypatch.setattr(
         tracker_outbox.tracker_client,
         "list_transitions",

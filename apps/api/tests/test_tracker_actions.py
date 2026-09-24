@@ -4,11 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.orm import sessionmaker
 from starlette.background import BackgroundTasks
 
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, Report, User, UserPark
+from robopark_api.notification_delivery_models import NotificationDelivery
 from robopark_api.schedule_models import NotificationEvent, ScheduleEntry
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
@@ -98,6 +100,106 @@ def test_tracker_action_comment(
         )
     )
     assert [event.user_id for event in events] == [seed_mechanic.id]
+
+
+def test_keyed_operator_comment_notification_recovers_after_local_failure(
+    client, db_engine, db_session, seed_park_with_tracker, seed_mechanic, monkeypatch
+):
+    operator = _seed_operator(db_session, seed_park_with_tracker)
+    now = datetime.now(UTC)
+    db_session.add(
+        ScheduleEntry(
+            owner_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            kind="shift",
+            start_at=now - timedelta(hours=1),
+            end_at=now + timedelta(hours=1),
+            created_by_user_id=seed_mechanic.id,
+            updated_by_user_id=seed_mechanic.id,
+        )
+    )
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+
+    from robopark_api.services import tracker_client, tracker_outbox
+
+    issue = {
+        "key": "ROBOPARK-1",
+        "summary": "blocker [447]",
+        "status": "Open",
+        "status_key": "open",
+        "queue": "ROBOPARK",
+        "resolution": "",
+        "tags": ["Alpha"],
+        "assignee": {"login": "mech1", "display": "Mechanic"},
+    }
+    remote_comments = []
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: dict(issue))
+    monkeypatch.setattr(tracker_client, "list_comments", lambda **_kwargs: list(remote_comments))
+
+    def add_comment(**kwargs):
+        remote_comments.append(
+            {
+                "id": "accepted-1",
+                "text": kwargs["text"],
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        return remote_comments[-1]
+
+    monkeypatch.setattr(tracker_client, "add_comment", add_comment)
+    login_as(client, operator.username, "secret")
+    headers = {
+        "Idempotency-Key": "operator-comment-failure-1",
+        "X-Tracker-State": json.dumps(
+            {"status": "Open", "status_key": "open", "assignee": "mech1"}
+        ),
+    }
+    route = "/tracker/issues/ROBOPARK-1/comment"
+    push_service = client.app.state.push_service
+    real_emit = push_service.emit_in_transaction
+
+    def fail_local_stage(*_args, **_kwargs):
+        raise RuntimeError("notification database unavailable")
+
+    monkeypatch.setattr(push_service, "emit_in_transaction", fail_local_stage)
+    with pytest.raises(RuntimeError, match="notification database unavailable"):
+        client.post(route, json={"text": "hello"}, headers=headers)
+    db_session.rollback()
+    action = db_session.scalar(
+        select(ReliableAction).where(ReliableAction.idempotency_key == headers["Idempotency-Key"])
+    )
+    assert action is not None and action.state == "pending"
+    assert len(remote_comments) == 1
+    assert db_session.scalars(select(NotificationEvent)).all() == []
+    # Recovery must use the audience captured before Tracker accepted the
+    # comment, even if the shift has ended by the time outbox runs.
+    db_session.execute(delete(ScheduleEntry))
+    db_session.commit()
+
+    monkeypatch.setattr(push_service, "emit_in_transaction", real_emit)
+    factory = sessionmaker(bind=db_engine, future=True)
+    assert tracker_outbox._process_batch(factory) == 1
+    db_session.expire_all()
+    assert db_session.get(ReliableAction, action.id).state == "succeeded"
+    events = db_session.scalars(select(NotificationEvent)).all()
+    assert len(events) == 1 and events[0].user_id == seed_mechanic.id
+    assert len(db_session.scalars(select(NotificationDelivery)).all()) == 1
+    assert len(remote_comments) == 1
+
+    replay = client.post(route, json={"text": "hello"}, headers=headers)
+    assert replay.status_code == 200
+    assert len(db_session.scalars(select(NotificationEvent)).all()) == 1
+    assert len(remote_comments) == 1
+
+    db_session.execute(delete(NotificationDelivery))
+    db_session.execute(delete(NotificationEvent))
+    db_session.commit()
+    repaired = client.post(route, json={"text": "hello"}, headers=headers)
+    assert repaired.status_code == 200
+    assert len(db_session.scalars(select(NotificationEvent)).all()) == 1
+    assert len(db_session.scalars(select(NotificationDelivery)).all()) == 1
+    assert len(remote_comments) == 1
 
 
 def test_mechanic_claims_locally_without_tracker_login_or_upstream_assignment(

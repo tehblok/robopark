@@ -81,6 +81,7 @@ class PushService:
         park_id: int | None,
         protected_text: str,
         target_user_ids: set[int] | None = None,
+        recipient_user_ids: set[int] | None = None,
         event_key: str | None = None,
         deliver: bool = True,
     ) -> dict:
@@ -91,6 +92,7 @@ class PushService:
                 park_id=park_id,
                 protected_text=protected_text,
                 target_user_ids=target_user_ids,
+                recipient_user_ids=recipient_user_ids,
                 event_key=event_key,
                 deliver=deliver,
             )
@@ -105,12 +107,17 @@ class PushService:
         park_id: int | None,
         protected_text: str,
         target_user_ids: set[int] | None = None,
+        recipient_user_ids: set[int] | None = None,
         event_key: str | None = None,
         deliver: bool = True,
     ) -> dict:
         """Stage inbox and delivery rows in the caller's domain transaction."""
         now = datetime.now(UTC)
-        users = eligible_recipients(RoutingEvent(db, event_type, park_id, target_user_ids), now)
+        users = (
+            list(db.scalars(select(User).where(User.id.in_(recipient_user_ids)).order_by(User.id)))
+            if recipient_user_ids is not None
+            else eligible_recipients(RoutingEvent(db, event_type, park_id, target_user_ids), now)
+        )
         user_ids = {user.id for user in users}
         preferences = {
             item.user_id: item

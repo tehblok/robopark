@@ -17,7 +17,13 @@ from sqlalchemy.orm import Session
 
 from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import CampaignSubmission, Report, User
-from robopark_api.services import audit, tracker_cache, tracker_client, tracker_signatures
+from robopark_api.services import (
+    audit,
+    operator_comment_notifications,
+    tracker_cache,
+    tracker_client,
+    tracker_signatures,
+)
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.reliable_actions import (
     claim_due_batch,
@@ -146,6 +152,17 @@ def _reconciled_external_id(
     if len(external_ids) > 1:
         raise DeliveryError("duplicate_remote_action")
     return None
+
+
+def _created_after_action(comment: dict, action: ReliableAction) -> bool:
+    value = comment.get("created_at")
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        created = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return created.tzinfo is not None and created.timestamp() >= action.created_at
 
 
 def _set_issue_field(*, token: str, key: str, field_id: str, value: object) -> None:
@@ -290,6 +307,37 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
     if not token:
         raise DeliveryError("authentication")
 
+    intent = payload.get("_notification_intent")
+    if intent is not None:
+        # Legacy synchronous comments have no action marker in Tracker. The
+        # exact signed text is durable in the pending action. Never create a
+        # second remote comment when the outcome cannot be uniquely proven.
+        if action.action != "comment" or not isinstance(intent, dict):
+            raise DeliveryError("invalid_payload")
+        signed_text = intent.get("tracker_text")
+        if not isinstance(signed_text, str) or not signed_text:
+            raise DeliveryError("invalid_payload")
+        comments = tracker_client.list_comments(token=token, key=action.resource_id)
+        matches = {
+            str(comment.get("id") or "").strip()
+            for comment in comments
+            if comment.get("text") == signed_text
+            and _created_after_action(comment, action)
+            and str(comment.get("id") or "").strip()
+        }
+        if len(matches) != 1:
+            raise DeliveryError(
+                "tracker_comment_unconfirmed" if not matches else "duplicate_remote_action"
+            )
+        return {
+            "key": action.resource_id,
+            "action": "comment",
+            "status": str(intent.get("tracker_status") or "updated"),
+            "actor": actor.username,
+            "performed_at": datetime.fromtimestamp(action.created_at, UTC).isoformat(),
+            "external_id": next(iter(matches)),
+        }
+
     if action.action in {"comment", "attach"}:
         external_id = _reconciled_external_id(action, token=token)
         if external_id is not None:
@@ -338,7 +386,11 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         return {"tag": tag}
     if action.action == "ensure_components":
         value = payload.get("value")
-        if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
+        if (
+            not isinstance(value, list)
+            or not value
+            or not all(isinstance(item, str) for item in value)
+        ):
             raise DeliveryError("invalid_payload")
         if issue.get("components"):
             return {"already_applied": True}
@@ -559,6 +611,7 @@ def _process_batch(session_factory) -> int:
                     db.commit()
                     continue
                 result = _deliver_action(db, action)
+                operator_comment_notifications.stage_if_intended(db, action)
                 complete_action(db, action, result)
                 _sync_message(db, action)
                 _sync_campaign_submission(db, action)

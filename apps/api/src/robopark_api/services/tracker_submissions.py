@@ -15,7 +15,9 @@ from robopark_api.services import reliable_actions, tracker_cache, tracker_claim
 from robopark_api.services.tracker_policy import ensure_action_allowed
 
 
-def begin(db, user, key, action, request, payload, token, *, validate=None):
+def begin(
+    db, user, key, action, request, payload, token, *, validate=None, notification_intent=None
+):
     request_key = request.headers.get("Idempotency-Key")
     if not request_key:
         if validate is not None:
@@ -73,6 +75,12 @@ def begin(db, user, key, action, request, payload, token, *, validate=None):
         if exc.detail == "reliable_action_uncertain":
             raise HTTPException(409, "tracker_submission_uncertain") from None
         raise
+    if notification_intent is not None:
+        # The hash remains over the client request, while the durable command
+        # carries server-owned routing metadata for post-Tracker recovery.
+        result.row.payload_json = reliable_actions.canonical_payload(
+            {**payload, "_notification_intent": notification_intent}
+        )[0]
     db.commit()  # The compatibility route still writes upstream synchronously.
     return result.row, result.result
 

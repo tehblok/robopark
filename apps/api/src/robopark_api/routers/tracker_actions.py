@@ -32,6 +32,7 @@ from robopark_api.schemas import (
 )
 from robopark_api.services import (
     audit,
+    operator_comment_notifications,
     rbac,
     reliable_actions,
     schedules,
@@ -510,10 +511,43 @@ def add_comment(
 
     body = payload.text.strip()
     signed_text = _signed_tracker_text(db, user, issue, body)
+    park = sig_svc.resolve_park(db, issue)
+    claim = task_lifecycle.get_claim(db, key) if user.role == RoleSlug.OPERATOR else None
+    notification_intent = None
+    if user.role == RoleSlug.OPERATOR:
+        audience = schedules.eligible_recipients(
+            schedules.RoutingEvent(
+                db,
+                "operator_comment",
+                park.id if park is not None else None,
+                {claim.owner_user_id} if claim is not None else None,
+            ),
+            datetime.now(UTC),
+        )
+        notification_intent = {
+            "event_type": "operator_comment",
+            "park_id": park.id if park is not None else None,
+            "recipient_user_ids": [recipient.id for recipient in audience],
+            "protected_text": f"Оператор прокомментировал задачу {key}",
+            "tracker_text": signed_text,
+            "tracker_status": str(issue.get("status") or "updated"),
+        }
     submission, saved = submissions.begin(
-        db, user, key, "comment", request, payload.model_dump(), token
+        db,
+        user,
+        key,
+        "comment",
+        request,
+        payload.model_dump(),
+        token,
+        notification_intent=notification_intent,
     )
     if saved is not None:
+        if submission is not None:
+            operator_comment_notifications.stage_if_intended(
+                db, submission, push_service=request.app.state.push_service
+            )
+            db.commit()
         return saved
 
     try:
@@ -523,7 +557,6 @@ def add_comment(
         raise _upstream_error(db, user, "comment", key, exc, request) from exc
     tracker_cache.invalidate_issue(key)
 
-    park = sig_svc.resolve_park(db, issue)
     audit.record(
         db,
         action=audit.ACTION_TRACKER_COMMENT,
@@ -536,15 +569,19 @@ def add_comment(
     )
     result = _ok(key, "comment", user, issue)
     if user.role == RoleSlug.OPERATOR:
-        claim = task_lifecycle.get_claim(db, key)
-        request.app.state.push_service.emit_in_transaction(
-            db,
-            event_type="operator_comment",
-            park_id=park.id if park is not None else None,
-            protected_text=f"Оператор прокомментировал задачу {key}",
-            target_user_ids={claim.owner_user_id} if claim is not None else None,
-            event_key=f"operator-comment:{key}:{submission.id if submission is not None else result.performed_at}",
-        )
+        if submission is not None:
+            operator_comment_notifications.stage_if_intended(
+                db, submission, push_service=request.app.state.push_service
+            )
+        else:
+            request.app.state.push_service.emit_in_transaction(
+                db,
+                event_type="operator_comment",
+                park_id=park.id if park is not None else None,
+                protected_text=f"Оператор прокомментировал задачу {key}",
+                target_user_ids={claim.owner_user_id} if claim is not None else None,
+                event_key=f"operator-comment:{key}:{result.performed_at}",
+            )
     result = submissions.finish(db, submission, result)
     if submission is None:
         # Legacy unkeyed calls have no local submission row; their durable
