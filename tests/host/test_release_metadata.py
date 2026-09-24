@@ -1,8 +1,10 @@
 """The public packer, not fixture-only manifest construction, declares migrations."""
 
+import importlib.util
 import json
 import sys
 import zipfile
+from pathlib import Path
 
 import pytest
 from test_packaging import ROOT, run
@@ -11,6 +13,70 @@ from test_packaging import packaging as packaging_factory
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from release_policy import SupportPolicy, validate_manifest_policy
+
+
+def test_actual_alembic_head_matches_release_declarations():
+    checker_path = ROOT / "scripts/check-release-migrations.py"
+    assert checker_path.is_file(), "release migration checker is missing"
+    spec = importlib.util.spec_from_file_location("release_migrations", checker_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.check_release_migrations(ROOT) == []
+    metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
+    policy = json.loads((ROOT / "deploy/migration-policy.json").read_text())
+    assert metadata["migration_head"] == policy["target_head"] == "0038_inventory_photo_cleanup"
+    assert metadata["migration_compatibility"]["from_heads"] == [
+        "0036_audit_remediation_state",
+        "0037_claim_workflow_visibility",
+        "0038_inventory_photo_cleanup",
+    ]
+
+
+def test_release_migration_checker_rejects_declared_head_drift(tmp_path: Path):
+    checker_path = ROOT / "scripts/check-release-migrations.py"
+    assert checker_path.is_file(), "release migration checker is missing"
+    spec = importlib.util.spec_from_file_location("release_migrations", checker_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    api = tmp_path / "apps/api"
+    versions = api / "alembic/versions"
+    versions.mkdir(parents=True)
+    (api / "alembic.ini").write_text("[alembic]\nscript_location = alembic\n")
+    (versions / "head.py").write_text("revision = 'head'\ndown_revision = None\n")
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    (deploy / "release-metadata.json").write_text(json.dumps({"migration_head": "old"}))
+    (deploy / "migration-policy.json").write_text(json.dumps({"target_head": "head"}))
+
+    findings = module.check_release_migrations(tmp_path)
+    assert findings == ["actual=head metadata=old policy=head"]
+
+
+def test_release_migration_checker_rejects_multiple_heads(tmp_path: Path):
+    checker_path = ROOT / "scripts/check-release-migrations.py"
+    spec = importlib.util.spec_from_file_location("release_migrations", checker_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    api = tmp_path / "apps/api"
+    versions = api / "alembic/versions"
+    versions.mkdir(parents=True)
+    (api / "alembic.ini").write_text("[alembic]\nscript_location = alembic\n")
+    (versions / "first.py").write_text("revision = 'first'\ndown_revision = None\n")
+    (versions / "second.py").write_text("revision = 'second'\ndown_revision = None\n")
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    (deploy / "release-metadata.json").write_text(json.dumps({"migration_head": "first"}))
+    (deploy / "migration-policy.json").write_text(json.dumps({"target_head": "first"}))
+
+    findings = module.check_release_migrations(tmp_path)
+    assert len(findings) == 1
+    assert "multiple heads" in findings[0].lower()
 
 
 @pytest.fixture
@@ -91,8 +157,8 @@ def metadata_pack(packaging, tmp_path, metadata, version="1.2.3"):
     return result, output
 
 
-def test_release_accepts_installed_0133_migration_head():
-    from robopark_host.release import check_compatibility
+def test_release_rejects_unsupported_0133_migration_head():
+    from robopark_host.release import ReleaseError, check_compatibility
 
     metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
     files = {
@@ -117,7 +183,8 @@ def test_release_accepts_installed_0133_migration_head():
     }
     current = {"app_version": "0.1.33", "migration_head": "0026_global_inventory_workflows"}
 
-    check_compatibility(candidate, current)
+    with pytest.raises(ReleaseError, match="migration_incompatible"):
+        check_compatibility(candidate, current)
 
 
 def test_production_metadata_is_signed_and_matches_both_verifiers(packaging, tmp_path):
@@ -155,8 +222,9 @@ def test_production_metadata_is_signed_and_matches_both_verifiers(packaging, tmp
 @pytest.mark.parametrize(
     ("current_version", "current_head"),
     [
-        ("0.1.18", "0022_tracker_collaboration"),
-        ("0.1.33", "0027_emergency_readings"),
+        ("0.2.0-rc.5", "0036_audit_remediation_state"),
+        ("0.2.0-rc.5", "0037_claim_workflow_visibility"),
+        ("0.2.0-rc.5", "0038_inventory_photo_cleanup"),
     ],
 )
 def test_production_release_accepts_supported_upgrade(current_version, current_head):

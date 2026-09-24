@@ -1,8 +1,8 @@
 {
-  "migration_head": "0036_audit_remediation_state",
+  "migration_head": "0038_inventory_photo_cleanup",
   "migration_compatibility": {
-    "from_heads": ["0022_tracker_collaboration", "0024_inventory", "0025_local_task_claims", "0026_global_inventory_workflows", "0027_emergency_readings", "0028_reliable_task_workflow", "0029_campaign_snapshot", "0030_user_activity", "0031_postgresql_runtime", "0032_operator_inv_readonly", "0033_offline_sync_receipts", "0034_resumable_media_uploads", "0035_schedules_and_push"],
+    "from_heads": ["0036_audit_remediation_state", "0037_claim_workflow_visibility", "0038_inventory_photo_cleanup"],
     "reversible": true
   },
-  "update_notes": "Кандидат 0.2.0-rc.5: исправлены отступы и расположение действий в обоих интерфейсах, компактный выбор парка и индикатор автоматической синхронизации. Обновление поверх 0.2.0-rc.4 сохраняет данные."
+  "update_notes": "Кандидат 0.2.0-rc.6: исправлен контракт версии и миграций для безопасного обновления поверх 0.2.0-rc.5 с сохранением данных."
 }

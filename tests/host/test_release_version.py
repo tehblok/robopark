@@ -6,12 +6,37 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from robopark_version import BuildIdentity, ReleaseVersion  # noqa: E402
+from robopark_version import BuildIdentity, ReleaseVersion
+
+
+def test_repository_identity_is_rc6_across_shipped_sources() -> None:
+    checker = importlib.util.spec_from_file_location(
+        "check_release_version", SCRIPTS / "check-release-version.py"
+    )
+    assert checker is not None and checker.loader is not None
+    module = importlib.util.module_from_spec(checker)
+    checker.loader.exec_module(module)
+
+    version = module.check(ROOT, tag="v0.2.0-rc.6")
+    assert version == "0.2.0-rc.6"
+    assert ReleaseVersion.parse(version).stage == "rc"
+
+
+def test_release_documentation_targets_canonical_version() -> None:
+    generator = importlib.util.spec_from_file_location(
+        "release_docs", SCRIPTS / "generate-release-notes.py"
+    )
+    assert generator is not None and generator.loader is not None
+    module = importlib.util.module_from_spec(generator)
+    generator.loader.exec_module(module)
+
+    assert module.expected_compatibility(ROOT)["target_version"] == (
+        ROOT / "VERSION"
+    ).read_text().strip()
 
 
 def _write_version_tree(root: Path, version: str = "0.1.45") -> None:

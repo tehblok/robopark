@@ -77,6 +77,12 @@ run_docker() {
 }
 
 run_host() {
+  PYTHONDONTWRITEBYTECODE=1 \
+    uv run --project "$repo_root/apps/api" --frozen --extra dev \
+      python scripts/check-release-migrations.py
+  PYTHONDONTWRITEBYTECODE=1 \
+    uv run --project "$repo_root/apps/api" --frozen --extra dev \
+      python scripts/generate-release-notes.py --check
   for script in deploy/installer/install.sh deploy/installer/lib/*.sh deploy/tuna-http.sh; do
     sh -n "$script"
   done

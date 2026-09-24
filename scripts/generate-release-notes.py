@@ -7,14 +7,17 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TARGET = "0.2.0-rc.1"
+
+
+def target_version(root=ROOT):
+    return (root / "VERSION").read_text().strip()
 
 
 def expected_compatibility(root=ROOT):
     migration = json.loads((root / "deploy/migration-policy.json").read_text())
     return {
         "schema": 1,
-        "target_version": TARGET,
+        "target_version": target_version(root),
         "migration_head": migration["target_head"],
         "known_heads": migration["known_heads"],
         "bridge_before": migration["bridge_before"],
@@ -25,13 +28,14 @@ def expected_compatibility(root=ROOT):
 
 
 def validate_note(root=ROOT):
-    note = (root / f"docs/releases/{TARGET}.md").read_text()
+    version = target_version(root)
+    note = (root / f"docs/releases/{version}.md").read_text()
     match = re.search(r"<!-- release-contract:start -->\s*```json\s*(\{.*?\})\s*```\s*<!-- release-contract:end -->", note, re.DOTALL)
     if not match:
         raise ValueError("release_contract_missing")
     contract = json.loads(match.group(1))
     metadata = json.loads((root / "deploy/release-metadata.json").read_text())
-    if contract != {"migration_head": metadata["migration_head"], "support_class": "candidate", "support_months": 0, "version": TARGET}:
+    if contract != {"migration_head": metadata["migration_head"], "support_class": "candidate", "support_months": 0, "version": version}:
         raise ValueError("release_contract_mismatch")
 
 
