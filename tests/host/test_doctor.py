@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 
 from robopark_host.checks import CommandResult
 from robopark_host.doctor import run_doctor, run_status
@@ -108,6 +109,115 @@ def test_status_is_a_concise_secret_free_view_of_diagnostics(host_paths):
 
     assert set(status) >= {"services", "resources", "version", "url", "last_backup"}
     assert "hidden" not in json.dumps(status)
+
+
+def test_doctor_publishes_sanitized_services_without_losing_other_public_sections(host_paths):
+    from robopark_host.state import atomic_write_json
+
+    public = host_paths.var / "api-ops/host-health.json"
+    atomic_write_json(public, {
+        "capabilities": {"profile": "orin"},
+        "storage": {"pressure": False},
+    })
+    host_paths.etc.mkdir(parents=True)
+    (host_paths.etc / "tuna.env").write_text(
+        "TUNA_TOKEN=private-token\nPUBLIC_URL=https://secret.example/path\n"
+    )
+
+    class ServiceRunner(DoctorRunner):
+        def __call__(self, command, *, timeout, max_output):
+            if command[-3:] == ["ps", "--format", "json"]:
+                self.calls.append((command, timeout, max_output))
+                rows = [
+                    {"Service": service, "State": "running", "Health": "healthy"}
+                    for service in ("db", "api", "web")
+                ]
+                return CommandResult(stdout=json.dumps(rows))
+            return super().__call__(command, timeout=timeout, max_output=max_output)
+
+    runner = ServiceRunner()
+    run_doctor(host_paths, runner, ReadyHttp())
+    value = json.loads(public.read_text())
+    assert value["capabilities"]["profile"] == "generic-arm"
+    assert value["storage"] == {"pressure": False}
+    assert value["services"] == {"docker": "ok", "tuna": "ok", "internet": "ok"}
+    assert isinstance(value["services_checked_at"], str)
+    assert len(public.read_bytes()) < 65_536
+    assert "private-token" not in public.read_text()
+    assert "secret.example" not in public.read_text()
+    assert all(timeout <= 10 and max_output <= 16_384 for _, timeout, max_output in runner.calls)
+
+
+def test_doctor_marks_failed_bounded_internet_probe_degraded(host_paths):
+    class OfflineRunner(DoctorRunner):
+        def __call__(self, command, *, timeout, max_output):
+            if command and command[0] == "curl":
+                self.calls.append((command, timeout, max_output))
+                return CommandResult(returncode=124, stderr="https://private.example/token")
+            return super().__call__(command, timeout=timeout, max_output=max_output)
+
+    runner = OfflineRunner()
+    run_doctor(host_paths, runner, ReadyHttp())
+    value = json.loads((host_paths.var / "api-ops/host-health.json").read_text())
+    assert value["services"]["internet"] == "degraded"
+    assert "private.example" not in json.dumps(value)
+    assert "token" not in json.dumps(value)
+    assert any(command[0] == "curl" and timeout <= 10 for command, timeout, _ in runner.calls)
+
+
+def test_host_service_projection_marks_missing_probe_unknown(host_paths):
+    from robopark_host.checks import CheckResult, DiagnosticReport
+    from robopark_host.doctor import _publish_service_health
+
+    _publish_service_health(
+        host_paths,
+        DiagnosticReport([CheckResult("dns", "ok", "DNS reachable")]),
+    )
+    value = json.loads((host_paths.var / "api-ops/host-health.json").read_text())
+    assert value["services"] == {
+        "docker": "unknown", "tuna": "unknown", "internet": "unknown"
+    }
+
+
+def test_public_health_section_updates_do_not_lose_concurrent_writer(host_paths, monkeypatch):
+    from robopark_host import health_projection
+
+    public = host_paths.var / "api-ops/host-health.json"
+    first_read = threading.Event()
+    release_first = threading.Event()
+    original_read = health_projection.read_object
+
+    def delayed_first_read(path):
+        value = original_read(path)
+        if threading.current_thread().name == "capabilities-writer":
+            first_read.set()
+            assert release_first.wait(2)
+        return value
+
+    monkeypatch.setattr(health_projection, "read_object", delayed_first_read)
+    first = threading.Thread(
+        name="capabilities-writer",
+        target=lambda: health_projection.update_public_health(
+            public, capabilities={"profile": "orin"}
+        ),
+    )
+    second = threading.Thread(
+        name="storage-writer",
+        target=lambda: health_projection.update_public_health(
+            public, storage={"pressure": False}
+        ),
+    )
+    first.start()
+    assert first_read.wait(2)
+    second.start()
+    second.join(timeout=0.1)
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert not first.is_alive() and not second.is_alive()
+    assert json.loads(public.read_text()) == {
+        "capabilities": {"profile": "orin"}, "storage": {"pressure": False}
+    }
 
 
 def test_watchdog_restarts_the_application_only_after_three_local_readiness_failures(host_paths):

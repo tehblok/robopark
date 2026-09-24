@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from datetime import UTC, datetime
 from pathlib import Path
 
 from robopark_api.db import engine
@@ -284,13 +285,22 @@ def _cpu_health() -> dict:
 
 
 def _public_service_health(public_health: dict, name: str) -> dict:
+    try:
+        checked_at = datetime.fromisoformat(public_health["services_checked_at"])
+        if checked_at.tzinfo is None:
+            return {"state": "unknown"}
+        age = time.time() - checked_at.astimezone(UTC).timestamp()
+        if age < -60 or age > 35 * 60:
+            return {"state": "unknown"}
+    except (KeyError, TypeError, ValueError):
+        return {"state": "unknown"}
     services = public_health.get("services", {})
     if not isinstance(services, dict):
         return {"state": "unknown"}
     value = services.get(name)
     if value == "ok":
         return {"state": "ok"}
-    if value in {"failed", "warning"}:
+    if value in {"degraded", "failed", "warning"}:
         return {"state": "degraded"}
     return {"state": "unknown"}
 

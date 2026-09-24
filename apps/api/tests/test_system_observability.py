@@ -183,6 +183,51 @@ def test_summary_exposes_payload_free_worker_tracker_outbox_and_push_health(
     assert "version" in body["release"]
 
 
+def test_metric_collection_consumes_fresh_host_service_projection(
+    client, db_session, seed_royal, test_settings, tmp_path
+):
+    import json
+
+    from robopark_api.services.system_observability import collect_system_metrics
+
+    public = tmp_path / "host-health.json"
+    public.write_text(
+        json.dumps(
+            {
+                "services_checked_at": datetime.now(UTC).isoformat(),
+                "services": {"docker": "ok", "tuna": "degraded", "internet": "ok"},
+            }
+        )
+    )
+    settings = test_settings.model_copy(update={"host_health_path": str(public)})
+    collect_system_metrics(db_session, settings=settings)
+    login_as(client, "royal", "secret")
+    host = client.get("/admin/system/summary").json()["metrics"]["host"]
+    assert host["container"]["state"] == "ok"
+    assert host["tuna"]["state"] == "degraded"
+    assert host["internet"]["state"] == "ok"
+
+
+def test_stale_host_service_projection_is_explicitly_unknown(tmp_path):
+    import json
+
+    from robopark_api.services.operational_health import cached_host_snapshot
+
+    public = tmp_path / "host-health.json"
+    public.write_text(
+        json.dumps(
+            {
+                "services_checked_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+                "services": {"docker": "ok", "tuna": "ok", "internet": "ok"},
+            }
+        )
+    )
+    host = cached_host_snapshot(tmp_path, tmp_path, public)
+    assert host["container"]["state"] == "unknown"
+    assert host["tuna"]["state"] == "unknown"
+    assert host["internet"]["state"] == "unknown"
+
+
 def test_admin_presence_excludes_other_park(
     client, db_session, seed_admin, seed_mechanic, seed_park_with_tracker
 ):

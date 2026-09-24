@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 from .checks import CheckResult, DiagnosticReport, Runner, execute
 from .compose import EXPECTED_SERVICES, compose_command, parse_compose_services
+from .health_projection import update_public_health
 from .paths import HostPaths
 from .redaction import redact
 from .state import atomic_write_json
@@ -663,12 +664,34 @@ def run_doctor(paths: HostPaths, runner: Runner, http: Any) -> DiagnosticReport:
         _log_growth_check(paths, runner),
     ]
     report = DiagnosticReport(checks)
+    _publish_service_health(paths, report)
     atomic_write_json(paths.var / "diagnostics" / "latest.json", report.as_dict())
     _write_human_log(paths, report)
     from .commands import publish_health
 
     publish_health(paths, report)
     return report
+
+
+def _publish_service_health(paths: HostPaths, report: DiagnosticReport) -> None:
+    """Expose only bounded status enums, never diagnostic messages or URLs."""
+    statuses = {check.code: check.status for check in report.checks}
+
+    def state(*codes: str) -> str:
+        values = [statuses.get(code) for code in codes]
+        if any(value is None for value in values):
+            return "unknown"
+        return "ok" if all(value == "ok" for value in values) else "degraded"
+
+    update_public_health(
+        paths.var / "api-ops/host-health.json",
+        services={
+            "docker": state("docker_daemon", "compose", "containers"),
+            "tuna": state("tuna_inactive", "tuna_route"),
+            "internet": state("dns", "outbound_https"),
+        },
+        services_checked_at=report.created_at,
+    )
 
 
 def _release_metadata(paths: HostPaths) -> dict[str, str | None]:
