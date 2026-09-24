@@ -7,7 +7,8 @@ import { DomainPresentation } from '../../app/interface/DomainPresentation'
 export function RoleManagementPage() {
   return (
     <div className="rp-management"><PageShell subtitle="Базовые разрешения команды и пользовательских ролей." title="Роли и доступы">
-      <DomainPresentation route="admin-roles" context={<ManagementNavigation />}><AdminRolesPanel /></DomainPresentation>
+      <ManagementNavigation />
+      <DomainPresentation route="admin-roles"><AdminRolesPanel /></DomainPresentation>
     </PageShell></div>
   )
 }

@@ -28,7 +28,7 @@
   align-items: center;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: calc(var(--rp-radius-control) - var(--rp-space-1));
+  border-radius: var(--rp-radius-control);
   color: var(--rp-text-muted);
   cursor: pointer;
   display: inline-flex;

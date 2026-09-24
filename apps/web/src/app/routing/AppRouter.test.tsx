@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
 import { ROUTE_ELEMENTS } from './AppRouter'
-import { interfaceModeStore } from '../interface/interfaceModeStore'
 import { resourceStore } from '../../lib/resource'
 
 const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
@@ -24,7 +23,6 @@ describe('AppRouter', () => {
   })
 
   afterEach(() => {
-    interfaceModeStore.requestMode('classic')
     resourceStore.invalidate('reports:badge:', { prefix: true })
     vi.restoreAllMocks()
   })

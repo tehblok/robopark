@@ -70,11 +70,11 @@ describe('theme', () => {
     expect(readThemePreference()).toBe('system')
   })
 
-  it('keeps a desktop density preference but forces comfortable density on a phone', () => {
+  it('keeps the selected density on desktop and phone', () => {
     localStorage.setItem('robopark-density', 'compact')
     expect(readDensityPreference()).toBe('compact')
     expect(resolveDensity('compact', false)).toBe('compact')
-    expect(resolveDensity('compact', true)).toBe('comfortable')
+    expect(resolveDensity('compact', true)).toBe('compact')
   })
 
   it('boots the resolved theme before the application module', () => {
@@ -115,7 +115,7 @@ describe('theme', () => {
     expect(localStorage.getItem('robopark-theme')).toBeNull()
   })
 
-  it('restores compact density after leaving a narrow viewport without touching theme storage', () => {
+  it('keeps compact density while the viewport crosses the phone boundary', () => {
     const themeMedia = createMediaQuery(false)
     const densityMedia = createMediaQuery(false)
     vi.stubGlobal('matchMedia', vi.fn((query: string) => (
@@ -132,7 +132,7 @@ describe('theme', () => {
 
     act(() => densityMedia.dispatch(true))
 
-    expect(document.documentElement.dataset.density).toBe('comfortable')
+    expect(document.documentElement.dataset.density).toBe('compact')
     expect(localStorage.getItem('robopark-density')).toBe('compact')
     expect(localStorage.getItem('robopark-theme')).toBe('dark')
 

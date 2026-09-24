@@ -598,7 +598,6 @@ export function AppShell() {
           ) : null}
           </>,
           header: <>
-          <div className="rp-shell__context"><strong>{desktopCurrent?.label ?? 'Рабочее пространство'}</strong><span>{selectedPark?.name ?? 'Доступные парки'}</span></div>
           {phoneViewport ? (
             <ParkIdentity
               allowAllParks={allowAllParks}
@@ -610,9 +609,9 @@ export function AppShell() {
               selectedPark={selectedPark}
               user={user}
             />
-          ) : null}
+          ) : <span aria-hidden="true" />}
+          <SyncCenter />
           <div className="rp-shell__topbar-actions">
-            <SyncCenter />
             <span className="rp-shell__user">
               <strong>{user.username}</strong>
               <span>{roleLabel(user.role)}</span>
@@ -709,7 +708,6 @@ export function AppShell() {
             <label key={value}>
               <input
                 checked={densityPreference === value}
-                disabled={phoneViewport}
                 name="rp-density"
                 onChange={() => setDensityPreference(value)}
                 type="radio"
@@ -718,7 +716,6 @@ export function AppShell() {
               {label}
             </label>
           ))}
-          {phoneViewport ? <p>{ru.appShell.phoneDensity}</p> : null}
         </fieldset>
 
         <Button leadingIcon="logout" onClick={() => void logout()} variant="secondary">

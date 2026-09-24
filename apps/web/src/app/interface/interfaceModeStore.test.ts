@@ -11,28 +11,27 @@ function setup() {
 }
 
 describe('classic interface lifecycle', () => {
-  it('removes a stored legacy preference and resolves the account to classic', () => {
+  it('removes a stored legacy preference without retaining interface selection state', () => {
     const { store, values } = setup()
     values.set('robopark:interface:v1:810', ['task', 'first'].join('-'))
 
     store.setAccount(810)
 
-    expect(store.getSnapshot().mode).toBe('classic')
+    expect(store.getSnapshot()).toEqual({ accountId: 810, mutationCount: 0 })
     expect(values.has('robopark:interface:v1:810')).toBe(false)
   })
 
-  it('does not persist a mode preference for authenticated accounts', () => {
+  it('does not expose a mode mutation API for authenticated accounts', () => {
     const { store, values } = setup()
     store.setAccount(101)
-    store.requestMode('classic')
     expect(values.size).toBe(0)
-    expect(store.getSnapshot().mode).toBe('classic')
+    expect('requestMode' in store).toBe(false)
   })
 
   it('survives unavailable browser storage', () => {
     const store = createInterfaceModeStore(() => { throw new Error('denied') })
     store.setAccount(1)
-    expect(store.getSnapshot().mode).toBe('classic')
+    expect(store.getSnapshot()).toEqual({ accountId: 1, mutationCount: 0 })
   })
 
   it('tracks all writes and ignores duplicate release', () => {
@@ -54,7 +53,7 @@ describe('classic interface lifecycle', () => {
     store.setAccount(2)
     const newRelease = store.beginMutation()
     oldRelease()
-    expect(store.getSnapshot()).toEqual({ accountId: 2, mode: 'classic', pendingMode: null, mutationCount: 1 })
+    expect(store.getSnapshot()).toEqual({ accountId: 2, mutationCount: 1 })
     newRelease()
     expect(store.getSnapshot().mutationCount).toBe(0)
   })

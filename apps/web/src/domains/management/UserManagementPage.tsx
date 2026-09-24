@@ -17,7 +17,8 @@ export function UserManagementPage() {
 
   return (
     <div className="rp-management"><PageShell subtitle="Роли, парки и доступы каждого участника команды." title="Пользователи">
-      <DomainPresentation route="admin-users" context={<ManagementNavigation />}>
+      <ManagementNavigation />
+      <DomainPresentation route="admin-users">
       {error && <Alert tone="error">{error}</Alert>}
       {parks.isLoading && !parks.data ? <Spinner label="Загрузка парков…" /> : null}
       {parks.data ? <AdminUsersPanel parks={parks.data} /> : null}

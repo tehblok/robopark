@@ -36,6 +36,14 @@ describe('Button', () => {
     expect(css).not.toMatch(/^\.rp-button--primary\s*\{[^}]*width:\s*100%/ms)
   })
 
+  it('keeps primary, secondary, and destructive actions visually distinct', () => {
+    const css = readFileSync(resolve('src/design-system/actions/Button.css'), 'utf8')
+
+    expect(css).toMatch(/\.rp-button--primary\s*\{[^}]*background:\s*var\(--rp-action\)[^}]*color:\s*var\(--rp-action-on\)/s)
+    expect(css).toMatch(/\.rp-button--secondary\s*\{[^}]*background:\s*var\(--rp-surface\)[^}]*border-color:\s*var\(--rp-border\)[^}]*color:\s*var\(--rp-text\)/s)
+    expect(css).toMatch(/\.rp-button--danger\s*\{[^}]*background:\s*var\(--rp-critical\)[^}]*color:\s*var\(--rp-critical-on\)/s)
+  })
+
   it('stacks two secondary actions on mobile while retaining desktop wrapping', () => {
     const { container } = render(
       <div className="rp-action-bar">

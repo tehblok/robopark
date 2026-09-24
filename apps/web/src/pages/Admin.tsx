@@ -146,7 +146,7 @@ export function Admin() {
     user?.id, user?.username, user?.role, user?.tracker_login,
     user?.permissions, user?.parks, contextParkId,
   ])
-  return <div className="rp-management"><DomainPresentation route="admin-settings" context={<p>Настройки платформы</p>}><AdminWorkspace key={context} bootstrapKey={`admin:bootstrap:${context}`} /></DomainPresentation></div>
+  return <div className="rp-management"><DomainPresentation route="admin-settings"><AdminWorkspace key={context} bootstrapKey={`admin:bootstrap:${context}`} /></DomainPresentation></div>
 }
 
 function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {

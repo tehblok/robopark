@@ -62,7 +62,7 @@
 .rp-shell__park-brand {
   align-items: center;
   border: 1px solid transparent;
-  border-radius: var(--rp-radius-card);
+  border-radius: var(--rp-radius-control);
   display: flex;
   flex: 0 1 auto;
   gap: var(--rp-space-2);
@@ -234,14 +234,16 @@ button.rp-shell__more-link {
   align-items: center;
   background: var(--rp-surface);
   border-bottom: 1px solid var(--rp-border);
-  display: flex;
+  display: grid;
   gap: var(--rp-density-gap);
-  justify-content: flex-end;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   padding: var(--rp-space-3) var(--rp-density-panel-padding);
   position: sticky;
   top: 0;
   z-index: 40;
 }
+
+.rp-shell__topbar-actions { justify-self: end; }
 
 .rp-shell__user > span {
   color: var(--rp-text-muted);
@@ -415,9 +417,8 @@ button.rp-shell__more-link {
 
   .rp-shell__mobile-link .rp-shell__nav-label {
     flex: none;
-    line-height: 1.15;
+    line-height: 1.25;
     max-width: 100%;
-    min-height: 1.15em;
     overflow: hidden;
     text-overflow: ellipsis;
     text-align: center;
@@ -441,6 +442,8 @@ button.rp-shell__more-link {
 
   .rp-shell__content > :is(.page-content, .rp-management) { padding-inline: 0; }
   .rp-shell__topbar-actions { margin-left: auto; }
+
+  .rp-shell__user { display: none; }
 
   .rp-shell__user strong {
     max-width: 8rem;

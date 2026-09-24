@@ -13,13 +13,17 @@ function slots() {
 }
 
 describe('PresentationShell', () => {
-  it('renders every presentation zone through the classic shell', () => {
+  it('renders one classic shell without duplicate context or action zones', () => {
     const view = render(<PresentationShell mode="classic" slots={slots()} />)
 
     expect(screen.getByTestId('classic-shell')).toBeInTheDocument()
-    for (const zone of ['navigation', 'header', 'content', 'context', 'action']) {
+    for (const zone of ['navigation', 'header', 'content']) {
       expect(view.container.querySelector(`[data-shell-zone="${zone}"]`)).toBeInTheDocument()
     }
+    expect(view.container.querySelector('[data-shell-zone="context"]')).not.toBeInTheDocument()
+    expect(view.container.querySelector('[data-shell-zone="action"]')).not.toBeInTheDocument()
+    expect(screen.queryByText('Context')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Action' })).not.toBeInTheDocument()
   })
 
   it('keeps the one live File owner across rerenders', () => {

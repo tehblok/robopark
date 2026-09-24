@@ -189,7 +189,7 @@ function EmergencyFieldsConfig({ readOnly }: { readOnly: boolean }) {
   }
 
   return (
-    <DomainPresentation route="admin-robot-check" context={<p>{sections.length} разделов диагностики</p>}><div className="page-body">
+    <DomainPresentation route="admin-robot-check"><div className="page-body">
       <Panel actions={readOnly ? undefined : <button className="btn btn-secondary" onClick={() => { setSelectedSectionId(null); setCreateOpen(true) }} type="button">Новый раздел</button>} hint={readOnly ? 'Просмотр доступных разделов и полей.' : 'Найдите раздел и откройте его единственный редактор.'} title="Разделы">
         <label className="field"><span className="field-label">Поиск</span><input aria-label="Поиск разделов" onChange={(event) => setSearch(event.target.value)} role="searchbox" value={search} /></label>
         <ul className="card-list">{sections.filter((section) => `${section.title} ${section.id}`.toLowerCase().includes(search.trim().toLowerCase())).map((section) => <li className="card action-row" key={section.id}><div><div className="card-title">{section.title}</div><div className="card-meta">ID: {section.id}</div></div><button aria-label={`Открыть раздел ${section.title}`} className="btn btn-secondary" onClick={() => { setCreateOpen(false); setSelectedSectionId(section.id) }} type="button">Открыть</button></li>)}</ul>

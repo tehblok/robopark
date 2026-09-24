@@ -19,7 +19,8 @@ export function ManagementPage() {
       subtitle="Доступ команды и настройки рабочего пространства."
       title="Управление"
     >
-      <DomainPresentation route="admin" context={<ManagementNavigation />}>
+      <ManagementNavigation />
+      <DomainPresentation route="admin">
       <div className="rp-management-metrics">
         <MetricCard label="Доступные разделы" value={visibleLinks.length} />
         <MetricCard label="Назначенные парки" value={user?.parks.length ?? 0} />

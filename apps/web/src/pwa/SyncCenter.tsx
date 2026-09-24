@@ -44,10 +44,10 @@ export function SyncCenter({
 
   if (!sync) return null
   const { state } = sync
-  const label = state.status === 'offline' ? 'Без сети'
-    : state.status === 'syncing' ? 'Отправляем'
-      : state.conflicts > 0 ? 'Нужно внимание'
-        : state.pending > 0 ? 'Ожидает отправки' : 'Синхронизация'
+  const label = state.status === 'offline' ? 'Автосинхронизация: без сети'
+    : state.status === 'syncing' ? 'Автосинхронизация: отправляем'
+      : state.conflicts > 0 ? 'Автосинхронизация: нужно внимание'
+        : state.pending > 0 ? 'Автосинхронизация: ожидает отправки' : 'Синхронизация выполняется автоматически'
   const safeToUpdate = state.status === 'idle' && state.pending === 0 && state.conflicts === 0
 
   return (

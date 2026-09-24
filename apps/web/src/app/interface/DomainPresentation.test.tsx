@@ -12,16 +12,16 @@ function Draft() {
   </>
 }
 
-it('keeps the owned subtree mounted across classic rerenders', () => {
-  const view = render(<DomainPresentation route="admin-roles" context={<p>Контекст</p>}><Draft /></DomainPresentation>)
+it('keeps the owned subtree mounted without rendering a duplicate context card', () => {
+  const view = render(<DomainPresentation route="admin-roles"><Draft /></DomainPresentation>)
   const input = screen.getByRole('textbox', { name: 'Название роли' })
   fireEvent.change(input, { target: { value: 'Несохранённая роль' } })
   fireEvent.click(screen.getByRole('button', { name: 'Открыть диалог' }))
 
-  view.rerender(<DomainPresentation route="admin-roles" context={<p>Контекст</p>}><Draft /></DomainPresentation>)
+  view.rerender(<DomainPresentation route="admin-roles"><Draft /></DomainPresentation>)
 
   expect(screen.getByRole('textbox', { name: 'Название роли' })).toBe(input)
   expect(input).toHaveValue('Несохранённая роль')
   expect(screen.getByRole('dialog')).toHaveTextContent('Несохранённый пользователь')
-  expect(screen.getByText('Контекст').closest('aside')).not.toBeNull()
+  expect(view.container.querySelector('aside')).not.toBeInTheDocument()
 })

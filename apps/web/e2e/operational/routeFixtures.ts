@@ -143,6 +143,17 @@ export async function assertRouteSemanticContracts(page: Page, routeId: AppRoute
     const detail = page.locator('.rp-work-detail-pane')
     await expect(detail.getByText('ROBOPARK-42', { exact: true })).toHaveCount(1)
     await expect(detail.getByRole('heading', { name: 'Проверить переднее левое колесо робота 447', exact: true })).toHaveCount(1)
+    for (const tabName of ['Открытые задачи', 'Закрытые задачи'] as const) {
+      const tab = detail.getByRole('tab', { name: tabName, exact: true })
+      await tab.click()
+      await expect(tab).toHaveAttribute('aria-selected', 'true')
+      await expect(detail.getByRole('tabpanel', { name: tabName, exact: true })).toBeVisible()
+    }
+    await detail.getByRole('tab', { name: 'Чат', exact: true }).click()
+    const chat = detail.getByRole('tabpanel', { name: 'Чат', exact: true })
+    await expect(chat.getByRole('button', { name: /Проверить робота/ })).toHaveCount(0)
+    await expect(chat.getByText('Запчасти', { exact: true })).toHaveCount(0)
+    await expect(chat.getByText('Что было сделано', { exact: true })).toHaveCount(0)
   }
 
   if (routeId === 'campaigns') {
@@ -202,6 +213,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
 export async function assertResponsiveContracts(page: Page, _width: number): Promise<void> {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true)
   expect(await page.locator('[data-interface="task-first"]').count()).toBe(0)
+  await expect(page.locator('[data-shell-zone="context"], [data-shell-zone="action"]')).toHaveCount(0)
   const overflow = await page.evaluate(() => ({
     amount: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     offenders: Array.from(document.querySelectorAll('body *'))
@@ -269,11 +281,41 @@ export async function assertResponsiveContracts(page: Page, _width: number): Pro
       }
     }
 
+    for (const panel of document.querySelectorAll<HTMLElement>('.rp-panel, .rp-master-detail__list, .rp-master-detail__detail')) {
+      if (!visible(panel) || panel.closest('.rp-work-detail-pane') && getComputedStyle(panel).borderStyle === 'none') continue
+      const radius = parseFloat(getComputedStyle(panel).borderTopLeftRadius)
+      if (Math.abs(radius - 16) > .1) failures.push(`panel radius ${radius}: ${name(panel)}`)
+    }
+    for (const control of document.querySelectorAll<HTMLElement>('.rp-button, .rp-tabs__tab, .rp-shell__park-brand')) {
+      if (!visible(control)) continue
+      const radius = parseFloat(getComputedStyle(control).borderTopLeftRadius)
+      if (Math.abs(radius - 12) > .1) failures.push(`control radius ${radius}: ${name(control)}`)
+    }
+
+    const sync = document.querySelector<HTMLElement>('.rp-sync-center')
+    const topbar = sync?.closest<HTMLElement>('.rp-shell__topbar')
+    if (sync && topbar && visible(sync)) {
+      const syncBox = sync.getBoundingClientRect()
+      const topbarBox = topbar.getBoundingClientRect()
+      const delta = Math.abs((syncBox.left + syncBox.right) / 2 - (topbarBox.left + topbarBox.right) / 2)
+      if (delta > 1) failures.push(`automatic sync indicator is not centered: ${delta}`)
+    }
+
+    const actionStyles = ['primary', 'secondary', 'danger'].flatMap(variant => {
+      const element = document.querySelector<HTMLElement>(`.rp-button--${variant}`)
+      if (!element || !visible(element)) return []
+      const style = getComputedStyle(element)
+      return [`${style.backgroundColor}|${style.borderColor}|${style.color}`]
+    })
+    if (actionStyles.length > 1 && new Set(actionStyles).size !== actionStyles.length) {
+      failures.push(`button variants are not visually distinct: ${actionStyles.join(', ')}`)
+    }
+
     const structuralContainer = (element: Element) => element.matches('section,article,li,fieldset,div')
     const hasBorder = (element: Element) => {
       const style = getComputedStyle(element)
       return [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth]
-        .some(value => parseFloat(value) > 0)
+        .every(value => parseFloat(value) > 0) && parseFloat(style.borderTopLeftRadius) >= 12
     }
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -318,6 +360,7 @@ export async function assertResponsiveContracts(page: Page, _width: number): Pro
       for (let right = left + 1; right < controls.length; right += 1) {
         const second = controls[right]
         if (first.contains(second) || second.contains(first)) continue
+        if (first.closest('.rp-shell__bottom-nav') || second.closest('.rp-shell__bottom-nav')) continue
         if (first.closest('.password-field') != null && first.closest('.password-field') === second.closest('.password-field')) continue
         const secondBox = second.getBoundingClientRect()
         const overlapWidth = Math.min(firstBox.right, secondBox.right) - Math.max(firstBox.left, secondBox.left)

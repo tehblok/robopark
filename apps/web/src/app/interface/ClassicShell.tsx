@@ -16,8 +16,6 @@ export function ClassicShell({ slots, shellClassName = '', density, theme }: {
         <main className="rp-shell__content rp-classic-shell__content" data-shell-zone="content" id="main-content" tabIndex={-1}>
           {slots.content}
         </main>
-        <aside className="rp-shell__presentation-context rp-classic-shell__context" data-shell-zone="context" hidden={!slots.context}>{slots.context}</aside>
-        <div className="rp-shell__presentation-action rp-classic-shell__action" data-shell-zone="action" hidden={!slots.action}>{slots.action}</div>
       </div>
     </div>
   )

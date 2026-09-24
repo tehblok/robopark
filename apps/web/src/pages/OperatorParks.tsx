@@ -64,7 +64,7 @@ export function OperatorParks() {
         title={ru.parks.myParks}
       >
         {error && <Alert tone="error">{error}</Alert>}
-        <DomainPresentation route="operator-parks" context={<p>{parks.length} парков · {requests.length} заявок</p>}>
+        <DomainPresentation route="operator-parks">
 
         <Panel hint="Парки, к которым администратор уже выдал доступ." title={ru.parks.myParks}>
           {parksLoading ? (

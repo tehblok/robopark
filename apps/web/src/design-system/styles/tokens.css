@@ -43,14 +43,6 @@
   --rp-density-panel-padding: 12px;
 }
 
-@media (max-width: 899px) {
-  :root {
-    --rp-row-min-size: 48px;
-    --rp-density-gap: 12px;
-    --rp-density-panel-padding: 16px;
-  }
-}
-
 :root[data-theme='light'] {
   --rp-canvas: #f6f7f8;
   --rp-surface: #ffffff;

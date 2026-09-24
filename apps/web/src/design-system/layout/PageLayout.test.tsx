@@ -81,6 +81,7 @@ it('uses the exact Classic geometry tokens at desktop, tablet, and phone widths'
   expect(designTokens).toMatch(/--rp-radius-card:\s*16px/)
   expect(designTokens).toMatch(/--rp-radius-control:\s*12px/)
   expect(designTokens).toMatch(/--rp-radius-chip:\s*999px/)
+  expect(designTokens).not.toMatch(/@media \(max-width:\s*899px\)\s*\{[^}]*:root\s*\{[^}]*(?:--rp-density-gap|--rp-density-panel-padding|--rp-row-min-size)/s)
 })
 
 it('contains flexible children and separates nested panel surfaces without negative margins', () => {

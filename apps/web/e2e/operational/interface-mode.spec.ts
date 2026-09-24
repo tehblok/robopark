@@ -8,6 +8,7 @@ for (const width of [390, 1440]) {
     await installOperational(page, { role: 'mechanic' })
     await page.goto('/reports/new?park=7')
     await expect(page.locator('html')).toHaveAttribute('data-interface', 'classic')
+    await expect(page.getByRole('radiogroup', { name: 'Интерфейс' })).toHaveCount(0)
     await page.getByRole('button', { name: 'Проблема', exact: true }).click()
     const title = page.getByRole('textbox', { name: 'Заголовок *', exact: true })
     await title.fill('Проверить крепление крышки')
@@ -41,6 +42,40 @@ test('real API write is not resent and keeps its draft after a failed response',
   await expect(title).toHaveValue('Крепление крышки')
   expect(requests).toBe(1)
 })
+
+test('automatic sync status stays centered and does not present a manual sync action', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openRouteFixture(page, 'overview', userForRole('mechanic'))
+  const indicator = page.locator('.rp-sync-center')
+  await expect(indicator).toContainText('автоматически')
+  await expect(page.getByRole('button', { name: /(?:синхронизировать|запустить синхронизацию)/i })).toHaveCount(0)
+  const centers = await page.locator('.rp-sync-center, .rp-shell__topbar').evaluateAll(([sync, topbar]) => {
+    const syncBox = sync.getBoundingClientRect()
+    const topbarBox = topbar.getBoundingClientRect()
+    return [(syncBox.left + syncBox.right) / 2, (topbarBox.left + topbarBox.right) / 2]
+  })
+  expect(Math.abs(centers[0]! - centers[1]!)).toBeLessThanOrEqual(1)
+})
+
+for (const width of [390, 1440] as const) {
+  test(`park selector stays compact and switches the active park at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await openRouteFixture(page, 'overview', userForRole('operator'))
+    await page.getByRole('button', { name: 'Сменить парк', exact: true }).click()
+    const selector = page.getByRole('listbox', { name: 'Сменить парк', exact: true })
+    await expect(selector).toBeVisible()
+    const geometry = await selector.evaluate(element => {
+      const box = element.getBoundingClientRect()
+      return { left: box.left, right: box.right, width: box.width }
+    })
+    expect(geometry.left).toBeGreaterThanOrEqual(0)
+    expect(geometry.right).toBeLessThanOrEqual(width)
+    expect(geometry.width).toBeLessThanOrEqual(Math.min(width - 24, 288))
+    await selector.getByRole('option', { name: 'Южный парк', exact: true }).click()
+    await expect(page).toHaveURL(/park=8/)
+    await expect(page.getByText('Южный парк', { exact: true }).first()).toBeVisible()
+  })
+}
 
 test('admin role, user and settings drafts keep their open workspaces', async ({ page }) => {
   const royal = userForRole('royal')

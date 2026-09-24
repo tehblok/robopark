@@ -6,8 +6,6 @@ export type PresentationShellSlots = {
   navigation: ReactNode
   header: ReactNode
   content: ReactNode
-  context?: ReactNode
-  action?: ReactNode
 }
 
 export function PresentationShell({ mode: _mode, slots, shellClassName, density, theme }: {

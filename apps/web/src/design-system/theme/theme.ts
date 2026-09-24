@@ -36,9 +36,9 @@ export function readDensityPreference(): DensityPreference {
 
 export function resolveDensity(
   preference: DensityPreference,
-  narrowViewport: boolean,
+  _narrowViewport: boolean,
 ): ResolvedDensity {
-  return narrowViewport ? 'comfortable' : preference
+  return preference
 }
 
 export function applyDensity(density: ResolvedDensity): void {

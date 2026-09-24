@@ -6,7 +6,9 @@ import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { parkNorth, roles, userForRole } from './fixtures'
 import { assertResponsiveContracts, assertRouteSemanticContracts, openRouteFixture } from './routeFixtures'
 
-const widths = [320, 390, 412, 899, 1440] as const
+const widths = [360, 390, 412, 768, 1024, 1366, 1440, 1920] as const
+const themes = ['light', 'dark', 'system'] as const
+const densities = ['compact', 'comfortable'] as const
 test.describe.configure({ mode: 'parallel' })
 const restrictedUser: User = {
   id: 160,
@@ -20,12 +22,19 @@ const restrictedUser: User = {
   parks: [parkNorth],
 }
 
-for (const mode of ['Классический'] as const) for (const role of roles) for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'shell')) for (const width of widths) {
-  test(`${mode} ${role}: ${route.id} at ${width}px`, async ({ page }) => {
+for (const mode of ['Классический'] as const) for (const role of roles) for (const route of ROUTE_MANIFEST.filter(item => item.surface === 'shell')) for (const width of widths) for (const theme of themes) for (const density of densities) {
+  test(`${mode} ${role}: ${route.id} at ${width}px ${theme} ${density}`, async ({ page }) => {
     const user = userForRole(role)
     test.skip(!canAccessRoute(user, route.id), 'route denied by access policy')
     await page.setViewportSize({ width, height: 900 })
+    await page.emulateMedia({ colorScheme: theme === 'system' ? 'dark' : theme })
+    await page.addInitScript(({ theme, density }) => {
+      localStorage.setItem('robopark-theme', theme)
+      localStorage.setItem('robopark-density', density)
+    }, { theme, density })
     await openRouteFixture(page, route.id, user)
+    await expect(page.locator('html')).toHaveAttribute('data-density', density)
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme === 'system' ? 'dark' : theme)
     await assertResponsiveContracts(page, width)
     await assertRouteSemanticContracts(page, route.id)
     await assertNoSeriousA11yViolations(page)

@@ -405,8 +405,8 @@ describe('AppShell', () => {
       .toHaveAttribute('href', '/change-password')
 
     act(() => media.setWidth(899))
-    expect(screen.getByText('На телефоне используется комфортная плотность')).toBeVisible()
-    expect(document.documentElement.dataset.density).toBe('comfortable')
+    expect(screen.queryByText('На телефоне используется комфортная плотность')).not.toBeInTheDocument()
+    expect(document.documentElement.dataset.density).toBe('compact')
     expect(localStorage.getItem('robopark-density')).toBe('compact')
 
     act(() => media.setWidth(1200))

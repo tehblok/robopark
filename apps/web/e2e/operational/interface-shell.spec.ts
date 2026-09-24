@@ -61,12 +61,18 @@ for (const width of [320, 390, 412, 899, 1440]) for (const theme of ['light', 'd
     await expect(shell.locator('[data-shell-zone="navigation"]')).toHaveCount(1)
     await expect(shell.locator('[data-shell-zone="header"]')).toHaveCount(1)
     await expect(shell.locator('[data-shell-zone="content"]')).toHaveCount(1)
-    await expect(shell.locator('[data-shell-zone="context"]')).toHaveCount(1)
-    await expect(shell.locator('[data-shell-zone="action"]')).toHaveCount(1)
+    await expect(shell.locator('[data-shell-zone="context"]')).toHaveCount(0)
+    await expect(shell.locator('[data-shell-zone="action"]')).toHaveCount(0)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     if (width < 900) {
       for (const label of await page.locator('.rp-shell__bottom-nav .rp-shell__nav-label:visible').all()) {
-        expect(await label.evaluate(element => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight)).toBe(true)
+        const geometry = await label.evaluate(element => ({
+          fits: element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight,
+          text: element.textContent,
+          size: `${element.clientWidth}x${element.clientHeight}`,
+          scroll: `${element.scrollWidth}x${element.scrollHeight}`,
+        }))
+        expect(geometry.fits, `${geometry.text}: ${geometry.scroll} in ${geometry.size}`).toBe(true)
       }
       const navigation = page.locator('.rp-shell__bottom-nav')
       const navBox = await navigation.boundingBox()
