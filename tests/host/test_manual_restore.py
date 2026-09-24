@@ -587,7 +587,7 @@ def test_boot_stops_partial_containers_when_compose_wait_raises(e2e_host, monkey
     assert host.command("restore", "--boot-recover") == 1
     assert not host.app_active
     assert host.maintenance()
-    assert host.calls[-1][-5:] == ["stop", "--timeout", "30", "api", "web"]
+    assert host.calls[-1][-6:] == ["stop", "--timeout", "30", "worker", "api", "web"]
 
 
 def test_exhausted_new_claim_never_relabels_an_older_terminal_journal(host_paths):

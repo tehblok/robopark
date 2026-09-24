@@ -78,5 +78,5 @@ def test_systemd_keeps_database_running_while_application_writers_are_stopped():
     start = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
     stop = next(line for line in unit.splitlines() if line.startswith("ExecStop="))
     assert start.endswith("db api web")
-    assert stop.endswith("web api")
+    assert stop.endswith("worker web api")
     assert " db" not in stop

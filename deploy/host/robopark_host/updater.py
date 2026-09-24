@@ -658,7 +658,11 @@ def _render_configs(paths, journal, runner, stage):
     smoke.pop("networks", None)
     smoke.pop("secrets", None)
     smoke.pop("configs", None)
-    smoke["services"] = {key: smoke["services"][key] for key in ("db", "api", "web")}
+    smoke["services"] = {
+        key: smoke["services"][key]
+        for key in ("db", "api", "web", "worker")
+        if key in smoke["services"]
+    }
     for service in smoke["services"].values():
         for field in (
             "container_name",
@@ -721,6 +725,18 @@ def _render_configs(paths, journal, runner, stage):
         {"target": 80, "published": "0", "host_ip": "127.0.0.1", "protocol": "tcp"}
     ]
     smoke["services"]["api"]["depends_on"] = {"db": {"condition": "service_healthy"}}
+    if "worker" in smoke["services"]:
+        worker = smoke["services"]["worker"]
+        # Validate the candidate worker command and image without launching
+        # external polling/notification jobs during an isolated smoke run.
+        worker["profiles"] = ["worker"]
+        worker["volumes"] = copy.deepcopy(smoke["services"]["api"]["volumes"])
+        worker["env_file"] = list(smoke["services"]["api"]["env_file"])
+        worker["environment"] = dict(smoke["services"]["api"]["environment"])
+        worker["depends_on"] = {
+            "db": {"condition": "service_healthy"},
+            "api": {"condition": "service_healthy"},
+        }
     root = paths.state / "compose"
     atomic_write_json(root / (journal["job_id"] + "-production.json"), production)
     atomic_write_json(root / (journal["job_id"] + "-smoke.json"), smoke)

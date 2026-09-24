@@ -97,6 +97,7 @@ def test_settings_can_ignore_a_local_env_file(tmp_path, monkeypatch):
 
 def test_app_lifespan_ensures_seed_user(monkeypatch):
     from robopark_api import main
+    from robopark_api.services import bootstrap
 
     calls = []
     settings = Settings(_env_file=None, seed_username=None, seed_password=None)
@@ -110,12 +111,12 @@ def test_app_lifespan_ensures_seed_user(monkeypatch):
             return None
 
     monkeypatch.setattr(main, "SessionLocal", SessionContext, raising=False)
-    monkeypatch.setattr(main, "ensure_rbac_catalog", lambda _db: None, raising=False)
-    monkeypatch.setattr(main, "ensure_default_section_roles", lambda _db: None, raising=False)
-    monkeypatch.setattr(main, "ensure_dev_seed", lambda _db, _settings: None, raising=False)
-    monkeypatch.setattr(main.settings_svc, "migrate_plaintext_secrets", lambda _db: 0)
+    monkeypatch.setattr(bootstrap, "ensure_rbac_catalog", lambda _db: None)
+    monkeypatch.setattr(bootstrap, "ensure_default_section_roles", lambda _db: None)
+    monkeypatch.setattr(main, "ensure_dev_seed", lambda _db, _settings: None)
+    monkeypatch.setattr(bootstrap.settings_svc, "migrate_plaintext_secrets", lambda _db: 0)
     monkeypatch.setattr(
-        main.settings_svc, "migrate_registration_password_from_env", lambda _db: False
+        bootstrap.settings_svc, "migrate_registration_password_from_env", lambda _db: False
     )
     monkeypatch.setattr(
         main,

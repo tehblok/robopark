@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -56,27 +56,15 @@ from robopark_api.routers import (
     tracker_read,
 )
 from robopark_api.seed import ensure_seed_user
-from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_client
-from robopark_api.services.blocker_history_job import run_blocker_history_loop
-from robopark_api.services.cache_cleanup import run_cache_cleanup_loop
-from robopark_api.services.campaigns import run_refresh_loop as run_campaign_refresh_loop
+from robopark_api.services.bootstrap import initialize_data
 from robopark_api.services.change_revisions import (
     default_change_revision_store,
     scope_for_mutation,
 )
 from robopark_api.services.database_locks import dispose_database_lock_engines
-from robopark_api.services.emergency_config import ensure_default_section_roles
-from robopark_api.services.emergency_keepalive import run_keepalive_loop
-from robopark_api.services.live_merge import JobLease, default_live_merge_root, live_merge_enabled
 from robopark_api.services.ops.context import build_ops_context, resolved_ops_dir
 from robopark_api.services.ops.maintenance import host_maintenance_active
 from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
-from robopark_api.services.rbac_seed import ensure_rbac_catalog
-from robopark_api.services.session_cleanup import run_session_cleanup_loop
-from robopark_api.services.system_notifications import run_system_notification_loop
-from robopark_api.services.tracker_notifications import run_tracker_notification_loop
-from robopark_api.services.tracker_outbox import run_tracker_outbox_loop
 
 
 def create_app() -> FastAPI:
@@ -86,21 +74,16 @@ def create_app() -> FastAPI:
     if bind is not None:
         bind._robopark_ops_settings = settings
 
-    def initialize_data():
-        with SessionLocal() as db:
-            ensure_rbac_catalog(db)
-            ensure_default_section_roles(db)
-            ensure_seed_user(db, settings)
-            ensure_dev_seed(db, settings)
-            # Re-seal pre-encryption values only once host writes are allowed.
-            settings_svc.migrate_plaintext_secrets(db)
-            settings_svc.migrate_registration_password_from_env(db)
-
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         deferred = host_maintenance_active(settings)
         if not deferred:
-            initialize_data()
+            initialize_data(
+                SessionLocal,
+                settings,
+                seed_user=ensure_seed_user,
+                dev_seed=ensure_dev_seed,
+            )
         try:
             ctx = build_ops_context(settings)
             if ctx.use_host_updater:
@@ -116,117 +99,13 @@ def create_app() -> FastAPI:
                 )
         except Exception:  # noqa: BLE001
             logging.getLogger(__name__).exception("ops rebuild reconcile failed on startup")
-        stop_event = asyncio.Event()
-        job_lease = JobLease(default_live_merge_root(), "lifespan-jobs")
-        tasks = []
-        outbox_task: asyncio.Task[None] | None = None
-        campaign_task: asyncio.Task[None] | None = None
-        tracker_notification_task: asyncio.Task[None] | None = None
-
-        async def start_writers():
-            nonlocal outbox_task, campaign_task, tracker_notification_task
-            # Candidate readiness is read-only. Start seeding and workers only
-            # after root commits the release and publishes writes_resumed.
-            while host_maintenance_active(settings):
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(stop_event.wait(), timeout=0.5)
-                if stop_event.is_set():
-                    return
-            if deferred:
-                initialize_data()
-            owns_job_lease = job_lease.try_acquire()
-            run_background_jobs = (not live_merge_enabled()) or owns_job_lease
-            if not run_background_jobs:
-                return
-            tasks.extend(
-                [
-                    asyncio.create_task(run_keepalive_loop(stop_event)),
-                    asyncio.create_task(run_blocker_history_loop(stop_event)),
-                    asyncio.create_task(
-                        run_session_cleanup_loop(
-                            stop_event,
-                            interval_seconds=settings.session_cleanup_interval_seconds,
-                        )
-                    ),
-                ]
-            )
-            if owns_job_lease:
-                tasks.append(asyncio.create_task(run_cache_cleanup_loop(stop_event)))
-                tasks.append(
-                    asyncio.create_task(
-                        run_system_notification_loop(
-                            stop_event,
-                            settings=settings,
-                            emit=_app.state.push_service.emit,
-                        )
-                    )
-                )
-                outbox_task = asyncio.create_task(run_tracker_outbox_loop(SessionLocal, stop_event))
-                campaign_task = asyncio.create_task(
-                    run_campaign_refresh_loop(SessionLocal, stop_event)
-                )
-                tracker_notification_task = asyncio.create_task(
-                    run_tracker_notification_loop(
-                        SessionLocal,
-                        stop_event,
-                        emit=_app.state.push_service.emit,
-                        interval_seconds=settings.tracker_notification_interval_seconds,
-                        page_size=settings.tracker_notification_page_size,
-                        lease_seconds=settings.tracker_notification_lease_seconds,
-                        poll_deadline_seconds=settings.tracker_notification_poll_deadline_seconds,
-                        max_operation_seconds=max(
-                            tracker_client.SEARCH_OPERATION_TIMEOUT_SECONDS,
-                            settings.push_delivery_deadline_seconds,
-                        ),
-                    )
-                )
-
-        startup = asyncio.create_task(start_writers())
         try:
             yield
         finally:
-            stop_event.set()
             try:
-                startup.cancel()
-                startup_results = await asyncio.gather(startup, return_exceptions=True)
-                for result in startup_results:
-                    if isinstance(result, BaseException) and not isinstance(
-                        result, asyncio.CancelledError
-                    ):
-                        logging.getLogger(__name__).error(
-                            "lifespan writer startup failed", exc_info=result
-                        )
-                # The shared stop event lets every loop leave after its current
-                # bounded operation. Do not cancel asyncio.to_thread waiters:
-                # cancellation detaches the real writer thread, after which the
-                # lease/DB locks/push pool could be released underneath it.
-                writer_tasks = [
-                    *tasks,
-                    *(
-                        task
-                        for task in (outbox_task, campaign_task, tracker_notification_task)
-                        if task is not None
-                    ),
-                ]
-                # A failed sibling must never skip joining the remaining writers.
-                # In particular, cancelled ``to_thread`` waiters do not stop their
-                # real threads, so every task is collected before shared resources.
-                writer_results = await asyncio.gather(*writer_tasks, return_exceptions=True)
-                for result in writer_results:
-                    if isinstance(result, BaseException) and not isinstance(
-                        result, asyncio.CancelledError
-                    ):
-                        logging.getLogger(__name__).error(
-                            "lifespan background worker failed", exc_info=result
-                        )
+                await asyncio.to_thread(_app.state.push_service.close)
             finally:
-                try:
-                    await asyncio.to_thread(_app.state.push_service.close)
-                finally:
-                    try:
-                        await asyncio.to_thread(dispose_database_lock_engines)
-                    finally:
-                        job_lease.release()
+                await asyncio.to_thread(dispose_database_lock_engines)
 
     app = FastAPI(
         title="Robopark API",

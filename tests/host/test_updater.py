@@ -32,6 +32,7 @@ class FakeRunner:
         self.fail_on = None
         self.observations = []
         self.environments = []
+        self.include_worker = False
 
     def run(self, argv, *, timeout, cwd=None, env=None, capture=False):
         self.commands.append(list(map(str, argv)))
@@ -41,30 +42,32 @@ class FakeRunner:
         if argv[:3] == ["docker", "image", "inspect"]:
             return ("sha256:" + ("3" if "api" in argv[-1] else "4") * 64).encode()
         if "--format" in argv:
-            return json.dumps(
-                {
-                    "services": {
-                        "api": {
-                            "build": {"context": "../apps/api"},
-                            "env_file": [{"path": str(self.paths.etc / "host.env")}],
-                            "environment": {
-                                "DATABASE_URL": "sqlite:////data/robopark.db"
-                            },
-                            "volumes": [
-                                {
-                                    "type": "bind",
-                                    "source": str(self.paths.var / "data"),
-                                    "target": "/data",
-                                }
-                            ],
+            services = {
+                "api": {
+                    "build": {"context": "../apps/api"},
+                    "env_file": [{"path": str(self.paths.etc / "host.env")}],
+                    "environment": {"DATABASE_URL": "sqlite:////data/robopark.db"},
+                    "volumes": [
+                        {
+                            "type": "bind",
+                            "source": str(self.paths.var / "data"),
+                            "target": "/data",
                         },
-                        "web": {
-                            "build": {"context": "../apps/web"},
-                            "ports": [{"published": "8080", "target": 80}],
-                        },
-                    }
+                    ],
+                },
+                "web": {
+                    "build": {"context": "../apps/web"},
+                    "ports": [{"published": "8080", "target": 80}],
+                },
+            }
+            if self.include_worker:
+                services["worker"] = {
+                    "image": "robopark-api:local",
+                    "command": ["python", "-m", "robopark_api.worker"],
+                    "environment": {},
+                    "healthcheck": {"disable": True},
                 }
-            ).encode()
+            return json.dumps({"services": services}).encode()
         if argv[0] == "curl":
             return (
                 b'{"status":"ready"}\n200'
@@ -869,6 +872,27 @@ def test_candidate_smoke_uses_its_own_postgres_volume_and_credentials(host):
         }
     ]
     assert set(config["volumes"]) == {"candidate_data", "candidate_postgres"}
+
+
+def test_candidate_worker_is_pinned_and_validated_without_running_jobs(host):
+    host.runner.include_worker = True
+    request = host.request()
+    apply_release(request, host.paths, host.runner)
+    root = host.paths.state / "compose"
+    production = json.loads((root / (request.job_id + "-production.json")).read_text())
+    smoke = json.loads((root / (request.job_id + "-smoke.json")).read_text())
+
+    api = production["services"]["api"]
+    worker = production["services"]["worker"]
+    assert worker["image"] == api["image"]
+    assert worker["command"] == ["python", "-m", "robopark_api.worker"]
+    assert worker["environment"]["DATABASE_URL"] == api["environment"]["DATABASE_URL"]
+    assert worker["volumes"] == api["volumes"]
+    assert smoke["services"]["worker"]["profiles"] == ["worker"]
+    assert (
+        smoke["services"]["worker"]["environment"]["DATABASE_URL"]
+        == smoke["services"]["api"]["environment"]["DATABASE_URL"]
+    )
 
 
 def test_candidate_source_render_and_production_config_use_sanitized_snapshot(host):

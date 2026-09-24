@@ -261,7 +261,12 @@ def production_config(document, paths, release, image_tag):
             },
         },
     )
-    document["services"] = {name: document["services"][name] for name in ("db", "api", "web")}
+    services = document["services"]
+    document["services"] = {
+        name: services[name]
+        for name in ("db", "api", "web", "worker")
+        if name in services
+    }
     document["volumes"] = {"robopark_postgres": {}}
     document["secrets"] = {
         "postgres-password": {"file": str(paths.etc / "postgres-password")}
@@ -320,6 +325,19 @@ def production_config(document, paths, release, image_tag):
             for name in ("inbox", "artifacts", "public")
         ],
     ]
+    if "worker" in document["services"]:
+        worker = document["services"]["worker"]
+        worker.pop("build", None)
+        worker["command"] = ["python", "-m", "robopark_api.worker"]
+        worker["env_file"] = list(api["env_file"])
+        worker["environment"] = dict(api["environment"])
+        worker["environment"].pop("UVICORN_WORKERS", None)
+        worker["volumes"] = copy.deepcopy(api["volumes"])
+        worker["depends_on"] = {
+            "db": {"condition": "service_healthy"},
+            "api": {"condition": "service_healthy"},
+        }
+        worker["healthcheck"] = {"disable": True}
     workers = "2"
     for line in (paths.etc / "host.env").read_text().splitlines():
         if line.startswith("UVICORN_WORKERS="):
@@ -364,6 +382,12 @@ def production_config(document, paths, release, image_tag):
         service["mem_limit"] = profile.api_memory if name == "api" else "256m"
         service["pids_limit"] = 512
         service.setdefault("ulimits", {})["nofile"] = {"soft": 65536, "hard": 65536}
+    if "worker" in document["services"]:
+        worker = document["services"]["worker"]
+        worker["image"] = api["image"]
+        worker["mem_limit"] = "1g"
+        worker["pids_limit"] = 512
+        worker.setdefault("ulimits", {})["nofile"] = {"soft": 65536, "hard": 65536}
     return document
 
 

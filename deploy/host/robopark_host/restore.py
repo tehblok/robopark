@@ -672,7 +672,7 @@ class _BootRunner:
     def run(self, argv, *, timeout):
         if argv == ["systemctl", "stop", "robopark.service"]:
             return self.runner.run(
-                self.command + ["stop", "--timeout", "30", "api", "web"],
+                self.command + ["stop", "--timeout", "30", "worker", "api", "web"],
                 timeout=timeout,
             )
         if argv == ["systemctl", "restart", "robopark.service"]:

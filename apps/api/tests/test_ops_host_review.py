@@ -292,12 +292,15 @@ def test_candidate_startup_is_readonly_until_host_releases_marker(
     seed_royal,
     monkeypatch,
 ):
+    import asyncio
     import threading
 
     from fastapi.testclient import TestClient
 
     from robopark_api import main
     from robopark_api.db import get_db
+    from robopark_api.routers.push import PushService
+    from robopark_api.services import bootstrap, worker_runtime
 
     auth = AuthSession(
         user_id=seed_royal.id,
@@ -318,7 +321,13 @@ def test_candidate_startup_is_readonly_until_host_releases_marker(
         original_seed(db, settings)
         seeded.set()
 
-    monkeypatch.setattr(main, "ensure_seed_user", seed)
+    monkeypatch.setattr(
+        worker_runtime,
+        "initialize_data",
+        lambda session_factory, settings: bootstrap.initialize_data(
+            session_factory, settings, seed_user=seed
+        ),
+    )
     original_purge = session_cleanup.purge_expired_sessions_once
 
     def purge():
@@ -329,30 +338,57 @@ def test_candidate_startup_is_readonly_until_host_releases_marker(
 
     monkeypatch.setattr(session_cleanup, "purge_expired_sessions_once", purge)
 
-    async def idle(stop_event):
+    async def idle(*args, **kwargs):
+        stop_event = next(arg for arg in args if isinstance(arg, asyncio.Event))
         await stop_event.wait()
 
-    monkeypatch.setattr(main, "run_keepalive_loop", idle)
-    monkeypatch.setattr(main, "run_blocker_history_loop", idle)
+    for name in (
+        "run_keepalive_loop",
+        "run_blocker_history_loop",
+        "run_cache_cleanup_loop",
+        "run_system_notification_loop",
+        "run_tracker_outbox_loop",
+        "run_campaign_refresh_loop",
+        "run_tracker_notification_loop",
+    ):
+        monkeypatch.setattr(worker_runtime, name, idle)
+    monkeypatch.setattr(worker_runtime, "default_live_merge_root", lambda: installed / "live-merge")
     test_settings.session_cleanup_interval_seconds = 0.05
     marker = enable(installed)
     app = main.create_app()
+
+    worker_ready = threading.Event()
+    worker_control = {}
+
+    async def run_worker():
+        stop = asyncio.Event()
+        worker_control["loop"] = asyncio.get_running_loop()
+        worker_control["stop"] = stop
+        worker_ready.set()
+        await worker_runtime.WorkerRuntime(test_settings, factory, PushService(factory)).start(stop)
+
+    worker_thread = threading.Thread(target=lambda: asyncio.run(run_worker()))
+    worker_thread.start()
+    assert worker_ready.wait(timeout=1)
 
     def db_override():
         yield db_session
 
     app.dependency_overrides[get_db] = db_override
-    with TestClient(app) as candidate:
-        assert candidate.get("/health/ready").status_code == 200
-        assert candidate.post("/auth/logout").status_code == 503
-        assert not seeded.is_set()
-        assert not purged.is_set()
-        assert db_session.scalar(select(AuthSession)) is not None
-        marker.unlink()
-        assert seeded.wait(timeout=3), "startup seeds must resume after host releases maintenance"
-        assert purged.wait(timeout=3), (
-            "background cleanup must resume after host releases maintenance"
-        )
+    try:
+        with TestClient(app) as candidate:
+            assert candidate.get("/health/ready").status_code == 200
+            assert candidate.post("/auth/logout").status_code == 503
+            assert not seeded.is_set()
+            assert not purged.is_set()
+            assert db_session.scalar(select(AuthSession)) is not None
+            marker.unlink()
+            assert seeded.wait(timeout=3), "worker seeding must resume after maintenance"
+            assert purged.wait(timeout=3), "worker cleanup must resume after maintenance"
+    finally:
+        worker_control["loop"].call_soon_threadsafe(worker_control["stop"].set)
+        worker_thread.join(timeout=3)
+        assert not worker_thread.is_alive()
 
 
 @pytest.mark.parametrize("kind", ["diagnostics", "repair"])

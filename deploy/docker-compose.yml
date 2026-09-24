@@ -33,6 +33,7 @@ services:
   api:
     build:
       context: ../apps/api
+    image: robopark-api:local
     env_file:
       # Copy deploy/host.env.example → deploy/host.env and point HOST_ENV_FILE at it.
       # Do not fall back to the example file (empty SECRET_KEY).
@@ -74,6 +75,49 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker:
+    image: robopark-api:local
+    command: ["python", "-m", "robopark_api.worker"]
+    env_file:
+      - ${HOST_ENV_FILE:-./host.env}
+    environment:
+      DATABASE_URL: postgresql+psycopg://robopark@db:5432/robopark
+      PGPASSFILE: /run/secrets/pgpass
+      REPORT_ATTACHMENTS_DIR: /data/report-attachments
+      LIVE_MERGE_DIR: /data/live-merge
+      STAGED_ATTACHMENTS_DIR: /data/task-attachments
+      OPS_DIR: /data/ops
+      HOST_DATA_PATH: /data
+      HOST_HEALTH_PATH: /data/ops/host-health.json
+      OPS_HOST_ENV_PATH: /run/robopark/snapshot.env
+    volumes:
+      - ${ROBOPARK_DATA_SOURCE:-robopark_data}:/data
+      - ${ROBOPARK_PGPASS_FILE:?run sudo python3 compose_secrets.py first}:/run/secrets/pgpass:ro
+      - ${ROBOPARK_SNAPSHOT_CONFIG_FILE:?run sudo compose-production.sh first}:/run/robopark/snapshot.env:ro
+      - ${ROBOPARK_SNAPSHOT_CONFIG_FILE:?run sudo compose-production.sh first}:/host-repo/deploy/host.env:ro
+      - ..:/host-repo
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    init: true
+    mem_limit: 1g
+    stop_grace_period: 45s
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    # The image's HTTP healthcheck belongs to the API process only.
+    healthcheck:
+      disable: true
     logging:
       driver: json-file
       options:

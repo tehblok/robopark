@@ -45,6 +45,17 @@ def test_boot_never_builds_or_uses_a_mutable_compose_config():
     assert "--wait" in app["ExecStart"].split()
 
 
+def test_worker_start_failure_does_not_block_api_and_web_boot():
+    app = unit("robopark.service")["Service"]
+    start = app["ExecStart"].split()
+    worker = app["ExecStartPost"].split()
+    assert start[-3:] == ["db", "api", "web"]
+    assert worker[-1] == "worker"
+    assert worker[0].startswith("-")
+    assert "--wait" not in worker
+    assert app["ExecStop"].split()[-3:] == ["worker", "web", "api"]
+
+
 def test_command_consumer_can_open_the_shared_stable_host_lock():
     service = unit("robopark-commands.service")["Service"]
     assert "-/run/lock/robopark" in service["ReadWritePaths"].split()
@@ -139,11 +150,17 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
             return json.dumps(
                 {
                     "services": {
-                        "api": {
-                            "build": {"context": str(release / "apps/api")},
-                            "environment": {"UVICORN_WORKERS": "2"},
-                            "volumes": ["..:/host-repo"],
-                        },
+                            "api": {
+                                "build": {"context": str(release / "apps/api")},
+                                "environment": {"UVICORN_WORKERS": "2"},
+                                "volumes": ["..:/host-repo"],
+                            },
+                            "worker": {
+                                "image": "robopark-api:local",
+                                "command": ["python", "-m", "robopark_api.worker"],
+                                "environment": {},
+                                "healthcheck": {"disable": True},
+                            },
                         "web": {
                             "build": {"context": str(release / "apps/web")},
                             "ports": [
@@ -176,9 +193,18 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     document = json.loads(target.read_text())
     assert document["x-robopark-release"] == str(release.resolve())
     assert target.stat().st_mode & 0o777 == 0o600
-    assert set(document["services"]) == {"db", "api", "web"}
+    assert set(document["services"]) == {"db", "api", "worker", "web"}
     api = document["services"]["api"]
     assert api["image"] == "sha256:" + "1" * 64
+    worker = document["services"]["worker"]
+    assert worker["image"] == api["image"]
+    assert worker["command"] == ["python", "-m", "robopark_api.worker"]
+    assert worker["environment"]["DATABASE_URL"] == api["environment"]["DATABASE_URL"]
+    assert worker["depends_on"] == {
+        "db": {"condition": "service_healthy"},
+        "api": {"condition": "service_healthy"},
+    }
+    assert "worker" not in api.get("depends_on", {})
     assert document["services"]["web"]["image"] == "sha256:" + "2" * 64
     assert document["services"]["db"]["image"] == "sha256:" + "2" * 64
     assert "build" not in api
