@@ -1,7 +1,14 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
+
+import pytest
+from sqlalchemy import event
+from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, Park, User, UserPark
+from robopark_api.schedule_schemas import SchedulePatternCreate
 from robopark_api.security import hash_password
 from robopark_api.services import schedules
 from robopark_api.services.rbac import RoleSlug
@@ -42,6 +49,7 @@ def _pattern_payload(park_id: int, owner_ids: list[int], **overrides) -> dict:
         "start_time": "09:00:00",
         "end_time": "21:00:00",
         "pattern": "4/4",
+        "idempotency_key": "pattern-request-0001",
     }
     payload.update(overrides)
     return payload
@@ -77,6 +85,155 @@ def test_four_on_four_off_pattern_dates(
     ]
     assert len({row["series_id"] for row in rows}) == 1
     assert rows[0]["series_id"] is not None
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected_dates"),
+    [
+        ("5/2", ["2026-09-03", "2026-09-04", "2026-09-05", "2026-09-06", "2026-09-07", "2026-09-10", "2026-09-11"]),
+        ("2/2", ["2026-09-03", "2026-09-04", "2026-09-07", "2026-09-08", "2026-09-11"]),
+    ],
+)
+def test_pattern_exact_dates_and_moscow_wall_times(
+    client, db_session, seed_royal, seed_park_with_tracker, pattern, expected_dates
+):
+    mechanic = _add_user(
+        db_session,
+        username=f"pattern-{pattern.replace('/', '-')}",
+        role=RoleSlug.MECHANIC,
+        park_id=seed_park_with_tracker.id,
+    )
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(
+            seed_park_with_tracker.id,
+            [mechanic.id],
+            pattern=pattern,
+            end_date="2026-09-11",
+            start_time="00:30:00",
+            end_time="08:30:00",
+            idempotency_key=f"pattern-{pattern}-0001",
+        ),
+    )
+
+    assert response.status_code == 201
+    rows = response.json()
+    assert [row["start_at"][:10] for row in rows] == expected_dates
+    assert all(row["start_at"].endswith("00:30:00+03:00") for row in rows)
+    assert all(row["end_at"].endswith("08:30:00+03:00") for row in rows)
+
+
+def test_pattern_replay_is_idempotent_and_payload_bound(
+    client, db_session, seed_royal, seed_park_with_tracker
+):
+    owner = _add_user(
+        db_session,
+        username="pattern-replay",
+        role=RoleSlug.MECHANIC,
+        park_id=seed_park_with_tracker.id,
+    )
+    payload = _pattern_payload(seed_park_with_tracker.id, [owner.id])
+    login_as(client, seed_royal.username, "secret")
+
+    first = client.post("/schedules/pattern", json=payload)
+    owner.is_active = False
+    db_session.commit()
+    replay = client.post("/schedules/pattern", json=payload)
+    conflict = client.post(
+        "/schedules/pattern",
+        json={**payload, "end_date": "2026-09-15"},
+    )
+
+    assert first.status_code == replay.status_code == 201
+    assert replay.json() == first.json()
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "reliable_action_payload_conflict"
+
+    from robopark_api.schedule_models import ScheduleEntry
+
+    assert db_session.query(ScheduleEntry).count() == 8
+
+
+def test_pattern_retry_after_ambiguous_commit_replays_without_duplicates(
+    client, db_session, monkeypatch, seed_royal, seed_park_with_tracker
+):
+    owner = _add_user(
+        db_session,
+        username="pattern-ambiguous",
+        role=RoleSlug.MECHANIC,
+        park_id=seed_park_with_tracker.id,
+    )
+    payload = _pattern_payload(
+        seed_park_with_tracker.id,
+        [owner.id],
+        idempotency_key="pattern-ambiguous-0001",
+    )
+    login_as(client, seed_royal.username, "secret")
+    real_commit = db_session.commit
+    raised = False
+
+    def ambiguous_commit():
+        nonlocal raised
+        real_commit()
+        if not raised:
+            raised = True
+            raise RuntimeError("response_lost_after_commit")
+
+    monkeypatch.setattr(db_session, "commit", ambiguous_commit)
+    with pytest.raises(RuntimeError, match="response_lost_after_commit"):
+        client.post("/schedules/pattern", json=payload)
+    monkeypatch.setattr(db_session, "commit", real_commit)
+
+    replay = client.post("/schedules/pattern", json=payload)
+
+    assert replay.status_code == 201
+    assert len(replay.json()) == 8
+    from robopark_api.schedule_models import ScheduleEntry
+
+    assert db_session.query(ScheduleEntry).count() == 8
+
+
+def test_concurrent_pattern_replay_inserts_one_plan(
+    db_engine, db_session, seed_royal, seed_park_with_tracker
+):
+    owner = _add_user(
+        db_session,
+        username="pattern-concurrent",
+        role=RoleSlug.OPERATOR,
+        park_id=seed_park_with_tracker.id,
+    )
+    actor_id = seed_royal.id
+    park_id = seed_park_with_tracker.id
+    owner_id = owner.id
+    db_session.expunge_all()
+    barrier = Barrier(2)
+
+    def create_once():
+        with Session(db_engine) as session:
+            actor = session.get(User, actor_id)
+            assert actor is not None
+            barrier.wait()
+            return schedules.create_pattern(
+                session,
+                actor,
+                SchedulePatternCreate.model_validate(
+                    _pattern_payload(park_id, [owner_id], idempotency_key="pattern-race-0001")
+                ),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: create_once(), range(2)))
+
+    assert [[row["id"] for row in result] for result in results] == [
+        [row["id"] for row in results[0]],
+        [row["id"] for row in results[0]],
+    ]
+    from robopark_api.schedule_models import ScheduleEntry
+
+    with Session(db_engine) as session:
+        assert session.query(ScheduleEntry).count() == 8
 
 
 def test_pattern_is_royal_only_and_rejects_invalid_owner_or_range(
@@ -133,6 +290,44 @@ def test_pattern_is_royal_only_and_rejects_invalid_owner_or_range(
     ).status_code == 403
 
 
+def test_pattern_rejects_forged_inactive_pending_and_nonstaff_owners(
+    client, db_session, seed_royal, seed_park_with_tracker
+):
+    inactive = _add_user(
+        db_session,
+        username="pattern-inactive",
+        role=RoleSlug.MECHANIC,
+        park_id=seed_park_with_tracker.id,
+    )
+    inactive.is_active = False
+    pending = _add_user(
+        db_session,
+        username="pattern-pending",
+        role=RoleSlug.OPERATOR,
+        park_id=seed_park_with_tracker.id,
+    )
+    pending.access_status = AccessStatus.pending.value
+    nonstaff = _add_user(
+        db_session,
+        username="pattern-admin",
+        role=RoleSlug.ADMIN,
+        park_id=seed_park_with_tracker.id,
+    )
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+
+    for index, owner in enumerate((inactive, pending, nonstaff)):
+        response = client.post(
+            "/schedules/pattern",
+            json=_pattern_payload(
+                seed_park_with_tracker.id,
+                [owner.id],
+                idempotency_key=f"forged-owner-{index:04d}",
+            ),
+        )
+        assert response.status_code == 403
+
+
 def test_pattern_rejects_owner_and_generated_entry_limits_before_insert(
     client, db_session, seed_royal, seed_park_with_tracker
 ):
@@ -155,6 +350,94 @@ def test_pattern_rejects_owner_and_generated_entry_limits_before_insert(
     from robopark_api.schedule_models import ScheduleEntry
 
     assert db_session.query(ScheduleEntry).count() == 0
+
+
+def test_pattern_accepts_exactly_5000_entries(
+    client, db_session, seed_royal, seed_park_with_tracker
+):
+    owners = [
+        _add_user(
+            db_session,
+            username=f"pattern-limit-{index:02d}",
+            role=RoleSlug.MECHANIC,
+            park_id=seed_park_with_tracker.id,
+        )
+        for index in range(50)
+    ]
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(
+            seed_park_with_tracker.id,
+            [owner.id for owner in owners],
+            pattern="5/2",
+            start_date="2026-01-01",
+            end_date="2026-05-20",
+            idempotency_key="pattern-limit-5000",
+        ),
+    )
+
+    assert response.status_code == 201
+    assert len(response.json()) == 5000
+
+
+def test_pattern_accepts_exactly_366_calendar_days(
+    client, db_session, seed_royal, seed_park_with_tracker
+):
+    owner = _add_user(
+        db_session,
+        username="pattern-366-days",
+        role=RoleSlug.OPERATOR,
+        park_id=seed_park_with_tracker.id,
+    )
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(
+            seed_park_with_tracker.id,
+            [owner.id],
+            pattern="2/2",
+            start_date="2026-01-01",
+            end_date="2027-01-01",
+            idempotency_key="pattern-limit-366-days",
+        ),
+    )
+
+    assert response.status_code == 201
+    assert len(response.json()) == 184
+
+
+def test_pattern_response_schedule_query_count_is_constant(
+    client, db_session, db_engine, seed_royal, seed_park_with_tracker
+):
+    owner = _add_user(
+        db_session,
+        username="pattern-query-count",
+        role=RoleSlug.MECHANIC,
+        park_id=seed_park_with_tracker.id,
+    )
+    schedule_selects = []
+
+    def count_schedule_selects(_connection, _cursor, statement, *_args):
+        normalized = statement.upper()
+        if normalized.lstrip().startswith("SELECT") and "FROM SCHEDULE_ENTRIES" in normalized:
+            schedule_selects.append(statement)
+
+    event.listen(db_engine, "before_cursor_execute", count_schedule_selects)
+    try:
+        login_as(client, seed_royal.username, "secret")
+        response = client.post(
+            "/schedules/pattern",
+            json=_pattern_payload(seed_park_with_tracker.id, [owner.id]),
+        )
+    finally:
+        event.remove(db_engine, "before_cursor_execute", count_schedule_selects)
+
+    assert response.status_code == 201
+    assert len(response.json()) == 8
+    assert len(schedule_selects) <= 2
 
 
 def test_employee_manages_own_schedule_and_gets_overlap_warning(
@@ -343,8 +626,8 @@ def test_list_schedule_range_is_bounded_and_ordered(
     payload = response.json()
     assert len(payload) == 2000
     assert [row["start_at"] for row in payload] == sorted(row["start_at"] for row in payload)
-    assert payload[0]["start_at"] == "2026-09-01T00:00:00"
-    assert payload[-1]["start_at"] == "2026-09-02T09:19:00"
+    assert payload[0]["start_at"] == "2026-09-01T00:00:00+03:00"
+    assert payload[-1]["start_at"] == "2026-09-02T09:19:00+03:00"
 
 
 def test_list_schedule_range_uses_half_open_intersection(

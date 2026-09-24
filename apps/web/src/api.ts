@@ -105,7 +105,7 @@ export type ScheduleListParams = { parkId: number; ownerUserId?: number; startAt
 export type ScheduleParticipant = { id: number; display_name: string; role: 'mechanic' | 'operator' }
 export type SchedulePattern = 'none' | '5/2' | '2/2' | '4/4'
 export type SchedulePatternCreate = {
-  park_id: number; owner_user_ids: number[]; kind: ScheduleEntry['kind']; pattern: SchedulePattern
+  idempotency_key: string; park_id: number; owner_user_ids: number[]; kind: ScheduleEntry['kind']; pattern: SchedulePattern
   start_date: string; end_date: string; start_time: string; end_time: string
 }
 export type ScheduleCopyCreate = {

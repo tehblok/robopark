@@ -11,9 +11,12 @@ from robopark_api.schedule_schemas import (
     ScheduleBulkCreate,
     ScheduleCopy,
     ScheduleCreate,
+    ScheduleOut,
     SchedulePatternCreate,
     ScheduleUpdate,
 )
+from robopark_api.services import reliable_actions
+from robopark_api.services.database_locks import database_idempotency_lock
 
 SCHEDULE_RETENTION_DAYS = 400
 MOSCOW = ZoneInfo("Europe/Moscow")
@@ -104,8 +107,8 @@ def shell(db: Session, row: ScheduleEntry, *, warnings: list[str] | None = None)
         "owner_user_id": row.owner_user_id,
         "park_id": row.park_id,
         "kind": row.kind,
-        "start_at": row.start_at,
-        "end_at": row.end_at,
+        "start_at": _moscow_datetime(row.start_at),
+        "end_at": _moscow_datetime(row.end_at),
         "source": row.source,
         "series_id": row.series_id,
         "created_by_user_id": row.created_by_user_id,
@@ -116,6 +119,12 @@ def shell(db: Session, row: ScheduleEntry, *, warnings: list[str] | None = None)
         if warnings is not None
         else _warnings(db, row.owner_user_id, row.start_at, row.end_at, exclude_id=row.id),
     }
+
+
+def _moscow_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=MOSCOW)
+    return value.astimezone(MOSCOW)
 
 
 def list_entries(
@@ -243,11 +252,6 @@ def create_bulk(db: Session, actor: User, payload: ScheduleBulkCreate) -> list[d
 def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> list[dict]:
     if actor.role != "royal":
         raise PermissionError
-    if db.get(Park, payload.park_id) is None:
-        raise LookupError("park_not_found")
-    for owner_id in payload.owner_user_ids:
-        _owner_in_park(db, owner_id, payload.park_id)
-
     on_days, cycle_days = {
         "none": (1, None),
         "5/2": (5, 7),
@@ -264,29 +268,112 @@ def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> 
     if len(active_dates) * len(payload.owner_user_ids) > 5000:
         raise ValueError("too_many_entries")
 
-    series_id = str(uuid4())
-    rows: list[ScheduleEntry] = []
-    for owner_id in payload.owner_user_ids:
-        for work_date in active_dates:
-            start_at = datetime.combine(work_date, payload.start_time, tzinfo=MOSCOW)
-            end_at = datetime.combine(work_date, payload.end_time, tzinfo=MOSCOW)
-            if end_at <= start_at:
-                end_at += timedelta(days=1)
-            row = ScheduleEntry(
-                owner_user_id=owner_id,
-                park_id=payload.park_id,
-                kind=payload.kind,
-                start_at=start_at,
-                end_at=end_at,
-                source="royal",
-                series_id=series_id,
-                created_by_user_id=actor.id,
-                updated_by_user_id=actor.id,
+    action_payload = payload.model_dump(mode="json", exclude={"idempotency_key"})
+    lock_key = f"schedule-pattern:{actor.id}:{payload.park_id}:{payload.idempotency_key}"
+    with database_idempotency_lock(db, lock_key):
+        try:
+            begin = reliable_actions.begin_action(
+                db,
+                actor=actor,
+                resource_type="schedule_park",
+                resource_id=str(payload.park_id),
+                action="schedule_pattern",
+                idempotency_key=payload.idempotency_key,
+                payload=action_payload,
             )
-            db.add(row)
-            rows.append(row)
-    db.commit()
-    return [shell(db, row) for row in rows]
+            if begin.result is not None:
+                return list(begin.result)
+            if db.get(Park, payload.park_id) is None:
+                raise LookupError("park_not_found")
+            eligible_owner_ids = set(
+                db.scalars(
+                    select(User.id)
+                    .join(UserPark, UserPark.user_id == User.id)
+                    .join(Role, Role.id == User.role_id)
+                    .where(
+                        User.id.in_(payload.owner_user_ids),
+                        UserPark.park_id == payload.park_id,
+                        User.is_active.is_(True),
+                        User.access_status == AccessStatus.approved.value,
+                        Role.slug.in_(("mechanic", "operator")),
+                    )
+                )
+            )
+            if eligible_owner_ids != set(payload.owner_user_ids):
+                raise PermissionError
+
+            series_id = str(uuid4())
+            rows: list[ScheduleEntry] = []
+            for owner_id in payload.owner_user_ids:
+                for work_date in active_dates:
+                    start_at = datetime.combine(work_date, payload.start_time, tzinfo=MOSCOW)
+                    end_at = datetime.combine(work_date, payload.end_time, tzinfo=MOSCOW)
+                    if end_at <= start_at:
+                        end_at += timedelta(days=1)
+                    row = ScheduleEntry(
+                        owner_user_id=owner_id,
+                        park_id=payload.park_id,
+                        kind=payload.kind,
+                        start_at=start_at,
+                        end_at=end_at,
+                        source="royal",
+                        series_id=series_id,
+                        created_by_user_id=actor.id,
+                        updated_by_user_id=actor.id,
+                    )
+                    db.add(row)
+                    rows.append(row)
+            db.flush()
+            result_ids = [row.id for row in rows]
+            result = [
+                ScheduleOut.model_validate(item).model_dump(mode="json")
+                for item in _pattern_results(db, result_ids)
+            ]
+            reliable_actions.complete_action(db, begin.row, result)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return result
+
+
+def _pattern_results(db: Session, result_ids: list[str]) -> list[dict]:
+    if not result_ids:
+        return []
+    target_rows = list(
+        db.scalars(select(ScheduleEntry).where(ScheduleEntry.id.in_(result_ids)))
+    )
+    targets_by_id = {row.id: row for row in target_rows}
+    if len(targets_by_id) != len(result_ids):
+        raise LookupError("schedule_pattern_result_not_found")
+    owner_ids = {row.owner_user_id for row in target_rows}
+    window_start = min(row.start_at for row in target_rows)
+    window_end = max(row.end_at for row in target_rows)
+    candidates = list(
+        db.scalars(
+            select(ScheduleEntry)
+            .where(
+                ScheduleEntry.owner_user_id.in_(owner_ids),
+                ScheduleEntry.start_at < window_end,
+                ScheduleEntry.end_at > window_start,
+            )
+            .order_by(ScheduleEntry.owner_user_id, ScheduleEntry.start_at, ScheduleEntry.id)
+        )
+    )
+    candidates_by_owner: dict[int, list[ScheduleEntry]] = {}
+    for candidate in candidates:
+        candidates_by_owner.setdefault(candidate.owner_user_id, []).append(candidate)
+    result = []
+    for entry_id in result_ids:
+        row = targets_by_id[entry_id]
+        overlaps = any(
+            candidate.id != row.id
+            and candidate.start_at < row.end_at
+            and candidate.end_at > row.start_at
+            for candidate in candidates_by_owner.get(row.owner_user_id, [])
+        )
+        result.append(shell(db, row, warnings=["overlap"] if overlaps else []))
+    return result
 
 
 def copy_period(db: Session, actor: User, payload: ScheduleCopy) -> list[dict]:

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import type { ScheduleCopyCreate, ScheduleEntry, ScheduleParticipant, SchedulePattern, SchedulePatternCreate } from '../../api'
 import { Button } from '../../design-system/actions/Button'
 
@@ -36,16 +36,18 @@ export function SchedulePlanner({
   const [targetStart, setTargetStart] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(false)
+  const patternAttempt = useRef<{ fingerprint: string; key: string } | null>(null)
 
   const toggleOwner = (ownerId: number, checked: boolean) => {
     setOwnerIds(current => checked ? [...current, ownerId] : current.filter(id => id !== ownerId))
   }
-  const run = async (request: () => Promise<ScheduleEntry[]>) => {
+  const run = async (request: () => Promise<ScheduleEntry[]>, onSuccess?: () => void) => {
     setBusy(true)
     setError(false)
     try {
       const entries = await request()
       onCreated?.(entries)
+      onSuccess?.()
     } catch {
       setError(true)
     } finally {
@@ -55,7 +57,7 @@ export function SchedulePlanner({
   const submitPattern = (event: FormEvent) => {
     event.preventDefault()
     if (!ownerIds.length) return
-    void run(() => apiClient.schedulePattern({
+    const body = {
       park_id: parkId,
       owner_user_ids: ownerIds,
       kind,
@@ -64,7 +66,15 @@ export function SchedulePlanner({
       end_date: endDate,
       start_time: startTime,
       end_time: endTime,
-    }))
+    }
+    const fingerprint = JSON.stringify(body)
+    const key = patternAttempt.current?.fingerprint === fingerprint
+      ? patternAttempt.current.key
+      : globalThis.crypto.randomUUID()
+    patternAttempt.current = { fingerprint, key }
+    void run(() => apiClient.schedulePattern({ ...body, idempotency_key: key }), () => {
+      patternAttempt.current = null
+    })
   }
   const submitCopy = (event: FormEvent) => {
     event.preventDefault()

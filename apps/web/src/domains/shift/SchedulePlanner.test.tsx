@@ -60,4 +60,26 @@ describe('SchedulePlanner', () => {
       target_start: '2026-10-01T00:00:00+03:00',
     })))
   })
+
+  it('reuses one idempotency key when a failed submission is retried', async () => {
+    const schedulePattern = vi.fn()
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValueOnce([created])
+    const apiClient = { schedulePattern, scheduleCopy: vi.fn(async () => []) }
+    render(<SchedulePlanner apiClient={apiClient} employees={employees} parkId={7} />)
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Анна · Механик' }))
+    fireEvent.change(screen.getByLabelText('Дата начала'), { target: { value: '2026-09-03' } })
+    fireEvent.change(screen.getByLabelText('Дата окончания'), { target: { value: '2026-09-14' } })
+    fireEvent.change(screen.getByLabelText('Время начала'), { target: { value: '09:00' } })
+    fireEvent.change(screen.getByLabelText('Время окончания'), { target: { value: '21:00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Создать смены' }))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: 'Создать смены' }))
+
+    await waitFor(() => expect(schedulePattern).toHaveBeenCalledTimes(2))
+    const firstKey = schedulePattern.mock.calls[0][0].idempotency_key
+    expect(firstKey).toEqual(expect.any(String))
+    expect(schedulePattern.mock.calls[1][0].idempotency_key).toBe(firstKey)
+  })
 })

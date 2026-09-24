@@ -31,6 +31,7 @@ class ScheduleBulkCreate(ScheduleCreate):
 
 
 class SchedulePatternCreate(BaseModel):
+    idempotency_key: str = Field(min_length=8, max_length=128)
     park_id: int
     owner_user_ids: list[int] = Field(min_length=1, max_length=50)
     kind: ScheduleKind
