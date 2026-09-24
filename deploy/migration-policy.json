@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "target_head": "0038_inventory_photo_cleanup",
+  "target_head": "0039_sync_closure_scan",
   "known_heads": [
     "0036_audit_remediation_state",
     "0037_claim_workflow_visibility",

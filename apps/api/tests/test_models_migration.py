@@ -119,10 +119,20 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_inventory_photo_cleanup():
+def test_alembic_head_is_sync_closure_scan():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0038_inventory_photo_cleanup"]
+    assert script.get_heads() == ["0039_sync_closure_scan"]
+
+
+def test_sync_closure_scan_migration_adds_review_index(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0038_inventory_photo_cleanup")
+    command.upgrade(config, "head")
+    inspector = inspect(create_engine(sqlite_database_url, future=True))
+    indexes = {index["name"]: index["column_names"] for index in inspector.get_indexes("task_reviews")}
+    assert indexes["ix_task_reviews_closure_scan"] == ["state", "closed_at", "issue_key"]
 
 
 def test_inventory_photo_cleanup_migration_is_additive(sqlite_database_url, monkeypatch):

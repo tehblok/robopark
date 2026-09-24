@@ -56,8 +56,52 @@ def _active(session_factory: Callable[[], Session]) -> bool:
 
 def _poll_failed(session_factory: Callable[[], Session]) -> bool:
     with session_factory() as db:
-        row = db.get(TrackerNotificationCursor, _SCOPE_KEY)
-        return bool(row is not None and row.last_error)
+        return any(
+            row is not None and row.last_error
+            for row in (
+                db.get(TrackerNotificationCursor, _SCOPE_KEY),
+                db.get(TrackerNotificationCursor, _CLOSURE_SCOPE_KEY),
+            )
+        )
+
+
+def _closure_candidates(db: Session, position: str, limit: int, *, after: bool) -> list[str]:
+    claim_boundary = TrackerClaim.issue_key > position if after else TrackerClaim.issue_key <= position
+    review_boundary = TaskReview.issue_key > position if after else TaskReview.issue_key <= position
+    claims = db.scalars(
+        select(TrackerClaim.issue_key)
+        .where(claim_boundary)
+        .order_by(TrackerClaim.issue_key)
+        .limit(limit)
+    ).all()
+    reviews = db.scalars(
+        select(TaskReview.issue_key)
+        .where(
+            TaskReview.state == "closed",
+            TaskReview.closed_at.is_(None),
+            review_boundary,
+        )
+        .order_by(TaskReview.issue_key)
+        .limit(limit)
+    ).all()
+    return sorted(set(claims) | set(reviews))[:limit]
+
+
+def _advance_closure_cursor(
+    session_factory: Callable[[], Session], key: str, *, error: str | None = None
+) -> None:
+    with session_factory() as db:
+        cursor = db.get(TrackerNotificationCursor, _CLOSURE_SCOPE_KEY)
+        if cursor is None:
+            return
+        cursor.cursor_value = key
+        if error is not None:
+            cursor.last_error = f"{error}:{key}"
+        elif cursor.last_error and cursor.last_error.endswith(f":{key}"):
+            cursor.last_error = None
+        if error is None:
+            cursor.last_success_at = datetime.now(UTC)
+        db.commit()
 
 
 def reconcile_closed_claims(
@@ -70,24 +114,14 @@ def reconcile_closed_claims(
     if not token:
         return 0
     with session_factory() as db:
-        keys = sorted(
-            set(db.scalars(select(TrackerClaim.issue_key)).all())
-            | set(
-                db.scalars(
-                    select(TaskReview.issue_key).where(
-                        TaskReview.state == "closed", TaskReview.closed_at.is_(None)
-                    )
-                ).all()
-            )
-        )
         cursor = db.get(TrackerNotificationCursor, _CLOSURE_SCOPE_KEY)
         if cursor is None:
             cursor = TrackerNotificationCursor(scope_key=_CLOSURE_SCOPE_KEY)
             db.add(cursor)
         position = cursor.cursor_value or ""
-        selected = [key for key in keys if key > position][:limit]
+        selected = _closure_candidates(db, position, limit, after=True)
         if len(selected) < limit:
-            selected += [key for key in keys if key <= position][: limit - len(selected)]
+            selected += _closure_candidates(db, position, limit - len(selected), after=False)
         db.commit()
     reconciled = 0
     for key in selected:
@@ -95,28 +129,32 @@ def reconcile_closed_claims(
             issue = tracker_client.get_issue(token=token, key=key)
         except tracker_client.TrackerError:
             logger.warning("Tracker closure refresh failed", exc_info=True)
-            break
-        if issue is None or issue.get("key") != key:
+            _advance_closure_cursor(session_factory, key, error="tracker_unavailable")
             continue
-        with session_factory() as db:
-            before = db.get(TrackerClaim, key) is not None
-            review = db.scalar(
-                select(TaskReview.id).where(
-                    TaskReview.issue_key == key,
-                    TaskReview.state == "closed",
-                    TaskReview.closed_at.is_(None),
-                ).limit(1)
-            )
-            reconcile_external_closure(db, issue)
-            after = db.get(TrackerClaim, key) is not None
-            if tracker_issue_is_closed(issue) and (
-                (before and not after) or review is not None
-            ):
-                reconciled += 1
-            cursor = db.get(TrackerNotificationCursor, _CLOSURE_SCOPE_KEY)
-            if cursor is not None:
-                cursor.cursor_value = key
-                db.commit()
+        if issue is None or issue.get("key") != key:
+            _advance_closure_cursor(session_factory, key)
+            continue
+        try:
+            with session_factory() as db:
+                before = db.get(TrackerClaim, key) is not None
+                review = db.scalar(
+                    select(TaskReview.id).where(
+                        TaskReview.issue_key == key,
+                        TaskReview.state == "closed",
+                        TaskReview.closed_at.is_(None),
+                    ).limit(1)
+                )
+                reconcile_external_closure(db, issue)
+                after = db.get(TrackerClaim, key) is not None
+                if tracker_issue_is_closed(issue) and (
+                    (before and not after) or review is not None
+                ):
+                    reconciled += 1
+        except Exception:
+            logger.exception("Tracker closure reconciliation failed")
+            _advance_closure_cursor(session_factory, key, error="poll_failed")
+            continue
+        _advance_closure_cursor(session_factory, key)
     return reconciled
 
 

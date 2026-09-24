@@ -257,6 +257,17 @@ def reconcile_external_closure(db: Session, issue: dict) -> None:
     issue_key = str(issue.get("key") or "").strip()
     if not issue_key:
         return
+    try:
+        with database_idempotency_lock(db, f"tracker-external-close:{issue_key}"):
+            _reconcile_external_closure_locked(db, issue_key)
+    except HTTPException as exc:
+        if exc.status_code != 503 or exc.detail != "idempotency_lock_busy":
+            raise
+        # Another reconciler owns this key. Its result will be visible on the
+        # next read or polling cycle; a busy lock must not stop the worker.
+
+
+def _reconcile_external_closure_locked(db: Session, issue_key: str) -> None:
     review = _active_review(db, issue_key, for_update=True)
     if review is None:
         closing_review = _latest_review(db, issue_key)

@@ -192,6 +192,7 @@ class TaskReview(Base):
             sqlite_where=text("state != 'closed'"),
             postgresql_where=text("state != 'closed'"),
         ),
+        Index("ix_task_reviews_closure_scan", "state", "closed_at", "issue_key"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)

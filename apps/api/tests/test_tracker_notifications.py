@@ -1,14 +1,17 @@
 import asyncio
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.config import Settings
-from robopark_api.models import Park
+from robopark_api.models import AuditLog, Park
 from robopark_api.schedule_models import TrackerNotificationCursor
 from robopark_api.services import (
     platform_settings,
@@ -19,7 +22,7 @@ from robopark_api.services import (
     worker_runtime,
 )
 from robopark_api.services.tracker_notifications import poll_tracker_notifications
-from robopark_api.task_workflow_models import TaskReview
+from robopark_api.task_workflow_models import TaskMessage, TaskReview
 
 
 @pytest.mark.parametrize(
@@ -108,6 +111,113 @@ def test_worker_keeps_accepted_review_unconfirmed_while_tracker_is_open(
     assert tracker_notifications.reconcile_closed_claims(_factory(db_engine), limit=10) == 0
     db_session.expire_all()
     assert db_session.get(TaskReview, review.id).closed_at is None
+
+
+def test_concurrent_external_closure_writes_one_event_and_does_not_raise(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker
+):
+    from robopark_api.services import task_lifecycle, tracker_claims
+
+    key = "ROBOPARK-RACE"
+    tracker_claims.claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key=key,
+        park_id=seed_park_with_tracker.id,
+    )
+    db_session.add(
+        TaskReview(
+            id="race-review", issue_key=key, state="closed", actor_user_id=seed_mechanic.id,
+            created_at=1.0, updated_at=2.0, closed_at=None,
+        )
+    )
+    db_session.commit()
+    start = threading.Barrier(3)
+
+    def close() -> None:
+        with Session(db_engine) as db:
+            start.wait(timeout=3)
+            task_lifecycle.reconcile_external_closure(db, {"key": key, "status_key": "closed"})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(close)
+        second = pool.submit(close)
+        start.wait(timeout=3)
+        first.result(timeout=10)
+        second.result(timeout=10)
+
+    with Session(db_engine) as db:
+        assert db.get(TaskReview, "race-review").closed_at is not None
+        assert db.get(TrackerClaim, key) is None
+        assert len(db.scalars(select(TaskMessage).where(TaskMessage.issue_key == key,
+            TaskMessage.external_id == "tracker-external-close")).all()) == 1
+        assert len(db.scalars(select(AuditLog).where(AuditLog.target_id == key,
+            AuditLog.action == "task.external_close")).all()) == 1
+
+
+def test_closure_refresh_rotates_past_permanent_tracker_failure_and_reports_it(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import sync_health, tracker_claims
+
+    for key in ("ROBOPARK-1", "ROBOPARK-2"):
+        tracker_claims.claim_issue(db_session, actor=seed_mechanic, owner=seed_mechanic,
+            issue_key=key, park_id=seed_park_with_tracker.id)
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    seen = []
+
+    def get_issue(**kwargs):
+        key = kwargs["key"]
+        seen.append(key)
+        if key == "ROBOPARK-1":
+            raise tracker_client.TrackerError("permanent failure")
+        return {"key": key, "status_key": "resolved"}
+
+    monkeypatch.setattr(tracker_client, "get_issue", get_issue)
+    factory = _factory(db_engine)
+    assert tracker_notifications.reconcile_closed_claims(factory, limit=1) == 0
+    assert tracker_notifications._poll_failed(factory)
+    assert sync_health.sync_health(db_session).last_error == "tracker_unavailable"
+    assert tracker_notifications.reconcile_closed_claims(factory, limit=1) == 1
+    db_session.expire_all()
+    assert db_session.get(TrackerClaim, "ROBOPARK-2") is None
+    assert seen == ["ROBOPARK-1", "ROBOPARK-2"]
+
+
+def test_closure_candidate_queries_limit_rows_before_materialization(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import tracker_claims
+
+    for number in range(8):
+        tracker_claims.claim_issue(db_session, actor=seed_mechanic, owner=seed_mechanic,
+            issue_key=f"ROBOPARK-{number:02d}", park_id=seed_park_with_tracker.id)
+        db_session.add(TaskReview(id=f"bounded-{number}", issue_key=f"REVIEW-{number:02d}",
+            state="closed", actor_user_id=seed_mechanic.id, created_at=1.0,
+            updated_at=2.0, closed_at=None))
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(tracker_client, "get_issue",
+        lambda **kwargs: {"key": kwargs["key"], "status_key": "open"})
+    candidates = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
+        query = statement.upper()
+        if (
+            "SELECT TRACKER_CLAIMS.ISSUE_KEY \nFROM TRACKER_CLAIMS" in query
+            or "SELECT TASK_REVIEWS.ISSUE_KEY \nFROM TASK_REVIEWS" in query
+        ):
+            candidates.append(query)
+
+    event.listen(db_engine, "before_cursor_execute", capture)
+    try:
+        tracker_notifications.reconcile_closed_claims(_factory(db_engine), limit=1)
+    finally:
+        event.remove(db_engine, "before_cursor_execute", capture)
+    assert candidates
+    assert all("ORDER BY" in query and "LIMIT" in query for query in candidates), candidates
 
 
 def _issue(key: str, created: str) -> dict:

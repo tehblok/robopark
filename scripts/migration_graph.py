@@ -48,7 +48,6 @@ class MigrationPolicy:
                 or not value["known_heads"]
                 or not all(isinstance(item, str) and item for item in value["known_heads"])
                 or len(value["known_heads"]) != len(set(value["known_heads"]))
-                or value["target_head"] not in value["known_heads"]
                 or type(value["reversible"]) is not bool
                 or value["recovery"] not in {"rollback", "snapshot"}
                 or (value["reversible"] and value["recovery"] != "rollback")

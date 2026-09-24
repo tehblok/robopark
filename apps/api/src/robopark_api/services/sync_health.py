@@ -49,6 +49,7 @@ def sync_health(db: Session, *, now: datetime | None = None) -> SyncHealthOut:
     """Project only finite counters, age, and stable error codes for admin/royal."""
     current = now or datetime.now(UTC)
     poll = db.get(TrackerNotificationCursor, POLL_SCOPE)
+    closure = db.get(TrackerNotificationCursor, "closures")
     worker = db.get(TrackerNotificationCursor, WORKER_SCOPE)
     pending_count, oldest = db.execute(
         select(func.count(ReliableAction.id), func.min(ReliableAction.created_at)).where(
@@ -81,10 +82,17 @@ def sync_health(db: Session, *, now: datetime | None = None) -> SyncHealthOut:
         retry_count=retry_count,
         needs_attention_count=needs_attention_count,
         last_success_at=poll.last_success_at if poll is not None else None,
-        last_error=(
-            poll.last_error
-            if poll is not None and poll.last_error in {"tracker_unavailable", "poll_failed"}
-            else None
+        last_error=next(
+            (
+                code
+                for code in ("tracker_unavailable", "poll_failed")
+                if (
+                    closure is not None
+                    and closure.last_error is not None
+                    and closure.last_error.startswith(f"{code}:")
+                ) or (poll is not None and poll.last_error == code)
+            ),
+            None,
         ),
         worker_lease_state=worker_state,
     )
