@@ -114,7 +114,8 @@ def _transition_action(
             .order_by(ReliableAction.created_at.desc(), ReliableAction.id.desc())
         )
         if previous is not None:
-            effective_payload["depends_on_action_ids"] = [previous.id]
+            dependencies = list(effective_payload.get("depends_on_action_ids", []))
+            effective_payload["depends_on_action_ids"] = [*dependencies, previous.id]
     return _action(
         db,
         actor=actor,
@@ -647,6 +648,32 @@ def handoff(
     remaining: str = "",
     obstacles: str = "",
 ) -> dict:
+    with database_idempotency_lock(db, f"tracker-claim:{issue_key.strip()}"):
+        return _handoff_locked(
+            db,
+            actor=actor,
+            issue_key=issue_key,
+            assignee=assignee,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            done=done,
+            remaining=remaining,
+            obstacles=obstacles,
+        )
+
+
+def _handoff_locked(
+    db: Session,
+    *,
+    actor: User,
+    issue_key: str,
+    assignee: str,
+    reason: str,
+    idempotency_key: str | None,
+    done: str,
+    remaining: str,
+    obstacles: str,
+) -> dict:
     current = get_claim(db, issue_key)
     if current is None:
         raise HTTPException(409, "tracker_issue_claim_required")
@@ -734,17 +761,29 @@ def handoff(
     )
 
 
+def _current_comment_action(
+    db: Session, *, issue_key: str, owner_id: int, boundary: float
+) -> ReliableAction | None:
+    return db.scalar(
+        select(ReliableAction)
+        .join(TaskMessage, TaskMessage.action_id == ReliableAction.id)
+        .where(
+            TaskMessage.issue_key == issue_key,
+            TaskMessage.kind == "user",
+            TaskMessage.author_user_id == owner_id,
+            TaskMessage.created_at >= boundary,
+            func.length(func.trim(TaskMessage.text, " \t\r\n")) > 0,
+            ReliableAction.action == "comment",
+            ReliableAction.actor_user_id == owner_id,
+            ReliableAction.resource_id == issue_key,
+        )
+        .order_by(TaskMessage.created_at.desc(), TaskMessage.id.desc())
+    )
+
+
 def _valid_current_comment(db: Session, *, issue_key: str, owner_id: int, boundary: float) -> bool:
     return (
-        db.scalar(
-            select(TaskMessage.id).where(
-                TaskMessage.issue_key == issue_key,
-                TaskMessage.kind == "user",
-                TaskMessage.author_user_id == owner_id,
-                TaskMessage.created_at >= boundary,
-                func.length(func.trim(TaskMessage.text, " \t\r\n")) > 0,
-            )
-        )
+        _current_comment_action(db, issue_key=issue_key, owner_id=owner_id, boundary=boundary)
         is not None
     )
 
@@ -802,12 +841,34 @@ def submit_review(
     clean_comment = (comment or "").strip()
     digest = hashlib.sha256(content).hexdigest()
     dependencies = (["comment"] if clean_comment else []) + ["attach", "set_field"]
+    prior_comment = None
+    if not clean_comment:
+        existing_review = db.scalar(
+            select(ReliableAction.id).where(
+                ReliableAction.actor_user_id == actor.id,
+                ReliableAction.resource_type == "tracker_issue",
+                ReliableAction.resource_id == issue_key,
+                ReliableAction.action == "review",
+                ReliableAction.idempotency_key == idempotency_key,
+            )
+        )
+        if existing_review is None:
+            prior_comment = _current_comment_action(
+                db,
+                issue_key=issue_key,
+                owner_id=actor.id,
+                boundary=claim_row.updated_at,
+            )
+            if prior_comment is None:
+                raise HTTPException(400, "task_completion_comment_required")
     payload = {
         "comment": clean_comment,
         "defect_code": code,
         "depends_on_actions": dependencies,
         "photo_sha256": digest,
     }
+    if prior_comment is not None:
+        payload["depends_on_action_ids"] = [prior_comment.id]
     primary = _transition_action(
         db,
         actor=actor,
@@ -829,15 +890,6 @@ def submit_review(
             persisted_review.reviewer_user_id if persisted_review is not None else reviewer.id
         )
         return result
-    if not clean_comment and not _valid_current_comment(
-        db,
-        issue_key=issue_key,
-        owner_id=actor.id,
-        boundary=claim_row.updated_at,
-    ):
-        db.rollback()
-        raise HTTPException(400, "task_completion_comment_required")
-
     path: Path | None = None
     try:
         if clean_comment:

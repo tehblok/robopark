@@ -165,6 +165,20 @@ def _created_after_action(comment: dict, action: ReliableAction) -> bool:
     return created.tzinfo is not None and created.timestamp() >= action.created_at
 
 
+def _exact_remote_comment_id(action: ReliableAction, *, token: str, signed_text: str) -> str | None:
+    comments = tracker_client.list_comments(token=token, key=action.resource_id)
+    matches = {
+        str(comment.get("id") or "").strip()
+        for comment in comments
+        if comment.get("text") == signed_text
+        and _created_after_action(comment, action)
+        and str(comment.get("id") or "").strip()
+    }
+    if len(matches) > 1:
+        raise DeliveryError("duplicate_remote_action")
+    return next(iter(matches)) if matches else None
+
+
 def _set_issue_field(*, token: str, key: str, field_id: str, value: object) -> None:
     client = tracker_client._client(token)  # noqa: SLF001 - SDK write facade is private today.
 
@@ -317,28 +331,27 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         signed_text = intent.get("tracker_text")
         if not isinstance(signed_text, str) or not signed_text:
             raise DeliveryError("invalid_payload")
-        comments = tracker_client.list_comments(token=token, key=action.resource_id)
-        matches = {
-            str(comment.get("id") or "").strip()
-            for comment in comments
-            if comment.get("text") == signed_text
-            and _created_after_action(comment, action)
-            and str(comment.get("id") or "").strip()
-        }
-        if len(matches) != 1:
-            raise DeliveryError(
-                "tracker_comment_unconfirmed" if not matches else "duplicate_remote_action"
-            )
+        external_id = _exact_remote_comment_id(action, token=token, signed_text=signed_text)
+        if external_id is None:
+            raise DeliveryError("tracker_comment_unconfirmed")
         return {
             "key": action.resource_id,
             "action": "comment",
             "status": str(intent.get("tracker_status") or "updated"),
             "actor": actor.username,
             "performed_at": datetime.fromtimestamp(action.created_at, UTC).isoformat(),
-            "external_id": next(iter(matches)),
+            "external_id": external_id,
         }
 
-    if action.action in {"comment", "attach"}:
+    stock_text = None
+    if action.action == "comment" and payload.get("movement_id") is not None:
+        stock_text = payload.get("tracker_text")
+        if not isinstance(stock_text, str) or not stock_text.strip():
+            raise DeliveryError("invalid_payload")
+        external_id = _exact_remote_comment_id(action, token=token, signed_text=stock_text)
+        if external_id is not None:
+            return {"external_id": external_id}
+    elif action.action in {"comment", "attach"}:
         external_id = _reconciled_external_id(action, token=token)
         if external_id is not None:
             result: dict[str, Any] = {"external_id": external_id}
@@ -368,7 +381,7 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
             result = tracker_client.add_comment(
                 token=token,
                 key=action.resource_id,
-                text=_signed_text(db, action, actor, issue, body),
+                text=stock_text or _signed_text(db, action, actor, issue, body),
             )
         except tracker_client.TrackerError as exc:
             if payload.get("movement_id") is not None:

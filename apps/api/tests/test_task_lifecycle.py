@@ -574,6 +574,80 @@ def test_handoff_replay_changes_owner_and_writes_one_message(
     assert "Заменён мотор" in message.text
 
 
+def test_concurrent_handoffs_from_same_owner_commit_one_ownership_event(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import task_lifecycle
+    from robopark_api.services.tracker_claims import claim_issue
+
+    first_target = _mechanic(db_session, seed_park_with_tracker, username="handoff-race-b")
+    second_target = _mechanic(db_session, seed_park_with_tracker, username="handoff-race-c")
+    claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key=ISSUE_KEY,
+        park_id=seed_park_with_tracker.id,
+    )
+    db_session.commit()
+    real_get_claim = task_lifecycle.get_claim
+    first_read = threading.Event()
+    both_read = threading.Event()
+    release = threading.Event()
+    reads = 0
+    guard = threading.Lock()
+    start = threading.Barrier(3)
+
+    def paused_get_claim(db, issue_key):
+        nonlocal reads
+        claim = real_get_claim(db, issue_key)
+        if db.info.get("handoff_probe") and not db.info.get("handoff_seen"):
+            db.info["handoff_seen"] = True
+            with guard:
+                reads += 1
+                first_read.set()
+                if reads == 2:
+                    both_read.set()
+            assert release.wait(timeout=3)
+        return claim
+
+    monkeypatch.setattr(task_lifecycle, "get_claim", paused_get_claim)
+
+    def transfer(target, key):
+        start.wait(timeout=2)
+        with Session(db_engine) as db:
+            db.info["handoff_probe"] = True
+            try:
+                task_lifecycle.handoff(
+                    db,
+                    actor=db.get(User, seed_mechanic.id),
+                    issue_key=ISSUE_KEY,
+                    assignee=target,
+                    reason="Новая смена",
+                    idempotency_key=key,
+                )
+            except HTTPException as exc:
+                return (exc.status_code, exc.detail)
+            return (200, "ok")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        one = executor.submit(transfer, first_target.username, "handoff-race-one")
+        two = executor.submit(transfer, second_target.username, "handoff-race-two")
+        start.wait(timeout=2)
+        assert first_read.wait(timeout=2)
+        both_read.wait(timeout=0.25)
+        release.set()
+        outcomes = [one.result(timeout=4), two.result(timeout=4)]
+
+    assert sorted(outcomes) == [(200, "ok"), (403, "task_handoff_owner_required")]
+    assert db_session.query(ReliableAction).filter_by(action="comment").count() == 1
+    assert db_session.query(TaskMessage).count() == 1
+    assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id in {
+        first_target.id,
+        second_target.id,
+    }
+
+
 def test_workflow_exposes_current_cycle_comment_eligibility(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
@@ -795,26 +869,81 @@ def test_existing_current_cycle_comment_allows_omitting_optional_comment(
 ):
     _prepare_tracker(db_session, monkeypatch)
     assert _claim(client, seed_mechanic).status_code == 200
-    boundary = db_session.get(TrackerClaim, ISSUE_KEY).updated_at
-    db_session.add(
-        TaskMessage(
-            id="current-comment",
-            issue_key=ISSUE_KEY,
-            kind="user",
-            author_user_id=seed_mechanic.id,
-            author_name=seed_mechanic.username,
-            text="Работа завершена",
-            sync_state="saved",
-            created_at=boundary,
-            updated_at=boundary,
-        )
+    _activate_claim(db_session)
+    posted = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/messages",
+        headers={"Idempotency-Key": "current-comment-51"},
+        json={"text": "Работа завершена"},
     )
-    db_session.commit()
+    assert posted.status_code == 201
 
     response = _submit(client, key="review-existing-comment")
 
     assert response.status_code == 200
-    assert db_session.query(ReliableAction).filter_by(action="comment").count() == 0
+    assert db_session.query(ReliableAction).filter_by(action="comment").count() == 1
+
+
+def test_review_waits_for_exact_prior_current_cycle_comment_action(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services.tracker_outbox import _dependency_state
+
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    _activate_claim(db_session)
+    posted = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/messages",
+        headers={"Idempotency-Key": "completion-comment-51"},
+        json={"text": "Работа завершена"},
+    )
+    assert posted.status_code == 201
+    comment = db_session.scalar(select(ReliableAction).where(ReliableAction.action == "comment"))
+    assert comment is not None and comment.state == "pending"
+
+    response = _submit(client, key="review-prior-comment")
+
+    assert response.status_code == 200
+    review_action = db_session.scalar(
+        select(ReliableAction).where(ReliableAction.action == "review")
+    )
+    dependencies = json.loads(review_action.payload_json)["depends_on_action_ids"]
+    assert comment.id in dependencies
+    assert _dependency_state(db_session, review_action) == "waiting"
+    comment.state = "needs_attention"
+    db_session.commit()
+    assert _dependency_state(db_session, review_action) == "failed"
+
+
+def test_review_replay_keeps_saved_comment_dependency_after_return_starts_new_cycle(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    operator = db_session.scalar(select(User).where(User.username == "operator51"))
+    assert _claim(client, seed_mechanic).status_code == 200
+    _activate_claim(db_session)
+    assert (
+        client.post(
+            f"/tracker/issues/{ISSUE_KEY}/messages",
+            headers={"Idempotency-Key": "replay-comment-51"},
+            json={"text": "Работа завершена"},
+        ).status_code
+        == 201
+    )
+    assert _submit(client, key="replay-review-51").status_code == 200
+    before_actions = db_session.query(ReliableAction).count()
+    login_as(client, operator.username, "secret")
+    returned = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/review/return",
+        headers={"Idempotency-Key": "return-replay-review-51"},
+        json={"reason": "Нужно проверить повторно"},
+    )
+    assert returned.status_code == 200
+    login_as(client, seed_mechanic.username, "secret")
+
+    replay = _submit(client, key="replay-review-51")
+
+    assert replay.status_code == 200
+    assert db_session.query(ReliableAction).count() == before_actions + 2
 
 
 def test_whitespace_only_current_cycle_comment_does_not_satisfy_review(

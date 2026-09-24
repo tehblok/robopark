@@ -6,6 +6,7 @@ import tempfile
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -31,9 +32,10 @@ from robopark_api.services import (
     platform_settings,
     tracker_cache,
     tracker_client,
+    tracker_signatures,
 )
 from robopark_api.services.inventory_identity import resolve_catalog_part, resolve_legacy_part
-from robopark_api.services.reliable_actions import begin_action
+from robopark_api.services.reliable_actions import begin_action, canonical_payload
 from robopark_api.services.report_attachments import sanitize_filename
 from robopark_api.services.tracker_claims import get_claim, mechanic_owns_issue
 from robopark_api.services.tracker_client import (
@@ -581,6 +583,25 @@ def task_writeoff(
         issue = tracker_cache.get_issue(token=token, key=issue_key)
     except tracker_client.TrackerError as exc:
         raise RuntimeError("tracker_upstream_error") from exc
+    # The first lookup can race a request that commits while this one waits for
+    # the stock writer lock. Re-read the receipt after acquiring that lock.
+    stock = inventory_stock.ensure_stock(
+        db, park_id=resolved_park_id, catalog_part_id=resolved_part_id
+    )
+    existing = db.scalar(
+        select(InventoryMovement).where(InventoryMovement.idempotency_key == idempotency_key)
+    )
+    if existing is not None:
+        existing_part = resolve_catalog_part(db, existing.catalog_part_id, allow_archived=True)
+        if (
+            existing.actor_user_id != user.id
+            or existing.issue_key != issue_key
+            or existing.park_id != resolved_park_id
+            or existing_part.id != resolved_part_id
+            or existing.delta != -quantity
+        ):
+            raise inventory_stock.InventoryConflict("inventory_idempotency_conflict")
+        return existing
     if stock.quantity < quantity:
         raise inventory_stock.InventoryConflict(
             "inventory_out_of_stock", current_quantity=stock.quantity
@@ -613,6 +634,18 @@ def task_writeoff(
             action="comment",
             idempotency_key=f"inventory-writeoff:{movement.id}",
             payload={"text": body, "movement_id": movement.id},
+        )
+        signature = tracker_signatures.build_signature_context(db, user, issue)
+        tracker_text = tracker_signatures.format_signed_comment(
+            body=body,
+            park_name=signature.park_name,
+            mechanic_login=signature.mechanic_login,
+            operator_login=signature.operator_login,
+            actor_login=signature.actor_login,
+            occurred_at=datetime.fromtimestamp(action.row.created_at, UTC),
+        )
+        action.row.payload_json, action.row.payload_hash = canonical_payload(
+            {"text": body, "movement_id": movement.id, "tracker_text": tracker_text}
         )
         now = time.time()
         db.add(

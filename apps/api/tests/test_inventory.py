@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
@@ -394,6 +395,70 @@ def test_task_writeoff_idempotency_key_has_one_movement_decrement_comment_and_au
     assert comments == []
 
 
+@pytest.mark.parametrize("action_state", ["pending", "succeeded"])
+def test_writeoff_race_replays_movement_after_stock_lock_without_duplicate_events(
+    client, db_session, seed_park_with_tracker, monkeypatch, action_state
+):
+    mechanic = _user(db_session, "mechanic", "race-writeoff", [seed_park_with_tracker])
+    login_as(client, mechanic.username, "secret")
+    _, part = _seed_part(client, seed_park_with_tracker.id)
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=mechanic,
+        owner=mechanic,
+        issue_key="RP-RACE-WRITEOFF",
+        park_id=seed_park_with_tracker.id,
+    )
+    monkeypatch.setattr(inventory_svc.platform_settings, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        inventory_svc.tracker_cache,
+        "get_issue",
+        lambda **_kwargs: {"key": "RP-RACE-WRITEOFF", "tags": [seed_park_with_tracker.tag]},
+    )
+    payload = {"part_id": part["id"], "quantity": 1, "idempotency_key": "race-receipt-51"}
+    first = client.post("/inventory/tasks/RP-RACE-WRITEOFF/writeoff", json=payload)
+    assert first.status_code == 201
+    action = db_session.scalar(
+        select(ReliableAction).where(ReliableAction.resource_id == "RP-RACE-WRITEOFF")
+    )
+    if action_state == "succeeded":
+        action.state = "succeeded"
+        action.result_json = '{"external_id":"remote-1"}'
+        db_session.commit()
+    original_scalar = db_session.scalar
+    skipped_initial_lookup = False
+
+    def stale_initial_lookup(statement, *args, **kwargs):
+        nonlocal skipped_initial_lookup
+        if not skipped_initial_lookup and "inventory_movements.idempotency_key" in str(statement):
+            skipped_initial_lookup = True
+            return None
+        return original_scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalar", stale_initial_lookup)
+    second = client.post("/inventory/tasks/RP-RACE-WRITEOFF/writeoff", json=payload)
+    monkeypatch.setattr(db_session, "scalar", original_scalar)
+
+    assert skipped_initial_lookup
+    assert second.status_code == 201, second.text
+    assert second.json()["id"] == first.json()["id"]
+    assert db_session.scalar(select(InventoryParkStock.quantity)) == 4
+    assert db_session.query(InventoryMovement).filter_by(issue_key="RP-RACE-WRITEOFF").count() == 1
+    assert db_session.query(ReliableAction).filter_by(resource_id="RP-RACE-WRITEOFF").count() == 1
+    assert db_session.query(TaskMessage).filter_by(issue_key="RP-RACE-WRITEOFF").count() == 1
+    assert (
+        sum(
+            '"issue_key": "RP-RACE-WRITEOFF"' in (row.detail or "")
+            for row in db_session.scalars(
+                select(AuditLog).where(AuditLog.action == "inventory.stock.moved")
+            )
+        )
+        == 1
+    )
+
+
 def test_task_writeoff_commits_stock_receipt_and_outbox_comment_before_delivery(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):
@@ -487,7 +552,15 @@ def test_writeoff_outbox_reconciles_remote_comment_after_response_loss(
     )
 
     def accept_comment(**kwargs):
-        remote_comments.append({"id": "remote-1", "text": kwargs["text"]})
+        assert "surp-action:" not in kwargs["text"]
+        assert action.id not in kwargs["text"]
+        remote_comments.append(
+            {
+                "id": "remote-1",
+                "text": kwargs["text"],
+                "created_at": datetime.fromtimestamp(action.created_at + 1, UTC).isoformat(),
+            }
+        )
         raise tracker_outbox.tracker_client.TrackerError("connection lost after acceptance")
 
     monkeypatch.setattr(tracker_outbox.tracker_client, "add_comment", accept_comment)
@@ -498,7 +571,13 @@ def test_writeoff_outbox_reconciles_remote_comment_after_response_loss(
     with pytest.raises(tracker_outbox.DeliveryError) as still_uncertain:
         tracker_outbox._deliver_action(db_session, action)
     assert still_uncertain.value.code == "tracker_comment_unconfirmed"
+    assert json.loads(action.payload_json)["tracker_text"] == accepted["text"]
     remote_comments.append(accepted)
+    remote_comments.append({**accepted, "id": "remote-2"})
+    with pytest.raises(tracker_outbox.DeliveryError) as ambiguous:
+        tracker_outbox._deliver_action(db_session, action)
+    assert ambiguous.value.code == "duplicate_remote_action"
+    remote_comments.pop()
     second = tracker_outbox._deliver_action(db_session, action)
 
     assert uncertain.value.code == "tracker_comment_unconfirmed"
