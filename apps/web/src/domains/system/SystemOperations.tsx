@@ -93,7 +93,6 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
     if (!selected || !revision || !valid || busy || active || Date.parse(capabilities.expires_at ?? '') <= Date.now()) return
     const operationId = crypto.randomUUID()
     const operationKind = selected
-    let posted = false
     setBusy(true); setError('')
     try {
       const authorization = await client.reauthorize({
@@ -107,22 +106,19 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
         setError('Не удалось безопасно сохранить идентификатор операции. Запуск отменён.')
         return
       }
-      posted = true
-      const next = await client.startOperation(payloadFor(operationKind, operationId, revision, confirmation, deviceUuid, backupId), authorization.token)
-      onAccepted(next)
-      setSelected(null)
-    } catch (caught) {
-      if (posted && caught instanceof ApiError) {
-        localStorage.removeItem('robopark:system-operation')
-        setReservedOperationId(null)
+      try {
+        const next = await client.startOperation(payloadFor(operationKind, operationId, revision, confirmation, deviceUuid, backupId), authorization.token)
+        onAccepted(next)
+        setSelected(null)
+      } catch {
+        onAccepted({ id: operationId, kind: operationKind, state: 'queued', phase: 'Проверяем получение запроса', progress_percent: 0, error: null })
+        setSelected(null)
       }
+    } catch (caught) {
       if (caught instanceof ApiError && ['capabilities_changed', 'capability_unavailable', 'capabilities_unavailable'].includes(caught.detail ?? '')) {
         setError('Возможности хоста изменились. Список обновлён; подтвердите операцию заново.')
         setConfirmation(''); setPassword(''); setCode('')
         await onRefreshCapabilities()
-      } else if (posted && !(caught instanceof ApiError)) {
-        onAccepted({ id: operationId, kind: operationKind, state: 'queued', phase: 'Проверяем состояние', progress_percent: 0, error: null })
-        setSelected(null)
       } else setError('Операция не запущена. Проверьте пароль и одноразовый код.')
     } finally { setBusy(false) }
   }

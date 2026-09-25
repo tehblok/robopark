@@ -53,7 +53,7 @@ export type SystemClient = {
   getSummary: () => Promise<SystemSummary>
   getHistory: () => Promise<SystemHistory>
   getCapabilities: () => Promise<HostCapabilities>
-  getJob: () => Promise<SystemJob>
+  getOperation: (operationId: string) => Promise<SystemJob>
   reauthorize: (value: ReauthorizationInput) => Promise<{ token: string; expires_in: number }>
   startOperation: (value: HostOperationPayload, token: string) => Promise<SystemJob>
 }
@@ -76,7 +76,7 @@ export const systemClient: SystemClient = {
   getSummary: () => json('/admin/system/summary'),
   getHistory: () => json('/admin/system/history?days=7'),
   getCapabilities: () => json('/admin/ops/capabilities'),
-  getJob: () => json('/admin/ops/job'),
+  getOperation: operationId => json(`/admin/ops/operations/${encodeURIComponent(operationId)}`),
   reauthorize: value => json('/admin/privileged-auth/reauthorize', {
     method: 'POST', body: JSON.stringify(value),
   }),

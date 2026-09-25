@@ -44,7 +44,7 @@ function client(overrides: Partial<SystemClient> = {}): SystemClient {
     getSummary: vi.fn().mockResolvedValue(summary),
     getHistory: vi.fn().mockResolvedValue({ active_users: [{ date: '2026-09-24', users: 6 }], metrics: [] }),
     getCapabilities: vi.fn().mockResolvedValue(capabilities),
-    getJob: vi.fn().mockResolvedValue({ id: '', kind: '', state: 'idle', phase: '', progress_percent: null, error: null }),
+    getOperation: vi.fn().mockRejectedValue(new ApiError(404, 'operation_not_found')),
     reauthorize: vi.fn().mockResolvedValue({ token: 'reauth-token', expires_in: 120 }),
     startOperation: vi.fn().mockImplementation(async payload => ({ id: payload.operation_id, kind: payload.kind, state: 'running', phase: 'accepted', progress_percent: 0, error: null })),
     ...overrides,
@@ -160,12 +160,15 @@ describe('SystemPage', () => {
     expect(within(reopened).getByLabelText('Код TOTP или восстановления')).toHaveValue('')
   })
 
-  it('persists the operation UUID before POST and resumes that exact UUID after a lost response', async () => {
+  it.each([
+    ['lost response', new Error('response lost')],
+    ['dispatch conflict', new ApiError(409, 'host_work_in_progress')],
+  ])('persists before POST and reconciles the exact UUID after %s', async (_label, failure) => {
     let submittedId = ''
     const startOperation = vi.fn().mockImplementation(async payload => {
       submittedId = payload.operation_id
       expect(localStorage.getItem('robopark:system-operation')).toBe(submittedId)
-      throw new Error('response lost')
+      throw failure
     })
     const api = client({ startOperation })
     const first = render(tree('royal', api))
@@ -181,12 +184,46 @@ describe('SystemPage', () => {
     first.unmount()
 
     const resumed = client({
-      getJob: vi.fn().mockResolvedValue({ id: submittedId, kind: 'diagnostics', state: 'running', phase: 'executing', progress_percent: 25, error: null }),
+      getOperation: vi.fn().mockResolvedValue({ id: submittedId, kind: 'diagnostics', state: 'running', phase: 'executing', progress_percent: 25, error: null }),
       startOperation,
     })
     render(tree('royal', resumed))
     expect(await screen.findByRole('progressbar', { name: 'Прогресс операции' })).toHaveAttribute('value', '25')
     expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeDisabled()
+    expect(startOperation).toHaveBeenCalledOnce()
+  })
+
+  it('keeps an unknown reservation locked, then clears it only after authoritative exact 404', async () => {
+    let submittedId = ''
+    const getOperation = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new ApiError(404, 'operation_not_found'))
+    const startOperation = vi.fn().mockImplementation(async payload => {
+      submittedId = payload.operation_id
+      throw new Error('request outcome unknown')
+    })
+    const api = client({ getOperation, startOperation })
+    render(tree('royal', api))
+    fireEvent.click(await screen.findByRole('button', { name: 'Собрать диагностику' }))
+    const dialog = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
+    fireEvent.change(within(dialog).getByLabelText('Введите ЗАПУСТИТЬ DIAGNOSTICS'), { target: { value: 'ЗАПУСТИТЬ DIAGNOSTICS' } })
+    fireEvent.change(within(dialog).getByLabelText('Пароль'), { target: { value: 'secret' } })
+    fireEvent.change(within(dialog).getByLabelText('Код TOTP или восстановления'), { target: { value: '123456' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Запустить' }))
+    expect(await screen.findByText('Проверяем получение запроса')).toBeVisible()
+    expect(localStorage.getItem('robopark:system-operation')).toBe(submittedId)
+    expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeDisabled()
+
+    fireEvent(window, new Event('focus'))
+    await waitFor(() => expect(getOperation).toHaveBeenCalledWith(submittedId))
+    expect(localStorage.getItem('robopark:system-operation')).toBe(submittedId)
+    expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeDisabled()
+    expect(startOperation).toHaveBeenCalledOnce()
+
+    fireEvent(window, new Event('focus'))
+    expect(await screen.findByText('Запрос не получен')).toBeVisible()
+    await waitFor(() => expect(localStorage.getItem('robopark:system-operation')).toBeNull())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeEnabled())
     expect(startOperation).toHaveBeenCalledOnce()
   })
 
@@ -206,23 +243,24 @@ describe('SystemPage', () => {
 
   it('resumes progress by stored operation UUID after reload', async () => {
     localStorage.setItem('robopark:system-operation', '11111111-1111-4111-8111-111111111111')
-    const api = client({ getJob: vi.fn().mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', kind: 'diagnostics', state: 'running', phase: 'executing', progress_percent: 50, error: null }) })
+    const api = client({ getOperation: vi.fn().mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', kind: 'diagnostics', state: 'running', phase: 'executing', progress_percent: 50, error: null }) })
     render(tree('royal', api))
     expect(await screen.findByRole('progressbar', { name: 'Прогресс операции' })).toHaveAttribute('value', '50')
     expect(screen.getByText('11111111-1111-4111-8111-111111111111')).toBeVisible()
   })
 
-  it('does not adopt an arbitrary server job without an exact locally stored UUID', async () => {
-    const api = client({ getJob: vi.fn().mockResolvedValue({ id: '22222222-2222-4222-8222-222222222222', kind: 'diagnostics', state: 'running', phase: 'executing', progress_percent: 50, error: null }) })
+  it('does not query or adopt an operation without an exact locally stored UUID', async () => {
+    const api = client()
     render(tree('royal', api))
     await screen.findByRole('region', { name: 'Управляемые операции' })
     expect(screen.queryByRole('progressbar', { name: 'Прогресс операции' })).not.toBeInTheDocument()
     expect(localStorage.getItem('robopark:system-operation')).toBeNull()
+    expect(api.getOperation).not.toHaveBeenCalled()
   })
 
   it('requires an exact sanitized discovered USB UUID before enabling selection', async () => {
     localStorage.setItem('robopark:system-operation', '33333333-3333-4333-8333-333333333333')
-    const api = client({ getJob: vi.fn().mockResolvedValue({
+    const api = client({ getOperation: vi.fn().mockResolvedValue({
       id: '33333333-3333-4333-8333-333333333333', kind: 'usb-discover', state: 'succeeded', phase: 'completed', progress_percent: 100, error: null,
       host_result: { devices: [{ device_uuid: '44444444-4444-4444-8444-444444444444', removable: true, mounted: false }] },
     }) })

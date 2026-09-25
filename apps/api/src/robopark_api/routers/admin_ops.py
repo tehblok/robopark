@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from functools import partial
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -91,6 +92,16 @@ class OpsJobOut(BaseModel):
     host_result: HostResultOut | None = None
     progress_percent: int | None = None
     progress_phase: str | None = None
+
+
+class ExactOperationStatusOut(BaseModel):
+    id: str
+    kind: str
+    state: str
+    phase: str
+    error: str | None
+    host_result: HostResultOut | None = None
+    progress_percent: int | None = None
 
 
 def _token_hash(request: Request, settings: Settings) -> str:
@@ -233,6 +244,46 @@ def get_job(
         with suppress(host_bridge.BridgeError):
             progress = host_bridge.update_progress(host_bridge.host_root(settings), job)
     return _job_out(job, progress=progress)
+
+
+@router.get("/admin/ops/operations/{operation_id}", response_model=ExactOperationStatusOut)
+def get_exact_operation(
+    operation_id: UUID,
+    request: Request,
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> ExactOperationStatusOut:
+    _reconcile_if_needed(settings)
+    job = load_job(resolved_ops_dir(settings))
+    host_request = job.extra.get("host_request") if job else None
+    request_actor = host_request.get("actor_user_id") if isinstance(host_request, dict) else None
+    found = bool(
+        job
+        and job.id == str(operation_id)
+        and request_actor == royal.id
+        and job.exempt_token_hash == _token_hash(request, settings)
+    )
+    audit.record(
+        db, action="admin.ops.operation.status", actor=royal,
+        outcome=audit.OUTCOME_SUCCESS if found else audit.OUTCOME_DENIED,
+        detail="found" if found else "not_found",
+    )
+    if not found or job is None:
+        raise HTTPException(status_code=404, detail="operation_not_found")
+    progress = (None, None)
+    if settings.ops_host_root:
+        with suppress(host_bridge.BridgeError):
+            progress = host_bridge.update_progress(host_bridge.host_root(settings), job)
+    return ExactOperationStatusOut(
+        id=job.id,
+        kind=job.kind,
+        state=job.state,
+        phase=progress[0] or job.phase,
+        error=job.error,
+        host_result=public_result(job.extra.get("host_result")),
+        progress_percent=progress[1],
+    )
 
 
 @router.get("/admin/ops/artifact")

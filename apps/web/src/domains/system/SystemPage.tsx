@@ -9,6 +9,11 @@ import { SystemOperations } from './SystemOperations'
 import './system.css'
 
 const POLL_MS = 30_000
+const OPERATION_KEY = 'robopark:system-operation'
+
+function reconcilingJob(id: string): SystemJob {
+  return { id, kind: '', state: 'queued', phase: 'Проверяем получение запроса', progress_percent: 0, error: null }
+}
 
 export function SystemPage({ client = systemClient }: { client?: SystemClient }) {
   const { user } = useAuth()
@@ -17,7 +22,10 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
   const [summary, setSummary] = useState<SystemSummary | null>(null)
   const [history, setHistory] = useState<SystemHistory | null>(null)
   const [capabilities, setCapabilities] = useState<HostCapabilities | null>(null)
-  const [job, setJob] = useState<SystemJob | null>(null)
+  const [job, setJob] = useState<SystemJob | null>(() => {
+    const stored = localStorage.getItem(OPERATION_KEY)
+    return stored ? reconcilingJob(stored) : null
+  })
   const [failed, setFailed] = useState(false)
   const mounted = useRef(false)
   const pending = useRef<Promise<void> | null>(null)
@@ -37,17 +45,31 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
     if (pending.current) return pending.current
     const work = (async () => {
       try {
-        const reads: [Promise<SystemSummary>, Promise<SystemHistory>, Promise<HostCapabilities>?, Promise<SystemJob>?] = [client.getSummary(), client.getHistory()]
-        if (royal) { reads.push(client.getCapabilities()); reads.push(client.getJob()) }
-        const [nextSummary, nextHistory, nextCapabilities, nextJob] = await Promise.all(reads)
+        const stored = royal ? localStorage.getItem(OPERATION_KEY) : null
+        const royalReads = royal
+          ? Promise.all([
+              client.getCapabilities(),
+              stored
+                ? client.getOperation(stored).then(value => ({ state: 'found' as const, value })).catch(caught => {
+                    if (caught instanceof ApiError && caught.status === 404) return { state: 'absent' as const }
+                    throw caught
+                  })
+                : Promise.resolve({ state: 'none' as const }),
+            ])
+          : Promise.resolve([null, { state: 'none' as const }] as const)
+        const [nextSummary, nextHistory, [nextCapabilities, operation]] = await Promise.all([
+          client.getSummary(), client.getHistory(), royalReads,
+        ])
         if (!mounted.current) return
         setSummary(nextSummary); setHistory(nextHistory); setFailed(false)
         if (royal) {
           setCapabilities(nextCapabilities ?? null)
-          const stored = localStorage.getItem('robopark:system-operation')
-          if (stored && nextJob?.id === stored) {
-            setJob(nextJob)
-            if (nextJob.state === 'succeeded' || nextJob.state === 'failed') localStorage.removeItem('robopark:system-operation')
+          if (stored && operation.state === 'found') {
+            setJob(operation.value)
+            if (operation.value.state === 'succeeded' || operation.value.state === 'failed') localStorage.removeItem(OPERATION_KEY)
+          } else if (stored && operation.state === 'absent') {
+            localStorage.removeItem(OPERATION_KEY)
+            setJob({ id: stored, kind: '', state: 'failed', phase: 'Запрос не получен', progress_percent: 100, error: null })
           }
         }
       } catch (caught) {

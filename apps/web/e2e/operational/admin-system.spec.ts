@@ -14,8 +14,6 @@ const kinds = ['release-update', 'reinstall', 'rollback', 'package-inspect', 'pa
 const safe = new Set(['package-inspect', 'backup-verify', 'cleanup-preview', 'diagnostics', 'usb-discover', 'usb-select'])
 const capabilities = { state: 'ready', generated_at: '2026-09-25T09:00:00Z', expires_at: '2099-09-25T09:05:00Z', revision, operations: Object.fromEntries(kinds.map(kind => [kind, { available: safe.has(kind), unavailable_reason: safe.has(kind) ? null : 'capability_unavailable' }])) }
 const history = { active_users: [{ date: '2026-09-24', users: 6 }], metrics: [] }
-const idle = { id: '', kind: '', state: 'idle', phase: '', progress_percent: null, error: null }
-
 test('admin reads the compact system console at 390px without host controls', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   const routes: MockRoute[] = [
@@ -39,7 +37,12 @@ test('royal confirms an available typed operation and resumes UUID progress at 1
     { method: 'GET', path: '/api/admin/system/summary', handler: () => ({ json: summary }) },
     { method: 'GET', path: '/api/admin/system/history', handler: () => ({ json: history }) },
     { method: 'GET', path: '/api/admin/ops/capabilities', handler: () => ({ json: capabilities }) },
-    { method: 'GET', path: '/api/admin/ops/job', handler: () => ({ json: acceptedId ? { id: acceptedId, kind: 'diagnostics', state: 'running', phase: 'executing', progress_percent: 50, error: null } : idle }) },
+    { method: 'GET', path: /^\/api\/admin\/ops\/operations\/[0-9a-f-]{36}$/, handler: request => {
+      const requestedId = new URL(request.url).pathname.split('/').at(-1)
+      return requestedId === acceptedId
+        ? { json: { id: acceptedId, kind: 'diagnostics', state: 'running', phase: 'executing', progress_percent: 50, error: null } }
+        : { status: 404, json: { detail: 'operation_not_found' } }
+    } },
     { method: 'POST', path: '/api/admin/privileged-auth/reauthorize', handler: async request => {
       const body = await request.json() as Record<string, string>
       expect(body.capability_revision).toBe(revision)

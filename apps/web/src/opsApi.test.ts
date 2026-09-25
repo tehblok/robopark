@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { api } from './api'
+import { systemClient } from './opsApi'
 
 afterEach(() => vi.unstubAllGlobals())
 it('sends inspected archive separately from strict JSON approvals and uses dedicated artifacts', async () => {
@@ -15,10 +16,12 @@ it('sends inspected archive separately from strict JSON approvals and uses dedic
   await api.opsApproveGithubUpdate(42, 'ОБНОВИТЬ')
   await api.opsRepair()
   await api.opsDiagnosticArtifact()
+  await systemClient.getOperation('11111111-1111-4111-8111-111111111111')
   expect(requests.map(({ url }) => url)).toEqual([
     '/api/admin/ops/system-health', '/api/admin/ops/available-update', '/api/admin/ops/update/inspect',
     '/api/admin/ops/update/approve', '/api/admin/ops/github-update/approve',
     '/api/admin/ops/repair', '/api/admin/ops/diagnostic-artifact',
+    '/api/admin/ops/operations/11111111-1111-4111-8111-111111111111',
   ])
   const form = requests[2].init?.body as FormData
   expect(form.get('archive')).toBeInstanceOf(File)
