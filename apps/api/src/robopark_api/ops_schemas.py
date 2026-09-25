@@ -165,6 +165,8 @@ class GithubApprovalIn(BaseModel):
 
 
 class HostOperationKind(StrEnum):
+    """Protocol kinds, not an executable inventory; consult HostCapabilitiesOut."""
+
     RELEASE_UPDATE = "release-update"
     REINSTALL = "reinstall"
     ROLLBACK = "rollback"
@@ -181,6 +183,22 @@ class HostOperationKind(StrEnum):
     USB_DISCOVER = "usb-discover"
     USB_FORMAT = "usb-format"
     USB_SELECT = "usb-select"
+
+
+class HostOperationCapabilityOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    available: bool = Field(strict=True)
+    unavailable_reason: Literal["capability_unavailable", "capabilities_unavailable"] | None
+
+
+class HostCapabilitiesOut(BaseModel):
+    """Only available=true from a ready snapshot enables a console control."""
+
+    state: Literal["ready", "unavailable"]
+    generated_at: datetime | None = None
+    expires_at: datetime | None = None
+    revision: str | None = None
+    operations: dict[HostOperationKind, HostOperationCapabilityOut]
 
 
 class _HostOperationBase(BaseModel):
@@ -300,7 +318,13 @@ HostOperationIn = Annotated[
     | HostNoArgumentIn
     | HostUsbFormatIn
     | HostUsbSelectIn,
-    Field(discriminator="kind"),
+    Field(
+        discriminator="kind",
+        description=(
+            "Protocol request shape only. GET /admin/ops/capabilities determines which kinds "
+            "are executable on this host; unavailable kinds reject reauthorization and enqueue."
+        ),
+    ),
 ]
 
 

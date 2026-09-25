@@ -11,9 +11,12 @@ from uuid import uuid4
 
 import pytest
 from robopark_host.checks import CheckResult, CommandResult, DiagnosticReport
+from robopark_host.commands import OperationKind
 
 
 class FakeHostEffects:
+    supported_kinds = frozenset(OperationKind)
+
     def __init__(self, *, failure=None, reconciliation=None):
         self.calls = []
         self.failure = failure
@@ -126,6 +129,18 @@ _BACKUP_UUID = "00000000-0000-4000-8000-000000000002"
 _PLAN_UUID = "00000000-0000-4000-8000-000000000003"
 
 
+def publish_test_capabilities(paths, effects, monkeypatch):
+    from robopark_api.services.ops import host_bridge
+    from robopark_host.operation_capabilities import publish_operation_capabilities
+
+    boot_id = "00000000-0000-4000-8000-000000000010"
+    boot = paths.root / "proc/sys/kernel/random/boot_id"
+    boot.parent.mkdir(parents=True, exist_ok=True)
+    boot.write_text(boot_id + "\n")
+    monkeypatch.setattr(host_bridge, "_host_boot_id", lambda: boot_id)
+    publish_operation_capabilities(paths, effects)
+
+
 @pytest.mark.parametrize(
     ("payload", "effect"),
     [
@@ -148,7 +163,7 @@ _PLAN_UUID = "00000000-0000-4000-8000-000000000003"
     ],
 )
 def test_api_bridge_to_real_consumer_dispatches_every_typed_kind(
-    host_paths, payload, effect
+    host_paths, payload, effect, monkeypatch
 ):
     """The production consumer path must accept the API bridge's exact envelope."""
 
@@ -167,6 +182,9 @@ def test_api_bridge_to_real_consumer_dispatches_every_typed_kind(
         json.dumps({"job_id": str(uuid4()), "kind": "diagnostics", "actor_user_id": 1, "active": False})
     )
     request_payload = {"operation_id": operation_id, **payload}
+    system = FakeHostEffects()
+    effects = SystemTypedHostEffects(host_paths, system=system)
+    publish_test_capabilities(host_paths, effects, monkeypatch)
     host_bridge.enqueue_typed_operation(
         api_ops,
         host_paths.ops,
@@ -180,8 +198,6 @@ def test_api_bridge_to_real_consumer_dispatches_every_typed_kind(
             "consumed": True,
         },
     )
-    system = FakeHostEffects()
-    effects = SystemTypedHostEffects(host_paths, system=system)
     devices = [BlockDevice(_DEVICE_UUID, "/dev/fake-usb", removable=True)]
 
     code = consume_commands(
@@ -671,7 +687,7 @@ def test_typed_schema_is_closed_and_has_no_execution_escape():
             validate_typed_operation(injected)
 
 
-def test_api_typed_union_and_bridge_revalidate_consumed_authorization(tmp_path):
+def test_api_typed_union_and_bridge_revalidate_consumed_authorization(tmp_path, host_paths, monkeypatch):
     from pydantic import TypeAdapter, ValidationError
     from robopark_api.ops_schemas import HostOperationIn
     from robopark_api.services.ops import host_bridge
@@ -688,10 +704,11 @@ def test_api_typed_union_and_bridge_revalidate_consumed_authorization(tmp_path):
         adapter.validate_python({**payload, "argv": ["reboot"]})
 
     ops = tmp_path / "api-ops"
-    root = tmp_path / "host-ops"
+    root = host_paths.ops
     (root / "inbox").mkdir(parents=True)
     (root / "state").mkdir()
     (root / "public").mkdir()
+    publish_test_capabilities(host_paths, FakeHostEffects(), monkeypatch)
     (root / "public/command-claim.json").write_text(
         json.dumps(
             {

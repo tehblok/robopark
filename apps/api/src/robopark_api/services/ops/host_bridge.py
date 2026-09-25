@@ -13,7 +13,7 @@ import stat
 import tempfile
 import zipfile
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -22,6 +22,7 @@ from pydantic import TypeAdapter, ValidationError
 from robopark_api.ops_schemas import (
     AvailableReleaseOut,
     AvailableUpdateOut,
+    HostCapabilitiesOut,
     HostOperationIn,
     HostOperationKind,
     SystemHealthOut,
@@ -170,6 +171,81 @@ def read_json(path: Path, limit=65536):
             return value if isinstance(value, dict) else {}
     except (OSError, ValueError, UnicodeError, RecursionError):
         return {}
+
+
+def _host_boot_id():
+    try:
+        descriptor = os.open(
+            "/proc/sys/kernel/random/boot_id", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            value = stream.read(38).decode("ascii").strip()
+        return value if str(UUID(value)) == value else None
+    except (OSError, ValueError, UnicodeError):
+        return None
+
+
+def operation_capabilities(root):
+    """Read the host's atomic cache anew; no process cache can retain a revoked kind."""
+    unavailable = HostCapabilitiesOut(
+        state="unavailable", operations={
+            kind: {"available": False, "unavailable_reason": "capabilities_unavailable"}
+            for kind in HostOperationKind
+        },
+    )
+    value = read_json(root / "public/operation-capabilities.json", limit=8192)
+    try:
+        if set(value) != {"schema", "boot_id", "generated_at", "valid_for_seconds", "operations"}:
+            return unavailable
+        boot_id = _host_boot_id()
+        stamp = _timestamp(value["generated_at"])
+        lifetime = value["valid_for_seconds"]
+        operations = value["operations"]
+        if (
+            type(value["schema"]) is not int or value["schema"] != 1
+            or boot_id is None or value["boot_id"] != boot_id
+            or stamp is None or stamp.utcoffset().total_seconds() != 0
+            or type(lifetime) is not int or not 0 < lifetime <= 300
+            or not 0 <= (datetime.now(UTC) - stamp).total_seconds() < lifetime
+            or not isinstance(operations, dict) or set(operations) != set(HostOperationKind)
+        ):
+            return unavailable
+        for item in operations.values():
+            if (
+                not isinstance(item, dict) or set(item) != {"available", "unavailable_reason"}
+                or type(item["available"]) is not bool
+                or item["unavailable_reason"] != (None if item["available"] else "capability_unavailable")
+            ):
+                return unavailable
+        revision = hashlib.sha256(json.dumps(
+            {"boot_id": boot_id, "operations": operations}, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        return HostCapabilitiesOut(
+            state="ready", generated_at=stamp, expires_at=stamp + timedelta(seconds=lifetime),
+            revision=revision, operations=operations,
+        )
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        return unavailable
+
+
+def require_operation_capability(root, kind):
+    try:
+        kind = HostOperationKind(kind)
+    except ValueError as exc:
+        raise BridgeError("invalid_command") from exc
+    capabilities = operation_capabilities(root)
+    if capabilities.state != "ready":
+        raise BridgeError("capabilities_unavailable")
+    if not capabilities.operations[kind].available:
+        raise BridgeError("capability_unavailable")
+    return capabilities.revision
+
+
+def require_typed_reauthorization(settings, kind, operation_id):
+    """Legacy diagnostics use their existing non-UUID grant binding."""
+    if kind not in set(HostOperationKind) or (kind == "diagnostics" and operation_id == "diagnostics"):
+        return
+    require_operation_capability(host_root(settings), kind)
 
 
 def _atomic(path, raw):
@@ -477,9 +553,10 @@ def enqueue_typed_operation(
     actor,
     exempt,
     *,
-    authorization_consumed,
+    authorization_consumed=None,
+    authorize=None,
 ):
-    """Validate the typed API union again before publishing the root request."""
+    """Validate before invoking the internal grant consumer and publishing a request."""
 
     try:
         operation = _HOST_OPERATION_ADAPTER.validate_python(payload)
@@ -495,19 +572,27 @@ def enqueue_typed_operation(
         "actor_user_id": actor,
         "consumed": True,
     }
-    if authorization_consumed != expected_authorization:
+    if authorize is None and authorization_consumed != expected_authorization:
         raise BridgeError("authorization_required")
+    if authorize is not None and (not callable(authorize) or authorization_consumed is not None):
+        raise BridgeError("authorization_required")
+
+    def consume_authorization():
+        if authorize is not None and authorize() != expected_authorization:
+            raise BridgeError("authorization_required")
+
     phrase = _required_confirmation(operation)
     if phrase is not None and operation.confirmation != phrase:
         raise BridgeError("confirm_required")
     if kind is HostOperationKind.USB_FORMAT and operation.confirmation_repeat != phrase:
         raise BridgeError("confirm_required")
     with _locked(ops):
+        revision = require_operation_capability(root, kind)
         current = load_job(ops)
         if current and current.id == identity:
             saved = dict(current.extra.get("host_request", {}))
             saved["operation_id"] = saved.pop("job_id", None)
-            for key in ("actor_user_id", "created_at", "authorization"):
+            for key in ("actor_user_id", "created_at", "authorization", "capability_revision"):
                 saved.pop(key, None)
             if (
                 current.kind != kind.value
@@ -515,11 +600,13 @@ def enqueue_typed_operation(
                 or saved != operation.model_dump(mode="json")
             ):
                 raise JobConflict("duplicate_operation_id")
+            consume_authorization()
             if current.state in ACTIVE_STATES:
                 _dispatch(ops, root, current)
             return current
         require_idle(ops)
         require_host_idle(root)
+        consume_authorization()
         job = new_job(kind.value, exempt_token_hash=exempt)
         job.id = identity
         job.state = STATE_RUNNING
@@ -529,6 +616,7 @@ def enqueue_typed_operation(
         request.update(
             actor_user_id=actor,
             created_at=job.created_at,
+            capability_revision=revision,
             authorization={
                 **expected_authorization,
                 "validated_at": job.created_at,

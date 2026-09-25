@@ -27,6 +27,8 @@ from robopark_api.models import User
 from robopark_api.ops_schemas import (
     AvailableUpdateOut,
     GithubApprovalIn,
+    HostCapabilitiesOut,
+    HostOperationIn,
     HostResultOut,
     ReleaseStatusOut,
     SystemHealthOut,
@@ -432,14 +434,48 @@ def _host_action(db, actor, action, operation):
         audit.record(db, action=action, actor=actor, outcome=audit.OUTCOME_FAILURE, detail=detail)
         code = (
             409
-            if isinstance(exc, JobConflict)
+            if isinstance(exc, JobConflict) or detail == "capability_unavailable"
             else 503
-            if detail == "host_bridge_unavailable"
+            if detail in {"host_bridge_unavailable", "capabilities_unavailable"}
             else 400
         )
         raise HTTPException(status_code=code, detail=detail) from exc
     audit.record(db, action=action, actor=actor, outcome=audit.OUTCOME_SUCCESS, detail="accepted")
     return result
+
+
+@router.get("/admin/ops/capabilities", response_model=HostCapabilitiesOut)
+def get_host_capabilities(
+    royal: User = Depends(require_royal), settings: Settings = Depends(get_settings),
+):
+    return host_bridge.operation_capabilities(_bridge_root(settings))
+
+
+@router.post("/admin/ops/operations", response_model=OpsJobOut)
+def post_host_operation(
+    payload: HostOperationIn,
+    request: Request,
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    root = _bridge_root(settings)
+
+    def authorize():
+        _require_privileged(request, royal, db, settings, payload.kind.value, str(payload.operation_id))
+        return {
+            "operation_id": str(payload.operation_id), "operation_kind": payload.kind.value,
+            "actor_user_id": royal.id, "consumed": True,
+        }
+
+    def enqueue():
+        host_bridge.require_operation_capability(root, payload.kind)
+        return host_bridge.enqueue_typed_operation(
+            resolved_ops_dir(settings), root, payload.model_dump(mode="json"), royal.id,
+            _token_hash(request, settings), authorize=authorize,
+        )
+
+    return _job_out(_host_action(db, royal, "admin.ops." + payload.kind.value, enqueue))
 
 
 @router.get("/admin/ops/system-health", response_model=SystemHealthOut)

@@ -110,6 +110,8 @@ class TypedOperation:
 class TypedHostEffects:
     """Explicit host-effect interface. Production adapters may implement only this allowlist."""
 
+    supported_kinds = frozenset()
+
     def reconcile(self, operation):
         """Reconcile a durable dispatch checkpoint without replaying its effect."""
 
@@ -180,6 +182,10 @@ class SystemTypedHostEffects(TypedHostEffects):
         if system is None:
             raise ValueError("typed_system_adapter_required")
         self.system = system
+
+    @property
+    def supported_kinds(self):
+        return getattr(self.system, "supported_kinds", frozenset())
 
     def reconcile(self, operation):
         return self.system.reconcile(operation)
@@ -312,6 +318,12 @@ def validate_typed_operation(value, *, fresh=True, authorization_fresh=True):
         elif "authorization" in value:
             required.add("authorization")
         common = {"job_id", "kind", "actor_user_id", "created_at"}
+        if "capability_revision" in value:
+            common.add("capability_revision")
+            if not isinstance(value["capability_revision"], str) or not re.fullmatch(
+                r"[a-f0-9]{64}", value["capability_revision"]
+            ):
+                raise ValueError()
         if set(value) != common | required:
             raise ValueError()
         operation_id = _canonical_uuid(value["job_id"])
@@ -452,6 +464,10 @@ def execute_typed_operation(
 
 
 def _execute_typed_operation_locked(paths, operation, effects, devices):
+    from .operation_capabilities import (
+        current_capability_revision,
+        operation_capabilities,
+    )
     from .state import read_operation_progress, write_operation_progress
 
     receipt = paths.state / "typed-operation-receipts" / f"{operation.operation_id}.json"
@@ -509,6 +525,13 @@ def _execute_typed_operation_locked(paths, operation, effects, devices):
         atomic_write_json(receipt, {"request": operation.request, "result": result})
         write_operation_progress(paths, operation.operation_id, state, 100)
         return result
+
+    available = operation_capabilities(effects)[operation.kind.value]["available"]
+    revision = operation.request.get("capability_revision")
+    if not available:
+        return terminal("failed", {}, "manual_recovery_required" if dispatched else "capability_unavailable")
+    if revision is not None and revision != current_capability_revision(paths, effects):
+        return terminal("failed", {}, "manual_recovery_required" if dispatched else "capabilities_changed")
 
     if dispatched:
         try:
@@ -1127,6 +1150,8 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
         self.runner = runner
         self.http = http
         self.device_provider = device_provider or (lambda: discover_usb_devices(paths))
+        if runner is None or http is None:
+            self.supported_kinds = self.supported_kinds - {OperationKind.DIAGNOSTICS}
 
     @classmethod
     def unsupported_kinds(cls):
@@ -1887,8 +1912,12 @@ def consume_commands(
     """All privileged work is serialized; API never chooses argv or output paths."""
     if paths.root == Path("/") and os.geteuid() != 0:
         return 1
+    from .operation_capabilities import publish_operation_capabilities
+
+    effects = typed_effects if typed_effects is not None else TypedHostEffects()
     # Separate outer lock prevents two launchers while worker owns host.lock.
     with exclusive_lock(paths.ops / "command-consumer.lock"):
+        publish_operation_capabilities(paths, effects)
         pending = paths.state / "command-request.json"
         inbox = paths.ops / "inbox/approved.json"
         with exclusive_lock(paths.host_lock):
@@ -1977,7 +2006,6 @@ def consume_commands(
             if typed_kind is not None and (
                 typed_kind is not OperationKind.DIAGNOSTICS or "authorization" in request
             ):
-                effects = typed_effects or TypedHostEffects()
                 devices = typed_devices() if callable(typed_devices) else ()
                 result = execute_typed_operation(
                     paths,

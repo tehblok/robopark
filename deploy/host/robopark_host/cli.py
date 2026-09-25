@@ -165,6 +165,9 @@ def _repair_owned(paths: HostPaths) -> int:
 
 
 def _watchdog_handler(paths: HostPaths) -> int:
+    from .operation_capabilities import publish_operation_capabilities
+
+    publish_operation_capabilities(paths, _production_typed_effects(paths))
     result = run_watchdog(paths, _system_runner, _Http())
     _print(
         {
@@ -204,28 +207,30 @@ def _bootstrap_handler(paths: HostPaths) -> int:
     return 0
 
 
-def _consume_handler(paths: HostPaths) -> int:
+def _production_typed_effects(paths: HostPaths):
     from .commands import (
         SafeProductionTypedHostEffects,
-        consume_commands,
         discover_usb_devices,
     )
 
     def devices():
         return discover_usb_devices(paths)
 
-    http = _Http()
+    return SafeProductionTypedHostEffects(
+        paths, runner=_system_runner, http=_Http(), device_provider=devices,
+    )
+
+
+def _consume_handler(paths: HostPaths) -> int:
+    from .commands import consume_commands
+
+    effects = _production_typed_effects(paths)
     return consume_commands(
         paths,
         _system_runner,
-        http,
-        typed_effects=SafeProductionTypedHostEffects(
-            paths,
-            runner=_system_runner,
-            http=http,
-            device_provider=devices,
-        ),
-        typed_devices=devices,
+        effects.http,
+        typed_effects=effects,
+        typed_devices=effects.device_provider,
     )
 
 

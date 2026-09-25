@@ -11,6 +11,7 @@ from robopark_api.models import PrivilegedCredential, User
 from robopark_api.security import hash_session_token
 from robopark_api.services import privileged_auth
 from robopark_api.services.login_throttle import LoginThrottle, client_ip
+from robopark_api.services.ops import host_bridge
 
 router = APIRouter(prefix="/admin/privileged-auth", tags=["privileged-auth"])
 
@@ -152,6 +153,12 @@ def reauthorize(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> TokenOut:
+    try:
+        host_bridge.require_typed_reauthorization(settings, payload.operation_kind, payload.operation_id)
+    except host_bridge.BridgeError as exc:
+        raise HTTPException(
+            status_code=409 if str(exc) == "capability_unavailable" else 503, detail=str(exc),
+        ) from exc
     ip = client_ip(request)
     throttle = _throttle(settings)
     throttle_key = f"privileged|{royal.id}|{ip}"
