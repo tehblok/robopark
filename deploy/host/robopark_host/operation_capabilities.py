@@ -15,12 +15,19 @@ def operation_capabilities(effects):
     from .commands import OperationKind
 
     supported = getattr(effects, "supported_kinds", frozenset())
+    reasons = getattr(effects, "unavailable_reasons", {})
     if not isinstance(supported, frozenset) or not supported <= set(OperationKind):
         supported = frozenset()
+    if not isinstance(reasons, dict):
+        reasons = {}
     return {
         kind.value: {
             "available": kind in supported,
-            "unavailable_reason": None if kind in supported else "capability_unavailable",
+            "unavailable_reason": None if kind in supported else (
+                "context_unavailable"
+                if reasons.get(kind) == "context_unavailable"
+                else "capability_unavailable"
+            ),
         }
         for kind in OperationKind
     }

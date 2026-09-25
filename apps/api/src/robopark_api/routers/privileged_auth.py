@@ -49,8 +49,7 @@ class ReauthorizeIn(ConfirmIn):
     @model_validator(mode="after")
     def require_typed_capability_revision(self):
         typed = self.operation_kind in set(HostOperationKind)
-        legacy_diagnostics = self.operation_kind == "diagnostics" and self.operation_id == "diagnostics"
-        if typed and not legacy_diagnostics and self.capability_revision is None:
+        if typed and self.capability_revision is None:
             raise ValueError("capability_revision is required for typed operations")
         return self
 
@@ -85,6 +84,7 @@ def _context(
     *,
     operation_kind: str | None = None,
     operation_id: str | None = None,
+    capability_revision: str | None = None,
 ) -> privileged_auth.AuditContext:
     return privileged_auth.AuditContext(
         ip=client_ip(request),
@@ -92,6 +92,7 @@ def _context(
         session_token_hash=_session_hash(request, settings) if settings else None,
         operation_kind=operation_kind,
         operation_id=operation_id,
+        capability_revision=capability_revision,
     )
 
 
@@ -190,6 +191,7 @@ def reauthorize(
                 settings,
                 operation_kind=payload.operation_kind,
                 operation_id=payload.operation_id,
+                capability_revision=payload.capability_revision,
             ),
             throttle=throttle,
             throttle_key=throttle_key,

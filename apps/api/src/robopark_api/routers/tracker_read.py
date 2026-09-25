@@ -64,7 +64,7 @@ from robopark_api.services.tracker_policy import (
     is_issue_in_scope,
     load_issue_scope,
 )
-from robopark_api.task_workflow_models import TaskReview
+from robopark_api.task_workflow_models import ReliableAction, TaskReview
 
 MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 50
@@ -418,6 +418,7 @@ def list_issues(
     offset: int = Query(default=0, ge=0),
     include_hidden: bool = Query(default=False),
     owned_by_me: bool = Query(default=False),
+    sync_state: Literal["needs_attention"] | None = Query(default=None),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerIssuesOut:
@@ -577,6 +578,16 @@ def list_issues(
                 pass
         seen_keys.add(key)
         scoped_raw.append(issue)
+
+    if sync_state == "needs_attention":
+        attention_keys = set(db.scalars(select(ReliableAction.resource_id).where(
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.state == "needs_attention",
+        )).all())
+        scoped_raw = [
+            issue for issue in scoped_raw
+            if str(issue.get("key") or "").strip() in attention_keys
+        ]
 
     total = len(scoped_raw)
     page_raw = _work_page_sla(token=token, issues=scoped_raw[offset : offset + limit])

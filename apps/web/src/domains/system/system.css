@@ -3,6 +3,8 @@
 .rp-system-chart { width: 100%; min-height: 5.5rem; color: var(--rp-text-muted); background: var(--rp-surface-raised); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-md); }
 .rp-system-chart rect { fill: var(--rp-accent); }
 .rp-system-chart text { fill: currentColor; font-size: 8px; text-anchor: middle; }
+.rp-system-chart-values { width: 100%; margin-top: var(--space-2); border-collapse: collapse; font-size: .8rem; }
+.rp-system-chart-values th, .rp-system-chart-values td { padding: .25rem .5rem; border-bottom: 1px solid var(--rp-border); text-align: left; }
 .rp-system-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: var(--space-3); }
 .rp-system-status-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .rp-system-operations { display: grid; gap: var(--space-4); margin-top: var(--space-4); }

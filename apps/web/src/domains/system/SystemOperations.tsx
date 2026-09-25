@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { ApiError } from '../../api'
 import { Alert, Panel } from '../../components/PageShell'
 import { Button } from '../../design-system/actions/Button'
@@ -18,11 +18,14 @@ const phrases: Record<HostOperationKind, string> = Object.fromEntries(
   HOST_OPERATION_KINDS.map(kind => [kind, `ЗАПУСТИТЬ ${kind.toUpperCase()}`]),
 ) as Record<HostOperationKind, string>
 const directlyRunnable = new Set<HostOperationKind>(['package-inspect', 'cleanup-preview', 'diagnostics', 'usb-discover'])
+const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
 
-function payloadFor(kind: HostOperationKind, operationId: string, capabilityRevision: string): HostOperationPayload {
-  const common = { operation_id: operationId, kind, capability_revision: capabilityRevision }
+function payloadFor(kind: HostOperationKind, operationId: string, capabilityRevision: string, confirmation: string, deviceUuid: string, backupId: string): HostOperationPayload {
+  const common = { operation_id: operationId, kind, capability_revision: capabilityRevision, confirmation }
   if (kind === 'package-inspect') return { ...common, package: 'openssl' }
   if (kind === 'cleanup-preview') return { ...common, categories: ['diagnostics', 'logs', 'backups', 'releases'] }
+  if (kind === 'usb-select') return { ...common, device_uuid: deviceUuid }
+  if (kind === 'backup-verify') return { ...common, backup_id: backupId }
   return common
 }
 
@@ -34,6 +37,8 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
   const [confirmation, setConfirmation] = useState('')
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
+  const [deviceUuid, setDeviceUuid] = useState('')
+  const [backupId, setBackupId] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const initialFocus = useRef<HTMLInputElement>(null)
@@ -42,16 +47,26 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
     && typeof capabilities.expires_at === 'string'
     && Date.parse(capabilities.expires_at) > Date.now()
   const revision = fresh ? capabilities.revision : null
-  const valid = Boolean(selected && revision && confirmation === phrase && password && code)
+  const valid = Boolean(selected && revision && confirmation === phrase && password && code
+    && (selected !== 'usb-select' || deviceUuid)
+    && (selected !== 'backup-verify' || UUID_PATTERN.test(backupId)))
   const active = job?.state === 'queued' || job?.state === 'running'
-  const rows = useMemo(() => HOST_OPERATION_KINDS.map(kind => {
+  const devices = job?.host_result?.devices?.filter(device => device.removable) ?? []
+  const rows = HOST_OPERATION_KINDS.map(kind => {
     const advertised = fresh && capabilities.operations[kind]?.available === true
-    const runnable = advertised && directlyRunnable.has(kind)
-    const reason = !advertised ? fresh ? 'Недоступно на этом хосте' : 'Снимок возможностей хоста недоступен или устарел'
-      : !runnable ? kind === 'cleanup-execute' ? 'Сначала нужен поддерживаемый хостом план очистки' : 'Сначала выберите объект из результата безопасного обнаружения'
+    const runnable = advertised && (directlyRunnable.has(kind)
+      || kind === 'usb-select' && devices.some(device => device.device_uuid === deviceUuid)
+      || kind === 'backup-verify' && UUID_PATTERN.test(backupId))
+    const unavailableReason = capabilities.operations[kind]?.unavailable_reason
+    const reason = !advertised ? !fresh ? 'Снимок возможностей хоста недоступен или устарел'
+      : unavailableReason === 'context_unavailable' ? 'Безопасный контекст для этой операции на хосте не настроен'
+      : 'Недоступно на этом хосте'
+      : !runnable ? kind === 'cleanup-execute' ? 'Сначала нужен поддерживаемый хостом план очистки'
+        : kind === 'backup-verify' ? 'Укажите точный UUID резервной копии; внешний ключ должен быть безопасно установлен на хосте'
+        : 'Сначала выберите объект из результата безопасного обнаружения'
         : null
     return { kind, runnable, reason }
-  }), [capabilities, fresh])
+  })
 
   const open = (kind: HostOperationKind) => {
     setSelected(kind); setConfirmation(''); setPassword(''); setCode(''); setError('')
@@ -66,7 +81,7 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
         password, code, operation_kind: selected, operation_id: operationId,
         capability_revision: revision,
       })
-      const next = await client.startOperation(payloadFor(selected, operationId, revision), authorization.token)
+      const next = await client.startOperation(payloadFor(selected, operationId, revision, confirmation, deviceUuid, backupId), authorization.token)
       localStorage.setItem('robopark:system-operation', operationId)
       onAccepted(next)
       setSelected(null)
@@ -82,6 +97,8 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
   return <section aria-label="Управляемые операции" className="rp-system-operations">
     <Panel title="Управляемые операции" hint="Доступность поступает с хоста. Произвольные команды и аргументы не принимаются.">
       {capabilities.state !== 'ready' && <Alert tone="warning">Свежий список возможностей хоста недоступен. Все операции заблокированы.</Alert>}
+      {devices.length > 0 && <label className="field"><span className="field-label">Обнаруженное USB-устройство</span><select onChange={event => setDeviceUuid(event.target.value)} value={deviceUuid}><option value="">Выберите устройство</option>{devices.map(device => <option key={device.device_uuid} value={device.device_uuid}>{device.device_uuid}{device.mounted ? ' · подключено' : ''}</option>)}</select></label>}
+      {fresh && capabilities.operations['backup-verify']?.available && <label className="field"><span className="field-label">UUID резервной копии</span><input autoComplete="off" onChange={event => setBackupId(event.target.value.trim())} value={backupId} /></label>}
       <div className="rp-system-operation-list">{rows.map(({ kind, runnable, reason }) => <div className="rp-system-operation" key={kind}>
         <div><strong>{labels[kind]}</strong>{reason && <p>{reason}</p>}</div>
         <Button disabled={!runnable || active} onClick={() => open(kind)} size="compact" type="button">{labels[kind]}</Button>

@@ -165,9 +165,8 @@ export function AdminOpsPanel() {
       </ul>}
     </Panel> : <p className="muted">{ru.ops.jobIdle}</p>}
 
-    <Panel title="Диагностика" hint="Соберите отчёт для разбора состояния системы.">
+    <Panel title="Диагностика" hint="Новая диагностика запускается в разделе «Система» с подтверждением возможностей хоста.">
       <div className="form-actions">
-        <Button disabled={blocked || inspecting} onClick={() => void run(api.opsDiagnostics)} type="button">Собрать диагностику</Button>
         <Button variant="secondary" disabled={blocked || job?.kind !== 'diagnostics' || !completed || !job.artifact_ready} onClick={() => void getArtifact('diagnostics')} type="button">Скачать диагностику</Button>
       </div>
     </Panel>

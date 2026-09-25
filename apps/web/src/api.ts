@@ -1740,6 +1740,7 @@ export const api = {
     offset?: number
     owned_by_me?: boolean
     include_hidden?: boolean
+    sync_state?: 'needs_attention'
   }) => {
     const q = new URLSearchParams({ sort: params.sort ?? 'oldest' })
     Object.entries(params).forEach(([key, value]) => {
@@ -2047,7 +2048,6 @@ export const api = {
     request<OpsJob>('/admin/ops/update/approve', { method: 'POST', body: JSON.stringify({ inspection_id, confirm }) }),
   opsApproveGithubUpdate: (release_id: number, confirm: 'ОБНОВИТЬ') =>
     request<OpsJob>('/admin/ops/github-update/approve', { method: 'POST', body: JSON.stringify({ release_id, confirm }) }),
-  opsDiagnostics: () => request<OpsJob>('/admin/ops/diagnostics', { method: 'POST' }),
   opsRepair: () => request<OpsJob>('/admin/ops/repair', { method: 'POST' }),
   opsDiagnosticArtifact: () => requestBlob('/admin/ops/diagnostic-artifact'),
   opsMaintenance: () => request<OpsMaintenance>('/ops/maintenance'),

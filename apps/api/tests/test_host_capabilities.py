@@ -8,7 +8,11 @@ import pytest
 from sqlalchemy import select
 
 from conftest import _test_totp, login_as
-from robopark_api.models import PrivilegedReauthorization, PrivilegedRecoveryCode
+from robopark_api.models import (
+    PrivilegedAuthAudit,
+    PrivilegedReauthorization,
+    PrivilegedRecoveryCode,
+)
 from robopark_api.services.ops import host_bridge
 
 BOOT_ID = "00000000-0000-4000-8000-000000000010"
@@ -23,7 +27,7 @@ UNAVAILABLE_PAYLOADS = [
     {"kind": "package-update", "package": "openssl", "confirmation": "UPDATE PACKAGE openssl"},
     {"kind": "service-restart", "service": "robopark-api.service", "confirmation": "RESTART SERVICE robopark-api.service"},
     {"kind": "reboot", "confirmation": "REBOOT ROBOPARK"},
-    {"kind": "backup", "device_uuid": BOOT_ID},
+    {"kind": "backup", "device_uuid": BOOT_ID, "confirmation": "BACKUP ROBOPARK"},
     {"kind": "backup-restore", "backup_id": BOOT_ID, "confirmation": "RESTORE ROBOPARK BACKUP"},
     {"kind": "cleanup-execute", "plan_id": BOOT_ID, "confirmation": "CLEAN ROBOPARK"},
     {"kind": "usb-format", "device_uuid": BOOT_ID, "confirmation": f"FORMAT USB {BOOT_ID}", "confirmation_repeat": f"FORMAT USB {BOOT_ID}"},
@@ -185,7 +189,7 @@ def test_capability_drift_before_enqueue_does_not_consume_issued_grant(
         "X-Privileged-Authorization": issued.json()["token"],
     }, json={
         "operation_id": identity, "kind": "package-inspect", "package": "openssl",
-        "capability_revision": revision,
+        "capability_revision": revision, "confirmation": "ЗАПУСТИТЬ PACKAGE-INSPECT",
     })
     assert response.status_code in {409, 503}, response.text
     if drift == "revision":
@@ -201,9 +205,10 @@ def test_supported_api_operation_requires_and_consumes_one_bound_grant(
     login_as(client, "royal", "secret")
     identity = str(uuid4())
     revision = host_bridge.operation_capabilities(capability_bridge[0]).revision
+    phrase = "ЗАПУСТИТЬ PACKAGE-INSPECT"
     payload = {
         "operation_id": identity, "kind": "package-inspect", "package": "openssl",
-        "capability_revision": revision,
+        "capability_revision": revision, "confirmation": phrase,
     }
     assert client.post("/admin/ops/operations", json=payload).status_code == 409
     monkeypatch.setattr("robopark_api.services.privileged_auth._unix_time", lambda: 9_000.0)
@@ -225,10 +230,88 @@ def test_supported_api_operation_requires_and_consumes_one_bound_grant(
     root, _ = capability_bridge
     request = json.loads((root / "inbox/approved.json").read_text())
     assert request["capability_revision"] == host_bridge.operation_capabilities(root).revision
+    assert request["confirmation"] == phrase
     assert request["authorization"]["consumed"] is True
     db_session.expire_all()
     assert db_session.scalars(select(PrivilegedReauthorization)).one().used_at is not None
     assert client.post("/admin/ops/operations", json=payload, headers=headers).status_code == 401
+
+
+def test_revision_drift_invalidates_issued_grant_without_job_or_inbox(
+    client, seed_royal, db_session, capability_bridge, monkeypatch,
+):
+    login_as(client, "royal", "secret")
+    monkeypatch.setattr("robopark_api.services.privileged_auth._unix_time", lambda: 12_000.0)
+    secret = client.post("/admin/privileged-auth/enrollment").json()["secret"]
+    client.post("/admin/privileged-auth/enrollment/confirm", json={
+        "password": "secret", "code": _test_totp(secret, 400),
+    })
+    monkeypatch.setattr("robopark_api.services.privileged_auth._unix_time", lambda: 12_030.0)
+    root, value = capability_bridge
+    revision_a = host_bridge.operation_capabilities(root).revision
+    identity = str(uuid4())
+    issued = client.post("/admin/privileged-auth/reauthorize", json={
+        "password": "secret", "code": _test_totp(secret, 401),
+        "operation_kind": "package-inspect", "operation_id": identity,
+        "capability_revision": revision_a,
+    })
+    assert issued.status_code == 200, issued.text
+    grant = db_session.scalars(select(PrivilegedReauthorization)).one()
+    assert grant.capability_revision == revision_a
+    value["operations"]["diagnostics"] = {
+        "available": False, "unavailable_reason": "capability_unavailable",
+    }
+    (root / "public/operation-capabilities.json").write_text(json.dumps(value))
+    revision_b = host_bridge.operation_capabilities(root).revision
+    assert revision_b != revision_a
+    response = client.post("/admin/ops/operations", headers={
+        "X-Privileged-Authorization": issued.json()["token"],
+    }, json={
+        "operation_id": identity, "kind": "package-inspect", "package": "openssl",
+        "capability_revision": revision_b, "confirmation": "ЗАПУСТИТЬ PACKAGE-INSPECT",
+    })
+    assert response.status_code == 401
+    db_session.expire_all()
+    assert db_session.scalars(select(PrivilegedReauthorization)).one().used_at is None
+    denial = db_session.scalars(select(PrivilegedAuthAudit).where(
+        PrivilegedAuthAudit.reason == "capability_revision_mismatch"
+    )).one()
+    assert denial.capability_revision == revision_b
+    assert not (root / "inbox/approved.json").exists()
+
+
+def test_safe_typed_operation_rejects_missing_or_wrong_confirmation_before_grant(
+    client, seed_royal, db_session, capability_bridge,
+):
+    login_as(client, "royal", "secret")
+    root, _ = capability_bridge
+    revision = host_bridge.operation_capabilities(root).revision
+    identity = str(uuid4())
+    base = {
+        "operation_id": identity, "kind": "package-inspect", "package": "openssl",
+        "capability_revision": revision,
+    }
+    assert client.post("/admin/ops/operations", json=base).status_code == 422
+    assert client.post("/admin/ops/operations", json={
+        **base, "confirmation": "ЗАПУСТИТЬ PACKAGE-INSPECT ",
+    }).status_code == 400
+    assert not db_session.scalars(select(PrivilegedReauthorization)).all()
+    assert not (root / "inbox/approved.json").exists()
+
+
+def test_legacy_diagnostics_entrypoints_fail_closed_without_job_or_inbox(
+    client, seed_royal, db_session, capability_bridge,
+):
+    login_as(client, "royal", "secret")
+    root, _ = capability_bridge
+    response = client.post("/admin/ops/diagnostics")
+    assert response.status_code == 410
+    assert client.post("/admin/privileged-auth/reauthorize", json={
+        "password": "secret", "code": "000000",
+        "operation_kind": "diagnostics", "operation_id": "diagnostics",
+    }).status_code == 422
+    assert not db_session.scalars(select(PrivilegedReauthorization)).all()
+    assert not (root / "inbox/approved.json").exists()
 
 
 def test_typed_api_and_reauthorization_require_the_live_capability_revision(
@@ -248,6 +331,7 @@ def test_typed_api_and_reauthorization_require_the_live_capability_revision(
     }).status_code == 422
     assert client.post("/admin/ops/operations", json={
         **operation, "capability_revision": revision,
+        "confirmation": "ЗАПУСТИТЬ PACKAGE-INSPECT",
     }).status_code == 409
     credentials = {
         "password": "secret", "code": "000000",
@@ -274,7 +358,10 @@ def test_bridge_rejects_missing_or_drifted_revision_before_authorization(
             "actor_user_id": 7, "consumed": True,
         }
 
-    base = {"operation_id": identity, "kind": "package-inspect", "package": "openssl"}
+    base = {
+        "operation_id": identity, "kind": "package-inspect", "package": "openssl",
+        "confirmation": "ЗАПУСТИТЬ PACKAGE-INSPECT",
+    }
     for revision in (None, "0" * 64):
         payload = dict(base)
         if revision is not None:

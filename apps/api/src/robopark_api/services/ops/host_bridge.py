@@ -57,6 +57,16 @@ _DESTRUCTIVE_PHRASES = {
     HostOperationKind.BACKUP_RESTORE: "RESTORE ROBOPARK BACKUP",
     HostOperationKind.CLEANUP_EXECUTE: "CLEAN ROBOPARK",
 }
+_SAFE_PHRASES = {
+    kind: f"ЗАПУСТИТЬ {kind.value.upper()}" for kind in (
+        HostOperationKind.PACKAGE_INSPECT,
+        HostOperationKind.BACKUP_VERIFY,
+        HostOperationKind.CLEANUP_PREVIEW,
+        HostOperationKind.DIAGNOSTICS,
+        HostOperationKind.USB_DISCOVER,
+        HostOperationKind.USB_SELECT,
+    )
+}
 
 
 def _required_confirmation(operation):
@@ -66,7 +76,7 @@ def _required_confirmation(operation):
         return f"RESTART SERVICE {operation.service}"
     if operation.kind is HostOperationKind.USB_FORMAT:
         return f"FORMAT USB {operation.device_uuid}"
-    return _DESTRUCTIVE_PHRASES.get(operation.kind)
+    return _DESTRUCTIVE_PHRASES.get(operation.kind) or _SAFE_PHRASES.get(operation.kind)
 
 
 UPDATE_PROGRESS_PERCENT = {
@@ -214,7 +224,9 @@ def operation_capabilities(root):
             if (
                 not isinstance(item, dict) or set(item) != {"available", "unavailable_reason"}
                 or type(item["available"]) is not bool
-                or item["unavailable_reason"] != (None if item["available"] else "capability_unavailable")
+                or item["unavailable_reason"] not in (
+                    (None,) if item["available"] else ("capability_unavailable", "context_unavailable")
+                )
             ):
                 return unavailable
         revision = hashlib.sha256(json.dumps(
@@ -242,8 +254,7 @@ def require_operation_capability(root, kind):
 
 
 def require_typed_reauthorization(settings, kind, operation_id, capability_revision=None):
-    """Legacy diagnostics use their existing non-UUID grant binding."""
-    if kind not in set(HostOperationKind) or (kind == "diagnostics" and operation_id == "diagnostics"):
+    if kind not in set(HostOperationKind):
         return
     if not isinstance(capability_revision, str) or not re.fullmatch(
         r"[a-f0-9]{64}", capability_revision

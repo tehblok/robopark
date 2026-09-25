@@ -47,7 +47,7 @@ def test_root_marker_blocks_initiating_royal_post_but_allows_readonly_polling(
     client, seed_royal, installed, db_session
 ):
     login_as(client, "royal", "secret")
-    assert client.post("/admin/ops/diagnostics").status_code == 200
+    assert client.post("/admin/ops/diagnostics").status_code == 410
     auth = db_session.scalar(select(AuthSession))
     deadline = datetime.now(UTC) + timedelta(seconds=30)
     auth.expires_at = deadline
@@ -86,11 +86,18 @@ def test_invalid_marker_blocks_writes_and_terminal_reconciliation(
     client, seed_royal, installed, test_settings, content
 ):
     login_as(client, "royal", "secret")
-    job = client.post("/admin/ops/diagnostics").json()
+    job = new_job("diagnostics", exempt_token_hash="session")
+    job.state = "running"
+    job.phase = "running"
+    job.extra = {
+        "host_updater": True, "host_dispatch": "dispatched",
+        "host_request": {"actor_user_id": seed_royal.id},
+    }
+    save_job(Path(test_settings.ops_dir), job)
     (installed / "public/command-result.json").write_text(
         json.dumps(
             {
-                "job_id": job["id"],
+                "job_id": job.id,
                 "kind": "diagnostics",
                 "actor_user_id": seed_royal.id,
                 "state": "succeeded",
@@ -393,7 +400,7 @@ def test_candidate_startup_is_readonly_until_host_releases_marker(
         assert not worker_thread.is_alive()
 
 
-@pytest.mark.parametrize("kind", ["diagnostics", "repair"])
+@pytest.mark.parametrize("kind", ["repair"])
 def test_generic_publish_failure_retries_the_exact_job(
     client, seed_royal, installed, test_settings, monkeypatch, kind
 ):

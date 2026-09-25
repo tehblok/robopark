@@ -107,17 +107,15 @@ describe('AdminOpsPanel', () => {
     expect(await screen.findByText('Выполнено: перезапуск Tuna')).toBeVisible()
     expect(screen.getByText('Не выполнено: перезапуск приложения')).toBeVisible()
   })
-  it('allows diagnostic download only for completed diagnostics, never a snapshot', async () => {
+  it('allows diagnostic download for a completed typed diagnostic job', async () => {
     const user = userEvent.setup()
-    mockOpsServer({ '/admin/ops/job': jobFixture('snapshot', 'succeeded'), '/admin/ops/diagnostics': jobFixture('diagnostics', 'succeeded'), '/admin/ops/diagnostic-artifact': new Response('diagnostic zip') })
+    mockOpsServer({ '/admin/ops/job': jobFixture('diagnostics', 'succeeded'), '/admin/ops/diagnostic-artifact': new Response('diagnostic zip') })
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
     vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:diagnostic'), revokeObjectURL: vi.fn() }))
     render(<AdminOpsPanel />)
     const download = screen.getByRole('button', { name: 'Скачать диагностику' })
     await screen.findByText('Завершено')
-    expect(download).toBeDisabled()
-    await user.click(screen.getByRole('button', { name: 'Собрать диагностику' }))
-    await waitFor(() => expect(download).toBeEnabled())
+    expect(download).toBeEnabled()
     await user.click(download)
     await waitFor(() => expect(click).toHaveBeenCalledOnce())
     expect(screen.getByRole('button', { name: 'Скачать архив' })).toBeDisabled()
@@ -191,15 +189,15 @@ it.each([1, 2])('keeps the accepted job after %i dispatches isolated from a pre-
   const afterDispatch = new Promise(resolve => { resolveAfterDispatch = resolve })
   let reads = 0
   let dispatches = 0
-  const currentJob = { ...jobFixture('diagnostics'), id: `job-${dispatchCount}` }
+  const currentJob = { ...jobFixture('repair'), id: `job-${dispatchCount}` }
   const fetchMock = mockOpsServer({
     '/admin/ops/job': () => ++reads === 1 ? beforeDispatch : reads === 2 ? afterDispatch : { ...currentJob, state: 'succeeded', artifact_ready: true },
-    '/admin/ops/diagnostics': () => ({ ...jobFixture('diagnostics', ++dispatches === dispatchCount ? 'running' : 'succeeded'), id: `job-${dispatches}` }),
+    '/admin/ops/repair': () => ({ ...jobFixture('repair', ++dispatches === dispatchCount ? 'running' : 'succeeded'), id: `job-${dispatches}` }),
   })
   render(<AdminOpsPanel />)
   await act(async () => { await vi.advanceTimersByTimeAsync(0) })
   expect(callsFor(fetchMock, '/job')).toHaveLength(1)
-  const start = screen.getByRole('button', { name: 'Собрать диагностику' })
+  const start = screen.getByRole('button', { name: 'Исправить безопасные проблемы' })
   for (let dispatch = 0; dispatch < dispatchCount; dispatch++) {
     await act(async () => { fireEvent.click(start) })
   }

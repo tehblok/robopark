@@ -10,7 +10,7 @@ from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, Park, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
-from robopark_api.task_workflow_models import HiddenTask, TaskReview
+from robopark_api.task_workflow_models import HiddenTask, ReliableAction, TaskReview
 
 
 def _seed_operator(db_session, park):
@@ -77,6 +77,32 @@ def test_tracker_read_list_issues(client, db_session, seed_park_with_tracker, mo
     unchanged = client.get("/tracker/issues", headers={"If-None-Match": response.headers["etag"]})
     assert unchanged.status_code == 304
     assert unchanged.content == b""
+
+
+def test_tracker_read_filters_attention_state_before_pagination(
+    client, db_session, seed_park_with_tracker, monkeypatch,
+):
+    operator = _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: [
+        _scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+        _scoped_issue("ROBOPARK-2", "2026-01-02T00:00:00Z"),
+    ])
+    db_session.add(ReliableAction(
+        id="attention-action", actor_user_id=operator.id, resource_type="tracker_issue",
+        resource_id="ROBOPARK-2", action="comment", idempotency_key="attention",
+        payload_hash="a" * 64, state="needs_attention", created_at=1.0, updated_at=1.0,
+    ))
+    db_session.commit()
+    login_as(client, "op2", "secret")
+
+    response = client.get("/tracker/issues?sync_state=needs_attention&limit=1")
+
+    assert response.status_code == 200
+    assert [item["key"] for item in response.json()["items"]] == ["ROBOPARK-2"]
+    assert response.json()["total"] == 1
 
 
 def test_tracker_read_does_not_emit_new_task_notification(

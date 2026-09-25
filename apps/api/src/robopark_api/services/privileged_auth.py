@@ -45,6 +45,7 @@ class AuditContext:
     session_token_hash: str | None = None
     operation_kind: str | None = None
     operation_id: str | None = None
+    capability_revision: str | None = None
 
 
 class PrivilegedAuthError(ValueError):
@@ -170,6 +171,7 @@ def _add_audit(
             device=(context.device or "")[:256] or None,
             operation_kind=context.operation_kind,
             operation_id=context.operation_id,
+            capability_revision=context.capability_revision,
         )
     )
 
@@ -500,6 +502,7 @@ def issue_reauthorization(
             session_token_hash=context.session_token_hash or "",
             operation_kind=context.operation_kind or "",
             operation_id=context.operation_id or "",
+            capability_revision=context.capability_revision,
             credential_generation=credential.credential_generation,
             expires_at=_now() + timedelta(seconds=REAUTH_TTL_SECONDS),
         )
@@ -552,6 +555,7 @@ def consume_reauthorization(
         and hmac.compare_digest(row.session_token_hash, context.session_token_hash or "")
         and hmac.compare_digest(row.operation_kind, context.operation_kind or "")
         and hmac.compare_digest(row.operation_id, context.operation_id or "")
+        and hmac.compare_digest(row.capability_revision or "", context.capability_revision or "")
     )
     if valid:
         row.used_at = now
@@ -559,6 +563,12 @@ def consume_reauthorization(
         row is not None
         and credential is not None
         and row.credential_generation != credential.credential_generation
+    )
+    revision_mismatch = bool(
+        row is not None
+        and not hmac.compare_digest(
+            row.capability_revision or "", context.capability_revision or ""
+        )
     )
     _add_audit(
         db,
@@ -570,6 +580,8 @@ def consume_reauthorization(
         else (
             "credential_generation_mismatch"
             if generation_mismatch
+            else "capability_revision_mismatch"
+            if revision_mismatch
             else ("token_invalid" if credential and credential.enrolled_at else "not_enrolled")
         ),
         context=context,

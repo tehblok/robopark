@@ -107,6 +107,7 @@ def _require_privileged(
     settings: Settings,
     operation_kind: str,
     operation_id: str,
+    capability_revision: str | None = None,
 ) -> None:
     token = request.headers.get("X-Privileged-Authorization", "")
     enrolled = privileged_auth.enrolled(db, actor.id)
@@ -116,6 +117,7 @@ def _require_privileged(
         session_token_hash=_token_hash(request, settings),
         operation_kind=str(operation_kind),
         operation_id=str(operation_id),
+        capability_revision=capability_revision,
     )
     valid = privileged_auth.consume_reauthorization(
         db,
@@ -464,7 +466,10 @@ def post_host_operation(
     root = _bridge_root(settings)
 
     def authorize():
-        _require_privileged(request, royal, db, settings, payload.kind.value, str(payload.operation_id))
+        _require_privileged(
+            request, royal, db, settings, payload.kind.value, str(payload.operation_id),
+            payload.capability_revision,
+        )
         return {
             "operation_id": str(payload.operation_id), "operation_kind": payload.kind.value,
             "actor_user_id": royal.id, "consumed": True,
@@ -570,7 +575,7 @@ def post_diagnostics(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    return _start_host_operation("diagnostics", request, royal, db, settings)
+    raise HTTPException(status_code=410, detail="typed_operation_required")
 
 
 @router.post("/admin/ops/repair", response_model=OpsJobOut)

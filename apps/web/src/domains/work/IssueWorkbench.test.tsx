@@ -653,6 +653,26 @@ it('renders a duplicate upstream task key only once', async () => {
   })).toHaveLength(1)
 })
 
+it('shows only attention tasks for the shareable sync attention state', async () => {
+  const attention = {
+    ...issue, key: 'ROBOPARK-ATTENTION', summary: 'Конфликт синхронизации',
+    workflow: { owner: null, review_state: null, display_status: 'queued' as const, sync_state: 'needs_attention' as const, has_current_cycle_comment: false },
+  }
+  const saved = {
+    ...issue, key: 'ROBOPARK-SAVED', summary: 'Обычная задача',
+    workflow: { owner: null, review_state: null, display_status: 'queued' as const, sync_state: 'saved' as const, has_current_cycle_comment: false },
+  }
+  const trackerIssues = vi.fn(async query => page(query.sync_state === 'needs_attention' ? [attention] : [attention, saved]))
+  renderWorkbench({
+    client: apiClient({ trackerIssues }),
+    selectedIssue: '', currentState: { ...state, sync: 'needs_attention' },
+  })
+  expect(await screen.findByText(/Показаны только задачи, требующие внимания/)).toBeVisible()
+  expect(screen.getByRole('button', { name: /ROBOPARK-ATTENTION/ })).toBeVisible()
+  expect(screen.queryByRole('button', { name: /ROBOPARK-SAVED/ })).not.toBeInTheDocument()
+  expect(trackerIssues).toHaveBeenCalledWith(expect.objectContaining({ sync_state: 'needs_attention' }))
+})
+
 function Harness({ children }: { children: ReactNode }) {
   return <MemoryRouter>{children}</MemoryRouter>
 }

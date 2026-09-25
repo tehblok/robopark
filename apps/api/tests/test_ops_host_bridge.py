@@ -261,13 +261,20 @@ def test_signed_inspection_approval_is_bound_and_idempotent(
     }
 
 
-def test_diagnostics_download_only_completed_exact_job_artifact(client, seed_royal, installed):
+def test_diagnostics_download_only_completed_exact_job_artifact(client, seed_royal, installed, test_settings):
     import zipfile
 
     login_as(client, "royal", "secret")
-    started = client.post("/admin/ops/diagnostics")
-    assert started.status_code == 200, started.text
-    job_id = started.json()["id"]
+    assert client.post("/admin/ops/diagnostics").status_code == 410
+    job = new_job("diagnostics", exempt_token_hash="session")
+    job.state = "running"
+    job.phase = "running"
+    job.extra = {
+        "host_updater": True, "host_dispatch": "dispatched",
+        "host_request": {"actor_user_id": seed_royal.id},
+    }
+    save_job(Path(test_settings.ops_dir), job)
+    job_id = job.id
     assert client.get("/admin/ops/diagnostic-artifact").status_code == 404
     artifacts = installed / "public/artifacts"
     artifacts.mkdir()
@@ -452,6 +459,23 @@ def test_repair_job_exposes_only_sanitized_before_after_outcome(client, seed_roy
     assert response.json()["host_result"]["before"][0]["status"] == "failed"
     assert response.json()["host_result"]["after"][0]["status"] == "ok"
     assert "LEAK" not in response.text
+
+
+def test_public_result_projects_only_sanitized_usb_device_selection_metadata():
+    device_uuid = "11111111-1111-4111-8111-111111111111"
+    result = host_bridge.public_result({
+        "detail": {"devices": [
+            {"device_uuid": device_uuid, "removable": True, "mounted": False, "path": "/dev/secret"},
+            {"device_uuid": "not-a-uuid", "removable": True, "mounted": False},
+        ]},
+        "secret": "LEAK",
+    }).model_dump(mode="json")
+
+    assert result["devices"] == [{
+        "device_uuid": device_uuid, "removable": True, "mounted": False,
+    }]
+    assert "LEAK" not in json.dumps(result)
+    assert host_bridge.public_result(result).model_dump(mode="json")["devices"] == result["devices"]
 
 
 def test_snapshot_conflicts_with_active_host_work_without_local_job(client, seed_royal, installed):

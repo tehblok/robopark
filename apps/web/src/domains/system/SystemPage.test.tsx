@@ -115,7 +115,7 @@ describe('SystemPage', () => {
     const operation = vi.mocked(api.startOperation).mock.calls[0]
     expect(reauth).toMatchObject({ operation_kind: 'diagnostics', capability_revision: revision, password: 'secret', code: '123456' })
     expect(reauth.operation_id).toMatch(/^[a-f0-9-]{36}$/)
-    expect(operation[0]).toEqual({ operation_id: reauth.operation_id, kind: 'diagnostics', capability_revision: revision })
+    expect(operation[0]).toEqual({ operation_id: reauth.operation_id, kind: 'diagnostics', capability_revision: revision, confirmation: 'ЗАПУСТИТЬ DIAGNOSTICS' })
     expect(operation[1]).toBe('reauth-token')
     expect(localStorage.getItem('robopark:system-operation')).toBe(reauth.operation_id)
   })
@@ -143,6 +143,57 @@ describe('SystemPage', () => {
     expect(screen.getByText('11111111-1111-4111-8111-111111111111')).toBeVisible()
   })
 
+  it('does not adopt an arbitrary server job without an exact locally stored UUID', async () => {
+    const api = client({ getJob: vi.fn().mockResolvedValue({ id: '22222222-2222-4222-8222-222222222222', kind: 'diagnostics', state: 'running', phase: 'executing', progress_percent: 50, error: null }) })
+    render(tree('royal', api))
+    await screen.findByRole('region', { name: 'Управляемые операции' })
+    expect(screen.queryByRole('progressbar', { name: 'Прогресс операции' })).not.toBeInTheDocument()
+    expect(localStorage.getItem('robopark:system-operation')).toBeNull()
+  })
+
+  it('requires an exact sanitized discovered USB UUID before enabling selection', async () => {
+    localStorage.setItem('robopark:system-operation', '33333333-3333-4333-8333-333333333333')
+    const api = client({ getJob: vi.fn().mockResolvedValue({
+      id: '33333333-3333-4333-8333-333333333333', kind: 'usb-discover', state: 'succeeded', phase: 'completed', progress_percent: 100, error: null,
+      host_result: { devices: [{ device_uuid: '44444444-4444-4444-8444-444444444444', removable: true, mounted: false }] },
+    }) })
+    render(tree('royal', api))
+    const selectButton = await screen.findByRole('button', { name: 'Выбрать USB' })
+    expect(selectButton).toBeDisabled()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Обнаруженное USB-устройство' }), { target: { value: '44444444-4444-4444-8444-444444444444' } })
+    expect(selectButton).toBeEnabled()
+    fireEvent.click(selectButton)
+    const dialog = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
+    fireEvent.change(within(dialog).getByLabelText('Введите ЗАПУСТИТЬ USB-SELECT'), { target: { value: 'ЗАПУСТИТЬ USB-SELECT' } })
+    fireEvent.change(within(dialog).getByLabelText('Пароль'), { target: { value: 'secret' } })
+    fireEvent.change(within(dialog).getByLabelText('Код TOTP или восстановления'), { target: { value: '123456' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Запустить' }))
+    await waitFor(() => expect(api.startOperation).toHaveBeenCalledOnce())
+    expect(vi.mocked(api.startOperation).mock.calls[0][0]).toMatchObject({
+      kind: 'usb-select', device_uuid: '44444444-4444-4444-8444-444444444444', confirmation: 'ЗАПУСТИТЬ USB-SELECT',
+    })
+  })
+
+  it('labels partial telemetry as unknown and exposes a textual seven-day history', async () => {
+    const partial: SystemSummary = {
+      ...summary,
+      sync: { ...summary.sync, last_error: null, worker_lease_state: 'unknown' },
+      metrics: { host: {} },
+    }
+    render(tree('admin', client({
+      getSummary: vi.fn().mockResolvedValue(partial),
+      getHistory: vi.fn().mockResolvedValue({ active_users: [{ date: '2026-09-24', users: 6 }], metrics: [] }),
+    })))
+    const table = await screen.findByRole('table', { name: 'Активные пользователи за 7 дней — значения' })
+    expect(within(table).getByText('2026-09-24')).toBeVisible()
+    expect(within(table).getByText('6')).toBeVisible()
+    expect(screen.queryByText('Резервная копия: проверена')).not.toBeInTheDocument()
+    expect(screen.queryByText('Очистка: без ошибок')).not.toBeInTheDocument()
+    expect(screen.getByText('Резервная копия: Неизвестно')).toBeVisible()
+    expect(screen.getByText('Очистка: Неизвестно')).toBeVisible()
+    expect(screen.getAllByText('Нет данных').length).toBeGreaterThanOrEqual(6)
+  })
+
   it('pauses polling while hidden and resumes once without duplicate timers', async () => {
     vi.useFakeTimers()
     const api = client()
@@ -163,10 +214,10 @@ describe('SystemPage', () => {
     expect(api.getSummary).toHaveBeenCalledTimes(initial + 2)
   })
 
-  it('removes protected system data when a refresh is denied', async () => {
+  it.each([401, 403])('removes protected system data when a refresh returns %s', async status => {
     const getSummary = vi.fn()
       .mockResolvedValueOnce(summary)
-      .mockRejectedValueOnce(new ApiError(403, 'forbidden'))
+      .mockRejectedValueOnce(new ApiError(status, 'forbidden'))
     const api = client({ getSummary })
     render(tree('admin', api))
     expect(await screen.findByRole('img', { name: 'Активные пользователи за 7 дней' })).toBeVisible()

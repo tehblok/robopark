@@ -33,12 +33,13 @@ export type HostCapabilities = {
   revision: string | null
   operations: Record<HostOperationKind, {
     available: boolean
-    unavailable_reason: 'capability_unavailable' | 'capabilities_unavailable' | null
+    unavailable_reason: 'capability_unavailable' | 'capabilities_unavailable' | 'context_unavailable' | null
   }>
 }
 export type SystemJob = {
   id: string; kind: string; state: string; phase: string
   progress_percent: number | null; error: string | null
+  host_result?: { devices?: Array<{ device_uuid: string; removable: boolean; mounted: boolean }> } | null
 }
 export type ReauthorizationInput = {
   password: string; code: string; operation_kind: HostOperationKind
@@ -46,6 +47,7 @@ export type ReauthorizationInput = {
 }
 export type HostOperationPayload = Record<string, unknown> & {
   operation_id: string; kind: HostOperationKind; capability_revision: string
+  confirmation: string
 }
 export type SystemClient = {
   getSummary: () => Promise<SystemSummary>

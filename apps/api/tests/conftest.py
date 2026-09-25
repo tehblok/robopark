@@ -52,7 +52,6 @@ def authorize_privileged_ops(client, monkeypatch):
             "/admin/ops/restore": ("restore", "restore"),
             "/admin/ops/update": ("update", "update"),
             "/admin/ops/abort": ("abort", "abort"),
-            "/admin/ops/diagnostics": ("diagnostics", "diagnostics"),
             "/admin/ops/repair": ("repair", "repair"),
             "/admin/ops/update/inspect": ("update.inspect", "inspect"),
             "/admin/ops/update/approve": (

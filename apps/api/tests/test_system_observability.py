@@ -2,10 +2,13 @@ import asyncio
 import threading
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from conftest import login_as
-from robopark_api.models import UserPark
+from robopark_api.models import AccessStatus, Permission, Role, User, UserPark
+from robopark_api.security import hash_password
+from robopark_api.services import rbac
 from robopark_api.task_workflow_models import ReliableAction
 
 
@@ -53,6 +56,21 @@ def test_admin_system_history_requires_admin_and_bounds_days(client, seed_mechan
     response = client.get("/admin/system/history?days=7")
     assert response.status_code == 200
     assert set(response.json()) >= {"active_users", "metrics"}
+
+
+def test_custom_role_with_nav_admin_cannot_read_system_telemetry(client, db_session):
+    permission = db_session.scalar(select(Permission).where(Permission.key == rbac.PERMISSION_NAV_ADMIN))
+    role = Role(slug="system-viewer", name="System viewer", is_system=False, permissions=[permission])
+    db_session.add(role)
+    db_session.flush()
+    db_session.add(User(
+        username="system-viewer", password_hash=hash_password("secret"), role_id=role.id,
+        access_status=AccessStatus.approved.value, is_active=True,
+    ))
+    db_session.commit()
+    login_as(client, "system-viewer", "secret")
+    assert client.get("/admin/system/summary").status_code == 403
+    assert client.get("/admin/system/history").status_code == 403
 
 
 def test_worker_metric_sample_and_retention_are_bounded(db_session):

@@ -26,6 +26,7 @@ test('admin reads the compact system console at 390px without host controls', as
   await page.goto('/system?park=7')
   await expect(page.getByRole('heading', { name: 'Система', level: 1 })).toBeVisible()
   await expect(page.getByRole('img', { name: 'Активные пользователи за 7 дней' })).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Активные пользователи за 7 дней — значения' })).toContainText('2026-09-24')
   await expect(page.getByText('Wi‑Fi')).toBeVisible()
   await expect(page.getByRole('region', { name: 'Управляемые операции' })).toHaveCount(0)
   await expect(page.locator('body')).not.toContainText(/argv|командная строка/i)
@@ -50,7 +51,7 @@ test('royal confirms an available typed operation and resumes UUID progress at 1
     { method: 'POST', path: '/api/admin/ops/operations', handler: async request => {
       const body = await request.json() as Record<string, string>
       expect(request.headers.get('X-Privileged-Authorization')).toBe('reauth')
-      expect(body).toEqual({ operation_id: acceptedId, kind: 'diagnostics', capability_revision: revision })
+      expect(body).toEqual({ operation_id: acceptedId, kind: 'diagnostics', capability_revision: revision, confirmation: 'ЗАПУСТИТЬ DIAGNOSTICS' })
       return { json: { id: acceptedId, kind: 'diagnostics', state: 'running', phase: 'accepted', progress_percent: 0, error: null } }
     } },
   ]

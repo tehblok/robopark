@@ -690,6 +690,7 @@ export function TaskController({
   )
   const ownedItems = ownedEnabled ? oldestFirst(owned.data?.items ?? []) : []
   const ownedKeys = new Set(ownedItems.map(item => item.key))
+  const visibleListItems = list.data?.items ?? []
   const detailFailure = failureFor(
     detail.error,
     'Не удалось загрузить задачу.',
@@ -1224,6 +1225,7 @@ export function TaskController({
           detailOpen={Boolean(issueKey)}
           list={<div className="rp-work-list-pane">
             <h2>{taskView === 'mine' && hasOwnedView ? 'Мои задачи' : 'Очередь задач'}</h2>
+            {state.sync === 'needs_attention' ? <p role="status">Показаны только задачи, требующие внимания при синхронизации. Безопасный повтор доступен в карточке задачи.</p> : null}
             {hasOwnedView ? <div aria-label="Раздел задач" className="rp-work-view-switch">
               <button aria-pressed={taskView === 'queue'} onClick={() => setTaskView('queue')} type="button">Очередь</button>
               <button aria-pressed={taskView === 'mine'} onClick={() => setTaskView('mine')} type="button">Мои задачи ({ownedItems.length})</button>
@@ -1244,7 +1246,7 @@ export function TaskController({
                     onClaimed={() => { void list.refresh(); void owned.refresh() }}
                     onOpen={saveAndOpenIssue} selected={issueKey} now={now} user={user} />
                 </div> : <EmptyState description="Взятые вами задачи появятся здесь." icon="work" title="Моих задач пока нет" />
-              ) : !listFailure && list.data?.items.length === 0 && ownedItems.length === 0 ? (
+              ) : !listFailure && visibleListItems.length === 0 && ownedItems.length === 0 ? (
                 <EmptyState
                   description="Измените фильтры или проверьте выбранный парк."
                   icon="work"
@@ -1252,7 +1254,7 @@ export function TaskController({
                 />
               ) : list.data ? (
                 <div className="rp-work-list-scroll" ref={listScrollRef}>
-                  <p className="rp-work-list-count">Показано {list.data.items.length}{list.data.total > list.data.items.length ? ` из ${list.data.total}` : ''}</p>
+                  <p className="rp-work-list-count">Показано {visibleListItems.length}{state.sync !== 'needs_attention' && list.data.total > visibleListItems.length ? ` из ${list.data.total}` : ''}</p>
                   {ownedItems.length ? <>
                     <h3>{user.role === 'operator' ? 'Ждут проверки' : 'Мои задачи в работе'}</h3>
                     <WorkIssueRows
@@ -1268,7 +1270,7 @@ export function TaskController({
                   </> : null}
                   <WorkIssueRows
                     apiClient={apiClient}
-                    items={oldestFirst(list.data.items).filter(item => !ownedKeys.has(item.key))}
+                    items={oldestFirst(visibleListItems).filter(item => !ownedKeys.has(item.key))}
                     onClaimed={() => { void list.refresh(); void owned.refresh() }}
                     onOpen={saveAndOpenIssue}
                     selected={issueKey}

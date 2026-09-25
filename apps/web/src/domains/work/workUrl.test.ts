@@ -11,6 +11,12 @@ import {
 const defaults = { queue: 'ROBOPARK' }
 
 describe('work URL state', () => {
+  it('round-trips the sync attention view for share and history navigation', () => {
+    const state = parseWorkUrl(new URLSearchParams('sync=needs_attention'), defaults)
+    expect(state.sync).toBe('needs_attention')
+    expect(buildWorkSearch(state, 7)).toContain('sync=needs_attention')
+    expect(parseWorkUrl(new URLSearchParams(buildWorkSearch(state, 7)), defaults)).toEqual(state)
+  })
   afterEach(() => {
     vi.restoreAllMocks()
     sessionStorage.clear()

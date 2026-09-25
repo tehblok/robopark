@@ -8,7 +8,7 @@ from robopark_host.commands import SafeProductionTypedHostEffects, TypedHostEffe
 
 BOOT_ID = "00000000-0000-4000-8000-000000000010"
 SAFE_KINDS = {
-    "package-inspect", "backup-verify", "cleanup-preview", "diagnostics",
+    "package-inspect", "cleanup-preview", "diagnostics",
     "usb-discover", "usb-select",
 }
 UNAVAILABLE_KINDS = {
@@ -28,7 +28,7 @@ def capability_host(host_paths, monkeypatch):
     return host_paths
 
 
-def test_idle_production_consumer_publishes_only_its_six_supported_kinds(capability_host):
+def test_idle_production_consumer_marks_missing_backup_key_context_unavailable(capability_host):
     from robopark_api.services.ops import host_bridge
     from robopark_host.cli import _consume_handler
 
@@ -36,10 +36,14 @@ def test_idle_production_consumer_publishes_only_its_six_supported_kinds(capabil
     report = host_bridge.operation_capabilities(capability_host.ops)
     assert report.state == "ready"
     assert {kind.value for kind, value in report.operations.items() if value.available} == SAFE_KINDS
-    assert {
+    reasons = {
         kind.value: value.unavailable_reason
         for kind, value in report.operations.items() if not value.available
-    } == dict.fromkeys(UNAVAILABLE_KINDS, "capability_unavailable")
+    }
+    assert reasons == {
+        **dict.fromkeys(UNAVAILABLE_KINDS, "capability_unavailable"),
+        "backup-verify": "context_unavailable",
+    }
     assert not (capability_host.ops / "inbox/approved.json").exists()
 
 
@@ -92,6 +96,7 @@ def test_queued_request_cannot_execute_after_capability_drift(capability_host, d
         {
             "operation_id": identity, "kind": "package-inspect", "package": "openssl",
             "capability_revision": revision,
+            "confirmation": "ЗАПУСТИТЬ PACKAGE-INSPECT",
         },
         7, "session", authorization_consumed={
             "operation_id": identity, "operation_kind": "package-inspect",

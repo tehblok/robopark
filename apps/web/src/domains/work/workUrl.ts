@@ -13,6 +13,7 @@ export type WorkFilters = {
 export type WorkDetailTab = 'task' | 'open' | 'closed' | 'check' | 'chat' | 'parts'
 
 export type WorkUrlState = {
+  sync?: 'needs_attention'
   detailTab?: WorkDetailTab
   checkTab?: string
   rootIssue?: string
@@ -70,6 +71,7 @@ export function parseWorkUrl(
   const root = text(params, 'blocker')
   const checkTab = text(params, 'check_tab')
   return {
+    ...(params.get('sync') === 'needs_attention' ? { sync: 'needs_attention' as const } : {}),
     ...(['open', 'closed', 'check', 'chat', 'parts'].includes(view ?? '') ? { detailTab: view as WorkDetailTab } : {}),
     ...(root && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(root) ? { rootIssue: root } : {}),
     ...(checkTab && /^[a-zA-Z0-9_-]{1,80}$/.test(checkTab) ? { checkTab } : {}),
@@ -107,6 +109,7 @@ export function buildWorkSearch(state: WorkUrlState, parkId: number | null): str
     params.set('age', String(filters.ageHours))
   }
   if (serializablePage(state.page)) params.set('page', String(state.page))
+  if (state.sync === 'needs_attention') params.set('sync', 'needs_attention')
 
   if (state.rootIssue) params.set('blocker', state.rootIssue)
   if (state.detailTab && state.detailTab !== 'task') params.set('view', state.detailTab)

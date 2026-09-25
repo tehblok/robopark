@@ -13,12 +13,11 @@ it('sends inspected archive separately from strict JSON approvals and uses dedic
   await api.opsInspectUpdate(new File(['zip'], 'signed.zip'))
   await api.opsApproveUpdate('inspection-one', 'ОБНОВИТЬ')
   await api.opsApproveGithubUpdate(42, 'ОБНОВИТЬ')
-  await api.opsDiagnostics()
   await api.opsRepair()
   await api.opsDiagnosticArtifact()
   expect(requests.map(({ url }) => url)).toEqual([
     '/api/admin/ops/system-health', '/api/admin/ops/available-update', '/api/admin/ops/update/inspect',
-    '/api/admin/ops/update/approve', '/api/admin/ops/github-update/approve', '/api/admin/ops/diagnostics',
+    '/api/admin/ops/update/approve', '/api/admin/ops/github-update/approve',
     '/api/admin/ops/repair', '/api/admin/ops/diagnostic-artifact',
   ])
   const form = requests[2].init?.body as FormData
@@ -26,5 +25,5 @@ it('sends inspected archive separately from strict JSON approvals and uses dedic
   expect(form.has('confirm')).toBe(false)
   expect(JSON.parse(String(requests[3].init?.body))).toEqual({ inspection_id: 'inspection-one', confirm: 'ОБНОВИТЬ' })
   expect(JSON.parse(String(requests[4].init?.body))).toEqual({ release_id: 42, confirm: 'ОБНОВИТЬ' })
-  expect(requests.slice(2, 7).every(({ init }) => init?.method === 'POST')).toBe(true)
+  expect(requests.slice(2, 6).every(({ init }) => init?.method === 'POST')).toBe(true)
 })

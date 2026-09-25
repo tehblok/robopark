@@ -22,10 +22,16 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
   const mounted = useRef(false)
   const pending = useRef<Promise<void> | null>(null)
 
+  const clearProtected = useCallback(() => {
+    setSummary(null); setHistory(null); setCapabilities(null); setJob(null)
+  }, [])
   const refreshCapabilities = useCallback(async () => {
     if (!royal) return
-    try { setCapabilities(await client.getCapabilities()) } catch { setCapabilities(null) }
-  }, [client, royal])
+    try { setCapabilities(await client.getCapabilities()) } catch (caught) {
+      if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) clearProtected()
+      else setCapabilities(null)
+    }
+  }, [clearProtected, client, royal])
   const refresh = useCallback(() => {
     if (!allowed) return Promise.resolve()
     if (pending.current) return pending.current
@@ -39,23 +45,20 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
         if (royal) {
           setCapabilities(nextCapabilities ?? null)
           const stored = localStorage.getItem('robopark:system-operation')
-          if (nextJob?.id && (!stored || stored === nextJob.id)) {
+          if (stored && nextJob?.id === stored) {
             setJob(nextJob)
-            localStorage.setItem('robopark:system-operation', nextJob.id)
             if (nextJob.state === 'succeeded' || nextJob.state === 'failed') localStorage.removeItem('robopark:system-operation')
           }
         }
       } catch (caught) {
         if (!mounted.current) return
         setFailed(true)
-        if (caught instanceof ApiError && caught.status === 403) {
-          setSummary(null); setHistory(null); setCapabilities(null); setJob(null)
-        }
+        if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) clearProtected()
       }
     })().finally(() => { if (pending.current === work) pending.current = null })
     pending.current = work
     return work
-  }, [allowed, client, royal])
+  }, [allowed, clearProtected, client, royal])
 
   useEffect(() => {
     mounted.current = true

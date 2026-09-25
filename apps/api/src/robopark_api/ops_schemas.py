@@ -112,11 +112,19 @@ class UpdateApprovalIn(BaseModel):
     confirm: str
 
 
+class UsbDeviceOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    device_uuid: UUID
+    removable: bool
+    mounted: bool
+
+
 class HostResultOut(BaseModel):
     before: list[CheckOut] = []
     after: list[CheckOut] = []
     performed: list[str] = []
     failed: list[str] = []
+    devices: list[UsbDeviceOut] = []
 
 
 def public_result(value):
@@ -131,11 +139,31 @@ def public_result(value):
             else []
         )
 
+    devices = []
+    detail = value.get("detail")
+    raw_devices = value.get("devices")
+    if not isinstance(raw_devices, list):
+        raw_devices = detail.get("devices") if isinstance(detail, dict) else None
+    if isinstance(raw_devices, list):
+        for item in raw_devices[:8]:
+            if not isinstance(item, dict):
+                continue
+            if type(item.get("removable")) is not bool or type(item.get("mounted")) is not bool:
+                continue
+            try:
+                devices.append(UsbDeviceOut(
+                    device_uuid=item.get("device_uuid"),
+                    removable=item["removable"], mounted=item["mounted"],
+                ))
+            except ValueError:
+                continue
+
     return HostResultOut(
         before=public_checks(value.get("before")),
         after=public_checks(value.get("after")),
         performed=actions("performed"),
         failed=actions("failed"),
+        devices=devices,
     )
 
 
@@ -188,7 +216,7 @@ class HostOperationKind(StrEnum):
 class HostOperationCapabilityOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
     available: bool = Field(strict=True)
-    unavailable_reason: Literal["capability_unavailable", "capabilities_unavailable"] | None
+    unavailable_reason: Literal["capability_unavailable", "capabilities_unavailable", "context_unavailable"] | None
 
 
 class HostCapabilitiesOut(BaseModel):
@@ -205,6 +233,7 @@ class _HostOperationBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operation_id: UUID
     capability_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    confirmation: str = Field(min_length=1, max_length=160)
 
 
 class HostReleaseUpdateIn(_HostOperationBase):

@@ -21,7 +21,7 @@ function ratio(used: unknown, total: unknown) {
 function ActiveUsersChart({ history }: { history: SystemHistory }) {
   const points = history.active_users.slice(-7)
   const max = Math.max(1, ...points.map(point => point.users))
-  return <svg aria-label="Активные пользователи за 7 дней" className="rp-system-chart" role="img" viewBox="0 0 280 88">
+  return <div><svg aria-label="Активные пользователи за 7 дней" className="rp-system-chart" role="img" viewBox="0 0 280 88">
     <title>Активные пользователи за 7 дней</title>
     {points.map((point, index) => {
       const height = point.users / max * 58
@@ -30,7 +30,10 @@ function ActiveUsersChart({ history }: { history: SystemHistory }) {
         <text x={24 + index * 38} y="82">{point.date.slice(5)}</text>
       </g>
     })}
-  </svg>
+  </svg><table aria-label="Активные пользователи за 7 дней — значения" className="rp-system-chart-values">
+    <thead><tr><th>Дата</th><th>Пользователи</th></tr></thead>
+    <tbody>{points.map(point => <tr key={point.date}><td>{point.date}</td><td>{point.users}</td></tr>)}</tbody>
+  </table></div>
 }
 
 export function SystemMetrics({ summary, history }: { summary: SystemSummary; history: SystemHistory }) {
@@ -67,7 +70,7 @@ export function SystemMetrics({ summary, history }: { summary: SystemSummary; hi
       <div className="rp-system-grid">
         <MetricCard label="Очередь" value={summary.sync.pending_action_count} delta={`${summary.sync.needs_attention_count} требуют внимания`} tone={summary.sync.needs_attention_count ? 'warning' : 'success'} />
         <MetricCard label="Worker" value={summary.sync.worker_lease_state === 'active' ? 'Работает' : summary.sync.worker_lease_state === 'stale' ? 'Задержка' : 'Нет данных'} />
-        <MetricCard label="Tracker" value={typeof tracker.errors === 'number' && tracker.errors > 0 ? 'Есть ошибки' : summary.sync.last_error ? 'Есть ошибки' : 'Работает'} delta={summary.sync.cursor_age_seconds == null ? 'Курсор неизвестен' : `Курсор: ${summary.sync.cursor_age_seconds} с`} />
+        <MetricCard label="Tracker" value={typeof tracker.errors !== 'number' && !summary.sync.last_error ? 'Нет данных' : typeof tracker.errors === 'number' && tracker.errors > 0 ? 'Есть ошибки' : summary.sync.last_error ? 'Есть ошибки' : 'Работает'} delta={summary.sync.cursor_age_seconds == null ? 'Курсор неизвестен' : `Курсор: ${summary.sync.cursor_age_seconds} с`} />
         <MetricCard label="Tuna" value={state(host.tuna)} />
         <MetricCard label="Хранилище" value={bytes(disk.free_bytes)} delta={typeof storage.bytes_to_reclaim === 'number' ? `К очистке: ${bytes(storage.bytes_to_reclaim)}` : 'Состояние очистки неизвестно'} />
       </div>
@@ -75,8 +78,8 @@ export function SystemMetrics({ summary, history }: { summary: SystemSummary; hi
     </Panel>
     <Panel title="Состояние очистки и резервных копий">
       <div className="rp-system-status-row">
-        <StatusBadge tone={record(host.backup).overdue === true ? 'warning' : 'success'}>Резервная копия: {record(host.backup).overdue === true ? 'просрочена' : 'проверена'}</StatusBadge>
-        <StatusBadge tone={storage.cleanup_failed === true ? 'critical' : 'neutral'}>Очистка: {storage.cleanup_failed === true ? 'ошибка' : 'без ошибок'}</StatusBadge>
+        <StatusBadge tone={record(host.backup).overdue === true ? 'warning' : record(host.backup).overdue === false ? 'success' : 'neutral'}>Резервная копия: {record(host.backup).overdue === true ? 'просрочена' : record(host.backup).overdue === false ? 'проверена' : 'Неизвестно'}</StatusBadge>
+        <StatusBadge tone={storage.cleanup_failed === true ? 'critical' : storage.cleanup_failed === false ? 'success' : 'neutral'}>Очистка: {storage.cleanup_failed === true ? 'ошибка' : storage.cleanup_failed === false ? 'без ошибок' : 'Неизвестно'}</StatusBadge>
       </div>
     </Panel>
   </div>

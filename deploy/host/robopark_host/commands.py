@@ -298,7 +298,18 @@ def _required_confirmation(kind, value):
         return f"RESTART SERVICE {value.get('service', '')}"
     if kind is OperationKind.USB_FORMAT:
         return f"FORMAT USB {value.get('device_uuid', '')}"
-    return DESTRUCTIVE_CONFIRMATIONS.get(kind)
+    safe = {
+        OperationKind.PACKAGE_INSPECT,
+        OperationKind.BACKUP_VERIFY,
+        OperationKind.CLEANUP_PREVIEW,
+        OperationKind.DIAGNOSTICS,
+        OperationKind.USB_DISCOVER,
+        OperationKind.USB_SELECT,
+    }
+    return (
+        DESTRUCTIVE_CONFIRMATIONS.get(kind)
+        or (f"ЗАПУСТИТЬ {kind.value.upper()}" if kind in safe else None)
+    )
 
 
 def validate_typed_operation(value, *, fresh=True, authorization_fresh=True):
@@ -309,14 +320,11 @@ def validate_typed_operation(value, *, fresh=True, authorization_fresh=True):
             raise ValueError()
         kind = OperationKind(value.get("kind"))
         required = set(_TYPED_FIELDS[kind])
-        if kind in DESTRUCTIVE_CONFIRMATIONS or kind in _DYNAMIC_CONFIRMATION_KINDS:
-            required.update({"confirmation", "authorization"})
-            if "authorization" not in value:
-                raise ReleaseError("authorization_required")
-            if "confirmation" not in value:
-                raise ReleaseError("confirmation_required")
-        elif "authorization" in value:
-            required.add("authorization")
+        required.update({"confirmation", "authorization"})
+        if "authorization" not in value:
+            raise ReleaseError("authorization_required")
+        if "confirmation" not in value:
+            raise ReleaseError("confirmation_required")
         common = {"job_id", "kind", "actor_user_id", "created_at", "capability_revision"}
         if not isinstance(value.get("capability_revision"), str) or not re.fullmatch(
             r"[a-f0-9]{64}", value["capability_revision"]
@@ -1150,6 +1158,12 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
         self.device_provider = device_provider or (lambda: discover_usb_devices(paths))
         if runner is None or http is None:
             self.supported_kinds = self.supported_kinds - {OperationKind.DIAGNOSTICS}
+        self.unavailable_reasons = {}
+        try:
+            self._external_key()
+        except ReleaseError:
+            self.supported_kinds = self.supported_kinds - {OperationKind.BACKUP_VERIFY}
+            self.unavailable_reasons[OperationKind.BACKUP_VERIFY] = "context_unavailable"
 
     @classmethod
     def unsupported_kinds(cls):

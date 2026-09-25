@@ -92,8 +92,14 @@ def test_metadata_has_required_tables():
         "auth_throttle_states",
         "privileged_credentials",
         "privileged_recovery_codes",
+        "privileged_recovery_resets",
+        "privileged_recovery_reset_codes",
         "privileged_reauthorizations",
         "privileged_auth_audit",
+        "presence_samples",
+        "user_presence",
+        "system_metric_raw",
+        "system_metric_aggregates",
         "ip_geo_cache",
         "ip_geo_quota",
     }
@@ -129,7 +135,7 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
 def test_alembic_head_is_privileged_auth():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0046_privileged_generation"]
+    assert script.get_heads() == ["0047_capability_revision"]
 
 
 def test_privileged_audit_is_immutable_after_sqlite_migration(
@@ -244,11 +250,20 @@ def test_privileged_generation_migration_binds_existing_grants(
                 "WHERE user_id = 999"
             )
         ) == 1
+        assert connection.scalar(text(
+            "SELECT capability_revision FROM privileged_reauthorizations WHERE user_id = 999"
+        )) is None
     inspector = inspect(engine)
     assert {
         "privileged_recovery_resets",
         "privileged_recovery_reset_codes",
     } <= set(inspector.get_table_names())
+    assert "capability_revision" in {
+        column["name"] for column in inspector.get_columns("privileged_reauthorizations")
+    }
+    assert "capability_revision" in {
+        column["name"] for column in inspector.get_columns("privileged_auth_audit")
+    }
 
 
 def test_sync_closure_scan_migration_adds_review_index(sqlite_database_url, monkeypatch):
@@ -274,7 +289,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
         "idempotency_key", "lease_owner", "lease_until",
     }
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0046_privileged_generation"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0047_capability_revision"
 
 
 def test_schedule_series_lookup_index_is_used(sqlite_database_url, monkeypatch):
@@ -909,8 +924,9 @@ def test_models_match_required_schema():
         "last_seen_at",
         "last_ip",
         "last_device",
-        "last_location",
-    }
+            "last_location",
+            "timezone",
+        }
     assert set(AuthSession.__table__.columns.keys()) == {
         "id",
         "user_id",

@@ -124,8 +124,10 @@ def typed_request(kind, **changes):
         "capability_revision": capability_revision(
             TEST_BOOT_ID, operation_capabilities(FakeHostEffects())
         ),
+        "confirmation": f"ЗАПУСТИТЬ {kind.upper()}",
     }
     value.update(changes)
+    value.setdefault("authorization", authorization(value))
     return value
 
 
@@ -168,19 +170,19 @@ def publish_test_capabilities(paths, effects, monkeypatch):
         ({"kind": "release-update", "release_id": 7, "confirmation": "UPDATE ROBOPARK"}, "release_update"),
         ({"kind": "reinstall", "confirmation": "REINSTALL ROBOPARK"}, "reinstall"),
         ({"kind": "rollback", "release": "release-a", "confirmation": "ROLLBACK ROBOPARK"}, "rollback"),
-        ({"kind": "package-inspect", "package": "openssl"}, "package_inspect"),
+        ({"kind": "package-inspect", "package": "openssl", "confirmation": "ЗАПУСТИТЬ PACKAGE-INSPECT"}, "package_inspect"),
         ({"kind": "package-update", "package": "openssl", "confirmation": "UPDATE PACKAGE openssl"}, "package_update"),
         ({"kind": "service-restart", "service": "robopark-api.service", "confirmation": "RESTART SERVICE robopark-api.service"}, "service_restart"),
         ({"kind": "reboot", "confirmation": "REBOOT ROBOPARK"}, "reboot"),
-        ({"kind": "backup", "device_uuid": _DEVICE_UUID}, "backup"),
-        ({"kind": "backup-verify", "backup_id": _BACKUP_UUID}, "backup_verify"),
+        ({"kind": "backup", "device_uuid": _DEVICE_UUID, "confirmation": "BACKUP ROBOPARK"}, "backup"),
+        ({"kind": "backup-verify", "backup_id": _BACKUP_UUID, "confirmation": "ЗАПУСТИТЬ BACKUP-VERIFY"}, "backup_verify"),
         ({"kind": "backup-restore", "backup_id": _BACKUP_UUID, "confirmation": "RESTORE ROBOPARK BACKUP"}, "backup_restore"),
-        ({"kind": "cleanup-preview", "categories": ["backups", "releases"]}, "cleanup_preview"),
+        ({"kind": "cleanup-preview", "categories": ["backups", "releases"], "confirmation": "ЗАПУСТИТЬ CLEANUP-PREVIEW"}, "cleanup_preview"),
         ({"kind": "cleanup-execute", "plan_id": _PLAN_UUID, "confirmation": "CLEAN ROBOPARK"}, "cleanup_execute"),
-        ({"kind": "diagnostics"}, "diagnostics"),
-        ({"kind": "usb-discover"}, "usb_discover"),
+        ({"kind": "diagnostics", "confirmation": "ЗАПУСТИТЬ DIAGNOSTICS"}, "diagnostics"),
+        ({"kind": "usb-discover", "confirmation": "ЗАПУСТИТЬ USB-DISCOVER"}, "usb_discover"),
         ({"kind": "usb-format", "device_uuid": _DEVICE_UUID, "confirmation": f"FORMAT USB {_DEVICE_UUID}", "confirmation_repeat": f"FORMAT USB {_DEVICE_UUID}"}, "usb_format"),
-        ({"kind": "usb-select", "device_uuid": _DEVICE_UUID}, "usb_select"),
+        ({"kind": "usb-select", "device_uuid": _DEVICE_UUID, "confirmation": "ЗАПУСТИТЬ USB-SELECT"}, "usb_select"),
     ],
 )
 def test_api_bridge_to_real_consumer_dispatches_every_typed_kind(
@@ -333,7 +335,7 @@ def test_default_cli_consumer_verifies_backup_with_external_runtime_key(host_pat
         backups / f"backup-{_BACKUP_UUID}.rpb",
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0046_privileged_generation",
+        schema_version="0047_capability_revision",
     )
     device = host_paths.root / "dev/fake-usb"
     device.parent.mkdir(parents=True)
@@ -412,7 +414,7 @@ def _production_backup_verify_fixture(host_paths):
             artifact,
             recovery_key=key,
             app_version="0.2.0-rc.6",
-            schema_version="0046_privileged_generation",
+            schema_version="0047_capability_revision",
         )
         artifact.chmod(0o600)
         return artifact
@@ -815,6 +817,7 @@ def test_usb_format_requires_uuid_safe_removable_device_and_double_confirmation(
     assert len(effects.calls) == 1
     collision = typed_request("package-inspect", package="openssl")
     collision["job_id"] = command["job_id"]
+    collision["authorization"] = authorization(collision)
     with pytest.raises(ReleaseError, match="duplicate_operation_id"):
         execute_typed_operation(host_paths, collision, effects)
 
@@ -836,6 +839,7 @@ def test_destructive_operation_revalidates_consumed_authorization_and_phrase(hos
 
     command = typed_request("reboot", confirmation="REBOOT ROBOPARK")
     effects = FakeHostEffects()
+    command.pop("authorization")
     with pytest.raises(ReleaseError, match="authorization_required"):
         execute_typed_operation(host_paths, command, effects)
     command["authorization"] = authorization(command)
@@ -970,7 +974,7 @@ def test_encrypted_backup_never_contains_key_and_restore_requires_external_key(t
         artifact,
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0046_privileged_generation",
+        schema_version="0047_capability_revision",
     )
     assert created["verified"] is False
     metadata = verify_encrypted_backup(artifact, recovery_key=key)
@@ -1002,7 +1006,7 @@ def test_restore_rejects_unverified_or_incompatible_backup(tmp_path):
         artifact,
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0046_privileged_generation",
+        schema_version="0047_capability_revision",
     )
     receipt = verify_encrypted_backup(artifact, recovery_key=key)
     with pytest.raises(ReleaseError, match="verified_backup_required"):
@@ -1054,7 +1058,7 @@ def test_backup_verification_rejects_bounded_archive_limits(tmp_path, limits):
         artifact,
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0046_privileged_generation",
+        schema_version="0047_capability_revision",
     )
 
     with pytest.raises(ReleaseError, match="backup_archive_limit"):
@@ -1078,7 +1082,7 @@ def test_backup_verification_streams_without_extractall(tmp_path, monkeypatch):
         artifact,
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0046_privileged_generation",
+        schema_version="0047_capability_revision",
     )
 
     def forbidden(*args, **kwargs):
@@ -1116,7 +1120,7 @@ def test_backup_zip_directory_bounds_reject_before_zipfile_allocation(
         artifact,
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0046_privileged_generation",
+        schema_version="0047_capability_revision",
     )
 
     def forbidden(*args, **kwargs):
