@@ -216,12 +216,53 @@ def _release_check(paths: HostPaths) -> CheckResult:
         not isinstance(payload, Mapping)
         or not isinstance(payload.get("app_version"), str)
         or not payload["app_version"]
-        or not isinstance(payload.get("format"), int)
+        or not isinstance(payload.get("format", payload.get("format_version")), int)
         or not isinstance(payload.get("migration_head"), str)
         or not payload["migration_head"]
     ):
         return CheckResult("release_layout", "failed", "Манифест текущего релиза неполный", None)
     return CheckResult("release_layout", "ok", "Текущий релиз и манифест согласованы", None)
+
+
+def _ota_storage_check(paths: HostPaths) -> CheckResult:
+    incoming = paths.ops / "ota-uploads"
+    packages = paths.state / "ota-packages"
+    for directory in (incoming, packages):
+        if directory.is_symlink():
+            return CheckResult("ota_storage", "failed", "Каталог OTA небезопасен", None)
+    try:
+        bytes_used = sum(
+            item.stat().st_size
+            for directory in (incoming, packages)
+            if directory.is_dir()
+            for item in directory.iterdir()
+            if item.is_file() and not item.is_symlink()
+        )
+    except OSError:
+        return CheckResult("ota_storage", "warning", "Хранилище OTA недоступно", None)
+    return CheckResult("ota_storage", "ok", f"Пакеты OTA занимают {bytes_used} байт", None)
+
+
+def _ota_rollback_check(paths: HostPaths) -> CheckResult:
+    if not paths.current.is_symlink() or not paths.previous.is_symlink():
+        return CheckResult(
+            "ota_rollback", "warning", "Предыдущий релиз для отката отсутствует", None
+        )
+    try:
+        current = paths.current.resolve(strict=True)
+        previous = paths.previous.resolve(strict=True)
+        safe = all(
+            target.parent == paths.releases.resolve() and not target.is_symlink()
+            for target in (current, previous)
+        )
+    except OSError:
+        safe = False
+    return CheckResult(
+        "ota_rollback",
+        "ok" if safe else "failed",
+        "Откат OTA готов" if safe else "Откат OTA требует восстановления",
+        None,
+    )
 
 
 def _container_check(paths: HostPaths, runner: Runner) -> CheckResult:
@@ -656,6 +697,8 @@ def run_doctor(paths: HostPaths, runner: Runner, http: Any) -> DiagnosticReport:
         _tuna_route_check(paths, http),
         _tuna_certificate_check(paths, http),
         _state_check(paths, "updater", "Состояние обновлений проверено"),
+        _ota_storage_check(paths),
+        _ota_rollback_check(paths),
         _integration_check(http),
         _state_check(paths, "backup", "Последняя резервная копия проверена"),
         _artifact_check(paths, runner),

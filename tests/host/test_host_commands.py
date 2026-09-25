@@ -47,6 +47,9 @@ class FakeHostEffects:
     def release_update(self, operation_id, release_id):
         return self._effect("release_update", operation_id, release_id)
 
+    def ota_update(self, operation_id, upload_id, sha256, version):
+        return self._effect("ota_update", operation_id, upload_id, sha256, version)
+
     def reinstall(self, operation_id):
         return self._effect("reinstall", operation_id)
 
@@ -167,6 +170,7 @@ def publish_test_capabilities(paths, effects, monkeypatch):
 @pytest.mark.parametrize(
     ("payload", "effect"),
     [
+        ({"kind": "ota-update", "upload_id": _DEVICE_UUID, "sha256": "a" * 64, "version": "0.2.0-rc.7", "confirmation": "UPDATE ROBOPARK"}, "ota_update"),
         ({"kind": "release-update", "release_id": 7, "confirmation": "UPDATE ROBOPARK"}, "release_update"),
         ({"kind": "reinstall", "confirmation": "REINSTALL ROBOPARK"}, "reinstall"),
         ({"kind": "rollback", "release": "release-a", "confirmation": "ROLLBACK ROBOPARK"}, "rollback"),
@@ -693,6 +697,7 @@ def test_safe_production_adapter_declares_exact_fail_closed_kinds():
     from robopark_host.commands import OperationKind, SafeProductionTypedHostEffects
 
     assert SafeProductionTypedHostEffects.unsupported_kinds() == {
+        OperationKind.OTA_UPDATE,
         OperationKind.RELEASE_UPDATE,
         OperationKind.REINSTALL,
         OperationKind.ROLLBACK,

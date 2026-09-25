@@ -50,6 +50,7 @@ class BridgeError(ValueError):
 
 _HOST_OPERATION_ADAPTER = TypeAdapter(HostOperationIn)
 _DESTRUCTIVE_PHRASES = {
+    HostOperationKind.OTA_UPDATE: "UPDATE ROBOPARK",
     HostOperationKind.RELEASE_UPDATE: "UPDATE ROBOPARK",
     HostOperationKind.REINSTALL: "REINSTALL ROBOPARK",
     HostOperationKind.ROLLBACK: "ROLLBACK ROBOPARK",

@@ -8,6 +8,7 @@ from pathlib import Path
 # launcher target contributes host modules.
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ota"))
 from robopark_host.cli import main
 
 

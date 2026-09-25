@@ -212,12 +212,18 @@ def _production_typed_effects(paths: HostPaths):
         SafeProductionTypedHostEffects,
         discover_usb_devices,
     )
+    from .ota_update import OtaProductionEffects
+    from .updater import SystemRunner
 
     def devices():
         return discover_usb_devices(paths)
 
     return SafeProductionTypedHostEffects(
-        paths, runner=_system_runner, http=_Http(), device_provider=devices,
+        paths,
+        runner=_system_runner,
+        http=_Http(),
+        device_provider=devices,
+        ota_effects=OtaProductionEffects(paths, SystemRunner()),
     )
 
 
@@ -298,7 +304,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         version(INSTALLER_VERSION)
         assert callable(SystemRunner.wait_ready)
-        assert len(OperationKind) == 16 and callable(TypedHostEffects.usb_format)
+        assert len(OperationKind) == 17 and callable(TypedHostEffects.usb_format)
         assert not {"shell", "exec", "command"} & set(COMMAND_HANDLERS)
         for source in Path(__file__).parent.glob("*.py"):
             compile(source.read_bytes(), str(source), "exec")

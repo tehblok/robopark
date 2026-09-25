@@ -30,6 +30,8 @@ CHECK_LABELS = {
     "tuna_route": "HTTPS-маршрут",
     "tuna_certificate": "Сертификат HTTPS",
     "updater": "Обновления",
+    "ota_storage": "Хранилище OTA",
+    "ota_rollback": "Готовность отката OTA",
     "integrations": "Интеграции",
     "backup": "Резервная копия",
     "diagnostic_artifacts": "Диагностика",
@@ -198,6 +200,7 @@ class GithubApprovalIn(BaseModel):
 class HostOperationKind(StrEnum):
     """Protocol kinds, not an executable inventory; consult HostCapabilitiesOut."""
 
+    OTA_UPDATE = "ota-update"
     RELEASE_UPDATE = "release-update"
     REINSTALL = "reinstall"
     ROLLBACK = "rollback"
@@ -244,6 +247,14 @@ class _HostOperationBase(BaseModel):
 class HostReleaseUpdateIn(_HostOperationBase):
     kind: Literal[HostOperationKind.RELEASE_UPDATE]
     release_id: int = Field(strict=True, gt=0, lt=2**63)
+    confirmation: str
+
+
+class HostOtaUpdateIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.OTA_UPDATE]
+    upload_id: UUID
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,150}$")
     confirmation: str
 
 
@@ -338,7 +349,8 @@ class HostUsbSelectIn(_HostOperationBase):
 
 
 HostOperationIn = Annotated[
-    HostReleaseUpdateIn
+    HostOtaUpdateIn
+    | HostReleaseUpdateIn
     | HostReinstallIn
     | HostRollbackIn
     | HostPackageInspectIn

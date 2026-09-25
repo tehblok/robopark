@@ -27,6 +27,7 @@ from .state import atomic_write_json, exclusive_lock
 
 
 class OperationKind(StrEnum):
+    OTA_UPDATE = "ota-update"
     RELEASE_UPDATE = "release-update"
     REINSTALL = "reinstall"
     ROLLBACK = "rollback"
@@ -46,6 +47,7 @@ class OperationKind(StrEnum):
 
 
 DESTRUCTIVE_CONFIRMATIONS = {
+    OperationKind.OTA_UPDATE: "UPDATE ROBOPARK",
     OperationKind.RELEASE_UPDATE: "UPDATE ROBOPARK",
     OperationKind.REINSTALL: "REINSTALL ROBOPARK",
     OperationKind.ROLLBACK: "ROLLBACK ROBOPARK",
@@ -125,6 +127,9 @@ class TypedHostEffects:
     def release_update(self, operation_id, release_id):
         raise ReleaseError("operation_unavailable")
 
+    def ota_update(self, operation_id, upload_id, sha256, version):
+        raise ReleaseError("operation_unavailable")
+
     def reinstall(self, operation_id):
         raise ReleaseError("operation_unavailable")
 
@@ -193,6 +198,9 @@ class SystemTypedHostEffects(TypedHostEffects):
     def release_update(self, operation_id, release_id):
         return self.system.release_update(operation_id, release_id)
 
+    def ota_update(self, operation_id, upload_id, sha256, version):
+        return self.system.ota_update(operation_id, upload_id, sha256, version)
+
     def reinstall(self, operation_id):
         return self.system.reinstall(operation_id)
 
@@ -240,6 +248,7 @@ class SystemTypedHostEffects(TypedHostEffects):
 
 
 _TYPED_FIELDS = {
+    OperationKind.OTA_UPDATE: {"upload_id", "sha256", "version"},
     OperationKind.RELEASE_UPDATE: {"release_id"},
     OperationKind.REINSTALL: set(),
     OperationKind.ROLLBACK: {"release"},
@@ -340,9 +349,19 @@ def validate_typed_operation(value, *, fresh=True, authorization_fresh=True):
             datetime.now(UTC) - stamp
         ).total_seconds() <= 86400:
             raise ValueError()
-        for key in ("device_uuid", "backup_id", "plan_id"):
+        for key in ("device_uuid", "backup_id", "plan_id", "upload_id"):
             if key in value:
                 _canonical_uuid(value[key])
+        if "sha256" in value and (
+            not isinstance(value["sha256"], str)
+            or re.fullmatch(r"[a-f0-9]{64}", value["sha256"]) is None
+        ):
+            raise ValueError()
+        if "version" in value and (
+            not isinstance(value["version"], str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,150}", value["version"]) is None
+        ):
+            raise ValueError()
         if "release_id" in value and (
             type(value["release_id"]) is not int or not 0 < value["release_id"] < 2**63
         ):
@@ -410,6 +429,10 @@ def _perform_typed(effect, operation, devices):
     identity = operation.operation_id
     value = operation.payload
     kind = operation.kind
+    if kind is OperationKind.OTA_UPDATE:
+        return effect.ota_update(
+            identity, value["upload_id"], value["sha256"], value["version"]
+        )
     if kind is OperationKind.RELEASE_UPDATE:
         return effect.release_update(identity, value["release_id"])
     if kind is OperationKind.REINSTALL:
@@ -1151,11 +1174,16 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
         }
     )
 
-    def __init__(self, paths, *, runner=None, http=None, device_provider=None):
+    def __init__(
+        self, paths, *, runner=None, http=None, device_provider=None, ota_effects=None
+    ):
         self.paths = paths
         self.runner = runner
         self.http = http
+        self.ota_effects = ota_effects
         self.device_provider = device_provider or (lambda: discover_usb_devices(paths))
+        if ota_effects is not None:
+            self.supported_kinds = self.supported_kinds | {OperationKind.OTA_UPDATE}
         if runner is None or http is None:
             self.supported_kinds = self.supported_kinds - {OperationKind.DIAGNOSTICS}
         self.unavailable_reasons = {}
@@ -1176,6 +1204,11 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
     def release_update(self, operation_id, release_id):
         del operation_id, release_id
         return self._unavailable()
+
+    def ota_update(self, operation_id, upload_id, sha256, version):
+        if self.ota_effects is None:
+            return self._unavailable()
+        return self.ota_effects.ota_update(operation_id, upload_id, sha256, version)
 
     def reinstall(self, operation_id):
         del operation_id

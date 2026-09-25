@@ -8,7 +8,7 @@ from robopark_host.commands import SafeProductionTypedHostEffects, TypedHostEffe
 
 BOOT_ID = "00000000-0000-4000-8000-000000000010"
 SAFE_KINDS = {
-    "package-inspect", "cleanup-preview", "diagnostics",
+    "ota-update", "package-inspect", "cleanup-preview", "diagnostics",
     "usb-discover", "usb-select",
 }
 UNAVAILABLE_KINDS = {

@@ -982,6 +982,7 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
         "staging_deleted": 0,
         "atomic_deleted": 0,
         "diagnostic_deleted": 0,
+        "ota_uploads_deleted": 0,
         "temporary_deleted": 0,
         "bytes": 0,
         "pressure": False,
@@ -1014,6 +1015,11 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
                     raise RetentionBlocked("maintenance")
             names, identities = _protected(paths)
             result.update(_cleanup_operation_residue(paths, identities, now=now))
+            from .ota_store import OtaPackageStore
+
+            result["ota_uploads_deleted"] = len(
+                OtaPackageStore(paths).cleanup_expired(now=now, ttl_seconds=STAGING_TTL)
+            )
             bits = _bloom(paths)
             fill = sum(byte.bit_count() for byte in bits)
             if fill >= BLOOM_BYTES * 8 * MAX_FILL:
