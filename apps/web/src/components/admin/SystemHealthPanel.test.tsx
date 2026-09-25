@@ -9,7 +9,7 @@ describe('SystemHealthPanel', () => {
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
   it('shows degraded checks, rollback and backup age with visible text and icons', async () => {
     mockOpsServer()
-    render(<SystemHealthPanel onRepair={() => undefined} busy={false} />)
+    render(<SystemHealthPanel />)
     expect(await screen.findByText('Сервис Tuna')).toBeVisible()
     expect(screen.getByText('Есть проблемы')).toBeVisible()
     expect(screen.getByText('Ошибка')).toBeVisible()
@@ -20,7 +20,7 @@ describe('SystemHealthPanel', () => {
   })
   it('keeps last good health during focus refresh failure without duplicate mount fetch', async () => {
     const fetchMock = mockOpsServer()
-    render(<SystemHealthPanel onRepair={() => undefined} busy={false} />)
+    render(<SystemHealthPanel />)
     await screen.findByText('Сервис Tuna')
     expect(fetchMock).toHaveBeenCalledTimes(1)
     fetchMock.mockRejectedValue(new Error('offline'))
@@ -31,7 +31,7 @@ describe('SystemHealthPanel', () => {
   })
   it('shows unknown and stale host data without exposing raw messages', async () => {
     mockOpsServer({ '/admin/ops/system-health': { ...healthFixture, generated_at: '2020-01-01T00:00:00Z', checks: [{ code: 'dns', status: 'failed', message: 'Traceback /srv/secret.json {"token":"secret"}' }], last_backup: { status: 'unknown', completed_at: null } } })
-    render(<SystemHealthPanel onRepair={() => undefined} busy={false} />)
+    render(<SystemHealthPanel />)
     expect(await screen.findByText(/Данные устарели/)).toBeVisible()
     expect(document.body).not.toHaveTextContent(/Traceback|secret|\/srv/)
     expect(screen.getByText(/Резервная копия: нет данных/)).toBeVisible()

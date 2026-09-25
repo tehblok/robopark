@@ -43,7 +43,6 @@ ROUTE_ACTION_CASES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset({"royal", "admin", "restricted"}),
         frozenset({"nav.admin"}),
     ),
-    "backup-restore-update": (frozenset({"royal"}), frozenset()),
     "manage-user": (
         frozenset({"royal", "admin", "restricted"}),
         frozenset({"users.manage"}),
@@ -98,7 +97,7 @@ def _actor(db, park, action: str, role: str) -> User:
 
 ACTION_HTTP_CONTRACTS = {
     "request-park": ("POST", "/operator/park-requests", {201}),
-    "claim-and-transition": ("POST", "/tracker/issues/ROBOPARK-999/claim", {200}),
+    "claim-and-transition": ("POST", "/tracker/issues/ROBOPARK-999/claim", {200, 409}),
     "attach-photo": ("POST", "/tracker/issues/ROBOPARK-999/attachments", {200}),
     "create-report": ("POST", "/reports", {201}),
     "return-or-resolve": ("POST", "/reports/{report_id}/return", {200}),
@@ -107,7 +106,6 @@ ACTION_HTTP_CONTRACTS = {
     "update-or-delete-campaign": ("PATCH", "/campaigns/999999", {404}),
     "submit-ticket-result": ("POST", "/campaigns/999999/tickets/ROBOPARK-999/complete", {404}),
     "change-platform-settings": ("PUT", "/admin/settings/tracker-policy", {200}),
-    "backup-restore-update": ("POST", "/admin/ops/restore", {200}),
     "manage-user": ("PATCH", "/admin/users/{actor_id}", {200}),
     "approve-user": ("POST", "/admin/users/{pending_user_id}/approve", {204}),
     "manage-role": ("POST", "/admin/roles", {201}),
@@ -213,12 +211,6 @@ def _request(client, action: str, park_id: int, *, actor_id: int, targets: dict[
         return client.put(
             "/admin/settings/tracker-policy",
             json={"queue": "ROBOPARK", "allowed_statuses": []},
-        )
-    if action == "backup-restore-update":
-        return client.post(
-            "/admin/ops/restore",
-            data={"confirm": "ВОССТАНОВИТЬ"},
-            files={"archive": ("fixture.tar.gz", b"fixture-only", "application/gzip")},
         )
     if action == "manage-user":
         return client.patch(f"/admin/users/{actor_id}", json={"tracker_login": "matrix.updated"})

@@ -140,13 +140,12 @@ def test_expire_stale_job(tmp_path):
     assert expired.error == "job_expired"
 
 
-def test_ops_abort_http(client, seed_royal, test_settings):
+def test_legacy_ops_abort_http_is_retired(client, seed_royal, test_settings):
     login_as(client, "royal", "secret")
     job = new_job("snapshot", exempt_token_hash="x")
     job.state = STATE_RUNNING
     save_job(Path(test_settings.ops_dir), job)
     response = client.post("/admin/ops/abort")
-    assert response.status_code == 200
-    assert response.json()["state"] == "failed"
-    assert response.json()["error"] == "aborted"
-    assert client.get("/ops/maintenance").json()["active"] is False
+    assert response.status_code == 410
+    assert response.json()["detail"] == "typed_operation_required"
+    assert client.get("/ops/maintenance").json()["active"] is True

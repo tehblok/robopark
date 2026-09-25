@@ -28,12 +28,9 @@ def test_installed_restore_cannot_fall_back_to_process_local_replacement(tmp_pat
     assert database.read_bytes() == b"live database"
 
 
-def test_installed_restore_queues_root_approval_without_replacing_worker_database(
+def test_installed_legacy_restore_route_cannot_queue_root_approval(
     client, seed_royal, test_settings, tmp_path
 ):
-    import hashlib
-    import json
-
     from conftest import login_as
 
     host = tmp_path / "host-ops"
@@ -50,16 +47,11 @@ def test_installed_restore_queues_root_approval_without_replacing_worker_databas
         data={"confirm": "ВОССТАНОВИТЬ"},
         files={"archive": ("external.zip", archive, "application/zip")},
     )
-    assert response.status_code == 200, response.text
-    assert response.json()["phase"] == "awaiting_host"
-    request = json.loads((host / "inbox/approved.json").read_text())
-    assert request["kind"] == "restore"
-    assert request["actor_user_id"] == seed_royal.id
-    assert request["sha256"] == hashlib.sha256(archive).hexdigest()
-    assert request["artifact"] == "restore-" + response.json()["id"] + ".zip"
-    assert (host / "artifacts" / request["artifact"]).read_bytes() == archive
+    assert response.status_code == 410
+    assert response.json()["detail"] == "typed_operation_required"
+    assert not (host / "inbox/approved.json").exists()
+    assert not list((host / "artifacts").iterdir())
     assert client.get("/auth/me").status_code == 200
-    assert client.post("/admin/ops/abort").status_code == 409
 
 
 def test_restore_admission_reserves_storage_before_creating_job(tmp_path, monkeypatch):

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import QueuePool
 
@@ -179,16 +179,18 @@ def test_postgresql_lock_does_not_wait_for_prechecked_request_queue_pool(monkeyp
     ]
 
 
-def test_postgresql_lock_caps_independent_connections_and_times_out_waiter(monkeypatch):
-    """A third lock waiter times out without opening beyond the two-connection cap."""
+def test_postgresql_nested_locks_share_one_connection_per_workflow(monkeypatch):
+    """Two offline workflows may nest claim locks without starving each other."""
     request_engine = create_engine(
         "sqlite://", poolclass=QueuePool, pool_size=1, max_overflow=0, future=True
     )
     active = 0
     maximum_active = 0
+    connections_opened = 0
     active_lock = threading.Lock()
-    two_opened = threading.Event()
+    both_nested = threading.Event()
     release_holders = threading.Event()
+    nested = 0
 
     class Transaction:
         def __enter__(self):
@@ -199,12 +201,11 @@ def test_postgresql_lock_caps_independent_connections_and_times_out_waiter(monke
 
     class Connection:
         def __enter__(self):
-            nonlocal active, maximum_active
+            nonlocal active, maximum_active, connections_opened
             with active_lock:
                 active += 1
+                connections_opened += 1
                 maximum_active = max(maximum_active, active)
-                if active == 2:
-                    two_opened.set()
             return self
 
         def __exit__(self, *_args):
@@ -237,23 +238,22 @@ def test_postgresql_lock_caps_independent_connections_and_times_out_waiter(monke
     monkeypatch.setattr(database_locks, "_postgres_lock_engine", lambda _bind: state)
 
     def hold(key):
-        with database_idempotency_lock(RequestSession(), key):
+        nonlocal nested
+        with (
+            database_idempotency_lock(RequestSession(), f"offline:{key}"),
+            database_idempotency_lock(RequestSession(), f"tracker-claim:{key}"),
+        ):
+            with active_lock:
+                nested += 1
+                if nested == 2:
+                    both_nested.set()
             assert release_holders.wait(timeout=2)
 
     try:
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             first = executor.submit(hold, "first")
             second = executor.submit(hold, "second")
-            assert two_opened.wait(timeout=1)
-            started = time.monotonic()
-            third = executor.submit(
-                lambda: database_idempotency_lock(RequestSession(), "third").__enter__()
-            )
-            with pytest.raises(HTTPException, match="idempotency_lock_busy"):
-                third.result(timeout=1)
-            assert time.monotonic() - started < 0.5
-            with RequestBind().connect() as request_connection:
-                assert request_connection.scalar(text("SELECT 1")) == 1
+            assert both_nested.wait(timeout=1)
             release_holders.set()
             first.result(timeout=1)
             second.result(timeout=1)
@@ -262,6 +262,68 @@ def test_postgresql_lock_caps_independent_connections_and_times_out_waiter(monke
         request_engine.dispose()
 
     assert maximum_active == 2
+    assert connections_opened == 2
+
+
+def test_postgresql_unrelated_locks_are_not_globally_capped_at_two(monkeypatch):
+    """Four unrelated actions can enter together instead of failing behind a pool of two."""
+    active = 0
+    all_entered = threading.Event()
+    release = threading.Event()
+    guard = threading.Lock()
+
+    class Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def begin(self):
+            return Transaction()
+
+        def scalar(self, _statement, _parameters):
+            return True
+
+    class LockEngine:
+        def connect(self):
+            return Connection()
+
+    class RequestSession:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    monkeypatch.setattr(database_locks, "LOCK_WAIT_SECONDS", 0.2)
+    state = database_locks._PostgresLockEngine(LockEngine(), threading.BoundedSemaphore(2))
+    monkeypatch.setattr(database_locks, "_postgres_lock_engine", lambda _bind: state)
+
+    def hold(index):
+        nonlocal active
+        with database_idempotency_lock(RequestSession(), f"unrelated:{index}"):
+            with guard:
+                active += 1
+                if active == 4:
+                    all_entered.set()
+            assert release.wait(timeout=2)
+
+    try:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(hold, index) for index in range(4)]
+            assert all_entered.wait(timeout=1)
+            release.set()
+            for future in futures:
+                future.result(timeout=1)
+    finally:
+        release.set()
+
+    assert active == 4
 
 
 @pytest.mark.parametrize("slow_phase", ["connect", "scalar"])

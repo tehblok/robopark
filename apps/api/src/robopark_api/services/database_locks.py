@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - non-Unix development fallback
 
 
 LOCK_WAIT_SECONDS = 5.0
-POSTGRES_LOCK_POOL_SIZE = 2
+POSTGRES_LOCK_POOL_SIZE = 16
 _SLEEP_SECONDS = 0.02
 SQLITE_LOCK_BUCKETS = 64
 
@@ -67,6 +67,7 @@ _process_locks_guard = threading.Lock()
 _postgres_lock_engines: dict[str, _PostgresLockEngine] = {}
 _postgres_lock_engines_guard = threading.Lock()
 _postgres_connect_deadline = threading.local()
+_postgres_active_scope = threading.local()
 
 
 class _LockDeadlineExceeded(TimeoutError):
@@ -238,6 +239,34 @@ def dispose_database_lock_engines() -> None:
         state.engine.dispose()
 
 
+def _acquire_postgres_key(
+    connection: Any,
+    key: str,
+    deadlines: _PostgresPhaseDeadlines,
+    budget: _PostgresPhaseTimeouts,
+) -> None:
+    while True:
+        phase_remaining = _remaining_seconds(deadlines.query)
+        if phase_remaining * 1000 < budget.attempt_milliseconds:
+            raise _lock_busy()
+        try:
+            acquired = connection.scalar(
+                text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
+                {"key": key},
+            )
+        except (DBAPIError, SQLAlchemyTimeoutError, _LockDeadlineExceeded):
+            raise _lock_busy() from None
+        remaining = _remaining_seconds(deadlines.query)
+        if remaining <= 0:
+            raise _lock_busy()
+        if acquired:
+            return
+        next_attempt_wait = remaining - budget.attempt_milliseconds / 1000
+        if next_attempt_wait <= 0:
+            raise _lock_busy()
+        time.sleep(min(_SLEEP_SECONDS, next_attempt_wait))
+
+
 @contextmanager
 def database_idempotency_lock(db: Any, key: str) -> Iterator[None]:
     """Hold a bounded idempotency lock across commits and request re-binding.
@@ -255,8 +284,12 @@ def database_idempotency_lock(db: Any, key: str) -> Iterator[None]:
         budget = _postgres_phase_timeouts(LOCK_WAIT_SECONDS)
         deadlines = _postgres_phase_deadlines(started, LOCK_WAIT_SECONDS, budget)
         state = _postgres_lock_engine(bind)
-        if not state.slots.acquire(timeout=_remaining_seconds(deadlines.connect)):
-            raise _lock_busy()
+        active = getattr(_postgres_active_scope, "value", None)
+        if active is not None and active[0] is state:
+            _acquire_postgres_key(active[1], key, deadlines, budget)
+            yield
+            return
+        previous_scope = active
         try:
             if _remaining_seconds(deadlines.connect) <= 0:
                 raise _lock_busy()
@@ -275,36 +308,21 @@ def database_idempotency_lock(db: Any, key: str) -> Iterator[None]:
                     except (DBAPIError, SQLAlchemyTimeoutError, _LockDeadlineExceeded):
                         raise _lock_busy() from None
                     with transaction_context:
-                        while True:
-                            phase_remaining = _remaining_seconds(deadlines.query)
-                            if phase_remaining * 1000 < budget.attempt_milliseconds:
-                                raise _lock_busy()
-                            try:
-                                acquired = connection.scalar(
-                                    text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
-                                    {"key": key},
-                                )
-                            except (DBAPIError, SQLAlchemyTimeoutError, _LockDeadlineExceeded):
-                                raise _lock_busy() from None
-                            remaining = _remaining_seconds(deadlines.query)
-                            if remaining <= 0:
-                                raise _lock_busy()
-                            if acquired:
-                                break
-                            next_attempt_wait = remaining - budget.attempt_milliseconds / 1000
-                            if next_attempt_wait <= 0:
-                                raise _lock_busy()
-                            time.sleep(min(_SLEEP_SECONDS, next_attempt_wait))
+                        _acquire_postgres_key(connection, key, deadlines, budget)
                         if _remaining_seconds(deadlines.query) <= 0:
                             raise _lock_busy()
-                        yield
+                        _postgres_active_scope.value = (state, connection)
+                        try:
+                            yield
+                        finally:
+                            _postgres_active_scope.value = previous_scope
             except _LockDeadlineExceeded:
                 raise _lock_busy() from None
             finally:
                 _postgres_connect_deadline.value = None
                 _postgres_connect_deadline.attempt_milliseconds = None
         finally:
-            state.slots.release()
+            _postgres_active_scope.value = previous_scope
         return
     if dialect == "sqlite":
         with _sqlite_file_lock(bind, key):

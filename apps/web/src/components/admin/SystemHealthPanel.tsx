@@ -1,4 +1,3 @@
-import { Button } from '../../design-system/actions/Button'
 import { OpsAlert } from './OpsAlert'
 import { useEffect } from 'react'
 import { api } from '../../api'
@@ -7,7 +6,7 @@ import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { Panel } from '../PageShell'
 import { age, opsText, staleHealth, useOpsResource } from './opsPresentation'
 
-export function SystemHealthPanel({ onRepair, busy, revision = 0 }: { onRepair: () => void; busy: boolean; revision?: number }) {
+export function SystemHealthPanel({ revision = 0 }: { revision?: number }) {
   const { data, error, refresh } = useOpsResource('ops:health', api.opsSystemHealth)
   useEffect(() => { if (revision > 0) void refresh() }, [revision, refresh])
   const stale = staleHealth(data?.generated_at)
@@ -29,8 +28,7 @@ export function SystemHealthPanel({ onRepair, busy, revision = 0 }: { onRepair: 
       {data.update.state === 'updating' && <OpsAlert tone="info">Хост устанавливает обновление.</OpsAlert>}
       {data.update.state === 'maintenance' && <OpsAlert>Хост выполняет технические работы.</OpsAlert>}
       {data.update.publication === 'degraded' && <OpsAlert>Публикация через Tuna недоступна.</OpsAlert>}
-      <div className="form-actions"><Button variant="secondary" type="button" disabled={busy || !data.checks.some(check => check.repair && check.status !== 'ok')} onClick={onRepair}>Исправить безопасные проблемы</Button></div>
-      <p className="muted">Исправление перезапускает только разрешённые службы. Результат каждой попытки появится в текущей операции.</p>
+      <p className="muted">Безопасные операции доступны в разделе «Система» только при подтверждённой возможности хоста.</p>
     </>}
   </Panel>
 }

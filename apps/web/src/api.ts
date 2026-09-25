@@ -2039,32 +2039,8 @@ export const api = {
   opsSystemHealth: () => request<SystemHealth>('/admin/ops/system-health'),
   opsReleaseStatus: () => request<ReleaseStatus>('/admin/ops/release-status'),
   opsAvailableUpdate: () => request<AvailableUpdate>('/admin/ops/available-update'),
-  opsInspectUpdate: (file: File) => {
-    const form = new FormData()
-    form.append('archive', file, file.name)
-    return requestForm<UpdateInspection>('/admin/ops/update/inspect', form)
-  },
-  opsApproveUpdate: (inspection_id: string, confirm: 'ОБНОВИТЬ') =>
-    request<OpsJob>('/admin/ops/update/approve', { method: 'POST', body: JSON.stringify({ inspection_id, confirm }) }),
-  opsApproveGithubUpdate: (release_id: number, confirm: 'ОБНОВИТЬ') =>
-    request<OpsJob>('/admin/ops/github-update/approve', { method: 'POST', body: JSON.stringify({ release_id, confirm }) }),
-  opsRepair: () => request<OpsJob>('/admin/ops/repair', { method: 'POST' }),
   opsDiagnosticArtifact: () => requestBlob('/admin/ops/diagnostic-artifact'),
   opsMaintenance: () => request<OpsMaintenance>('/ops/maintenance'),
   opsJob: () => request<OpsJob>('/admin/ops/job'),
-  opsAbort: () => request<OpsJob>('/admin/ops/abort', { method: 'POST' }),
-  opsSnapshot: () => request<OpsJob>('/admin/ops/snapshot', { method: 'POST' }),
   opsArtifact: () => requestBlob('/admin/ops/artifact'),
-  opsRestore: (file: File, confirm: string) => {
-    const form = new FormData()
-    form.append('confirm', confirm)
-    form.append('archive', file, file.name)
-    return requestForm<OpsJob>('/admin/ops/restore', form)
-  },
-  opsUpdate: (file: File, confirm: string) => {
-    const form = new FormData()
-    form.append('confirm', confirm)
-    form.append('archive', file, file.name)
-    return requestForm<OpsJob>('/admin/ops/update', form)
-  },
 }

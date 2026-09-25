@@ -143,6 +143,40 @@ The production web build passed after the independent admin lane corrected its o
 test typing; this lane did not edit or stage those files. No long/full/soak/load test
 was run.
 
+## Independent reliability remediation — database locks and legacy operations
+
+### Fixed invariants
+
+- Nested PostgreSQL idempotency scopes in one workflow reuse the active dedicated
+  connection and transaction. A claim/handoff dispatched from offline sync no longer
+  waits for a second slot while holding the first advisory lock.
+- The lock-only pool is bounded at 16 instead of imposing a global two-workflow
+  ceiling. Advisory keys still serialize the same idempotency action; unrelated keys
+  proceed independently. SQLite keeps its keyed process and bounded `flock` fallback.
+- Legacy mutation endpoints for abort, snapshot, restore, archive/GitHub update,
+  diagnostics and repair are retired with HTTP 410 and cannot enqueue host work.
+  Destructive actions remain reachable only through `/admin/ops/operations`, whose
+  contract requires a typed UUID, current capability revision and privileged grant.
+- The legacy admin panel and API client no longer expose those mutation controls. It
+  retains read-only health/version/update status, operation progress and download of
+  an already completed diagnostic artifact.
+
+### Bounded PASS evidence
+
+- Database lock regressions: 12 passed, including two concurrent nested workflows and
+  four unrelated concurrent keys.
+- Legacy route/capability regressions: 28 passed; enqueue helpers were patched to fail
+  the test if any retired route reached them.
+- Operations HTTP/restore/review/security regressions: 53 passed.
+- Privileged-auth regressions: 13 passed.
+- Claim permission selection: 6 passed, 105 deselected.
+- Web admin/health/typed-gateway tests: 3 files, 14 passed.
+- Targeted API Ruff check: passed. Web production build: passed.
+
+No full suite, Docker run, soak or load test was run. The existing Python files are
+not globally Ruff-format-clean; the bounded lint check for the touched files has no
+errors, and `git diff --check` is the whitespace gate for this remediation.
+
 ## Pre-merge state
 
 - Base reviewed HEAD: `b42775597d9ba95eb1c8b1f69edd1584aa0562ee`.

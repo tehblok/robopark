@@ -70,6 +70,54 @@ def test_capabilities_api_reports_executable_subset(client, seed_royal, capabili
         }
 
 
+def test_legacy_mutating_ops_routes_are_retired_and_cannot_enqueue(
+    client, seed_royal, monkeypatch,
+):
+    """Typed UUID operations are the only gateway to host mutations."""
+    login_as(client, "royal", "secret")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("retired route attempted to enqueue host work")
+
+    monkeypatch.setattr("robopark_api.services.ops.host_bridge.enqueue_restore", forbidden)
+    monkeypatch.setattr("robopark_api.services.ops.host_bridge.inspect_update", forbidden)
+    monkeypatch.setattr("robopark_api.services.ops.host_bridge.approve_update", forbidden)
+    monkeypatch.setattr("robopark_api.services.ops.host_bridge.enqueue_operation", forbidden)
+    monkeypatch.setattr("robopark_api.services.ops.host_bridge.approve_github_update", forbidden)
+
+    calls = [
+        client.post("/admin/ops/abort"),
+        client.post("/admin/ops/snapshot"),
+        client.post(
+            "/admin/ops/restore",
+            data={"confirm": "ВОССТАНОВИТЬ"},
+            files={"archive": ("backup.zip", b"zip", "application/zip")},
+        ),
+        client.post(
+            "/admin/ops/update",
+            data={"confirm": "ОБНОВИТЬ"},
+            files={"archive": ("release.zip", b"zip", "application/zip")},
+        ),
+        client.post(
+            "/admin/ops/update/inspect",
+            files={"archive": ("release.zip", b"zip", "application/zip")},
+        ),
+        client.post(
+            "/admin/ops/update/approve",
+            json={"inspection_id": BOOT_ID, "confirm": "ОБНОВИТЬ"},
+        ),
+        client.post("/admin/ops/repair"),
+        client.post(
+            "/admin/ops/github-update/approve",
+            json={"release_id": 42, "confirm": "ОБНОВИТЬ"},
+        ),
+    ]
+
+    assert [(response.status_code, response.json()) for response in calls] == [
+        (410, {"detail": "typed_operation_required"}),
+    ] * len(calls)
+
+
 @pytest.mark.parametrize("damage", ["missing", "stale", "future", "boot", "oversize", "schema", "extra", "missing-kind", "unknown-kind", "inconsistent", "boolean", "lifetime", "symlink"])
 def test_invalid_capability_cache_is_closed(capability_bridge, damage, tmp_path):
     root, value = capability_bridge

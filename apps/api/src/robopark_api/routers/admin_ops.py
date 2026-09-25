@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
-from functools import partial
 from uuid import UUID
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
-    File,
-    Form,
     HTTPException,
     Request,
     UploadFile,
@@ -28,14 +24,11 @@ from robopark_api.deps import require_builtin_admin_or_royal, require_royal
 from robopark_api.models import HostOperationStatus, User
 from robopark_api.ops_schemas import (
     AvailableUpdateOut,
-    GithubApprovalIn,
     HostCapabilitiesOut,
     HostOperationIn,
     HostResultOut,
     ReleaseStatusOut,
     SystemHealthOut,
-    UpdateApprovalIn,
-    UpdateInspectionOut,
     public_result,
 )
 from robopark_api.security import hash_session_token
@@ -45,11 +38,7 @@ from robopark_api.services.ops import host_bridge, operation_registry
 from robopark_api.services.ops.archives import ArchiveError
 from robopark_api.services.ops.context import build_ops_context, resolved_ops_dir
 from robopark_api.services.ops.jobs import (
-    KIND_RESTORE,
-    KIND_SNAPSHOT,
-    KIND_UPDATE,
     JobConflict,
-    abort_job,
     is_exempt_session,
     is_maintenance_active,
     load_job,
@@ -58,9 +47,7 @@ from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
 from robopark_api.services.ops.runner import (
     RESTORE_PHRASE,
     UPDATE_PHRASE,
-    OpsError,
     artifact_path,
-    start_and_run,
 )
 from robopark_api.services.release_status import release_status
 
@@ -162,6 +149,10 @@ def _require_privileged(
             if enrolled
             else "privileged_enrollment_required",
         )
+
+
+def _typed_operation_required() -> None:
+    raise HTTPException(status_code=410, detail="typed_operation_required")
 
 
 def _reconcile_if_needed(settings: Settings, db: Session | None = None) -> None:
@@ -317,173 +308,31 @@ def download_artifact(
 
 @router.post("/admin/ops/abort", response_model=OpsJobOut)
 def post_abort(
-    request: Request,
     _royal: User = Depends(require_royal),
-    settings: Settings = Depends(get_settings),
-    db: Session = Depends(get_db),
 ) -> OpsJobOut:
-    """Force-clear a stuck running ops job and lift maintenance."""
-    _require_privileged(request, _royal, db, settings, "abort", "abort")
-    ops_dir = resolved_ops_dir(settings)
-    try:
-        job = abort_job(ops_dir)
-    except JobConflict as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    if job is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no_active_job")
-    audit.record(
-        db,
-        action="admin.ops.abort",
-        actor=_royal,
-        detail=job.error or job.state,
-    )
-    return _job_out(job)
-
-
-def _launch(
-    *,
-    kind: str,
-    exempt: str,
-    archive: bytes | None,
-    confirm: str,
-    settings: Settings,
-    background: BackgroundTasks,
-):
-    if kind == KIND_RESTORE and confirm.strip() != RESTORE_PHRASE:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="confirm_required")
-    if kind == KIND_UPDATE and confirm.strip() != UPDATE_PHRASE:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="confirm_required")
-    if settings.ops_host_root:
-        if kind == KIND_RESTORE:
-            raise HTTPException(status_code=503, detail="host_restore_required")
-        if kind == KIND_UPDATE:
-            raise HTTPException(status_code=400, detail="inspection_required")
-        host_bridge.require_host_idle(_bridge_root(settings))
-    ctx = build_ops_context(settings)
-    if settings.ops_sync:
-        try:
-            return start_and_run(
-                ctx, kind, exempt_token_hash=exempt, archive=archive, confirm=confirm
-            )
-        except OpsError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    # Begin inside the request so maintenance is on before we return.
-    from robopark_api.services.ops.runner import begin_job, execute_job
-
-    try:
-        job = begin_job(ctx, kind, exempt_token_hash=exempt)
-    except JobConflict as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    background.add_task(partial(execute_job, ctx, job, archive=archive, confirm=confirm))
-    return job
+    """Retired: use the typed operation gateway."""
+    _typed_operation_required()
 
 
 @router.post("/admin/ops/snapshot", response_model=OpsJobOut)
 def post_snapshot(
-    request: Request,
-    background: BackgroundTasks,
-    royal: User = Depends(require_royal),
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
+    _royal: User = Depends(require_royal),
 ) -> OpsJobOut:
-    _require_privileged(request, royal, db, settings, "snapshot", "snapshot")
-    operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
-    exempt = _token_hash(request, settings)
-    try:
-        job = _launch(
-            kind=KIND_SNAPSHOT,
-            exempt=exempt,
-            archive=None,
-            confirm="",
-            settings=settings,
-            background=background,
-        )
-    except JobConflict as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="job_in_progress") from exc
-    audit.record(
-        db, action=ACTION_OPS_SNAPSHOT, actor=royal, outcome=audit.OUTCOME_SUCCESS, detail=job.state
-    )
-    return _job_out(job)
+    _typed_operation_required()
 
 
 @router.post("/admin/ops/restore", response_model=OpsJobOut)
 async def post_restore(
-    request: Request,
-    background: BackgroundTasks,
-    confirm: str = Form(default=""),
-    archive: UploadFile = File(...),
-    royal: User = Depends(require_royal),
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
+    _royal: User = Depends(require_royal),
 ) -> OpsJobOut:
-    _require_privileged(request, royal, db, settings, "restore", "restore")
-    operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
-    exempt = _token_hash(request, settings)
-    blob = await _read_upload(archive, settings.ops_max_upload_bytes)
-    try:
-        if settings.ops_host_root:
-            if confirm.strip() != RESTORE_PHRASE:
-                raise HTTPException(status_code=400, detail="confirm_required")
-            try:
-                job = host_bridge.enqueue_restore(
-                    resolved_ops_dir(settings), _bridge_root(settings), blob, royal.id, exempt
-                )
-            except ArchiveError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-        else:
-            job = _launch(
-                kind=KIND_RESTORE,
-                exempt=exempt,
-                archive=blob,
-                confirm=confirm,
-                settings=settings,
-                background=background,
-            )
-    except JobConflict as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="job_in_progress") from exc
-    audit.record(
-        db,
-        action=ACTION_OPS_RESTORE,
-        actor=royal,
-        outcome=audit.OUTCOME_FAILURE if job.state == "failed" else audit.OUTCOME_SUCCESS,
-        detail=job.error or job.state,
-    )
-    return _job_out(job)
+    _typed_operation_required()
 
 
 @router.post("/admin/ops/update", response_model=OpsJobOut)
 async def post_update(
-    request: Request,
-    background: BackgroundTasks,
-    confirm: str = Form(default=""),
-    archive: UploadFile = File(...),
-    royal: User = Depends(require_royal),
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
+    _royal: User = Depends(require_royal),
 ) -> OpsJobOut:
-    _require_privileged(request, royal, db, settings, "update", "update")
-    operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
-    exempt = _token_hash(request, settings)
-    blob = await _read_upload(archive, settings.ops_max_upload_bytes)
-    try:
-        job = _launch(
-            kind=KIND_UPDATE,
-            exempt=exempt,
-            archive=blob,
-            confirm=confirm,
-            settings=settings,
-            background=background,
-        )
-    except JobConflict as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="job_in_progress") from exc
-    audit.record(
-        db,
-        action=ACTION_OPS_UPDATE,
-        actor=royal,
-        outcome=audit.OUTCOME_FAILURE if job.state == "failed" else audit.OUTCOME_SUCCESS,
-        detail=job.error or job.state,
-    )
-    return _job_out(job)
+    _typed_operation_required()
 
 
 def _bridge_root(settings):
@@ -602,93 +451,32 @@ def get_release_status(
     return release_status(_bridge_root(settings))
 
 
-@router.post("/admin/ops/update/inspect", response_model=UpdateInspectionOut)
+@router.post("/admin/ops/update/inspect")
 async def inspect_host_update(
-    request: Request,
-    archive: UploadFile = File(...),
-    royal: User = Depends(require_royal),
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
+    _royal: User = Depends(require_royal),
 ):
-    _require_privileged(request, royal, db, settings, "update.inspect", "inspect")
-    root = _bridge_root(settings)
-    blob = await _read_upload(archive, settings.ops_max_upload_bytes)
-    return _host_action(
-        db,
-        royal,
-        "admin.ops.update.inspect",
-        lambda: host_bridge.inspect_update(
-            settings, resolved_ops_dir(settings), root, blob, royal.id
-        ),
-        settings,
-    )
+    _typed_operation_required()
 
 
 @router.post("/admin/ops/update/approve", response_model=OpsJobOut)
 def approve_host_update(
-    payload: UpdateApprovalIn,
-    request: Request,
-    royal: User = Depends(require_royal),
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
+    _royal: User = Depends(require_royal),
 ):
-    _require_privileged(
-        request, royal, db, settings, "update.approve", payload.inspection_id
-    )
-    root = _bridge_root(settings)
-
-    def approve():
-        if payload.confirm != UPDATE_PHRASE:
-            raise host_bridge.BridgeError("confirm_required")
-        host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
-        operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
-        return host_bridge.approve_update(
-            settings,
-            resolved_ops_dir(settings),
-            root,
-            payload.inspection_id,
-            royal.id,
-            _token_hash(request, settings),
-        )
-
-    return _job_out(_host_action(db, royal, "admin.ops.update.approve", approve, settings))
-
-
-def _start_host_operation(kind, request, royal, db, settings):
-    _require_privileged(request, royal, db, settings, kind, kind)
-    root = _bridge_root(settings)
-    host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
-    return _job_out(
-        _host_action(
-            db,
-            royal,
-            "admin.ops." + kind,
-            lambda: host_bridge.enqueue_operation(
-                resolved_ops_dir(settings), root, kind, royal.id, _token_hash(request, settings)
-            ),
-            settings,
-        )
-    )
+    _typed_operation_required()
 
 
 @router.post("/admin/ops/diagnostics", response_model=OpsJobOut)
 def post_diagnostics(
-    request: Request,
-    royal: User = Depends(require_royal),
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
+    _royal: User = Depends(require_royal),
 ):
-    raise HTTPException(status_code=410, detail="typed_operation_required")
+    _typed_operation_required()
 
 
 @router.post("/admin/ops/repair", response_model=OpsJobOut)
 def post_repair(
-    request: Request,
-    royal: User = Depends(require_royal),
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
+    _royal: User = Depends(require_royal),
 ):
-    return _start_host_operation("repair", request, royal, db, settings)
+    _typed_operation_required()
 
 
 @router.get("/admin/ops/diagnostic-artifact")
@@ -721,28 +509,6 @@ def get_available_update(
 
 @router.post("/admin/ops/github-update/approve", response_model=OpsJobOut)
 def approve_github_update(
-    payload: GithubApprovalIn,
-    request: Request,
-    royal: User = Depends(require_royal),
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
+    _royal: User = Depends(require_royal),
 ):
-    _require_privileged(
-        request, royal, db, settings, "github-update.approve", payload.release_id
-    )
-    root = _bridge_root(settings)
-
-    def approve():
-        if payload.confirm != UPDATE_PHRASE:
-            raise host_bridge.BridgeError("confirm_required")
-        host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
-        operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
-        return host_bridge.approve_github_update(
-            resolved_ops_dir(settings),
-            root,
-            payload.release_id,
-            royal.id,
-            _token_hash(request, settings),
-        )
-
-    return _job_out(_host_action(db, royal, "admin.ops.github-update.approve", approve, settings))
+    _typed_operation_required()

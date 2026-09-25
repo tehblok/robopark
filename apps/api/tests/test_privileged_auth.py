@@ -30,6 +30,29 @@ def _totp(secret: str, counter: int) -> str:
     return f"{value % 1_000_000:06d}"
 
 
+def _consume_token(db, actor, raw_token: str, operation_kind: str, operation_id: str) -> bool:
+    grant = db.scalar(
+        select(PrivilegedReauthorization).where(
+            PrivilegedReauthorization.token_hash
+            == hashlib.sha256(raw_token.encode()).hexdigest()
+        )
+    )
+    assert grant is not None
+    return privileged_auth.consume_reauthorization(
+        db,
+        actor,
+        raw_token=raw_token,
+        context=privileged_auth.AuditContext(
+            ip="127.0.0.1",
+            device="test",
+            session_token_hash=grant.session_token_hash,
+            operation_kind=operation_kind,
+            operation_id=operation_id,
+            capability_revision=grant.capability_revision,
+        ),
+    )
+
+
 def test_enrollment_requires_password_totp_encrypts_secret_and_shows_ten_codes_once(
     client, seed_royal, db_session, monkeypatch
 ):
@@ -89,14 +112,9 @@ def test_reauthorization_is_session_operation_bound_one_use_and_audited(
     token = issued.json()["token"]
     assert token not in str(db_session.execute(select(PrivilegedCredential)).all())
 
-    wrong = client.post("/admin/ops/repair", headers={"X-Privileged-Authorization": token})
-    assert wrong.status_code == 401
-    ok = client.post("/admin/ops/snapshot", headers={"X-Privileged-Authorization": token})
-    assert ok.status_code == 200
-    assert (
-        client.post("/admin/ops/snapshot", headers={"X-Privileged-Authorization": token}).status_code
-        == 401
-    )
+    assert _consume_token(db_session, seed_royal, token, "repair", "repair") is False
+    assert _consume_token(db_session, seed_royal, token, "snapshot", "snapshot") is True
+    assert _consume_token(db_session, seed_royal, token, "snapshot", "snapshot") is False
 
     recovery_auth = client.post(
         "/admin/privileged-auth/reauthorize",
@@ -344,10 +362,9 @@ def test_confirmed_reset_invalidates_old_snapshot_grant_before_any_side_effect(
     ).status_code == 204
 
     ops_root = Path(test_settings.ops_dir)
-    denied = client.post(
-        "/admin/ops/snapshot", headers={"X-Privileged-Authorization": old_token}
-    )
-    assert denied.status_code == 401
+    assert _consume_token(
+        db_session, seed_royal, old_token, "snapshot", "snapshot"
+    ) is False
     assert db_session.scalars(
         select(PrivilegedAuthAudit).where(
             PrivilegedAuthAudit.reason == "credential_generation_mismatch"
@@ -366,9 +383,9 @@ def test_confirmed_reset_invalidates_old_snapshot_grant_before_any_side_effect(
             "operation_id": "snapshot",
         },
     ).json()["token"]
-    assert client.post(
-        "/admin/ops/snapshot", headers={"X-Privileged-Authorization": new_token}
-    ).status_code == 200
+    assert _consume_token(
+        db_session, seed_royal, new_token, "snapshot", "snapshot"
+    ) is True
 
 
 def test_key_loss_is_controlled_and_recovery_is_checked_before_totp_decryption(
@@ -485,9 +502,9 @@ def test_legacy_recovery_hashes_require_totp_rotation_before_key_change(
     } == {"scrypt-v1"}
     assert db_session.get(PrivilegedCredential, seed_royal.id).credential_generation == 2
     ops_root = Path(test_settings.ops_dir)
-    assert client.post(
-        "/admin/ops/snapshot", headers={"X-Privileged-Authorization": old_token}
-    ).status_code == 401
+    assert _consume_token(
+        db_session, seed_royal, old_token, "snapshot", "snapshot"
+    ) is False
     assert not ops_root.exists() or not [
         path for path in ops_root.rglob("*") if path.is_file() and path.name != "begin.lock"
     ]
@@ -538,7 +555,7 @@ def test_audit_insert_failure_rolls_back_enrollment_grant_consumption_and_thrott
     ).json()["token"]
     monkeypatch.setattr("robopark_api.services.privileged_auth._add_audit", fail_audit)
     with pytest.raises(RuntimeError, match="audit unavailable"):
-        client.post("/admin/ops/snapshot", headers={"X-Privileged-Authorization": token})
+        _consume_token(db_session, seed_royal, token, "snapshot", "snapshot")
     db_session.expire_all()
     assert db_session.query(PrivilegedReauthorization).one().used_at is None
 

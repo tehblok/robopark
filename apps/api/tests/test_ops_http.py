@@ -56,18 +56,11 @@ def test_admin_cannot_create_snapshot(client, seed_royal, db_session):
     assert client.post("/admin/ops/snapshot").status_code == 403
 
 
-def test_royal_snapshot_download(client, seed_royal, test_settings):
+def test_royal_legacy_snapshot_route_is_retired(client, seed_royal, test_settings):
     login_as(client, "royal", "secret")
     created = client.post("/admin/ops/snapshot")
-    assert created.status_code == 200, created.text
-    body = created.json()
-    assert body["kind"] == "snapshot"
-    assert body["state"] == "succeeded"
-    assert body["artifact_ready"] is True
-    artifact = client.get("/admin/ops/artifact")
-    assert artifact.status_code == 200
-    assert artifact.headers["content-type"].startswith("application/zip")
-    assert artifact.content[:2] == b"PK"
+    assert created.status_code == 410
+    assert created.json()["detail"] == "typed_operation_required"
 
 
 def test_maintenance_blocks_others_not_health(client, seed_royal, seed_mechanic, test_settings):
@@ -87,31 +80,26 @@ def test_maintenance_blocks_others_not_health(client, seed_royal, seed_mechanic,
     assert blocked.json()["detail"] == "maintenance"
 
 
-def test_update_rejects_snapshot_zip(client, seed_royal, tmp_path, test_settings):
+def test_legacy_archive_update_route_is_retired(client, seed_royal, tmp_path, test_settings):
     login_as(client, "royal", "secret")
-    snap = client.post("/admin/ops/snapshot")
-    assert snap.status_code == 200
-    zip_bytes = client.get("/admin/ops/artifact").content
-    files = {"archive": ("snap.zip", zip_bytes, "application/zip")}
     updated = client.post(
         "/admin/ops/update",
         data={"confirm": UPDATE_PHRASE},
-        files=files,
+        files={"archive": ("release.zip", b"PK", "application/zip")},
     )
-    assert updated.status_code == 200
-    assert updated.json()["state"] == "failed"
-    assert updated.json()["error"] == "unexpected_kind"
+    assert updated.status_code == 410
+    assert updated.json()["detail"] == "typed_operation_required"
 
 
-def test_restore_bad_confirm_is_400(client, seed_royal):
+def test_legacy_restore_is_retired_before_confirmation(client, seed_royal):
     login_as(client, "royal", "secret")
     response = client.post(
         "/admin/ops/restore",
         data={"confirm": "nope"},
         files={"archive": ("x.zip", b"PK\x03\x04", "application/zip")},
     )
-    assert response.status_code == 400
-    assert response.json()["detail"] == "confirm_required"
+    assert response.status_code == 410
+    assert response.json()["detail"] == "typed_operation_required"
 
 
 def test_release_tests_fail_leaves_apply_root_empty(
@@ -136,12 +124,13 @@ def test_release_tests_fail_leaves_apply_root_empty(
         data={"confirm": UPDATE_PHRASE},
         files={"archive": ("rel.zip", blob, "application/zip")},
     )
-    assert updated.json()["error"] == "tests_failed"
+    assert updated.status_code == 410
+    assert updated.json()["detail"] == "typed_operation_required"
     apply = Path(test_settings.ops_apply_root)
     assert not (apply / "apps").exists()
 
 
-def test_host_dispatch_abort_is_409_and_preserves_maintenance(client, seed_royal, test_settings):
+def test_legacy_abort_is_retired_and_preserves_maintenance(client, seed_royal, test_settings):
     from robopark_api.services.ops.jobs import is_maintenance_active, load_job
 
     login_as(client, "royal", "secret")
@@ -153,7 +142,7 @@ def test_host_dispatch_abort_is_409_and_preserves_maintenance(client, seed_royal
     job.extra = {"host_updater": True, "host_dispatch": "dispatched"}
     save_job(ops, job)
     response = client.post("/admin/ops/abort", headers=headers)
-    assert response.status_code == 409
-    assert response.json()["detail"] == "host_update_dispatched"
+    assert response.status_code == 410
+    assert response.json()["detail"] == "typed_operation_required"
     assert load_job(ops).state == STATE_RUNNING
     assert is_maintenance_active(ops)

@@ -401,32 +401,14 @@ def test_candidate_startup_is_readonly_until_host_releases_marker(
 
 
 @pytest.mark.parametrize("kind", ["repair"])
-def test_generic_publish_failure_retries_the_exact_job(
+def test_retired_generic_route_never_publishes_a_job(
     client, seed_royal, installed, test_settings, monkeypatch, kind
 ):
-    import os
-
     login_as(client, "royal", "secret")
-    original = os.link
-    monkeypatch.setattr(
-        os, "link", lambda *args: (_ for _ in ()).throw(OSError("disk unavailable"))
-    )
     first = client.post("/admin/ops/" + kind)
-    assert first.status_code in {200, 503}
-    job = load_job(Path(test_settings.ops_dir))
-    saved = job.extra["host_request"].copy()
-    assert job.extra["host_dispatch"] == "pending"
-    assert not (installed / "inbox/approved.json").exists()
-    monkeypatch.setattr(os, "link", original)
-    retried = client.post("/admin/ops/" + kind)
-    assert retried.status_code == 200, retried.text
-    assert retried.json()["id"] == job.id
-    assert json.loads((installed / "inbox/approved.json").read_text()) == saved
-    (installed / "inbox/approved.json").unlink()
-    (installed / "public/command-claim.json").write_text(
-        json.dumps({"job_id": job.id, "active": True})
-    )
-    assert client.get("/admin/ops/job").json()["state"] == "running"
+    assert first.status_code == 410
+    assert first.json()["detail"] == "typed_operation_required"
+    assert load_job(Path(test_settings.ops_dir)) is None
     assert not (installed / "inbox/approved.json").exists()
 
 
