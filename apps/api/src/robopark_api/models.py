@@ -281,6 +281,9 @@ class HostOperationStatus(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     kind: Mapped[str] = mapped_column(String(64))
+    request_digest: Mapped[str] = mapped_column(
+        String(64), default="0" * 64, server_default="0" * 64
+    )
     receipt_state: Mapped[str] = mapped_column(String(16), default="received")
     state: Mapped[str] = mapped_column(String(16), default="queued")
     phase: Mapped[str] = mapped_column(String(64), default="request_received")

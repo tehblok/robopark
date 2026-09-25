@@ -86,6 +86,11 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
     )
     monkeypatch.setattr(
         cache_cleanup,
+        "prune_operation_registry",
+        lambda session, **kwargs: calls.append(("operation-receipts", session, kwargs)) or 5,
+    )
+    monkeypatch.setattr(
+        cache_cleanup,
         "prune_observability",
         lambda session, **kwargs: calls.append(("observability", session, kwargs)) or (0, 0),
     )
@@ -136,6 +141,7 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         ("receipts", db, {"now": now.timestamp()}),
         ("throttles", db, {"now": now}),
         ("incidents", db, {"now": now}),
+        ("operation-receipts", db, {"now": now}),
         ("observability", db, {"now": now}),
         ("notifications", db, {"now": now}),
         ("schedules", db, {"now": now}),

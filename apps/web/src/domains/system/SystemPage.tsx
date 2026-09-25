@@ -6,7 +6,7 @@ import { LoadingState } from '../../design-system/feedback/AsyncState'
 import { systemClient, type HostCapabilities, type SystemClient, type SystemHistory, type SystemJob, type SystemSummary } from '../../opsApi'
 import { SystemMetrics } from './SystemMetrics'
 import { SystemOperations } from './SystemOperations'
-import { clearOperationReservation, NOT_FOUND_GRACE_MS, readOperationReservation } from './operationReservation'
+import { clearOperationReservation, readOperationReservation } from './operationReservation'
 import './system.css'
 
 const POLL_MS = 30_000
@@ -53,11 +53,7 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
                 ? postingOperation.current === stored.id
                   ? Promise.resolve({ state: 'posting' as const })
                   : client.getOperation(stored.id).then(value => ({ state: 'found' as const, value })).catch(caught => {
-                    if (caught instanceof ApiError && caught.status === 404) {
-                      return Date.now() - stored.created_at >= NOT_FOUND_GRACE_MS
-                        ? { state: 'absent' as const }
-                        : { state: 'waiting' as const }
-                    }
+                    if (caught instanceof ApiError && caught.status === 404) return { state: 'absent' as const }
                     throw caught
                   })
                 : Promise.resolve({ state: 'none' as const }),
@@ -74,8 +70,7 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
             setJob(operation.value)
             if (operation.value.receipt_state === 'terminal' || operation.value.state === 'succeeded' || operation.value.state === 'failed') clearOperationReservation()
           } else if (stored && operation.state === 'absent') {
-            clearOperationReservation()
-            setJob({ id: stored.id, kind: '', state: 'failed', phase: 'Запрос не получен', progress_percent: 100, error: null })
+            setJob({ id: stored.id, kind: stored.kind, state: 'queued', phase: 'Запрос не подтверждён — повторите тот же запрос', progress_percent: 0, error: null })
           }
         }
       } catch (caught) {

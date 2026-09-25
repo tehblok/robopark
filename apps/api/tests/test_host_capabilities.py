@@ -211,6 +211,9 @@ def test_supported_api_operation_requires_and_consumes_one_bound_grant(
         "capability_revision": revision, "confirmation": phrase,
     }
     assert client.post("/admin/ops/operations", json=payload).status_code == 409
+    assert client.post("/admin/ops/operations", json=payload).json()["receipt_state"] == "terminal"
+    identity = str(uuid4())
+    payload = {**payload, "operation_id": identity}
     monkeypatch.setattr("robopark_api.services.privileged_auth._unix_time", lambda: 9_000.0)
     secret = client.post("/admin/privileged-auth/enrollment").json()["secret"]
     client.post("/admin/privileged-auth/enrollment/confirm", json={
@@ -237,6 +240,12 @@ def test_supported_api_operation_requires_and_consumes_one_bound_grant(
     replay = client.post("/admin/ops/operations", json=payload, headers=headers)
     assert replay.status_code == 200
     assert replay.json()["id"] == identity
+    changed = client.post(
+        "/admin/ops/operations", json={**payload, "package": "docker-ce"}, headers=headers,
+    )
+    assert changed.status_code == 409
+    assert changed.json()["detail"] == "duplicate_operation_id"
+    assert json.loads((root / "inbox/approved.json").read_text()) == request
 
 
 def test_capability_drift_after_credentials_denies_and_audits_without_issuing_grant(

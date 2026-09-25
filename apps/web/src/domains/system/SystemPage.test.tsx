@@ -216,17 +216,39 @@ describe('SystemPage', () => {
     release?.({ id: 'accepted', kind: 'diagnostics', state: 'running', phase: 'awaiting_host', progress_percent: 0, error: null })
   })
 
-  it('keeps an unknown reservation locked, then clears it only after authoritative exact 404', async () => {
+  it('persists the exact safe draft before a slow reauthorization and never starts a second UUID', async () => {
+    let release: ((value: { token: string; expires_in: number }) => void) | undefined
+    const getOperation = vi.fn().mockRejectedValue(new ApiError(404, 'operation_not_found'))
+    const reauthorize = vi.fn().mockImplementation(() => new Promise(resolve => { release = resolve }))
+    const api = client({ getOperation, reauthorize })
+    render(tree('royal', api))
+    fireEvent.click(await screen.findByRole('button', { name: 'Собрать диагностику' }))
+    const dialog = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
+    fireEvent.change(within(dialog).getByLabelText('Введите ЗАПУСТИТЬ DIAGNOSTICS'), { target: { value: 'ЗАПУСТИТЬ DIAGNOSTICS' } })
+    fireEvent.change(within(dialog).getByLabelText('Пароль'), { target: { value: 'secret' } })
+    fireEvent.change(within(dialog).getByLabelText('Код TOTP или восстановления'), { target: { value: '123456' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Запустить' }))
+    await waitFor(() => expect(reauthorize).toHaveBeenCalledOnce())
+    const stored = readOperationReservation()
+    expect(stored?.draft).toEqual({
+      operation_id: stored?.id, kind: 'diagnostics', capability_revision: revision,
+    })
+    fireEvent(window, new Event('focus'))
+    await act(async () => { await Promise.resolve() })
+    expect(getOperation).not.toHaveBeenCalled()
+    expect(api.startOperation).not.toHaveBeenCalled()
+    release?.({ token: 'reauth-token', expires_in: 120 })
+  })
+
+  it('keeps an exact safe draft locked across 404 and retries only the same UUID and payload', async () => {
     let submittedId = ''
-    const getOperation = vi.fn()
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockRejectedValueOnce(new ApiError(404, 'operation_not_found'))
+    const getOperation = vi.fn().mockRejectedValue(new ApiError(404, 'operation_not_found'))
     const startOperation = vi.fn().mockImplementation(async payload => {
       submittedId = payload.operation_id
       throw new Error('request outcome unknown')
     })
     const api = client({ getOperation, startOperation })
-    render(tree('royal', api))
+    const first = render(tree('royal', api))
     fireEvent.click(await screen.findByRole('button', { name: 'Собрать диагностику' }))
     const dialog = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
     fireEvent.change(within(dialog).getByLabelText('Введите ЗАПУСТИТЬ DIAGNOSTICS'), { target: { value: 'ЗАПУСТИТЬ DIAGNOSTICS' } })
@@ -237,19 +259,32 @@ describe('SystemPage', () => {
     expect(readOperationReservation()?.id).toBe(submittedId)
     expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeDisabled()
 
-    fireEvent(window, new Event('focus'))
-    await waitFor(() => expect(getOperation).toHaveBeenCalledWith(submittedId))
+    first.unmount()
+    render(tree('royal', api))
+    expect(await screen.findByText(/Запрос не подтверждён/)).toBeVisible()
     expect(readOperationReservation()?.id).toBe(submittedId)
+    expect(readOperationReservation()?.draft).toEqual({
+      operation_id: submittedId, kind: 'diagnostics', capability_revision: revision,
+    })
+    expect(localStorage.getItem('robopark:system-operation')).not.toContain('secret')
+    expect(localStorage.getItem('robopark:system-operation')).not.toContain('123456')
     expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeDisabled()
-    expect(startOperation).toHaveBeenCalledOnce()
 
-    const reservation = readOperationReservation()
-    if (reservation) writeOperationReservation({ ...reservation, created_at: 0 })
-    fireEvent(window, new Event('focus'))
-    expect(await screen.findByText('Запрос не получен')).toBeVisible()
-    await waitFor(() => expect(localStorage.getItem('robopark:system-operation')).toBeNull())
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeEnabled())
-    expect(startOperation).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить тот же запрос' }))
+    const retry = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
+    fireEvent.change(within(retry).getByLabelText('Введите ЗАПУСТИТЬ DIAGNOSTICS'), { target: { value: 'ЗАПУСТИТЬ DIAGNOSTICS' } })
+    fireEvent.change(within(retry).getByLabelText('Пароль'), { target: { value: 'new-secret' } })
+    fireEvent.change(within(retry).getByLabelText('Код TOTP или восстановления'), { target: { value: '654321' } })
+    fireEvent.click(within(retry).getByRole('button', { name: 'Запустить' }))
+    await waitFor(() => expect(startOperation).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(startOperation).mock.calls[1][0]).toEqual({
+      operation_id: submittedId, kind: 'diagnostics', capability_revision: revision,
+      confirmation: 'ЗАПУСТИТЬ DIAGNOSTICS',
+    })
+    expect(vi.mocked(api.reauthorize).mock.calls[1][0]).toMatchObject({
+      operation_id: submittedId, operation_kind: 'diagnostics', capability_revision: revision,
+      password: 'new-secret', code: '654321',
+    })
   })
 
   it('disables operations exactly when the capability snapshot expires', async () => {

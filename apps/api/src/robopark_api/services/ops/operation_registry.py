@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from pathlib import Path
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from robopark_api.models import HostOperationStatus
 from robopark_api.ops_schemas import public_result
+from robopark_api.services.ops.jobs import load_job
 
 RETENTION = timedelta(days=7)
 MAX_OPERATION_ROWS = 5_000
@@ -25,34 +28,57 @@ class OperationRegistryFull(ValueError):
     pass
 
 
+_NON_OPERATIONAL_FIELDS = {
+    "operation_id", "confirmation", "confirmation_repeat", "password", "code",
+    "totp", "recovery_code", "authorization", "grant", "grant_token",
+}
+
+
+def request_digest(payload: object) -> str:
+    """Hash only the canonical, non-secret typed operational request."""
+    if hasattr(payload, "model_dump"):
+        value = payload.model_dump(mode="json")
+    elif isinstance(payload, dict):
+        value = dict(payload)
+    else:
+        raise TypeError("invalid_operation_request")
+    canonical = {
+        key: value[key]
+        for key in sorted(value)
+        if key not in _NON_OPERATIONAL_FIELDS
+    }
+    encoded = json.dumps(
+        canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
 def _safe_token(value: object, fallback: str) -> str:
     return value if isinstance(value, str) and _SAFE_TOKEN.fullmatch(value) else fallback
 
 
 def reserve(
     db: Session, *, operation_id: str, actor_user_id: int, kind: str,
+    request_digest: str | None = None,
 ) -> HostOperationStatus:
+    digest = request_digest or sha256(f"legacy:{kind}".encode()).hexdigest()
     existing = db.get(HostOperationStatus, operation_id)
     if existing is not None:
-        if existing.actor_user_id != actor_user_id or existing.kind != kind:
+        if (
+            existing.actor_user_id != actor_user_id
+            or existing.kind != kind
+            or existing.request_digest != digest
+        ):
             raise OperationIdentityConflict("duplicate_operation_id")
-        if existing.receipt_state == "terminal" and existing.phase == "rejected":
-            existing.receipt_state = "received"
-            existing.state = "queued"
-            existing.phase = "request_received"
-            existing.error = None
-            existing.progress_percent = None
-            existing.terminal_at = None
-            db.commit()
-            db.refresh(existing)
         return existing
-    prune(db)
+    prune(db, commit=False)
     if (db.scalar(select(func.count()).select_from(HostOperationStatus)) or 0) >= MAX_OPERATION_ROWS:
         raise OperationRegistryFull("operation_registry_full")
     row = HostOperationStatus(
         operation_id=operation_id,
         actor_user_id=actor_user_id,
         kind=kind,
+        request_digest=digest,
         receipt_state="received",
         state="queued",
         phase="request_received",
@@ -120,31 +146,30 @@ def update_from_job(
     return row
 
 
-def prune(db: Session, *, now: datetime | None = None) -> int:
-    """Delete terminal/abandoned receipts by age, then enforce a hard row ceiling."""
+def snapshot_current_job(db: Session, ops_dir: Path) -> HostOperationStatus | None:
+    """Persist the current file-slot state before a later job can replace it."""
+    job = load_job(ops_dir)
+    if job is None or db.get(HostOperationStatus, job.id) is None:
+        return None
+    return update_from_job(db, operation_id=job.id, job=job)
+
+
+def prune(
+    db: Session, *, now: datetime | None = None, commit: bool = True,
+) -> int:
+    """Delete only expired terminal receipts; live/uncertain receipts are retained."""
     current = now or datetime.now(UTC)
     cutoff = current - RETENTION
-    expired = list(db.scalars(
-        select(HostOperationStatus.operation_id)
-        .where(HostOperationStatus.updated_at < cutoff)
-        .order_by(HostOperationStatus.updated_at, HostOperationStatus.operation_id)
-        .limit(500)
-    ))
-    if expired:
-        db.execute(delete(HostOperationStatus).where(HostOperationStatus.operation_id.in_(expired)))
+    result = db.execute(
+        delete(HostOperationStatus).where(
+            HostOperationStatus.receipt_state == "terminal",
+            HostOperationStatus.terminal_at.is_not(None),
+            HostOperationStatus.terminal_at < cutoff,
+        ).execution_options(synchronize_session=False)
+    )
+    removed = max(0, int(result.rowcount or 0))
+    if commit:
         db.commit()
-    overflow = list(db.scalars(
-        select(HostOperationStatus.operation_id)
-        .where(HostOperationStatus.receipt_state == "terminal")
-        .order_by(HostOperationStatus.updated_at.desc(), HostOperationStatus.operation_id.desc())
-        .offset(max(0, MAX_OPERATION_ROWS - int(db.scalar(
-            select(func.count()).select_from(HostOperationStatus).where(
-                HostOperationStatus.receipt_state != "terminal"
-            )
-        ) or 0)))
-        .limit(500)
-    ))
-    if overflow:
-        db.execute(delete(HostOperationStatus).where(HostOperationStatus.operation_id.in_(overflow)))
-        db.commit()
-    return len(expired) + len(overflow)
+    else:
+        db.flush()
+    return removed

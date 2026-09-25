@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
 from conftest import login_as, role_id_for
@@ -75,7 +76,7 @@ def test_exact_status_is_not_exposed_to_a_different_royal(
     assert client.get(f"/admin/ops/operations/{operation_id}").status_code == 404
 
 
-def test_registry_retention_is_bounded_by_age_and_count(db_session, seed_royal, monkeypatch):
+def test_registry_retention_deletes_only_expired_terminal_rows(db_session, seed_royal, monkeypatch):
     now = datetime(2026, 9, 25, 12, tzinfo=UTC)
     monkeypatch.setattr(operation_registry, "MAX_OPERATION_ROWS", 3)
     old = HostOperationStatus(
@@ -99,6 +100,136 @@ def test_registry_retention_is_bounded_by_age_and_count(db_session, seed_royal, 
         select(HostOperationStatus).order_by(HostOperationStatus.created_at.desc())
     ).all()
 
-    assert removed == 3
-    assert len(rows) == 3
+    assert removed == 1
+    assert len(rows) == 5
     assert old not in rows
+
+
+def test_operation_uuid_is_bound_to_exact_canonical_request(db_session, seed_royal):
+    operation_id = str(uuid4())
+    first = {
+        "operation_id": operation_id,
+        "kind": "usb-select",
+        "capability_revision": "a" * 64,
+        "device_uuid": "11111111-1111-4111-8111-111111111111",
+        "confirmation": "ЗАПУСТИТЬ USB-SELECT",
+    }
+    digest = operation_registry.request_digest(first)
+    operation_registry.reserve(
+        db_session, operation_id=operation_id, actor_user_id=seed_royal.id,
+        kind="usb-select", request_digest=digest,
+    )
+
+    replay = operation_registry.reserve(
+        db_session, operation_id=operation_id, actor_user_id=seed_royal.id,
+        kind="usb-select", request_digest=operation_registry.request_digest({
+            **first, "confirmation": "a different non-operational phrase",
+        }),
+    )
+    assert replay.operation_id == operation_id
+
+    with pytest.raises(operation_registry.OperationIdentityConflict):
+        operation_registry.reserve(
+            db_session, operation_id=operation_id, actor_user_id=seed_royal.id,
+            kind="usb-select", request_digest=operation_registry.request_digest({
+                **first, "device_uuid": "22222222-2222-4222-8222-222222222222",
+            }),
+        )
+
+
+@pytest.mark.parametrize(
+    ("kind", "field", "before", "after"),
+    [
+        ("backup-verify", "backup_id", "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"),
+        ("package-inspect", "package", "openssl", "curl"),
+    ],
+)
+def test_operation_digest_changes_for_every_operational_payload(
+    kind, field, before, after,
+):
+    base = {
+        "operation_id": "11111111-1111-4111-8111-111111111111",
+        "kind": kind,
+        "capability_revision": "a" * 64,
+        field: before,
+    }
+    assert operation_registry.request_digest(base) != operation_registry.request_digest({
+        **base, field: after,
+    })
+
+
+def test_terminal_job_is_snapshotted_before_current_slot_is_replaced(
+    client, db_session, seed_royal, test_settings,
+):
+    operation_id = str(uuid4())
+    request = {
+        "operation_id": operation_id,
+        "kind": "diagnostics",
+        "capability_revision": "a" * 64,
+    }
+    operation_registry.reserve(
+        db_session, operation_id=operation_id, actor_user_id=seed_royal.id,
+        kind="diagnostics", request_digest=operation_registry.request_digest(request),
+    )
+    first = new_job("diagnostics", exempt_token_hash="session")
+    first.id = operation_id
+    first.state = "succeeded"
+    first.phase = "completed"
+    first.extra = {"host_result": {"performed": ["restart_tuna"]}}
+    save_job(Path(test_settings.ops_dir), first)
+
+    operation_registry.snapshot_current_job(db_session, Path(test_settings.ops_dir))
+    login_as(client, "royal", "secret")
+    replacement = new_job("diagnostics", exempt_token_hash="session")
+    replacement.id = str(uuid4())
+    replacement.state = "running"
+    replacement.phase = "awaiting_host"
+    save_job(Path(test_settings.ops_dir), replacement)
+
+    receipt = client.get(f"/admin/ops/operations/{operation_id}")
+    assert receipt.status_code == 200
+    assert receipt.json()["receipt_state"] == "terminal"
+    assert receipt.json()["state"] == "succeeded"
+    assert receipt.json()["host_result"]["performed"] == ["restart_tuna"]
+
+
+def test_prune_never_deletes_live_rows_and_rejects_admission_at_capacity(
+    db_session, seed_royal, monkeypatch,
+):
+    now = datetime(2026, 9, 25, 12, tzinfo=UTC)
+    monkeypatch.setattr(operation_registry, "MAX_OPERATION_ROWS", 3)
+    for state in ("received", "accepted", "accepted"):
+        db_session.add(HostOperationStatus(
+            operation_id=str(uuid4()), actor_user_id=seed_royal.id, kind="diagnostics",
+            request_digest="a" * 64, receipt_state=state,
+            state="queued" if state == "received" else "running",
+            phase="request_received" if state == "received" else "awaiting_host",
+            created_at=now - timedelta(days=30), updated_at=now - timedelta(days=30),
+        ))
+    db_session.commit()
+
+    assert operation_registry.prune(db_session, now=now) == 0
+    with pytest.raises(operation_registry.OperationRegistryFull):
+        operation_registry.reserve(
+            db_session, operation_id=str(uuid4()), actor_user_id=seed_royal.id,
+            kind="diagnostics", request_digest="b" * 64,
+        )
+    assert len(db_session.scalars(select(HostOperationStatus)).all()) == 3
+
+
+def test_prune_removes_all_expired_terminal_overflow_in_one_pass(
+    db_session, seed_royal, monkeypatch,
+):
+    now = datetime(2026, 9, 25, 12, tzinfo=UTC)
+    monkeypatch.setattr(operation_registry, "MAX_OPERATION_ROWS", 500)
+    for index in range(501):
+        db_session.add(HostOperationStatus(
+            operation_id=str(uuid4()), actor_user_id=seed_royal.id, kind="diagnostics",
+            request_digest=f"{index:064x}", receipt_state="terminal", state="failed",
+            phase="rejected", created_at=now - timedelta(days=8),
+            updated_at=now - timedelta(days=8), terminal_at=now - timedelta(days=8),
+        ))
+    db_session.commit()
+
+    assert operation_registry.prune(db_session, now=now) == 501
+    assert db_session.scalar(select(operation_registry.func.count()).select_from(HostOperationStatus)) == 0

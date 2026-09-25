@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "target_version": "0.2.0-rc.6",
-  "migration_head": "0048_host_operation_status",
+  "migration_head": "0049_operation_request_digest",
   "known_heads": [
     "0036_audit_remediation_state",
     "0037_claim_workflow_visibility",

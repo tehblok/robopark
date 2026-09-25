@@ -164,22 +164,27 @@ def _require_privileged(
         )
 
 
-def _reconcile_if_needed(settings: Settings) -> None:
+def _reconcile_if_needed(settings: Settings, db: Session | None = None) -> None:
     """Finalize Docker cutover when ops-agent writes rebuild.result after API boot."""
+    ops_dir = resolved_ops_dir(settings)
+    if db is not None:
+        operation_registry.snapshot_current_job(db, ops_dir)
     if settings.ops_host_root:
         with suppress(host_bridge.BridgeError):
             host_bridge.reconcile_host_job(
-                resolved_ops_dir(settings), host_bridge.host_root(settings)
+                ops_dir, host_bridge.host_root(settings)
             )
-        return
-    ctx = build_ops_context(settings)
-    with suppress(Exception):
-        reconcile_pending_rebuild(
-            ctx.ops_dir,
-            database_url=ctx.database_url,
-            config_files=ctx.config_files,
-            data_dir=ctx.data_dir,
-        )
+    else:
+        ctx = build_ops_context(settings)
+        with suppress(Exception):
+            reconcile_pending_rebuild(
+                ctx.ops_dir,
+                database_url=ctx.database_url,
+                config_files=ctx.config_files,
+                data_dir=ctx.data_dir,
+            )
+    if db is not None:
+        operation_registry.snapshot_current_job(db, ops_dir)
 
 
 def _job_out(job, *, progress: tuple[str | None, int | None] = (None, None)) -> OpsJobOut:
@@ -241,9 +246,10 @@ def maintenance_status(
 @router.get("/admin/ops/job", response_model=OpsJobOut)
 def get_job(
     _royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> OpsJobOut:
-    _reconcile_if_needed(settings)
+    _reconcile_if_needed(settings, db)
     job = load_job(resolved_ops_dir(settings))
     if job is None:
         return OpsJobOut(
@@ -273,7 +279,7 @@ def get_exact_operation(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> ExactOperationStatusOut:
-    _reconcile_if_needed(settings)
+    _reconcile_if_needed(settings, db)
     row = db.get(HostOperationStatus, str(operation_id))
     found = row is not None and row.actor_user_id == royal.id
     audit.record(
@@ -381,6 +387,7 @@ def post_snapshot(
     settings: Settings = Depends(get_settings),
 ) -> OpsJobOut:
     _require_privileged(request, royal, db, settings, "snapshot", "snapshot")
+    operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
     exempt = _token_hash(request, settings)
     try:
         job = _launch(
@@ -410,6 +417,7 @@ async def post_restore(
     settings: Settings = Depends(get_settings),
 ) -> OpsJobOut:
     _require_privileged(request, royal, db, settings, "restore", "restore")
+    operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
     exempt = _token_hash(request, settings)
     blob = await _read_upload(archive, settings.ops_max_upload_bytes)
     try:
@@ -454,6 +462,7 @@ async def post_update(
     settings: Settings = Depends(get_settings),
 ) -> OpsJobOut:
     _require_privileged(request, royal, db, settings, "update", "update")
+    operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
     exempt = _token_hash(request, settings)
     blob = await _read_upload(archive, settings.ops_max_upload_bytes)
     try:
@@ -484,7 +493,8 @@ def _bridge_root(settings):
         raise HTTPException(status_code=503, detail="host_bridge_unavailable") from exc
 
 
-def _host_action(db, actor, action, operation):
+def _host_action(db, actor, action, operation, settings):
+    operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
     try:
         result = operation()
     except (host_bridge.BridgeError, ArchiveError, JobConflict, OSError) as exc:
@@ -527,11 +537,14 @@ def post_host_operation(
     try:
         receipt = operation_registry.reserve(
             db, operation_id=identity, actor_user_id=royal.id, kind=payload.kind.value,
+            request_digest=operation_registry.request_digest(payload),
         )
     except operation_registry.OperationIdentityConflict as exc:
         raise HTTPException(status_code=409, detail="duplicate_operation_id") from exc
     except operation_registry.OperationRegistryFull as exc:
         raise HTTPException(status_code=503, detail="operation_registry_full") from exc
+    operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
+    db.refresh(receipt)
     if receipt.receipt_state != "received":
         return _operation_out(receipt)
 
@@ -555,7 +568,7 @@ def post_host_operation(
     try:
         root = _bridge_root(settings)
         job = _host_action(
-            db, royal, "admin.ops." + payload.kind.value, lambda: enqueue(root)
+            db, royal, "admin.ops." + payload.kind.value, lambda: enqueue(root), settings
         )
     except HTTPException as exc:
         current = load_job(resolved_ops_dir(settings))
@@ -607,6 +620,7 @@ async def inspect_host_update(
         lambda: host_bridge.inspect_update(
             settings, resolved_ops_dir(settings), root, blob, royal.id
         ),
+        settings,
     )
 
 
@@ -627,6 +641,7 @@ def approve_host_update(
         if payload.confirm != UPDATE_PHRASE:
             raise host_bridge.BridgeError("confirm_required")
         host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
+        operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
         return host_bridge.approve_update(
             settings,
             resolved_ops_dir(settings),
@@ -636,7 +651,7 @@ def approve_host_update(
             _token_hash(request, settings),
         )
 
-    return _job_out(_host_action(db, royal, "admin.ops.update.approve", approve))
+    return _job_out(_host_action(db, royal, "admin.ops.update.approve", approve, settings))
 
 
 def _start_host_operation(kind, request, royal, db, settings):
@@ -651,6 +666,7 @@ def _start_host_operation(kind, request, royal, db, settings):
             lambda: host_bridge.enqueue_operation(
                 resolved_ops_dir(settings), root, kind, royal.id, _token_hash(request, settings)
             ),
+            settings,
         )
     )
 
@@ -720,6 +736,7 @@ def approve_github_update(
         if payload.confirm != UPDATE_PHRASE:
             raise host_bridge.BridgeError("confirm_required")
         host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
+        operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
         return host_bridge.approve_github_update(
             resolved_ops_dir(settings),
             root,
@@ -728,4 +745,4 @@ def approve_github_update(
             _token_hash(request, settings),
         )
 
-    return _job_out(_host_action(db, royal, "admin.ops.github-update.approve", approve))
+    return _job_out(_host_action(db, royal, "admin.ops.github-update.approve", approve, settings))

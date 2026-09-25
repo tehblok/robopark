@@ -619,7 +619,6 @@ def enqueue_typed_operation(
                 or saved != operation.model_dump(mode="json")
             ):
                 raise JobConflict("duplicate_operation_id")
-            consume_authorization()
             if current.state in ACTIVE_STATES:
                 _dispatch(ops, root, current)
             return current
