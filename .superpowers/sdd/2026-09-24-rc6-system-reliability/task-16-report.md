@@ -5,8 +5,9 @@
 - This report covers only the mandatory pre-merge blockers and short release gates.
 - No merge to `main`, signing, archive/package creation, installation, deployment,
   host mutation, soak, load test, or broad/full suite was performed.
-- Release declarations remain `0.2.0-rc.6`, channel `rc`, migration head
-  `0049_operation_request_digest`; no migration was needed.
+- Release declarations remain `0.2.0-rc.6`, channel `rc`. The independent
+  reliability remediation below advances the linear migration head to
+  `0050_media_action_dependency`.
 
 ## Mandatory blocker 1 — exact unknown UUID survives failed retry authentication
 
@@ -106,6 +107,41 @@ observe the last free slot.
   merge/package boundary.
 - The existing 16 web lint warnings remain outside this isolated task; there are no
   lint errors and none points at the changed System operation files.
+
+## Independent reliability remediation — client replay, media retention and cleanup
+
+Commit: `3f0c01b6` (`fix(sync): retain interrupted actions and media`).
+
+### Fixed invariants
+
+- A restarted client atomically reconciles orphan `sending` actions and `uploading`
+  media to retryable state under the existing cross-tab coordinator. Action UUID,
+  idempotency key, media UUID and payload identity remain unchanged.
+- Confirmed review media is retained on the client while its durable action is
+  nonterminal. On the server migration `0050_media_action_dependency` binds the
+  completed upload to the exact actor/device/action and starts the seven-day cleanup
+  clock only after a terminal server result. Tracker `attention` responses stay
+  replayable without losing the photo.
+- System-operation reservations are keyed by immutable account id, included in the
+  storage inventory, purged on logout/auth transition, and cannot expose one royal's
+  draft or operation UUID to another account in the same browser.
+- Attachment and resumable-upload cleanup unlinks first. A transient filesystem
+  failure retains retryable metadata; a later cleanup removes both file and row.
+
+### Bounded PASS evidence
+
+- Web reliability/auth tests: seven files, 114 passed.
+- API media/offline/cleanup/migration selection: 53 passed, 28 deselected; one
+  upstream Starlette deprecation warning.
+- Model/migration contract selection: 3 passed, 31 deselected.
+- Host migration/release metadata selection: 23 passed, 97 deselected.
+- Release migration checker: `Release migration heads agree.`
+- API Ruff check: passed. Web lint: exit 0 with the same 16 unrelated warnings.
+- `git diff --check`: passed.
+
+The production web build passed after the independent admin lane corrected its owned
+test typing; this lane did not edit or stage those files. No long/full/soak/load test
+was run.
 
 ## Pre-merge state
 
