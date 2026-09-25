@@ -14,6 +14,7 @@ from .credentials import (
 from .diagnose import collect_local_diagnostics
 from .host_install import HostInstallRuntime
 from .install import CleanInstallCoordinator
+from .local_update import apply_local_update
 from .menu import Action, run_menu
 from .model import OtaError
 from .remove import DockerCli, RemovalPlan, remove_owned_installation
@@ -80,12 +81,19 @@ def _clean_install(bundle: Path, root: Path) -> None:
     )
 
 
+def _update(bundle: Path) -> None:
+    if input("Введите ОБНОВИТЬ: ").strip() != "ОБНОВИТЬ":
+        raise RuntimeError("confirmation_required")
+    result = apply_local_update(bundle)
+    print(f"Robopark {result['version']} обновлён. SHA-256: {result['sha256']}")
+
+
 def run_interactive() -> int:
     root = Path("/")
     bundle = _bundle_path()
     handlers = {
         Action.CLEAN_INSTALL: lambda: _clean_install(bundle, root),
-        Action.UPDATE: lambda: (_ for _ in ()).throw(RuntimeError("ota_update_unavailable")),
+        Action.UPDATE: lambda: _update(bundle),
         Action.DIAGNOSE: lambda: print(collect_local_diagnostics(Path.cwd(), root=root)),
         Action.REMOVE: lambda: _remove(root),
     }

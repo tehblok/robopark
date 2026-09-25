@@ -6,7 +6,7 @@
   "gates": {
     "ota": {
       "command": "./scripts/verify.sh ota",
-      "result": "92 passed",
+      "result": "94 passed",
       "status": "PASS"
     },
     "fast": {
@@ -15,7 +15,7 @@
       "status": "PASS"
     },
     "affected_api": {
-      "result": "26 host tests and 16 shared UI geometry tests passed",
+      "result": "34 host tests and 16 shared UI geometry tests passed",
       "status": "PASS"
     },
     "web_production_build": {
