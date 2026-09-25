@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "target_version": "0.2.0-rc.6",
+  "target_version": "0.2.0-rc.7",
   "migration_head": "0050_media_action_dependency",
   "known_heads": [
     "0036_audit_remediation_state",
@@ -10,5 +10,7 @@
   "bridge_before": "0.1.45",
   "bridge_version": "0.1.45",
   "recovery": "snapshot",
-  "eligible_channels": ["rc"]
+  "eligible_channels": [
+    "rc"
+  ]
 }

@@ -162,13 +162,14 @@ def test_clean_install_failure_collects_diagnostics_without_publishing(tmp_path:
 
 def test_verified_release_extracts_under_fixed_release_root(tmp_path: Path):
     repository = Path(__file__).resolve().parents[2]
+    version = (repository / "VERSION").read_text().strip()
     bundle = build_ota(repository, tmp_path / "artifact", git_sha="f" * 40)
     root = tmp_path / "host"
 
     target = extract_release(bundle, root=root)
 
-    assert target == root / "opt/robopark/releases/0.2.0-rc.6"
-    assert (target / "VERSION").read_text().strip() == "0.2.0-rc.6"
+    assert target == root / "opt/robopark/releases" / version
+    assert (target / "VERSION").read_text().strip() == version
     assert not (target / "manifest.json").exists()
     assert (target / "deploy/host/robopark").stat().st_mode & 0o111
 

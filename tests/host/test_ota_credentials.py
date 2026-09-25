@@ -65,3 +65,4 @@ def test_seed_command_uses_fixed_container_path_not_password(tmp_path: Path):
     ]
     assert f"{host_path}:/run/robopark/seed.json:ro" not in command
     assert f"{path}:/run/robopark/seed.json:ro" in command
+    assert command[command.index("--user") + 1] == "0:0"

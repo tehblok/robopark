@@ -84,6 +84,8 @@ def seed_command(path: Path, *, compose_prefix: list[str] | None = None) -> list
         "run",
         "--rm",
         "--no-deps",
+        "--user",
+        "0:0",
         "-v",
         f"{path}:/run/robopark/seed.json:ro",
         "api",

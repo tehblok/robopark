@@ -1,6 +1,6 @@
 {
   "format": 2,
-  "release": "0.2.0-rc.6",
+  "release": "0.2.0-rc.7",
   "delivery": "single-hash-only-ota",
   "generated_at": "2026-09-25T15:52:00Z",
   "gates": {
