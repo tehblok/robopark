@@ -220,3 +220,42 @@ No full suite, browser matrix, Docker, soak or load test was run.
 - No uncommitted product-code changes were present before this report was added.
 - Stop point: independent whole-branch review; do not merge, sign, package, install,
   deploy, soak or load from this report.
+
+## Independent media reliability remediation — recover missing completed blobs
+
+Commit: `507638de` (`fix(sync): recover missing completed media`).
+
+### Fixed invariants
+
+- Upload creation now returns an explicit `active`, `reinitialized` or `completed`
+  status. A completed database row whose expected blob disappeared is reopened with
+  the same upload/media/action identity; an intact completed row remains an
+  idempotent no-op.
+- Reopening requires an exact authenticated actor, device id, action UUID, issue,
+  filename, MIME type, size and digest match. Dependency, payload or device mismatch
+  remains a conflict.
+- The client skips transfer only for an explicit `completed` server status. A
+  `reinitialized` response uploads the retained local blob again, even if stale
+  completion fields are present.
+- Offline sync recognizes the server's actual `media_upload_missing` conflict and
+  resets both retained media and the same `submit_review` action to retryable state.
+  Media UUID, action UUID and idempotency key are preserved.
+- The integration regression simulates an unlink-before-database-state mismatch:
+  first review submission reports missing media, the same upload id is restored,
+  and receipt replay proves the action effect is applied once.
+- No schema change was necessary; release migration head remains
+  `0050_media_action_dependency`.
+
+### Bounded PASS evidence
+
+- API media/offline-sync modules: 25 passed; one upstream Starlette deprecation
+  warning.
+- Focused exact-identity/reopen/integration selection: 3 passed.
+- Web resumable-upload and sync-engine modules: 32 passed.
+- Web production build: passed. Web lint: exit 0 with only pre-existing unrelated
+  warnings.
+- Targeted API Ruff format/check: passed.
+- Release migration checker: `Release migration heads agree.`
+- `git diff --check`: passed.
+
+No full suite, browser matrix, Docker, soak or load test was run.
