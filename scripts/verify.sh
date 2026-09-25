@@ -102,7 +102,11 @@ run_ota() {
     uv run --project "$repo_root/apps/api" --frozen --extra dev \
       python -m pytest -p no:cacheprovider -q \
       tests/host/test_ota_verifier.py \
-      tests/host/test_ota_builder.py
+      tests/host/test_ota_builder.py \
+      tests/host/test_ota_menu.py \
+      tests/host/test_ota_clean_install.py \
+      tests/host/test_ota_credentials.py \
+      apps/api/tests/test_seed_from_file.py
 }
 
 run_load() {
