@@ -901,7 +901,12 @@ def restore_encrypted_backup(
     archive_limits=DEFAULT_BACKUP_ARCHIVE_LIMITS,
     _verify_only=False,
 ):
-    """Authenticate manifest and ciphertext before extracting into an empty target."""
+    """Authenticate a local archive before extracting into an empty target.
+
+    Local cryptographic receipts remain supported for offline staging. Production
+    USB receipts require host selection/ownership checks and must not enter this
+    path while the device-aware production restore capability is unavailable.
+    """
 
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -916,6 +921,8 @@ def restore_encrypted_backup(
         raise ReleaseError("backup_integrity_failed") from exc
     if not isinstance(verified, dict) or verified.get("verified") is not True:
         raise ReleaseError("verified_backup_required")
+    if "device_uuid" in verified or "backup_id" in verified:
+        raise ReleaseError("device_bound_restore_unavailable")
     if verified.get("sha256") != _sha256_path(artifact):
         raise ReleaseError("backup_integrity_failed")
     descriptor, plain_name = tempfile.mkstemp(dir=artifact.parent, prefix=".restore-payload-")
@@ -1182,11 +1189,7 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
             elif operation.kind is OperationKind.USB_DISCOVER:
                 detail = self.usb_discover(operation.operation_id)
             elif operation.kind is OperationKind.BACKUP_VERIFY:
-                receipt = self._read_private_json(
-                    "backup-receipts", f"{operation.payload['backup_id']}.json"
-                )
-                if receipt.get("verified") is not True:
-                    raise ReleaseError("backup_not_verified")
+                self.verified_backup_receipt(operation.payload["backup_id"])
                 detail = {
                     "backup_id": operation.payload["backup_id"],
                     "verified": True,
@@ -1349,33 +1352,75 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
                 os.close(descriptor)
             raise ReleaseError("unsafe_backup_path") from exc
 
-    @contextmanager
-    def _backup_artifact(self, backup_id):
-        identity = _canonical_uuid(backup_id)
-        matches = []
+    def _selected_device(self):
+        selected = self._read_private_json(None, "selected-usb.json")
+        if set(selected) != {"schema", "device_uuid"} or selected["schema"] != 1:
+            raise ReleaseError("usb_not_selected")
         try:
-            for device in tuple(self.device_provider()):
-                candidate = self._open_backup_candidate(device, identity)
-                if candidate is not None:
-                    matches.append(candidate)
-        except Exception:
-            for descriptors, _, _ in matches:
-                for descriptor in reversed(descriptors):
-                    os.close(descriptor)
-            raise
-        if len(matches) != 1:
-            for descriptors, _, _ in matches:
-                for descriptor in reversed(descriptors):
-                    os.close(descriptor)
+            identity = _canonical_uuid(selected["device_uuid"])
+        except (TypeError, ValueError) as exc:
+            raise ReleaseError("usb_not_selected") from exc
+        device = select_removable_device(tuple(self.device_provider()), identity)
+        if not device.mounted or device.mount_point is None:
+            raise ReleaseError("unsafe_usb_device")
+        return device
+
+    @contextmanager
+    def _backup_artifact(self, backup_id, *, device_uuid):
+        identity = _canonical_uuid(backup_id)
+        device = self._selected_device()
+        if device.uuid != _canonical_uuid(device_uuid):
+            raise ReleaseError("backup_device_changed")
+        candidate = self._open_backup_candidate(device, identity)
+        if candidate is None:
             raise ReleaseError("backup_not_found")
-        descriptors, bindings, artifact = matches[0]
+        descriptors, bindings, artifact = candidate
         try:
             self._validate_bindings(bindings)
             yield artifact
             self._validate_bindings(bindings)
+            if self._selected_device() != device:
+                raise ReleaseError("backup_device_changed")
         finally:
             for descriptor in reversed(descriptors):
                 os.close(descriptor)
+
+    def verified_backup_receipt(self, backup_id):
+        """Revalidate a USB receipt against the selected device and pinned bytes.
+
+        Legacy receipts without a device UUID cannot authorize production actions.
+        Caller holds host.lock for the selection and action to remain serialized.
+        """
+        identity = _canonical_uuid(backup_id)
+        receipt = self._read_private_json("backup-receipts", f"{identity}.json")
+        if (
+            set(receipt) != {
+                "schema", "backup_id", "device_uuid", "verified", "sha256",
+                "verified_at", "recovery_required",
+            }
+            or receipt["schema"] != 1
+            or receipt["backup_id"] != identity
+            or receipt["verified"] is not True
+            or not re.fullmatch(r"[a-f0-9]{64}", str(receipt["sha256"]))
+            or type(receipt["verified_at"]) not in {int, float}
+            or type(receipt["recovery_required"]) is not bool
+        ):
+            raise ReleaseError("backup_not_verified")
+        try:
+            _canonical_uuid(receipt["device_uuid"])
+        except (TypeError, ValueError) as exc:
+            raise ReleaseError("backup_not_verified") from exc
+        digest = hashlib.sha256()
+        total = 0
+        with self._backup_artifact(identity, device_uuid=receipt["device_uuid"]) as artifact:
+            while chunk := os.read(artifact, 1024 * 1024):
+                total += len(chunk)
+                if total > DEFAULT_BACKUP_ARCHIVE_LIMITS.max_archive_bytes + 8192:
+                    raise ReleaseError("backup_archive_limit")
+                digest.update(chunk)
+        if digest.hexdigest() != receipt["sha256"]:
+            raise ReleaseError("backup_integrity_failed")
+        return receipt
 
     def _state_directory(self, child=None, *, create=False):
         state = None
@@ -1536,6 +1581,8 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
 
     def backup_verify(self, operation_id, backup_id):
         del operation_id
+        backup_id = _canonical_uuid(backup_id)
+        device = self._selected_device()
         descriptor, temporary_name = tempfile.mkstemp(
             dir=self.paths.state, prefix=".backup-verify-"
         )
@@ -1543,7 +1590,7 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
         digest = hashlib.sha256()
         total = 0
         try:
-            with self._backup_artifact(backup_id) as artifact, os.fdopen(
+            with self._backup_artifact(backup_id, device_uuid=device.uuid) as artifact, os.fdopen(
                 descriptor, "wb"
             ) as output:
                 descriptor = None
@@ -1561,6 +1608,8 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
             )
             if detail["sha256"] != digest.hexdigest():
                 raise ReleaseError("backup_integrity_failed")
+            if self._selected_device() != device:
+                raise ReleaseError("backup_device_changed")
         finally:
             if descriptor is not None:
                 os.close(descriptor)
@@ -1571,6 +1620,7 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
             {
                 "schema": 1,
                 "backup_id": backup_id,
+                "device_uuid": device.uuid,
                 "verified": True,
                 "sha256": detail["sha256"],
                 "verified_at": datetime.now(UTC).timestamp(),

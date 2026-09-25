@@ -304,6 +304,12 @@ def test_default_cli_consumer_verifies_backup_with_external_runtime_key(host_pat
     mountinfo.write_text(
         "1 0 8:1 / /mnt/usb rw - ext4 /dev/fake-usb rw\n"
     )
+    from robopark_host.state import atomic_write_json
+
+    atomic_write_json(
+        host_paths.state / "selected-usb.json",
+        {"schema": 1, "device_uuid": _DEVICE_UUID},
+    )
     command = typed_request("backup-verify", backup_id=_BACKUP_UUID)
     command["authorization"] = authorization(command)
     inbox = host_paths.ops / "inbox"
@@ -347,6 +353,7 @@ def _production_backup_verify_fixture(host_paths):
     adapter = SafeProductionTypedHostEffects(
         host_paths, device_provider=lambda: (device,)
     )
+    adapter.usb_select(str(uuid4()), device)
 
     def create(directory):
         directory.mkdir(parents=True, exist_ok=True)
@@ -439,6 +446,139 @@ def test_backup_verify_accepts_regular_single_link_direct_child(host_paths):
         "backup_id": _BACKUP_UUID,
         "verified": True,
     }
+    receipt = json.loads(
+        (host_paths.state / "backup-receipts" / f"{_BACKUP_UUID}.json").read_text()
+    )
+    assert receipt["device_uuid"] == _DEVICE_UUID
+
+
+def test_backup_verify_never_falls_back_to_unselected_usb(host_paths):
+    from dataclasses import replace
+
+    from robopark_host.release import ReleaseError
+
+    adapter, _, create = _production_backup_verify_fixture(host_paths)
+    selected = adapter.device_provider()[0]
+    other = replace(selected, uuid=str(uuid4()), path="/dev/fake-other", mount_point="/mnt/other")
+    adapter.device_provider = lambda: (selected, other)
+    create(host_paths.root / "mnt/other/robopark-backups")
+
+    with pytest.raises(ReleaseError, match="backup_not_found"):
+        adapter.backup_verify(str(uuid4()), _BACKUP_UUID)
+    assert not (host_paths.state / "backup-receipts").exists()
+
+
+def test_backup_verify_ignores_same_backup_id_on_other_usb(host_paths):
+    from dataclasses import replace
+
+    adapter, mount, create = _production_backup_verify_fixture(host_paths)
+    selected = adapter.device_provider()[0]
+    other = replace(selected, uuid=str(uuid4()), path="/dev/fake-other", mount_point="/mnt/other")
+    adapter.device_provider = lambda: (other, selected)
+    create(host_paths.root / "mnt/other/robopark-backups")
+    create(mount / "robopark-backups")
+    assert adapter.backup_verify(str(uuid4()), _BACKUP_UUID)["verified"] is True
+    receipt = adapter.verified_backup_receipt(_BACKUP_UUID)
+    assert receipt["device_uuid"] == _DEVICE_UUID
+
+
+@pytest.mark.parametrize("selection", ["missing", "invalid", "symlink", "duplicate"])
+def test_backup_verify_requires_unambiguous_private_selection(host_paths, selection):
+    from dataclasses import replace
+
+    from robopark_host.release import ReleaseError
+
+    adapter, mount, create = _production_backup_verify_fixture(host_paths)
+    create(mount / "robopark-backups")
+    state = host_paths.state / "selected-usb.json"
+    if selection == "missing":
+        state.unlink()
+    elif selection == "invalid":
+        state.write_text(json.dumps({"schema": 1, "device_uuid": "not-a-uuid"}))
+    elif selection == "symlink":
+        outside = host_paths.root / "selection.json"
+        state.replace(outside)
+        state.symlink_to(outside)
+    else:
+        device = adapter.device_provider()[0]
+        duplicate = replace(device, path="/dev/fake-other", mount_point="/mnt/other")
+        adapter.device_provider = lambda: (device, duplicate)
+    with pytest.raises(ReleaseError):
+        adapter.backup_verify(str(uuid4()), _BACKUP_UUID)
+
+
+@pytest.mark.parametrize("change", ["selection", "legacy", "artifact"])
+def test_backup_verify_reconciliation_rechecks_device_and_digest(host_paths, change):
+    from dataclasses import replace
+
+    from robopark_host.commands import validate_typed_operation
+
+    adapter, mount, create = _production_backup_verify_fixture(host_paths)
+    artifact = create(mount / "robopark-backups")
+    adapter.backup_verify(str(uuid4()), _BACKUP_UUID)
+    command = typed_request("backup-verify", backup_id=_BACKUP_UUID)
+    command["authorization"] = authorization(command)
+    operation = validate_typed_operation(command)
+    assert adapter.reconcile(operation)["state"] == "succeeded"
+    if change == "selection":
+        selected = adapter.device_provider()[0]
+        other = replace(selected, uuid=str(uuid4()), path="/dev/fake-other", mount_point="/mnt/other")
+        create(host_paths.root / "mnt/other/robopark-backups")
+        adapter.device_provider = lambda: (selected, other)
+        adapter.usb_select(str(uuid4()), other)
+    elif change == "legacy":
+        path = host_paths.state / "backup-receipts" / f"{_BACKUP_UUID}.json"
+        receipt = json.loads(path.read_text())
+        receipt.pop("device_uuid", None)
+        path.write_text(json.dumps(receipt))
+    else:
+        artifact.write_bytes(b"changed")
+    assert adapter.reconcile(operation)["state"] == "failed"
+
+
+def test_backup_verify_selection_swap_during_authentication_fails_closed(host_paths, monkeypatch):
+    from robopark_host import commands
+    from robopark_host.release import ReleaseError
+
+    adapter, mount, create = _production_backup_verify_fixture(host_paths)
+    create(mount / "robopark-backups")
+    real_verify = commands.verify_encrypted_backup
+
+    def verify_and_switch(*args, **kwargs):
+        result = real_verify(*args, **kwargs)
+        (host_paths.state / "selected-usb.json").write_text(
+            json.dumps({"schema": 1, "device_uuid": str(uuid4())})
+        )
+        return result
+
+    monkeypatch.setattr(commands, "verify_encrypted_backup", verify_and_switch)
+    with pytest.raises(ReleaseError):
+        adapter.backup_verify(str(uuid4()), _BACKUP_UUID)
+    assert not (host_paths.state / "backup-receipts").exists()
+
+
+@pytest.mark.parametrize("receipt_kind", ["device-bound", "legacy-production"])
+def test_device_bound_receipt_cannot_bypass_production_restore_guard(host_paths, receipt_kind):
+    from robopark_host.commands import restore_encrypted_backup, verify_encrypted_backup
+    from robopark_host.release import ReleaseError
+
+    adapter, mount, create = _production_backup_verify_fixture(host_paths)
+    artifact = create(mount / "robopark-backups")
+    adapter.backup_verify(str(uuid4()), _BACKUP_UUID)
+    receipt = verify_encrypted_backup(artifact, recovery_key=b"c" * 32)
+    if receipt_kind == "device-bound":
+        receipt["device_uuid"] = _DEVICE_UUID
+    else:
+        receipt["backup_id"] = _BACKUP_UUID
+    (host_paths.state / "selected-usb.json").write_text(
+        json.dumps({"schema": 1, "device_uuid": str(uuid4())})
+    )
+    target = host_paths.root / "must-not-restore"
+    with pytest.raises(ReleaseError, match="device_bound_restore_unavailable"):
+        restore_encrypted_backup(artifact, target, recovery_key=b"c" * 32, verified=receipt)
+    with pytest.raises(ReleaseError, match="capability_unavailable"):
+        adapter.backup_restore(str(uuid4()), _BACKUP_UUID)
+    assert not target.exists()
 
 
 @pytest.mark.parametrize("unsafe", ["hardlink", "mode"])
@@ -486,6 +626,7 @@ def test_safe_adapter_reconcile_rejects_symlinked_private_lookup(host_paths, kin
         selected = outside / "selected-usb.json"
         selected.write_text(json.dumps({"schema": 1, "device_uuid": _DEVICE_UUID}))
         selected.chmod(0o600)
+        (host_paths.state / "selected-usb.json").unlink()
         (host_paths.state / "selected-usb.json").symlink_to(selected)
         command = typed_request("usb-select", device_uuid=_DEVICE_UUID)
     command["authorization"] = authorization(command)

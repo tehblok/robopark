@@ -285,6 +285,9 @@ def _regular_sha256(path: Path, *, max_bytes: int = 4 * 1024**3) -> tuple[int, s
 
 
 def _backup_receipts(paths):
+    from .commands import SafeProductionTypedHostEffects
+    from .release import ReleaseError
+
     receipts = paths.state / "backup-receipts"
     result = {}
     if not receipts.exists():
@@ -294,34 +297,15 @@ def _backup_receipts(paths):
     entries = list(receipts.iterdir())
     if len(entries) > MAX_ENTRIES:
         raise RetentionBlocked("backup_receipt_limit")
+    effects = SafeProductionTypedHostEffects(paths)
     for receipt in entries:
         if receipt.is_symlink() or not re.fullmatch(UUID + r"\.json", receipt.name):
             raise RetentionBlocked("unsafe_backup_receipt")
         try:
-            value = read_object(receipt)
-        except (OSError, ValueError, TypeError) as exc:
+            value = effects.verified_backup_receipt(receipt.stem)
+        except (OSError, ValueError, TypeError, ReleaseError) as exc:
             raise RetentionBlocked("unsafe_backup_receipt") from exc
-        identity = receipt.stem
-        if (
-            not isinstance(value, dict)
-            or set(value)
-            != {
-                "schema",
-                "backup_id",
-                "verified",
-                "sha256",
-                "verified_at",
-                "recovery_required",
-            }
-            or value["schema"] != 1
-            or value["backup_id"] != identity
-            or value["verified"] is not True
-            or not re.fullmatch(r"[a-f0-9]{64}", str(value["sha256"]))
-            or not isinstance(value["verified_at"], (int, float))
-            or type(value["recovery_required"]) is not bool
-        ):
-            raise RetentionBlocked("unsafe_backup_receipt")
-        result[identity] = value
+        result[receipt.stem] = value
     return result
 
 
@@ -368,6 +352,7 @@ def _managed_cleanup_snapshot(
                     if now - receipt["verified_at"] <= backup_guard_max_age:
                         candidate = {
                             "backup_id": identity,
+                            "device_uuid": receipt["device_uuid"],
                             "sha256": digest,
                             "verified_at": receipt["verified_at"],
                         }

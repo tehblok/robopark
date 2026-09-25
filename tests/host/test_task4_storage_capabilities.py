@@ -126,9 +126,32 @@ def _managed_cleanup_fixture(host_paths, *, guard_age=0):
     guard_id = str(uuid4())
     guard = backup_root / f"backup-{guard_id}.rpb"
     guard.write_bytes(b"verified recovery backup")
+    device_uuid = str(uuid4())
+    mount = host_paths.root / "mnt/usb/robopark-backups"
+    mount.mkdir(parents=True)
+    usb_backup = mount / guard.name
+    usb_backup.write_bytes(guard.read_bytes())
+    usb_backup.chmod(0o600)
+    device = host_paths.root / "dev/fake-usb"
+    device.parent.mkdir(parents=True)
+    device.touch()
+    uuid_root = host_paths.root / "dev/disk/by-uuid"
+    uuid_root.mkdir(parents=True)
+    (uuid_root / device_uuid).symlink_to("../../fake-usb")
+    removable = host_paths.root / "sys/class/block/fake-usb/removable"
+    removable.parent.mkdir(parents=True)
+    removable.write_text("1\n")
+    mountinfo = host_paths.root / "proc/self/mountinfo"
+    mountinfo.parent.mkdir(parents=True)
+    mountinfo.write_text("1 0 8:1 / /mnt/usb rw - ext4 /dev/fake-usb rw\n")
+    atomic_write_json(
+        host_paths.state / "selected-usb.json",
+        {"schema": 1, "device_uuid": device_uuid},
+    )
     receipt = {
         "schema": 1,
         "backup_id": guard_id,
+        "device_uuid": device_uuid,
         "verified": True,
         "sha256": hashlib.sha256(guard.read_bytes()).hexdigest(),
         "verified_at": now - guard_age,
@@ -140,6 +163,35 @@ def _managed_cleanup_fixture(host_paths, *, guard_age=0):
     old.write_bytes(b"old unverified backup")
     os.utime(old, (1, 1))
     return now, guard, old, releases
+
+
+@pytest.mark.parametrize("change", ["selection", "legacy", "usb-artifact"])
+def test_cleanup_guard_rejects_stale_usb_binding(host_paths, change):
+    from robopark_host.operational_state import read_object
+    from robopark_host.retention import (
+        StorageBudget,
+        execute_host_cleanup_plan,
+        preview_host_cleanup_plan,
+    )
+    from robopark_host.state import atomic_write_json
+
+    now, guard, old, releases = _managed_cleanup_fixture(host_paths)
+    budget = StorageBudget(10_000, 0, minimum_free_bytes=10_000)
+    plan = preview_host_cleanup_plan(host_paths, ["releases"], budget, now=now, large_cleanup_bytes=1)
+    assert plan["blocked"] is False
+    assert plan["guard"]["device_uuid"] == read_object(host_paths.state / "selected-usb.json")["device_uuid"]
+    if change == "selection":
+        atomic_write_json(host_paths.state / "selected-usb.json", {"schema": 1, "device_uuid": str(uuid4())})
+    elif change == "legacy":
+        path = next((host_paths.state / "backup-receipts").iterdir())
+        receipt = read_object(path)
+        receipt.pop("device_uuid")
+        atomic_write_json(path, receipt)
+    else:
+        (host_paths.root / "mnt/usb/robopark-backups" / guard.name).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="cleanup_plan_changed"):
+        execute_host_cleanup_plan(host_paths, ["releases"], budget, plan, now=now, large_cleanup_bytes=1)
+    assert old.exists() and releases["obsolete-b"].exists()
 
 
 def test_managed_cleanup_plans_actual_backup_and_release_candidates(host_paths):
