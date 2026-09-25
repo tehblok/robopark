@@ -1,5 +1,5 @@
 {
-  "migration_head": "0045_privileged_recovery_hashes",
+  "migration_head": "0046_privileged_generation",
   "migration_compatibility": {
     "from_heads": ["0036_audit_remediation_state", "0037_claim_workflow_visibility", "0038_inventory_photo_cleanup"],
     "reversible": true

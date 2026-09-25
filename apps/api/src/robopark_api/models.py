@@ -167,6 +167,7 @@ class PrivilegedCredential(Base):
     totp_secret_encrypted: Mapped[str] = mapped_column(Text)
     last_totp_counter: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    credential_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -195,8 +196,41 @@ class PrivilegedReauthorization(Base):
     session_token_hash: Mapped[str] = mapped_column(String(64))
     operation_kind: Mapped[str] = mapped_column(String(64))
     operation_id: Mapped[str] = mapped_column(String(128))
+    credential_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PrivilegedRecoveryReset(Base):
+    __tablename__ = "privileged_recovery_resets"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    selected_recovery_code_id: Mapped[int] = mapped_column(
+        ForeignKey("privileged_recovery_codes.id", ondelete="CASCADE")
+    )
+    totp_secret_encrypted: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PrivilegedRecoveryResetCode(Base):
+    __tablename__ = "privileged_recovery_reset_codes"
+    __table_args__ = (
+        UniqueConstraint("reset_id", "code_hash", name="uq_recovery_reset_code"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    reset_id: Mapped[str] = mapped_column(
+        ForeignKey("privileged_recovery_resets.id", ondelete="CASCADE"), index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64))
+    hash_version: Mapped[str] = mapped_column(
+        String(32), default="scrypt-v1", server_default="scrypt-v1"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

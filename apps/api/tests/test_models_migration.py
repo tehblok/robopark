@@ -129,7 +129,7 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
 def test_alembic_head_is_privileged_auth():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0045_privileged_recovery_hashes"]
+    assert script.get_heads() == ["0046_privileged_generation"]
 
 
 def test_privileged_audit_is_immutable_after_sqlite_migration(
@@ -207,6 +207,50 @@ def test_privileged_recovery_hash_migration_labels_legacy_rows(
         ) == "legacy-hmac-v1"
 
 
+def test_privileged_generation_migration_binds_existing_grants(
+    sqlite_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0045_privileged_recovery_hashes")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO privileged_credentials "
+                "(user_id, totp_secret_encrypted, enrolled_at) "
+                "VALUES (999, 'encrypted', '2026-01-01 00:00:00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO privileged_reauthorizations "
+                "(token_hash, user_id, session_token_hash, operation_kind, operation_id, expires_at) "
+                "VALUES (:token_hash, 999, :session_hash, 'snapshot', 'snapshot', "
+                "'2026-01-01 00:02:00')"
+            ),
+            {"token_hash": "a" * 64, "session_hash": "b" * 64},
+        )
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.scalar(
+            text(
+                "SELECT credential_generation FROM privileged_credentials WHERE user_id = 999"
+            )
+        ) == 1
+        assert connection.scalar(
+            text(
+                "SELECT credential_generation FROM privileged_reauthorizations "
+                "WHERE user_id = 999"
+            )
+        ) == 1
+    inspector = inspect(engine)
+    assert {
+        "privileged_recovery_resets",
+        "privileged_recovery_reset_codes",
+    } <= set(inspector.get_table_names())
+
+
 def test_sync_closure_scan_migration_adds_review_index(sqlite_database_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
     config = Config(Path(__file__).parents[1] / "alembic.ini")
@@ -230,7 +274,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
         "idempotency_key", "lease_owner", "lease_until",
     }
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0045_privileged_recovery_hashes"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0046_privileged_generation"
 
 
 def test_schedule_series_lookup_index_is_used(sqlite_database_url, monkeypatch):

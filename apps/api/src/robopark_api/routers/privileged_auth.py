@@ -29,7 +29,14 @@ class RecoveryOut(BaseModel):
 
 
 class RecoveryResetOut(RecoveryOut):
+    pending_id: str
     secret: str
+    expires_in: int
+
+
+class RecoveryResetConfirmIn(BaseModel):
+    pending_id: str = Field(min_length=1, max_length=64)
+    code: str
 
 
 class ReauthorizeIn(ConfirmIn):
@@ -180,7 +187,7 @@ def reset_recovery(
     throttle = _throttle(settings)
     throttle_key = f"privileged-recovery|{royal.id}|{client_ip(request)}"
     try:
-        secret, codes = privileged_auth.reset_with_recovery(
+        pending_id, secret, codes = privileged_auth.begin_recovery_reset(
             db,
             royal,
             settings,
@@ -192,7 +199,37 @@ def reset_recovery(
         )
     except privileged_auth.PrivilegedAuthError as exc:
         _raise(exc)
-    return RecoveryResetOut(secret=secret, recovery_codes=codes)
+    return RecoveryResetOut(
+        pending_id=pending_id,
+        secret=secret,
+        recovery_codes=codes,
+        expires_in=privileged_auth.RECOVERY_RESET_TTL_SECONDS,
+    )
+
+
+@router.post("/recovery/reset/confirm", status_code=204)
+def confirm_recovery_reset(
+    payload: RecoveryResetConfirmIn,
+    request: Request,
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    throttle = _throttle(settings)
+    throttle_key = f"privileged-recovery|{royal.id}|{client_ip(request)}"
+    try:
+        privileged_auth.confirm_recovery_reset(
+            db,
+            royal,
+            settings,
+            pending_id=payload.pending_id,
+            code=payload.code,
+            context=_context(request),
+            throttle=throttle,
+            throttle_key=throttle_key,
+        )
+    except privileged_auth.PrivilegedAuthError as exc:
+        _raise(exc)
 
 
 @router.post("/recovery/rotate", response_model=RecoveryOut)

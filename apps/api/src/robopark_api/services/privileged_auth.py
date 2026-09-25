@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from functools import wraps
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings
@@ -22,6 +22,8 @@ from robopark_api.models import (
     PrivilegedCredential,
     PrivilegedReauthorization,
     PrivilegedRecoveryCode,
+    PrivilegedRecoveryReset,
+    PrivilegedRecoveryResetCode,
     Role,
     User,
 )
@@ -30,6 +32,7 @@ from robopark_api.services.login_throttle import LoginThrottle
 
 TOTP_STEP_SECONDS = 30
 REAUTH_TTL_SECONDS = 120
+RECOVERY_RESET_TTL_SECONDS = 600
 RECOVERY_CODE_COUNT = 10
 RECOVERY_HASH_VERSION = "scrypt-v1"
 LEGACY_RECOVERY_HASH_VERSION = "legacy-hmac-v1"
@@ -109,6 +112,21 @@ def _new_recovery_rows(user_id: int) -> tuple[list[str], list[PrivilegedRecovery
     rows = [
         PrivilegedRecoveryCode(
             user_id=user_id,
+            code_hash=_recovery_hash(code),
+            hash_version=RECOVERY_HASH_VERSION,
+        )
+        for code in codes
+    ]
+    return codes, rows
+
+
+def _new_pending_recovery_rows(
+    reset_id: str,
+) -> tuple[list[str], list[PrivilegedRecoveryResetCode]]:
+    codes = [secrets.token_urlsafe(18) for _ in range(RECOVERY_CODE_COUNT)]
+    rows = [
+        PrivilegedRecoveryResetCode(
+            reset_id=reset_id,
             code_hash=_recovery_hash(code),
             hash_version=RECOVERY_HASH_VERSION,
         )
@@ -273,6 +291,20 @@ def _lock_credential(db: Session, user_id: int) -> PrivilegedCredential | None:
     )
 
 
+def _advance_generation_and_revoke(
+    db: Session, credential: PrivilegedCredential, *, now: datetime
+) -> None:
+    credential.credential_generation += 1
+    db.execute(
+        update(PrivilegedReauthorization)
+        .where(
+            PrivilegedReauthorization.user_id == credential.user_id,
+            PrivilegedReauthorization.used_at.is_(None),
+        )
+        .values(used_at=now)
+    )
+
+
 @_atomic
 def confirm_enrollment(
     db: Session,
@@ -344,6 +376,7 @@ def confirm_enrollment(
     db.add_all(recovery_rows)
     row.last_totp_counter = matched
     row.enrolled_at = _now()
+    _advance_generation_and_revoke(db, row, now=_now())
     throttle.reset(throttle_key, db=db, commit=False)
     _add_audit(
         db,
@@ -364,8 +397,9 @@ def _verify_second_factor(
     if row is None or row.enrolled_at is None:
         return False, "privileged_enrollment_required"
     if not (len(code) == 6 and code.isascii() and code.isdigit()):
-        recovery = _consume_recovery(db, actor, code)
-        if recovery == "matched":
+        recovery, row = _match_recovery(db, actor, code)
+        if recovery == "matched" and row is not None:
+            row.used_at = _now()
             return True, "recovery"
         if recovery == "unsupported":
             return False, "recovery_hash_unsupported"
@@ -384,7 +418,9 @@ def _verify_second_factor(
     return False, "invalid_credentials"
 
 
-def _consume_recovery(db: Session, actor: User, code: str) -> str:
+def _match_recovery(
+    db: Session, actor: User, code: str
+) -> tuple[str, PrivilegedRecoveryCode | None]:
     rows = list(
         db.scalars(
             select(PrivilegedRecoveryCode)
@@ -398,11 +434,10 @@ def _consume_recovery(db: Session, actor: User, code: str) -> str:
     supported = [row for row in rows if row.hash_version == RECOVERY_HASH_VERSION]
     for row in supported:
         if _recovery_matches(code, row.code_hash):
-            row.used_at = _now()
-            return "matched"
+            return "matched", row
     if not supported and any(row.hash_version == LEGACY_RECOVERY_HASH_VERSION for row in rows):
-        return "unsupported"
-    return "invalid"
+        return "unsupported", None
+    return "invalid", None
 
 
 @_atomic
@@ -447,6 +482,16 @@ def issue_reauthorization(
             throttle=throttle,
             throttle_key=throttle_key,
         )
+    credential = db.get(PrivilegedCredential, actor.id)
+    if credential is None:
+        _deny(
+            db,
+            actor,
+            action="privileged.reauthorize",
+            reason="privileged_enrollment_required",
+            context=context,
+            status_code=409,
+        )
     raw = secrets.token_urlsafe(32)
     db.add(
         PrivilegedReauthorization(
@@ -455,6 +500,7 @@ def issue_reauthorization(
             session_token_hash=context.session_token_hash or "",
             operation_kind=context.operation_kind or "",
             operation_id=context.operation_id or "",
+            credential_generation=credential.credential_generation,
             expires_at=_now() + timedelta(seconds=REAUTH_TTL_SECONDS),
         )
     )
@@ -480,6 +526,7 @@ def consume_reauthorization(
     context: AuditContext,
 ) -> bool:
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    credential = _lock_credential(db, actor.id)
     db.execute(
         update(PrivilegedReauthorization)
         .where(PrivilegedReauthorization.token_hash == token_hash)
@@ -489,7 +536,6 @@ def consume_reauthorization(
         select(PrivilegedReauthorization).where(
             PrivilegedReauthorization.token_hash == token_hash,
             PrivilegedReauthorization.user_id == actor.id,
-            PrivilegedReauthorization.used_at.is_(None),
         ).with_for_update()
     )
     now = _now()
@@ -499,20 +545,32 @@ def consume_reauthorization(
     valid = bool(
         row is not None
         and expires is not None
+        and row.used_at is None
         and expires > now
+        and credential is not None
+        and row.credential_generation == credential.credential_generation
         and hmac.compare_digest(row.session_token_hash, context.session_token_hash or "")
         and hmac.compare_digest(row.operation_kind, context.operation_kind or "")
         and hmac.compare_digest(row.operation_id, context.operation_id or "")
     )
     if valid:
         row.used_at = now
+    generation_mismatch = bool(
+        row is not None
+        and credential is not None
+        and row.credential_generation != credential.credential_generation
+    )
     _add_audit(
         db,
         actor=actor,
         action="privileged.operation",
         outcome="success" if valid else "denied",
-        reason="authorized" if valid else (
-            "token_invalid" if enrolled(db, actor.id) else "not_enrolled"
+        reason="authorized"
+        if valid
+        else (
+            "credential_generation_mismatch"
+            if generation_mismatch
+            else ("token_invalid" if credential and credential.enrolled_at else "not_enrolled")
         ),
         context=context,
     )
@@ -520,8 +578,19 @@ def consume_reauthorization(
     return valid
 
 
+def _delete_pending_reset(db: Session, pending_id: str) -> None:
+    db.execute(
+        delete(PrivilegedRecoveryResetCode).where(
+            PrivilegedRecoveryResetCode.reset_id == pending_id
+        )
+    )
+    db.execute(
+        delete(PrivilegedRecoveryReset).where(PrivilegedRecoveryReset.id == pending_id)
+    )
+
+
 @_atomic
-def reset_with_recovery(
+def begin_recovery_reset(
     db: Session,
     actor: User,
     settings: Settings,
@@ -531,13 +600,13 @@ def reset_with_recovery(
     context: AuditContext,
     throttle: LoginThrottle,
     throttle_key: str,
-) -> tuple[str, list[str]]:
+) -> tuple[str, str, list[str]]:
     retry = throttle.retry_after(throttle_key, db=db)
     if retry:
         _deny(
             db,
             actor,
-            action="privileged.recovery.reset",
+            action="privileged.recovery.reset.begin",
             reason="locked",
             context=context,
             status_code=429,
@@ -549,54 +618,200 @@ def reset_with_recovery(
         _deny(
             db,
             actor,
-            action="privileged.recovery.reset",
+            action="privileged.recovery.reset.begin",
             reason="secret_key_required",
             context=context,
             status_code=409,
         )
     row = _lock_credential(db, actor.id)
-    result = (
-        _consume_recovery(db, actor, code)
+    result, selected = (
+        _match_recovery(db, actor, code)
         if verify_password(password, actor.password_hash)
-        else "invalid"
+        else ("invalid", None)
     )
-    if row is None or result != "matched":
+    if row is None or row.enrolled_at is None or result != "matched" or selected is None:
         reason = "recovery_hash_unsupported" if result == "unsupported" else "invalid_credentials"
         _deny(
             db,
             actor,
-            action="privileged.recovery.reset",
+            action="privileged.recovery.reset.begin",
             reason=reason,
             context=context,
             status_code=409 if reason == "recovery_hash_unsupported" else 401,
             throttle=throttle,
             throttle_key=throttle_key,
         )
+    previous = db.scalar(
+        select(PrivilegedRecoveryReset)
+        .where(PrivilegedRecoveryReset.user_id == actor.id)
+        .with_for_update()
+    )
+    if previous is not None:
+        _delete_pending_reset(db, previous.id)
+    pending_id = secrets.token_urlsafe(24)
     secret = base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
-    row.totp_secret_encrypted = encrypt_secret(secret, encryption_key)
-    row.last_totp_counter = None
-    row.enrolled_at = _now()
+    db.add(
+        PrivilegedRecoveryReset(
+            id=pending_id,
+            user_id=actor.id,
+            selected_recovery_code_id=selected.id,
+            totp_secret_encrypted=encrypt_secret(secret, encryption_key),
+            expires_at=_now() + timedelta(seconds=RECOVERY_RESET_TTL_SECONDS),
+        )
+    )
+    codes, pending_rows = _new_pending_recovery_rows(pending_id)
+    db.add_all(pending_rows)
+    throttle.reset(throttle_key, db=db, commit=False)
+    _add_audit(
+        db,
+        actor=actor,
+        action="privileged.recovery.reset.begin",
+        outcome="success",
+        reason="pending",
+        context=context,
+    )
+    _commit(db)
+    return pending_id, secret, codes
+
+
+@_atomic
+def confirm_recovery_reset(
+    db: Session,
+    actor: User,
+    settings: Settings,
+    *,
+    pending_id: str,
+    code: str,
+    context: AuditContext,
+    throttle: LoginThrottle,
+    throttle_key: str,
+) -> None:
+    retry = throttle.retry_after(throttle_key, db=db)
+    if retry:
+        _deny(
+            db,
+            actor,
+            action="privileged.recovery.reset.confirm",
+            reason="locked",
+            context=context,
+            status_code=429,
+            retry_after=retry,
+        )
+    credential = _lock_credential(db, actor.id)
+    pending = db.scalar(
+        select(PrivilegedRecoveryReset)
+        .where(
+            PrivilegedRecoveryReset.id == pending_id,
+            PrivilegedRecoveryReset.user_id == actor.id,
+        )
+        .with_for_update()
+    )
+    if credential is None or credential.enrolled_at is None or pending is None:
+        _deny(
+            db,
+            actor,
+            action="privileged.recovery.reset.confirm",
+            reason="pending_reset_invalid",
+            context=context,
+            status_code=409,
+            throttle=throttle,
+            throttle_key=throttle_key,
+        )
+    expires = (
+        pending.expires_at.replace(tzinfo=UTC)
+        if pending.expires_at.tzinfo is None
+        else pending.expires_at
+    )
+    if expires <= _now():
+        _delete_pending_reset(db, pending.id)
+        _deny(
+            db,
+            actor,
+            action="privileged.recovery.reset.confirm",
+            reason="pending_reset_expired",
+            context=context,
+            status_code=410,
+        )
+    try:
+        secret = decrypt_secret(pending.totp_secret_encrypted, _key(settings)) or ""
+    except (SecretDecryptionError, PrivilegedAuthError):
+        _deny(
+            db,
+            actor,
+            action="privileged.recovery.reset.confirm",
+            reason="credential_unavailable",
+            context=context,
+            status_code=409,
+        )
+    matched = _matching_counter(secret, code, int(_unix_time() // TOTP_STEP_SECONDS))
+    if matched is None:
+        _deny(
+            db,
+            actor,
+            action="privileged.recovery.reset.confirm",
+            reason="invalid_credentials",
+            context=context,
+            throttle=throttle,
+            throttle_key=throttle_key,
+        )
+    selected = db.scalar(
+        select(PrivilegedRecoveryCode)
+        .where(
+            PrivilegedRecoveryCode.id == pending.selected_recovery_code_id,
+            PrivilegedRecoveryCode.user_id == actor.id,
+            PrivilegedRecoveryCode.used_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if selected is None:
+        _deny(
+            db,
+            actor,
+            action="privileged.recovery.reset.confirm",
+            reason="pending_reset_stale",
+            context=context,
+            status_code=409,
+        )
+    now = _now()
+    selected.used_at = now
     db.execute(
         update(PrivilegedRecoveryCode)
         .where(
             PrivilegedRecoveryCode.user_id == actor.id,
             PrivilegedRecoveryCode.used_at.is_(None),
         )
-        .values(used_at=_now())
+        .values(used_at=now)
     )
-    codes, recovery_rows = _new_recovery_rows(actor.id)
-    db.add_all(recovery_rows)
+    pending_codes = list(
+        db.scalars(
+            select(PrivilegedRecoveryResetCode).where(
+                PrivilegedRecoveryResetCode.reset_id == pending.id
+            )
+        )
+    )
+    db.add_all(
+        PrivilegedRecoveryCode(
+            user_id=actor.id,
+            code_hash=pending_code.code_hash,
+            hash_version=pending_code.hash_version,
+        )
+        for pending_code in pending_codes
+    )
+    credential.totp_secret_encrypted = pending.totp_secret_encrypted
+    credential.last_totp_counter = matched
+    credential.enrolled_at = now
+    _advance_generation_and_revoke(db, credential, now=now)
+    _delete_pending_reset(db, pending.id)
     throttle.reset(throttle_key, db=db, commit=False)
     _add_audit(
         db,
         actor=actor,
-        action="privileged.recovery.reset",
+        action="privileged.recovery.reset.confirm",
         outcome="success",
         reason="credentials_replaced",
         context=context,
     )
     _commit(db)
-    return secret, codes
 
 
 @_atomic
@@ -646,6 +861,17 @@ def rotate_recovery_codes(
         )
         .values(used_at=_now())
     )
+    credential = db.get(PrivilegedCredential, actor.id)
+    if credential is None:
+        _deny(
+            db,
+            actor,
+            action="privileged.recovery.rotate",
+            reason="privileged_enrollment_required",
+            context=context,
+            status_code=409,
+        )
+    _advance_generation_and_revoke(db, credential, now=_now())
     codes, recovery_rows = _new_recovery_rows(actor.id)
     db.add_all(recovery_rows)
     throttle.reset(throttle_key, db=db, commit=False)
