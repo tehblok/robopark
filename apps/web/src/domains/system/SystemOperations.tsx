@@ -137,7 +137,12 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onPost
         setSelected(null)
       }
     } catch (caught) {
-      clearOperationReservation(); setReservedOperationId(null)
+      // Once a POST has an unknown outcome, its UUID is the idempotency key.
+      // A failed reauthorization on a retry must not release that reservation
+      // or a corrected credential attempt could create a second operation.
+      if (!retryDraft) {
+        clearOperationReservation(); setReservedOperationId(null)
+      }
       if (caught instanceof ApiError && ['capabilities_changed', 'capability_unavailable', 'capabilities_unavailable'].includes(caught.detail ?? '')) {
         setError('Возможности хоста изменились. Список обновлён; подтвердите операцию заново.')
         setConfirmation(''); setPassword(''); setCode('')

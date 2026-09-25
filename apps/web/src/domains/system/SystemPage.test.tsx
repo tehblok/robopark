@@ -287,6 +287,62 @@ describe('SystemPage', () => {
     })
   })
 
+  it('keeps the unknown UUID reserved when retry reauthorization fails and reuses it after corrected credentials', async () => {
+    let submittedId = ''
+    const getOperation = vi.fn().mockRejectedValue(new ApiError(404, 'operation_not_found'))
+    const startOperation = vi.fn()
+      .mockImplementationOnce(async payload => {
+        submittedId = payload.operation_id
+        throw new Error('request outcome unknown')
+      })
+      .mockImplementationOnce(async payload => ({
+        id: payload.operation_id, kind: payload.kind, state: 'running',
+        phase: 'accepted', progress_percent: 0, error: null,
+      }))
+    const reauthorize = vi.fn()
+      .mockResolvedValueOnce({ token: 'initial-token', expires_in: 120 })
+      .mockRejectedValueOnce(new ApiError(401, 'invalid_totp'))
+      .mockResolvedValueOnce({ token: 'retry-token', expires_in: 120 })
+    const api = client({ getOperation, reauthorize, startOperation })
+    const first = render(tree('royal', api))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Собрать диагностику' }))
+    let dialog = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
+    fireEvent.change(within(dialog).getByLabelText('Введите ЗАПУСТИТЬ DIAGNOSTICS'), { target: { value: 'ЗАПУСТИТЬ DIAGNOSTICS' } })
+    fireEvent.change(within(dialog).getByLabelText('Пароль'), { target: { value: 'secret' } })
+    fireEvent.change(within(dialog).getByLabelText('Код TOTP или восстановления'), { target: { value: '123456' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Запустить' }))
+    expect(await screen.findByText('Проверяем получение запроса')).toBeVisible()
+    first.unmount()
+
+    render(tree('royal', api))
+    expect(await screen.findByText(/Запрос не подтверждён/)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить тот же запрос' }))
+    dialog = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
+    fireEvent.change(within(dialog).getByLabelText('Введите ЗАПУСТИТЬ DIAGNOSTICS'), { target: { value: 'ЗАПУСТИТЬ DIAGNOSTICS' } })
+    fireEvent.change(within(dialog).getByLabelText('Пароль'), { target: { value: 'wrong' } })
+    fireEvent.change(within(dialog).getByLabelText('Код TOTP или восстановления'), { target: { value: '000000' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Запустить' }))
+
+    expect(await within(dialog).findByText('Операция не запущена. Проверьте пароль и одноразовый код.')).toBeVisible()
+    expect(readOperationReservation()?.id).toBe(submittedId)
+    expect(readOperationReservation()?.draft).toEqual({
+      operation_id: submittedId, kind: 'diagnostics', capability_revision: revision,
+    })
+
+    fireEvent.change(within(dialog).getByLabelText('Пароль'), { target: { value: 'secret' } })
+    fireEvent.change(within(dialog).getByLabelText('Код TOTP или восстановления'), { target: { value: '654321' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Запустить' }))
+    await waitFor(() => expect(startOperation).toHaveBeenCalledTimes(2))
+
+    expect(reauthorize.mock.calls.map(([value]) => value.operation_id)).toEqual([
+      submittedId, submittedId, submittedId,
+    ])
+    expect(startOperation.mock.calls.map(([value]) => value.operation_id)).toEqual([
+      submittedId, submittedId,
+    ])
+  })
+
   it('disables operations exactly when the capability snapshot expires', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-25T09:00:00Z'))
