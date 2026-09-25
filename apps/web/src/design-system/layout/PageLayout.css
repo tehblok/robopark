@@ -48,6 +48,14 @@
   font-size: var(--rp-font-size-body);
 }
 
+.rp-page-layout__title,
+.rp-panel__title,
+.rp-page-layout__description,
+.rp-panel__description {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
 .rp-page-layout__actions,
 .rp-panel__actions {
   align-items: center;

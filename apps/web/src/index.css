@@ -183,12 +183,12 @@ textarea {
 
 .shell {
   display: grid;
-  gap: 1.25rem;
+  gap: var(--rp-section-gap);
 }
 
 .page-content {
   display: grid;
-  gap: 1.25rem;
+  gap: var(--rp-section-gap);
 }
 
 .page-header {
@@ -258,7 +258,7 @@ textarea {
 
 .page-body {
   display: grid;
-  gap: 1.25rem;
+  gap: var(--rp-section-gap);
 }
 
 .modal-backdrop {
@@ -320,12 +320,18 @@ textarea {
 
 .panel {
   display: grid;
-  gap: var(--space-4);
-  padding: var(--rp-density-panel-padding);
+  gap: var(--rp-form-gap);
+  min-inline-size: 0;
+  padding: var(--rp-card-padding);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
+  border-radius: var(--rp-radius-card);
+  background: var(--rp-surface);
   box-shadow: none;
+}
+
+:where(.panel, .card, .page-header-text, .panel-head, .panel-body) {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
 }
 
 .panel-body {
@@ -727,7 +733,7 @@ textarea {
 
 .card-list {
   display: grid;
-  gap: 0.85rem;
+  gap: var(--rp-form-gap);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -735,11 +741,12 @@ textarea {
 
 .card {
   display: grid;
-  gap: 0.65rem;
-  padding: 1rem 1.1rem;
+  gap: var(--rp-form-gap);
+  min-inline-size: 0;
+  padding: var(--rp-card-padding);
   border: 1px solid var(--border);
-  border-radius: 0.9rem;
-  background: var(--surface-muted);
+  border-radius: var(--rp-radius-card);
+  background: var(--rp-surface-sunken);
   transition: border-color var(--dur-fast) var(--ease-out),
     transform var(--dur-fast) var(--ease-out);
 }
@@ -2781,10 +2788,6 @@ textarea {
     --sidebar-width: 13rem;
   }
 
-  .panel {
-    padding: 1rem 1.1rem;
-  }
-
   .tracker-grid {
     grid-template-columns: minmax(17rem, 21rem) 1fr;
   }
@@ -2974,10 +2977,6 @@ textarea {
 
   .page {
     padding: 0.85rem;
-  }
-
-  .panel {
-    padding: 1rem;
   }
 
   .stat-grid,

@@ -6,7 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .credentials import collect_royal_credentials, credential_file
+from .credentials import (
+    collect_royal_credentials,
+    collect_tuna_configuration,
+    credential_file,
+)
 from .diagnose import collect_local_diagnostics
 from .host_install import HostInstallRuntime
 from .install import CleanInstallCoordinator
@@ -66,7 +70,8 @@ def _clean_install(bundle: Path, root: Path) -> None:
     plan = RemovalPlan.for_root(root)
     _require_delete_confirmation(plan)
     credentials = collect_royal_credentials()
-    runtime = HostInstallRuntime(bundle, root=root)
+    tuna = collect_tuna_configuration()
+    runtime = HostInstallRuntime(bundle, root=root, tuna=tuna)
     with credential_file(credentials, root / "run/robopark") as secret:
         CleanInstallCoordinator(runtime).run(secret)
     print(

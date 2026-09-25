@@ -18,6 +18,26 @@ class RoyalCredentials:
     role: str = "royal"
 
 
+@dataclass(frozen=True)
+class TunaConfiguration:
+    token: str = field(default="", repr=False)
+    subdomain: str = "robopark"
+    location: str = "ru"
+    domain: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.token)
+
+    @property
+    def public_origin(self) -> str | None:
+        if not self.enabled:
+            return None
+        return f"https://{self.domain}" if self.domain else (
+            f"https://{self.subdomain}.{self.location}.tuna.am"
+        )
+
+
 def _validate(credentials: RoyalCredentials) -> None:
     if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", credentials.username) is None:
         raise ValueError("invalid_royal_username")
@@ -45,6 +65,43 @@ def collect_royal_credentials(
     credentials = RoyalCredentials(username=username, password=password)
     _validate(credentials)
     return credentials
+
+
+def collect_tuna_configuration(
+    *,
+    getpass_fn: Callable[[str], str] = getpass.getpass,
+) -> TunaConfiguration:
+    token = getpass_fn("Tuna token: ").strip()
+    if re.fullmatch(r"[A-Za-z0-9_.-]{8,2048}", token) is None:
+        raise ValueError("invalid_tuna_token")
+    return TunaConfiguration(token=token)
+
+
+def write_tuna_configuration(directory: Path, configuration: TunaConfiguration) -> Path:
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if directory.is_symlink():
+        raise ValueError("unsafe_credential_directory")
+    os.chmod(directory, 0o700)
+    target = directory / "tuna.env"
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".tuna.env.", dir=directory)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(
+                f"TUNA_TOKEN={configuration.token}\n"
+                f"TUNA_LOCATION={configuration.location}\n"
+                f"TUNA_SUBDOMAIN={configuration.subdomain}\n"
+                f"TUNA_DOMAIN={configuration.domain}\n"
+                "TUNA_BIND=127.0.0.1:8080\n"
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        return target
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 @contextmanager

@@ -8,9 +8,12 @@ from pathlib import Path
 import pytest
 from robopark_ota.credentials import (
     RoyalCredentials,
+    TunaConfiguration,
     collect_royal_credentials,
+    collect_tuna_configuration,
     credential_file,
     seed_command,
+    write_tuna_configuration,
 )
 
 
@@ -66,3 +69,29 @@ def test_seed_command_uses_fixed_container_path_not_password(tmp_path: Path):
     assert f"{host_path}:/run/robopark/seed.json:ro" not in command
     assert f"{path}:/run/robopark/seed.json:ro" in command
     assert command[command.index("--user") + 1] == "0:0"
+
+
+def test_tuna_token_is_hidden_and_written_only_to_private_host_file(tmp_path: Path):
+    token = "tt_private_value"
+    configuration = collect_tuna_configuration(getpass_fn=lambda _prompt: token)
+
+    assert configuration == TunaConfiguration(
+        token=token,
+        subdomain="robopark",
+        location="ru",
+    )
+    assert token not in repr(configuration)
+    target = write_tuna_configuration(tmp_path, configuration)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert target.read_text() == (
+        "TUNA_TOKEN=tt_private_value\n"
+        "TUNA_LOCATION=ru\n"
+        "TUNA_SUBDOMAIN=robopark\n"
+        "TUNA_DOMAIN=\n"
+        "TUNA_BIND=127.0.0.1:8080\n"
+    )
+
+
+def test_clean_install_requires_tuna_token_for_secure_browser_features():
+    with pytest.raises(ValueError, match="invalid_tuna_token"):
+        collect_tuna_configuration(getpass_fn=lambda _prompt: "")

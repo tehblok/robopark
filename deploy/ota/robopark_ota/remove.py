@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import stat
 import subprocess
@@ -116,6 +117,8 @@ def remove_owned_installation(
 
 
 class DockerCli:
+    _OWNED_PROJECT = re.compile(r"robopark(?:-candidate-[0-9a-f-]{8,64})?")
+
     @staticmethod
     def _lines(command: list[str]) -> tuple[str, ...]:
         completed = subprocess.run(
@@ -128,11 +131,38 @@ class DockerCli:
         return tuple(line.strip() for line in completed.stdout.splitlines() if line.strip())
 
     def discover_owned(self) -> DockerTargets:
-        label = "label=com.docker.compose.project=robopark"
-        containers = self._lines(["docker", "ps", "-aq", "--filter", label])
-        volumes = set(self._lines(["docker", "volume", "ls", "-q", "--filter", label]))
+        containers = self._discover_labelled(
+            ["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project"],
+            "container",
+            '{{ index .Config.Labels "com.docker.compose.project" }}',
+        )
+        volumes = set(
+            self._discover_labelled(
+                [
+                    "docker",
+                    "volume",
+                    "ls",
+                    "-q",
+                    "--filter",
+                    "label=com.docker.compose.project",
+                ],
+                "volume",
+                '{{ index .Labels "com.docker.compose.project" }}',
+            )
+        )
         volumes.update({"robopark_robopark_postgres", "robopark_robopark_data"})
-        networks = self._lines(["docker", "network", "ls", "-q", "--filter", label])
+        networks = self._discover_labelled(
+            [
+                "docker",
+                "network",
+                "ls",
+                "-q",
+                "--filter",
+                "label=com.docker.compose.project",
+            ],
+            "network",
+            '{{ index .Labels "com.docker.compose.project" }}',
+        )
         images = set(self._lines(["docker", "image", "ls", "-q", "robopark-api:*"]))
         images.update(self._lines(["docker", "image", "ls", "-q", "robopark-web:*"]))
         return DockerTargets(
@@ -141,6 +171,25 @@ class DockerCli:
             networks=networks,
             images=tuple(sorted(images)),
         )
+
+    def _discover_labelled(
+        self, list_command: list[str], object_name: str, format_template: str
+    ) -> tuple[str, ...]:
+        owned = []
+        for identity in self._lines(list_command):
+            project = self._lines(
+                [
+                    "docker",
+                    object_name,
+                    "inspect",
+                    "--format",
+                    format_template,
+                    identity,
+                ]
+            )
+            if len(project) == 1 and self._OWNED_PROJECT.fullmatch(project[0]):
+                owned.append(identity)
+        return tuple(owned)
 
     def _remove(self, object_name: str, names: tuple[str, ...]) -> None:
         if not names:

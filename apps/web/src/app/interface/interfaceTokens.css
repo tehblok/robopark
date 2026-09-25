@@ -18,15 +18,8 @@
 
 @media (max-width: 899px) {
   :root {
+    --rp-page-gutter: 16px;
     --rp-section-gap: 16px;
     --rp-card-padding: 16px;
   }
-}
-
-@media (min-width: 600px) and (max-width: 899px) {
-  :root { --rp-page-gutter: 16px; }
-}
-
-@media (max-width: 599px) {
-  :root { --rp-page-gutter: 12px; }
 }

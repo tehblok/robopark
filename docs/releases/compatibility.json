@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "target_version": "0.2.0-rc.7",
+  "target_version": "0.2.0-rc.8",
   "migration_head": "0050_media_action_dependency",
   "known_heads": [
     "0036_audit_remediation_state",

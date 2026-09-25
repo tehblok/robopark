@@ -1,12 +1,12 @@
 {
   "format": 2,
-  "release": "0.2.0-rc.7",
+  "release": "0.2.0-rc.8",
   "delivery": "single-hash-only-ota",
-  "generated_at": "2026-09-25T15:52:00Z",
+  "generated_at": "2026-09-25T16:57:32Z",
   "gates": {
     "ota": {
       "command": "./scripts/verify.sh ota",
-      "result": "86 passed",
+      "result": "92 passed",
       "status": "PASS"
     },
     "fast": {
@@ -15,7 +15,7 @@
       "status": "PASS"
     },
     "affected_api": {
-      "result": "68 passed",
+      "result": "26 host tests and 16 shared UI geometry tests passed",
       "status": "PASS"
     },
     "web_production_build": {

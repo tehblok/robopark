@@ -227,7 +227,7 @@ button.rp-shell__more-link {
 .rp-shell__main-column {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  min-width: 0;
+  min-inline-size: 0;
 }
 
 .rp-shell__topbar {
@@ -253,9 +253,13 @@ button.rp-shell__more-link {
 .rp-shell__user { align-items: flex-end; flex-direction: column; gap: 0; }
 
 .rp-shell__content {
-  min-width: 0;
+  min-inline-size: 0;
   overflow: visible;
-  padding: var(--rp-space-4) var(--rp-shell-gutter);
+  padding: var(--rp-section-gap) var(--rp-shell-gutter);
+}
+
+.rp-shell__content > * {
+  min-inline-size: 0;
 }
 
 .rp-shell__content > :is(.rp-page-layout, .page-content, .rp-management, .rp-reports) {

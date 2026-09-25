@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
-from robopark_ota.host_install import extract_release, write_host_configuration
+from robopark_ota.credentials import TunaConfiguration
+from robopark_ota.host_install import (
+    HostInstallRuntime,
+    extract_release,
+    prepare_host_layout,
+    write_host_configuration,
+)
 from robopark_ota.install import CleanInstallCoordinator
-from robopark_ota.remove import DockerTargets, RemovalPlan, remove_owned_installation
+from robopark_ota.remove import (
+    DockerCli,
+    DockerTargets,
+    RemovalPlan,
+    remove_owned_installation,
+)
+
 from scripts.build_ota import build_ota
 
 
@@ -24,6 +37,46 @@ class FakeDocker:
 
     def remove_images(self, names: tuple[str, ...]) -> None:
         self.removed.append(("images", names))
+
+
+class DiscoveryDocker(DockerCli):
+    def __init__(self, responses: dict[tuple[str, ...], tuple[str, ...]]) -> None:
+        self.responses = responses
+
+    def _lines(self, command: list[str]) -> tuple[str, ...]:
+        return self.responses.get(tuple(command), ())
+
+
+def test_discovery_removes_only_main_and_interrupted_candidate_projects():
+    list_command = (
+        "docker",
+        "ps",
+        "-aq",
+        "--filter",
+        "label=com.docker.compose.project",
+    )
+    template = '{{ index .Config.Labels "com.docker.compose.project" }}'
+    docker = DiscoveryDocker(
+        {
+            list_command: ("main", "candidate", "other"),
+            ("docker", "container", "inspect", "--format", template, "main"): (
+                "robopark",
+            ),
+            (
+                "docker",
+                "container",
+                "inspect",
+                "--format",
+                template,
+                "candidate",
+            ): ("robopark-candidate-66ee508b-0cfa-4de0-85e5-d02a6d9c115d",),
+            ("docker", "container", "inspect", "--format", template, "other"): (
+                "unrelated",
+            ),
+        }
+    )
+
+    assert docker.discover_owned().containers == ("main", "candidate")
 
 
 def test_removal_plan_deletes_only_owned_paths_and_exact_docker_targets(tmp_path: Path):
@@ -170,7 +223,9 @@ def test_verified_release_extracts_under_fixed_release_root(tmp_path: Path):
 
     assert target == root / "opt/robopark/releases" / version
     assert (target / "VERSION").read_text().strip() == version
-    assert not (target / "manifest.json").exists()
+    manifest = json.loads((target / "manifest.json").read_text())
+    assert manifest["app_version"] == version
+    assert manifest["package_sha256"]
     assert (target / "deploy/host/robopark").stat().st_mode & 0o111
 
 
@@ -185,3 +240,90 @@ def test_generated_host_configuration_has_no_seed_password(tmp_path: Path):
     assert "ROBOPARK_UPDATE_CHANNEL=manual" in content
     assert "ROBOPARK_HOST_PROFILE=vim4-safe" in content
     assert host_env.stat().st_mode & 0o077 == 0
+
+
+def test_clean_install_prepares_host_bridge_layout(tmp_path: Path):
+    root = tmp_path / "host"
+
+    prepare_host_layout(root)
+
+    expected_modes = {
+        "var/lib/robopark": 0o750,
+        "var/lib/robopark/ops": 0o750,
+        "var/lib/robopark/ops/state": 0o700,
+        "var/lib/robopark/ops/inbox": 0o700,
+        "var/lib/robopark/ops/artifacts": 0o700,
+        "var/lib/robopark/ops/ota-uploads": 0o700,
+        "var/lib/robopark/ops/public": 0o755,
+        "var/lib/robopark/data": 0o700,
+        "var/lib/robopark/api-ops": 0o700,
+    }
+    for relative, mode in expected_modes.items():
+        assert (root / relative).is_dir()
+        assert (root / relative).stat().st_mode & 0o777 == mode
+
+
+def test_runtime_configures_pinned_host_bridge_before_start(tmp_path: Path):
+    root = tmp_path / "host"
+    release = root / "opt/robopark/releases/0.2.0-rc.8"
+    (release / "deploy/host").mkdir(parents=True)
+    (release / "deploy/host/robopark").write_text("#!/bin/sh\n")
+    (release / "deploy/compose_secrets.py").write_text("")
+    runtime = object.__new__(HostInstallRuntime)
+    runtime.root = root
+    runtime.release = release
+    runtime.etc = root / "etc/robopark"
+    runtime.tuna = TunaConfiguration(token="tt_private_value")
+    calls = []
+    runtime._run = lambda command, **kwargs: calls.append((command, kwargs))
+
+    runtime.configure()
+
+    assert (root / "opt/robopark/current").resolve() == release
+    assert (root / "opt/robopark/host-tools").resolve() == release / "deploy/host"
+    assert any(command[-1] == "bootstrap-compose" for command, _kwargs in calls)
+    assert "CORS_ORIGINS=https://robopark.ru.tuna.am" in (
+        root / "etc/robopark/host.env"
+    ).read_text()
+    assert runtime._compose_prefix()[-1] == str(
+        root / "var/lib/robopark/ops/state/current-compose.json"
+    )
+
+
+def test_publish_enables_host_automation_and_optional_tuna(tmp_path: Path):
+    root = tmp_path / "host"
+    release = root / "opt/robopark/releases/0.2.0-rc.8"
+    (release / "deploy/installer/lib").mkdir(parents=True)
+    (release / "deploy/installer/lib/install-services.py").write_text("")
+    runtime = object.__new__(HostInstallRuntime)
+    runtime.root = root
+    runtime.release = release
+    runtime.etc = root / "etc/robopark"
+    runtime.tuna = TunaConfiguration(token="tt_private_value")
+    calls = []
+    runtime._run = lambda command, **kwargs: calls.append((command, kwargs))
+    tuna_ready = []
+    runtime._wait_tuna_ready = lambda: tuna_ready.append(True)
+
+    runtime.publish()
+
+    flattened = [" ".join(command) for command, _kwargs in calls]
+    assert any("enable docker.service" in command for command in flattened)
+    assert any("enable robopark.service" in command for command in flattened)
+    assert any("enable robopark-commands.path" in command for command in flattened)
+    assert any("start robopark-watchdog.service" in command for command in flattened)
+    assert any("start robopark-doctor.service" in command for command in flattened)
+    assert any("enable --now robopark-tuna.service" in command for command in flattened)
+    assert tuna_ready == [True]
+    doctor_index = next(
+        index
+        for index, (command, _kwargs) in enumerate(calls)
+        if "start robopark-doctor.service" in " ".join(command)
+    )
+    tuna_index = next(
+        index
+        for index, (command, _kwargs) in enumerate(calls)
+        if "enable --now robopark-tuna.service" in " ".join(command)
+    )
+    assert tuna_index < doctor_index
+    assert calls[doctor_index][1]["check"] is False
