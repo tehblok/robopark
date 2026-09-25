@@ -4,7 +4,7 @@ import { ROUTE_MANIFEST } from '../../src/app/routing/routeManifest'
 import type { User } from '../../src/api'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 import { parkNorth, roles, userForRole } from './fixtures'
-import { assertResponsiveContracts, assertRouteSemanticContracts, openRouteFixture } from './routeFixtures'
+import { assertResponsiveContracts, assertRouteSemanticContracts, assertShellIdentity, openRouteFixture } from './routeFixtures'
 
 const widths = [360, 390, 412, 768, 1024, 1366, 1440, 1920] as const
 const themes = ['light', 'dark', 'system'] as const
@@ -68,6 +68,23 @@ test('operator overview exposes the loaded secondary summary before its strict l
   await assertResponsiveContracts(page, 320)
 })
 
+for (const [role, routeId, expectedRole] of [
+  ['operator', 'overview', 'Оператор'],
+  ['royal', 'admin', 'Владелец'],
+] as const) test(`mobile menu exposes ${role} identity and role`, async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const user = userForRole(role)
+  await openRouteFixture(page, routeId, user)
+  await assertShellIdentity(page, user, expectedRole, 390)
+})
+
+test('desktop topbar exposes admin identity and role', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const user = userForRole('admin')
+  await openRouteFixture(page, 'overview', user)
+  await assertShellIdentity(page, user, 'Администратор', 1440)
+})
+
 test('route fixtures prove loaded operator, campaign, report-detail and administration workflows', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   let releaseParks!: () => void
@@ -96,8 +113,11 @@ test('route fixtures prove loaded operator, campaign, report-detail and administ
   await parksReady
   const availableParkPanel = page.locator('section.panel').filter({ has: page.getByRole('heading', { name: 'Запросить парк', exact: true, level: 2 }) })
   await availableParkPanel.getByRole('button', { name: 'Запросить парк', exact: true }).click()
-  await expect(page.getByRole('dialog', { name: 'Запросить парк' }).getByLabel('Парк', { exact: true })).toHaveValue('8')
-  await expect(page.getByText('operator-e2e', { exact: true })).toBeVisible()
+  const requestDialog = page.getByRole('dialog', { name: 'Запросить парк' })
+  await expect(requestDialog.getByLabel('Парк', { exact: true })).toHaveValue('8')
+  await requestDialog.getByRole('button', { name: 'Закрыть', exact: true }).filter({ hasText: 'Закрыть' }).click()
+  await expect(requestDialog).toBeHidden()
+  await assertShellIdentity(page, userForRole('operator'), 'Оператор', 390)
 
   await openRouteFixture(page, 'campaigns', userForRole('mechanic'))
   await expect(page.getByRole('heading', { name: 'Осенняя сервисная кампания', exact: true })).toBeVisible()
@@ -116,9 +136,9 @@ test('route fixtures prove loaded operator, campaign, report-detail and administ
     const marker = routeId === 'admin-settings'
       ? page.getByText('Tracker OAuth', { exact: true })
       : routeId === 'admin-users'
-          ? page.getByRole('button', { name: 'Открыть аккаунт route-admin', exact: true })
+          ? page.getByRole('heading', { name: 'route-admin', exact: true })
         : routeId === 'admin-roles'
-          ? page.getByText('Механик', { exact: true })
+          ? page.getByRole('heading', { name: 'Редактор: Механик', exact: true })
           : routeId === 'admin-tracker'
             ? page.getByRole('heading', { name: 'Очередь задач', exact: true })
           : page.getByRole('button', { name: 'Открыть правило Неисправность переднего лидара', exact: true })

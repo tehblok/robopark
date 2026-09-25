@@ -200,6 +200,23 @@ export async function assertRouteSemanticContracts(page: Page, routeId: AppRoute
   }
 }
 
+export async function assertShellIdentity(page: Page, user: User, expectedRole: string, width: number): Promise<void> {
+  const topbarIdentity = page.locator('.rp-shell__topbar .rp-shell__user')
+  if (width <= 899) {
+    await expect(topbarIdentity).toBeHidden()
+    await page.getByRole('button', { name: 'Меню', exact: true }).click()
+    const menu = page.getByRole('dialog', { name: 'Меню', exact: true })
+    await expect(menu).toBeVisible()
+    await expect(menu).toHaveAccessibleDescription(`${user.username} · ${expectedRole}`)
+    await menu.getByRole('button', { name: 'Закрыть', exact: true }).click()
+    await expect(menu).toBeHidden()
+    return
+  }
+  await expect(topbarIdentity).toBeVisible()
+  await expect(topbarIdentity.getByText(user.username, { exact: true })).toBeVisible()
+  await expect(topbarIdentity.getByText(expectedRole, { exact: true })).toBeVisible()
+}
+
 function routeReadyMarker(page: Page, routeId: AppRouteId) {
   switch (routeId) {
     case 'overview': return page.getByRole('heading', { name: 'Очередь внимания' })
