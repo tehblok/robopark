@@ -110,16 +110,29 @@ def test_admin_permanently_deletes_only_count_in_assigned_park(
     db_session.flush()
     db_session.add_all(
         [
-            InventoryCountLine(count_id=own.id, catalog_part_id=_part(db_session, admin, _component(db_session, admin), article="DELETE-OWN").id, expected_quantity=0),
-            InventoryCountLine(count_id=foreign_count.id, catalog_part_id=_part(db_session, admin, _component(db_session, admin, "Foreign delete component"), article="DELETE-FOREIGN").id, expected_quantity=0),
+            InventoryCountLine(
+                count_id=own.id,
+                catalog_part_id=_part(
+                    db_session, admin, _component(db_session, admin), article="DELETE-OWN"
+                ).id,
+                expected_quantity=0,
+            ),
+            InventoryCountLine(
+                count_id=foreign_count.id,
+                catalog_part_id=_part(
+                    db_session,
+                    admin,
+                    _component(db_session, admin, "Foreign delete component"),
+                    article="DELETE-FOREIGN",
+                ).id,
+                expected_quantity=0,
+            ),
         ]
     )
     db_session.commit()
     login_as(client, admin.username, "secret")
 
-    denied = client.delete(
-        f"/inventory/counts/{foreign_count.id}", params={"permanent": "true"}
-    )
+    denied = client.delete(f"/inventory/counts/{foreign_count.id}", params={"permanent": "true"})
     deleted = client.delete(f"/inventory/counts/{own.id}", params={"permanent": "true"})
 
     assert denied.status_code == 403
@@ -128,9 +141,7 @@ def test_admin_permanently_deletes_only_count_in_assigned_park(
     assert db_session.get(InventoryCount, own.id) is None
 
 
-def test_non_admin_cannot_permanently_delete_count(
-    client, db_session, seed_park_with_tracker
-):
+def test_non_admin_cannot_permanently_delete_count(client, db_session, seed_park_with_tracker):
     mechanic = _user(db_session, "mechanic", "count-delete-mechanic", [seed_park_with_tracker])
     count = InventoryCount(
         park_id=seed_park_with_tracker.id,
@@ -167,19 +178,20 @@ def test_permanent_delete_posted_count_reverses_stock_and_removes_adjustment(
     db_session.refresh(stock)
     assert stock.quantity == 7
 
-    deleted = client.delete(
-        f"/inventory/counts/{created['id']}", params={"permanent": "true"}
-    )
+    deleted = client.delete(f"/inventory/counts/{created['id']}", params={"permanent": "true"})
 
     assert deleted.status_code == 204, deleted.text
     db_session.refresh(stock)
     assert stock.quantity == 10
-    assert db_session.scalar(
-        select(func.count(InventoryMovement.id)).where(
-            InventoryMovement.source_kind == "count",
-            InventoryMovement.source_id.like(f"{created['id']}:%"),
+    assert (
+        db_session.scalar(
+            select(func.count(InventoryMovement.id)).where(
+                InventoryMovement.source_kind == "count",
+                InventoryMovement.source_id.like(f"{created['id']}:%"),
+            )
         )
-    ) == 0
+        == 0
+    )
 
 
 def test_permanent_delete_posted_count_rolls_back_stock_reversal_on_commit_failure(
@@ -190,13 +202,19 @@ def test_permanent_delete_posted_count_rolls_back_stock_reversal_on_commit_failu
     stock = _stock(db_session, seed_park_with_tracker, part, 10)
     login_as(client, seed_royal.username, "secret")
     created = _create_count(client, seed_park_with_tracker, name="Rollback posted count").json()
-    assert client.patch(
-        f"/inventory/parks/{seed_park_with_tracker.id}/counts/{created['id']}",
-        json={"lines": [{"catalog_part_id": part.id, "actual_quantity": 7}]},
-    ).status_code == 200
-    assert client.post(
-        f"/inventory/parks/{seed_park_with_tracker.id}/counts/{created['id']}/post"
-    ).status_code == 200
+    assert (
+        client.patch(
+            f"/inventory/parks/{seed_park_with_tracker.id}/counts/{created['id']}",
+            json={"lines": [{"catalog_part_id": part.id, "actual_quantity": 7}]},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/inventory/parks/{seed_park_with_tracker.id}/counts/{created['id']}/post"
+        ).status_code
+        == 200
+    )
     original_commit = type(db_session).commit
     monkeypatch.setattr(
         type(db_session),
@@ -204,21 +222,22 @@ def test_permanent_delete_posted_count_rolls_back_stock_reversal_on_commit_failu
         lambda _session: (_ for _ in ()).throw(RuntimeError("delete_commit_failed")),
     )
 
-    response = client.delete(
-        f"/inventory/counts/{created['id']}", params={"permanent": "true"}
-    )
+    response = client.delete(f"/inventory/counts/{created['id']}", params={"permanent": "true"})
 
     assert response.status_code == 502
     monkeypatch.setattr(type(db_session), "commit", original_commit)
     db_session.expire_all()
     assert db_session.get(InventoryCount, created["id"]) is not None
     assert db_session.get(InventoryParkStock, stock.id).quantity == 7
-    assert db_session.scalar(
-        select(func.count(InventoryMovement.id)).where(
-            InventoryMovement.source_kind == "count",
-            InventoryMovement.source_id.like(f"{created['id']}:%"),
+    assert (
+        db_session.scalar(
+            select(func.count(InventoryMovement.id)).where(
+                InventoryMovement.source_kind == "count",
+                InventoryMovement.source_id.like(f"{created['id']}:%"),
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
 def test_count_component_snapshot_posts_signed_deltas_and_is_idempotent(

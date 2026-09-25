@@ -99,11 +99,7 @@ def release_claim(db: Session, issue_key: str) -> None:
 
 def mechanic_owns_issue(db: Session, user: User, issue: dict) -> bool:
     claim = get_claim(db, _key(issue))
-    return (
-        claim is not None
-        and claim.owner_user_id == user.id
-        and claim.state == "active"
-    )
+    return claim is not None and claim.owner_user_id == user.id and claim.state == "active"
 
 
 def mechanic_can_access_issue(db: Session, user: User, issue: dict) -> bool:

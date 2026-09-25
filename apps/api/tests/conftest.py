@@ -113,7 +113,11 @@ def authorize_privileged_ops(client, monkeypatch):
         if binding is None or "X-Privileged-Authorization" in kwargs.get("headers", {}):
             return original_post(path, *args, **kwargs)
         response = original_post(path, *args, **kwargs)
-        detail = response.json().get("detail") if response.headers.get("content-type", "").startswith("application/json") else None
+        detail = (
+            response.json().get("detail")
+            if response.headers.get("content-type", "").startswith("application/json")
+            else None
+        )
         if not isinstance(detail, str) or detail not in {
             "privileged_enrollment_required",
             "privileged_authorization_required",

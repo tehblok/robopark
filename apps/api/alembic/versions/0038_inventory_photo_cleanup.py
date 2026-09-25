@@ -15,8 +15,12 @@ def upgrade() -> None:
         sa.Column("storage_key", sa.String(128), primary_key=True),
         sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("last_error", sa.String(128), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
     )
 
 

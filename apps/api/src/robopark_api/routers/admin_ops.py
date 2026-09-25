@@ -162,9 +162,7 @@ def _reconcile_if_needed(settings: Settings, db: Session | None = None) -> None:
         operation_registry.snapshot_current_job(db, ops_dir)
     if settings.ops_host_root:
         with suppress(host_bridge.BridgeError):
-            host_bridge.reconcile_host_job(
-                ops_dir, host_bridge.host_root(settings)
-            )
+            host_bridge.reconcile_host_job(ops_dir, host_bridge.host_root(settings))
     else:
         ctx = build_ops_context(settings)
         with suppress(Exception):
@@ -274,7 +272,9 @@ def get_exact_operation(
     row = db.get(HostOperationStatus, str(operation_id))
     found = row is not None and row.actor_user_id == royal.id
     audit.record(
-        db, action="admin.ops.operation.status", actor=royal,
+        db,
+        action="admin.ops.operation.status",
+        actor=royal,
         outcome=audit.OUTCOME_SUCCESS if found else audit.OUTCOME_DENIED,
         detail="found" if found else "not_found",
     )
@@ -287,7 +287,10 @@ def get_exact_operation(
             with suppress(host_bridge.BridgeError):
                 progress = host_bridge.update_progress(host_bridge.host_root(settings), job)
         row = operation_registry.update_from_job(
-            db, operation_id=row.operation_id, job=job, progress=progress,
+            db,
+            operation_id=row.operation_id,
+            job=job,
+            progress=progress,
         )
     return _operation_out(row)
 
@@ -355,8 +358,11 @@ def _host_action(db, actor, action, operation, settings):
         audit.record(db, action=action, actor=actor, outcome=audit.OUTCOME_FAILURE, detail=detail)
         code = (
             409
-            if isinstance(exc, JobConflict) or detail in {
-                "capability_unavailable", "capabilities_changed",
+            if isinstance(exc, JobConflict)
+            or detail
+            in {
+                "capability_unavailable",
+                "capabilities_changed",
             }
             else 503
             if detail in {"host_bridge_unavailable", "capabilities_unavailable"}
@@ -369,7 +375,8 @@ def _host_action(db, actor, action, operation, settings):
 
 @router.get("/admin/ops/capabilities", response_model=HostCapabilitiesOut)
 def get_host_capabilities(
-    royal: User = Depends(require_royal), settings: Settings = Depends(get_settings),
+    royal: User = Depends(require_royal),
+    settings: Settings = Depends(get_settings),
 ):
     return host_bridge.operation_capabilities(_bridge_root(settings))
 
@@ -385,7 +392,10 @@ def post_host_operation(
     identity = str(payload.operation_id)
     try:
         receipt = operation_registry.reserve(
-            db, operation_id=identity, actor_user_id=royal.id, kind=payload.kind.value,
+            db,
+            operation_id=identity,
+            actor_user_id=royal.id,
+            kind=payload.kind.value,
             request_digest=operation_registry.request_digest(payload),
         )
     except operation_registry.OperationIdentityConflict as exc:
@@ -399,19 +409,30 @@ def post_host_operation(
 
     def authorize():
         _require_privileged(
-            request, royal, db, settings, payload.kind.value, identity,
+            request,
+            royal,
+            db,
+            settings,
+            payload.kind.value,
+            identity,
             payload.capability_revision,
         )
         return {
-            "operation_id": str(payload.operation_id), "operation_kind": payload.kind.value,
-            "actor_user_id": royal.id, "consumed": True,
+            "operation_id": str(payload.operation_id),
+            "operation_kind": payload.kind.value,
+            "actor_user_id": royal.id,
+            "consumed": True,
         }
 
     def enqueue(root):
         host_bridge.require_operation_capability(root, payload.kind)
         return host_bridge.enqueue_typed_operation(
-            resolved_ops_dir(settings), root, payload.model_dump(mode="json"), royal.id,
-            _token_hash(request, settings), authorize=authorize,
+            resolved_ops_dir(settings),
+            root,
+            payload.model_dump(mode="json"),
+            royal.id,
+            _token_hash(request, settings),
+            authorize=authorize,
         )
 
     try:
@@ -423,11 +444,15 @@ def post_host_operation(
         current = load_job(resolved_ops_dir(settings))
         if current is not None and current.id == identity:
             receipt = operation_registry.update_from_job(
-                db, operation_id=identity, job=current,
+                db,
+                operation_id=identity,
+                job=current,
             )
         else:
             receipt = operation_registry.mark_rejected(
-                db, operation_id=identity, error=str(exc.detail),
+                db,
+                operation_id=identity,
+                error=str(exc.detail),
             )
         raise
     receipt = operation_registry.update_from_job(db, operation_id=identity, job=job)

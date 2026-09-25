@@ -51,8 +51,9 @@ def test_worker_reconciles_closed_claim_from_fresh_tracker_read(
     monkeypatch.setattr(
         tracker_client,
         "get_issue",
-        lambda **kwargs: seen.append(kwargs["key"])
-        or {"key": kwargs["key"], "status_key": "resolved"},
+        lambda **kwargs: (
+            seen.append(kwargs["key"]) or {"key": kwargs["key"], "status_key": "resolved"}
+        ),
     )
 
     assert tracker_notifications.reconcile_closed_claims(_factory(db_engine), limit=10) == 1
@@ -128,8 +129,13 @@ def test_concurrent_external_closure_writes_one_event_and_does_not_raise(
     )
     db_session.add(
         TaskReview(
-            id="race-review", issue_key=key, state="closed", actor_user_id=seed_mechanic.id,
-            created_at=1.0, updated_at=2.0, closed_at=None,
+            id="race-review",
+            issue_key=key,
+            state="closed",
+            actor_user_id=seed_mechanic.id,
+            created_at=1.0,
+            updated_at=2.0,
+            closed_at=None,
         )
     )
     db_session.commit()
@@ -150,10 +156,27 @@ def test_concurrent_external_closure_writes_one_event_and_does_not_raise(
     with Session(db_engine) as db:
         assert db.get(TaskReview, "race-review").closed_at is not None
         assert db.get(TrackerClaim, key) is None
-        assert len(db.scalars(select(TaskMessage).where(TaskMessage.issue_key == key,
-            TaskMessage.external_id == "tracker-external-close")).all()) == 1
-        assert len(db.scalars(select(AuditLog).where(AuditLog.target_id == key,
-            AuditLog.action == "task.external_close")).all()) == 1
+        assert (
+            len(
+                db.scalars(
+                    select(TaskMessage).where(
+                        TaskMessage.issue_key == key,
+                        TaskMessage.external_id == "tracker-external-close",
+                    )
+                ).all()
+            )
+            == 1
+        )
+        assert (
+            len(
+                db.scalars(
+                    select(AuditLog).where(
+                        AuditLog.target_id == key, AuditLog.action == "task.external_close"
+                    )
+                ).all()
+            )
+            == 1
+        )
 
 
 def test_closure_refresh_rotates_past_permanent_tracker_failure_and_reports_it(
@@ -162,8 +185,13 @@ def test_closure_refresh_rotates_past_permanent_tracker_failure_and_reports_it(
     from robopark_api.services import sync_health, tracker_claims
 
     for key in ("ROBOPARK-1", "ROBOPARK-2"):
-        tracker_claims.claim_issue(db_session, actor=seed_mechanic, owner=seed_mechanic,
-            issue_key=key, park_id=seed_park_with_tracker.id)
+        tracker_claims.claim_issue(
+            db_session,
+            actor=seed_mechanic,
+            owner=seed_mechanic,
+            issue_key=key,
+            park_id=seed_park_with_tracker.id,
+        )
     db_session.commit()
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     seen = []
@@ -264,9 +292,7 @@ def test_closure_error_clears_when_failed_key_disappears_but_other_claim_remains
     assert tracker_notifications._poll_failed(factory)
 
     with Session(db_engine) as db:
-        task_lifecycle.reconcile_external_closure(
-            db, {"key": failed_key, "status_key": "closed"}
-        )
+        task_lifecycle.reconcile_external_closure(db, {"key": failed_key, "status_key": "closed"})
     assert tracker_notifications.reconcile_closed_claims(factory, limit=1) == 0
     assert calls == [failed_key, healthy_key, healthy_key]
     assert not tracker_notifications._poll_failed(factory)
@@ -281,15 +307,29 @@ def test_closure_candidate_queries_limit_rows_before_materialization(
     from robopark_api.services import tracker_claims
 
     for number in range(8):
-        tracker_claims.claim_issue(db_session, actor=seed_mechanic, owner=seed_mechanic,
-            issue_key=f"ROBOPARK-{number:02d}", park_id=seed_park_with_tracker.id)
-        db_session.add(TaskReview(id=f"bounded-{number}", issue_key=f"REVIEW-{number:02d}",
-            state="closed", actor_user_id=seed_mechanic.id, created_at=1.0,
-            updated_at=2.0, closed_at=None))
+        tracker_claims.claim_issue(
+            db_session,
+            actor=seed_mechanic,
+            owner=seed_mechanic,
+            issue_key=f"ROBOPARK-{number:02d}",
+            park_id=seed_park_with_tracker.id,
+        )
+        db_session.add(
+            TaskReview(
+                id=f"bounded-{number}",
+                issue_key=f"REVIEW-{number:02d}",
+                state="closed",
+                actor_user_id=seed_mechanic.id,
+                created_at=1.0,
+                updated_at=2.0,
+                closed_at=None,
+            )
+        )
     db_session.commit()
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
-    monkeypatch.setattr(tracker_client, "get_issue",
-        lambda **kwargs: {"key": kwargs["key"], "status_key": "open"})
+    monkeypatch.setattr(
+        tracker_client, "get_issue", lambda **kwargs: {"key": kwargs["key"], "status_key": "open"}
+    )
     candidates = []
 
     def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
@@ -348,8 +388,9 @@ def test_poller_bootstraps_without_emitting_historical_tasks(
     monkeypatch.setattr(
         tracker_cache,
         "search_issue_page",
-        lambda **kwargs: searches.append(kwargs)
-        or [_issue("ROBOPARK-OLD", "2026-08-20T18:00:00Z")],
+        lambda **kwargs: (
+            searches.append(kwargs) or [_issue("ROBOPARK-OLD", "2026-08-20T18:00:00Z")]
+        ),
     )
     emitted = []
 
@@ -373,16 +414,15 @@ def test_poller_rebootstraps_invalid_cursor_without_historical_fetch(
 ):
     del seed_park_with_tracker
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
-    db_session.add(
-        TrackerNotificationCursor(scope_key="new-tasks", cursor_value="not-a-cursor")
-    )
+    db_session.add(TrackerNotificationCursor(scope_key="new-tasks", cursor_value="not-a-cursor"))
     db_session.commit()
     searches = []
     monkeypatch.setattr(
         tracker_cache,
         "search_issue_page",
-        lambda **kwargs: searches.append(kwargs)
-        or [_issue("ROBOPARK-OLD", "2026-08-20T18:00:00Z")],
+        lambda **kwargs: (
+            searches.append(kwargs) or [_issue("ROBOPARK-OLD", "2026-08-20T18:00:00Z")]
+        ),
     )
 
     processed = poll_tracker_notifications(
@@ -559,12 +599,14 @@ def test_poller_advances_past_raw_page_filtered_out_locally(
     emitted = []
     factory = _factory(db_engine)
 
-    assert poll_tracker_notifications(
-        factory, _capture(emitted), page_size=1, owner_id="worker-a"
-    ) == 0
-    assert poll_tracker_notifications(
-        factory, _capture(emitted), page_size=1, owner_id="worker-b"
-    ) == 1
+    assert (
+        poll_tracker_notifications(factory, _capture(emitted), page_size=1, owner_id="worker-a")
+        == 0
+    )
+    assert (
+        poll_tracker_notifications(factory, _capture(emitted), page_size=1, owner_id="worker-b")
+        == 1
+    )
 
     assert calls[0]["filter_open"] is False
     assert [event["event_key"] for event in emitted] == ["new-task:ROBOPARK-2"]
@@ -576,9 +618,7 @@ def test_poller_does_not_guess_park_for_shared_queue(
     del seed_park_with_tracker
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     _seed_cursor(db_session)
-    db_session.add(
-        Park(name="Beta", tag="Beta", tracker_queue="ROBOPARK", is_active=True)
-    )
+    db_session.add(Park(name="Beta", tag="Beta", tracker_queue="ROBOPARK", is_active=True))
     db_session.commit()
     issue = {**_issue("ROBOPARK-20", "2026-09-20T18:05:00Z"), "tags": []}
     monkeypatch.setattr(tracker_cache, "search_issue_page", lambda **_kwargs: [issue])
@@ -779,8 +819,12 @@ def test_two_workers_emit_one_event_for_the_same_issue(
     emitted = []
     factory = _factory(db_engine)
 
-    first = poll_tracker_notifications(factory, _capture(emitted), page_size=10, owner_id="worker-a")
-    second = poll_tracker_notifications(factory, _capture(emitted), page_size=10, owner_id="worker-b")
+    first = poll_tracker_notifications(
+        factory, _capture(emitted), page_size=10, owner_id="worker-a"
+    )
+    second = poll_tracker_notifications(
+        factory, _capture(emitted), page_size=10, owner_id="worker-b"
+    )
 
     assert (first, second) == (1, 0)
     assert [event["event_key"] for event in emitted] == ["new-task:ROBOPARK-10"]

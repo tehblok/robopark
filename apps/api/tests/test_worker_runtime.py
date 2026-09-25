@@ -168,9 +168,7 @@ def test_failed_job_joins_inflight_writer_before_shared_cleanup(
     asyncio.run(scenario())
 
 
-def test_worker_defers_initialization_until_maintenance_ends(
-    db_engine, test_settings, monkeypatch
-):
+def test_worker_defers_initialization_until_maintenance_ends(db_engine, test_settings, monkeypatch):
     maintenance = asyncio.Event()
     maintenance.set()
     initialized = []

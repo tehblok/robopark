@@ -136,16 +136,22 @@ def test_catalog_photo_replace_and_remove_clean_up_managed_files(
     _component, part = _catalog(db_session, seed_royal, article="PHOTO-REPLACE")
     login_as(client, seed_royal.username, "secret")
 
-    assert client.put(
-        f"/inventory/catalog/parts/{part.id}/photo",
-        files={"photo": ("first.jpg", _JPEG, "image/jpeg")},
-    ).status_code == 200
+    assert (
+        client.put(
+            f"/inventory/catalog/parts/{part.id}/photo",
+            files={"photo": ("first.jpg", _JPEG, "image/jpeg")},
+        ).status_code
+        == 200
+    )
     first_files = _photos_in(tmp_path)
     assert len(first_files) == 1
-    assert client.put(
-        f"/inventory/catalog/parts/{part.id}/photo",
-        files={"photo": ("second.png", _PNG, "image/png")},
-    ).status_code == 200
+    assert (
+        client.put(
+            f"/inventory/catalog/parts/{part.id}/photo",
+            files={"photo": ("second.png", _PNG, "image/png")},
+        ).status_code
+        == 200
+    )
     second_files = _photos_in(tmp_path)
     assert len(second_files) == 1
     assert first_files.isdisjoint(second_files)
@@ -345,9 +351,7 @@ def test_permanent_delete_persists_retryable_photo_cleanup_after_unlink_failure(
         lambda _key: (_ for _ in ()).throw(OSError("unlink failed")),
     )
 
-    response = client.delete(
-        f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"}
-    )
+    response = client.delete(f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"})
 
     assert response.status_code == 202, response.text
     assert db_session.get(InventoryCatalogPart, part.id) is None
@@ -367,9 +371,7 @@ def test_permanent_delete_persists_retryable_photo_cleanup_after_unlink_failure(
 def test_permanent_catalog_delete_locks_photo_rows_before_snapshot(
     client, db_session, seed_royal, monkeypatch, kind
 ):
-    component, part = _catalog(
-        db_session, seed_royal, article=f"DELETE-LOCK-{kind.upper()}"
-    )
+    component, part = _catalog(db_session, seed_royal, article=f"DELETE-LOCK-{kind.upper()}")
     login_as(client, seed_royal.username, "secret")
     statements = []
     real_execute = db_session.execute
@@ -381,9 +383,7 @@ def test_permanent_catalog_delete_locks_photo_rows_before_snapshot(
     monkeypatch.setattr(db_session, "execute", recording_execute)
     row_id = part.id if kind == "parts" else component.id
 
-    response = client.delete(
-        f"/inventory/catalog/{kind}/{row_id}", params={"permanent": "true"}
-    )
+    response = client.delete(f"/inventory/catalog/{kind}/{row_id}", params={"permanent": "true"})
 
     assert response.status_code == 200, response.text
     locked_tables = {
@@ -504,13 +504,14 @@ def test_only_royal_can_permanently_delete_global_part_graph(
     alias_id, stock_id, receipt_id, count_id = alias.id, stock.id, receipt.id, count.id
 
     login_as(client, admin.username, "secret")
-    assert client.delete(
-        f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"}
-    ).status_code == 403
-    login_as(client, seed_royal.username, "secret")
-    response = client.delete(
-        f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"}
+    assert (
+        client.delete(
+            f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"}
+        ).status_code
+        == 403
     )
+    login_as(client, seed_royal.username, "secret")
+    response = client.delete(f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"})
 
     assert response.status_code == 200, response.text
     assert response.json()["deleted_part_count"] == 2
@@ -595,21 +596,29 @@ def test_part_delete_preserves_other_lines_and_movements_in_mixed_documents(
     db_session.expire_all()
     assert db_session.get(InventoryReceipt, receipt_id) is not None
     assert db_session.get(InventoryCount, count_id) is not None
-    assert list(
-        db_session.scalars(
-            select(InventoryReceiptLine).where(InventoryReceiptLine.receipt_id == receipt_id)
-        )
-    )[0].catalog_part_id == surviving_part.id
-    assert list(
-        db_session.scalars(
-            select(InventoryCountLine).where(InventoryCountLine.count_id == count_id)
-        )
-    )[0].catalog_part_id == surviving_part.id
+    assert (
+        list(
+            db_session.scalars(
+                select(InventoryReceiptLine).where(InventoryReceiptLine.receipt_id == receipt_id)
+            )
+        )[0].catalog_part_id
+        == surviving_part.id
+    )
+    assert (
+        list(
+            db_session.scalars(
+                select(InventoryCountLine).where(InventoryCountLine.count_id == count_id)
+            )
+        )[0].catalog_part_id
+        == surviving_part.id
+    )
     assert db_session.get(InventoryMovement, deleted_movement_id) is None
     assert db_session.get(InventoryMovement, surviving_movement_id) is not None
 
 
-def test_royal_permanently_deletes_component_graph(client, db_session, seed_park_with_tracker, seed_royal):
+def test_royal_permanently_deletes_component_graph(
+    client, db_session, seed_park_with_tracker, seed_royal
+):
     component, part = _catalog(db_session, seed_royal, article="DELETE-COMPONENT")
     db_session.add(
         InventoryParkStock(
@@ -640,7 +649,7 @@ def test_royal_permanently_deletes_component_graph(client, db_session, seed_park
                 "component_is_active": True,
                 "merged_into_part_id": None,
             }
-        ]
+        ],
     }
     assert db_session.get(InventoryCatalogComponent, component.id) is None
     assert db_session.get(InventoryCatalogPart, part.id) is None
@@ -695,9 +704,7 @@ def test_permanent_delete_rolls_back_database_and_keeps_photo_on_failure(
         "commit",
         lambda _session: (_ for _ in ()).throw(RuntimeError("delete_step_failed")),
     )
-    response = client.delete(
-        f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"}
-    )
+    response = client.delete(f"/inventory/catalog/parts/{part.id}", params={"permanent": "true"})
 
     assert response.status_code == 502
     monkeypatch.setattr(type(db_session), "commit", original_commit)

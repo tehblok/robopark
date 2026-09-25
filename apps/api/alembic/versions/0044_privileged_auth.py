@@ -12,36 +12,57 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "privileged_credentials",
-        sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column(
+            "user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+        ),
         sa.Column("totp_secret_encrypted", sa.Text(), nullable=False),
         sa.Column("last_totp_counter", sa.BigInteger(), nullable=True),
         sa.Column("enrolled_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
     )
     op.create_table(
         "privileged_recovery_codes",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("code_hash", sa.String(64), nullable=False),
         sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.UniqueConstraint("user_id", "code_hash", name="uq_recovery_user_code"),
     )
-    op.create_index("ix_privileged_recovery_codes_user_id", "privileged_recovery_codes", ["user_id"])
+    op.create_index(
+        "ix_privileged_recovery_codes_user_id", "privileged_recovery_codes", ["user_id"]
+    )
     op.create_table(
         "privileged_reauthorizations",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("token_hash", sa.String(64), nullable=False),
-        sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("session_token_hash", sa.String(64), nullable=False),
         sa.Column("operation_kind", sa.String(64), nullable=False),
         sa.Column("operation_id", sa.String(128), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
     )
-    op.create_index("ix_privileged_reauthorizations_token_hash", "privileged_reauthorizations", ["token_hash"], unique=True)
-    op.create_index("ix_privileged_reauthorizations_expires_at", "privileged_reauthorizations", ["expires_at"])
+    op.create_index(
+        "ix_privileged_reauthorizations_token_hash",
+        "privileged_reauthorizations",
+        ["token_hash"],
+        unique=True,
+    )
+    op.create_index(
+        "ix_privileged_reauthorizations_expires_at", "privileged_reauthorizations", ["expires_at"]
+    )
     op.create_table(
         "privileged_auth_audit",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -55,7 +76,9 @@ def upgrade() -> None:
         sa.Column("device", sa.String(256), nullable=True),
         sa.Column("operation_kind", sa.String(64), nullable=True),
         sa.Column("operation_id", sa.String(128), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
     )
     op.create_index("ix_privileged_auth_audit_action", "privileged_auth_audit", ["action"])
     if op.get_bind().dialect.name == "sqlite":
@@ -87,8 +110,12 @@ def downgrade() -> None:
         op.execute("DROP FUNCTION deny_privileged_auth_audit_mutation()")
     op.drop_index("ix_privileged_auth_audit_action", table_name="privileged_auth_audit")
     op.drop_table("privileged_auth_audit")
-    op.drop_index("ix_privileged_reauthorizations_expires_at", table_name="privileged_reauthorizations")
-    op.drop_index("ix_privileged_reauthorizations_token_hash", table_name="privileged_reauthorizations")
+    op.drop_index(
+        "ix_privileged_reauthorizations_expires_at", table_name="privileged_reauthorizations"
+    )
+    op.drop_index(
+        "ix_privileged_reauthorizations_token_hash", table_name="privileged_reauthorizations"
+    )
     op.drop_table("privileged_reauthorizations")
     op.drop_index("ix_privileged_recovery_codes_user_id", table_name="privileged_recovery_codes")
     op.drop_table("privileged_recovery_codes")

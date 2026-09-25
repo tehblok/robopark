@@ -619,8 +619,19 @@ def test_four_on_four_off_shift_entries_route_only_work_days(
 
 def test_unresolved_park_still_obeys_schedule(db_session, seed_mechanic, seed_royal):
     from robopark_api.services.schedules import RoutingEvent, eligible_recipients
+
     at = datetime(2026, 9, 24, 12, tzinfo=UTC)
-    db_session.add(ScheduleEntry(owner_user_id=seed_mechanic.id, park_id=1, kind="sick", start_at=at-timedelta(hours=1), end_at=at+timedelta(hours=1), created_by_user_id=seed_royal.id, updated_by_user_id=seed_royal.id))
+    db_session.add(
+        ScheduleEntry(
+            owner_user_id=seed_mechanic.id,
+            park_id=1,
+            kind="sick",
+            start_at=at - timedelta(hours=1),
+            end_at=at + timedelta(hours=1),
+            created_by_user_id=seed_royal.id,
+            updated_by_user_id=seed_royal.id,
+        )
+    )
     db_session.commit()
     event = RoutingEvent(db_session, "operator_comment", None, {seed_mechanic.id})
     assert eligible_recipients(event, at) == []

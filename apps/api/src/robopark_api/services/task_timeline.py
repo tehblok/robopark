@@ -350,9 +350,7 @@ def _staged_attachment_path(blob_name: str) -> Path:
     return path
 
 
-def attachment_content(
-    db: Session, *, issue_key: str, attachment_id: str
-) -> tuple[Path, str, str]:
+def attachment_content(db: Session, *, issue_key: str, attachment_id: str) -> tuple[Path, str, str]:
     row = db.scalar(
         select(TaskAttachment)
         .join(TaskMessage, TaskMessage.id == TaskAttachment.message_id)
@@ -506,9 +504,7 @@ def merge_timeline(
         except LookupError:
             local_url = None
         else:
-            local_url = (
-                f"/api/tracker/issues/{issue_key}/attachments/{attachment.id}/content"
-            )
+            local_url = f"/api/tracker/issues/{issue_key}/attachments/{attachment.id}/content"
         local_attachments.setdefault(attachment.message_id, []).append(
             {
                 "id": attachment.id,

@@ -45,6 +45,7 @@ def test_system_notification_loop_persists_each_health_occurrence_once(
         [],
         [("server_problem", "system:degraded", "Система требует внимания")],
     ]
+
     def read(_settings):
         value = states.pop(0)
         if not states:

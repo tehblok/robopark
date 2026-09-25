@@ -50,9 +50,7 @@ def upgrade() -> None:
         sa.Column(
             "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
         ),
-        sa.CheckConstraint(
-            "last_seen_at >= started_at", name="ck_system_incident_seen_range"
-        ),
+        sa.CheckConstraint("last_seen_at >= started_at", name="ck_system_incident_seen_range"),
         sa.CheckConstraint(
             "resolved_at IS NULL OR resolved_at >= started_at",
             name="ck_system_incident_resolved_range",
@@ -88,9 +86,7 @@ def upgrade() -> None:
         sa.CheckConstraint("length(key_hash) = 64", name="ck_auth_throttle_key_hash"),
         sa.CheckConstraint("failure_count >= 0", name="ck_auth_throttle_failure_count"),
     )
-    op.create_index(
-        "ix_auth_throttle_expiry", "auth_throttle_states", ["expires_at", "key_hash"]
-    )
+    op.create_index("ix_auth_throttle_expiry", "auth_throttle_states", ["expires_at", "key_hash"])
 
 
 def downgrade() -> None:

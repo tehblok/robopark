@@ -44,11 +44,14 @@ def _active(session_factory: Callable[[], Session]) -> bool:
     with session_factory() as db:
         if db.scalar(select(TrackerClaim.issue_key).limit(1)) is not None:
             return True
-        if db.scalar(
-            select(TaskReview.id).where(
-                TaskReview.state == "closed", TaskReview.closed_at.is_(None)
-            ).limit(1)
-        ) is not None:
+        if (
+            db.scalar(
+                select(TaskReview.id)
+                .where(TaskReview.state == "closed", TaskReview.closed_at.is_(None))
+                .limit(1)
+            )
+            is not None
+        ):
             return True
         recent = datetime.now(UTC) - timedelta(minutes=2)
         return db.scalar(select(User.id).where(User.last_seen_at >= recent).limit(1)) is not None
@@ -66,7 +69,9 @@ def _poll_failed(session_factory: Callable[[], Session]) -> bool:
 
 
 def _closure_candidates(db: Session, position: str, limit: int, *, after: bool) -> list[str]:
-    claim_boundary = TrackerClaim.issue_key > position if after else TrackerClaim.issue_key <= position
+    claim_boundary = (
+        TrackerClaim.issue_key > position if after else TrackerClaim.issue_key <= position
+    )
     review_boundary = TaskReview.issue_key > position if after else TaskReview.issue_key <= position
     claims = db.scalars(
         select(TrackerClaim.issue_key)
@@ -113,22 +118,25 @@ def _clear_removed_closure_error(session_factory: Callable[[], Session]) -> None
         _code, separator, key = cursor.last_error.partition(":")
         if not separator or not key or db.get(TrackerClaim, key) is not None:
             return
-        if db.scalar(
-            select(TaskReview.id).where(
-                TaskReview.issue_key == key,
-                TaskReview.state == "closed",
-                TaskReview.closed_at.is_(None),
-            ).limit(1)
-        ) is not None:
+        if (
+            db.scalar(
+                select(TaskReview.id)
+                .where(
+                    TaskReview.issue_key == key,
+                    TaskReview.state == "closed",
+                    TaskReview.closed_at.is_(None),
+                )
+                .limit(1)
+            )
+            is not None
+        ):
             return
         cursor.last_error = None
         cursor.last_success_at = datetime.now(UTC)
         db.commit()
 
 
-def reconcile_closed_claims(
-    session_factory: Callable[[], Session], *, limit: int = 25
-) -> int:
+def reconcile_closed_claims(session_factory: Callable[[], Session], *, limit: int = 25) -> int:
     """Refresh a bounded, rotating set of locally owned or closing tickets."""
     if limit <= 0:
         return 0
@@ -167,11 +175,13 @@ def reconcile_closed_claims(
             with session_factory() as db:
                 before = db.get(TrackerClaim, key) is not None
                 review = db.scalar(
-                    select(TaskReview.id).where(
+                    select(TaskReview.id)
+                    .where(
                         TaskReview.issue_key == key,
                         TaskReview.state == "closed",
                         TaskReview.closed_at.is_(None),
-                    ).limit(1)
+                    )
+                    .limit(1)
                 )
                 reconcile_external_closure(db, issue)
                 after = db.get(TrackerClaim, key) is not None
@@ -299,9 +309,7 @@ def _query_context(session_factory: Callable[[], Session]) -> tuple[str | None, 
         queues = sorted(
             {
                 str(queue or tracker_client.DEFAULT_QUEUE).strip()
-                for queue in db.scalars(
-                    select(Park.tracker_queue).where(Park.is_active.is_(True))
-                )
+                for queue in db.scalars(select(Park.tracker_queue).where(Park.is_active.is_(True)))
                 if str(queue or tracker_client.DEFAULT_QUEUE).strip()
             }
         )
@@ -309,9 +317,9 @@ def _query_context(session_factory: Callable[[], Session]) -> tuple[str | None, 
 
 
 def _search_query(queues: list[str], cursor: tuple[datetime, str] | None) -> str:
-    queue_clause = "(" + " OR ".join(
-        f"Queue: {tracker_client.ql_token(queue)}" for queue in queues
-    ) + ")"
+    queue_clause = (
+        "(" + " OR ".join(f"Queue: {tracker_client.ql_token(queue)}" for queue in queues) + ")"
+    )
     created_clause = ""
     if cursor is not None:
         created = cursor[0].isoformat().replace("+00:00", "Z")
@@ -331,9 +339,7 @@ def _search_query(queues: list[str], cursor: tuple[datetime, str] | None) -> str
 
 def _resolve_active_park(db: Session, issue: dict) -> Park | None:
     tags = issue_tags(issue)
-    tagged_parks = (
-        list(db.scalars(select(Park).where(Park.tag.in_(tags)))) if tags else []
-    )
+    tagged_parks = list(db.scalars(select(Park).where(Park.tag.in_(tags)))) if tags else []
     if tagged_parks:
         if len(tagged_parks) == 1 and tagged_parks[0].is_active:
             return tagged_parks[0]
@@ -411,7 +417,8 @@ def poll_tracker_notifications(
         positioned = sorted(
             (position, issue)
             for issue in issues
-            if (position := _issue_position(issue)) is not None and (cursor is None or position > cursor)
+            if (position := _issue_position(issue)) is not None
+            and (cursor is None or position > cursor)
         )
         for position, issue in positioned:
             if monotonic() >= deadline:

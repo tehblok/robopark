@@ -150,7 +150,9 @@ def _release_manifest(
     ]
     canonical = json.dumps(descriptors, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     metadata.setdefault("eligible_channels", ["rc"] if prerelease else ["rc", "stable"])
-    metadata.setdefault("support_class", "candidate" if prerelease else "lts" if lts else "standard")
+    metadata.setdefault(
+        "support_class", "candidate" if prerelease else "lts" if lts else "standard"
+    )
     metadata.setdefault("support_months", 0 if prerelease else 24 if lts else 6)
     identity = (
         f"{app_version}\0{metadata.get('git_sha', '')}\0{metadata.get('migration_head', '')}"

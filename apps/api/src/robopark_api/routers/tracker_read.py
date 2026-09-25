@@ -490,9 +490,13 @@ def list_issues(
     )
     try:
         if pending_review_keys:
-            review_query = "(" + " OR ".join(
-                f"Key: {tracker_client.ql_token(key)}" for key in sorted(pending_review_keys)
-            ) + ")"
+            review_query = (
+                "("
+                + " OR ".join(
+                    f"Key: {tracker_client.ql_token(key)}" for key in sorted(pending_review_keys)
+                )
+                + ")"
+            )
             review_issues = tracker_cache.search_issues(
                 token=token,
                 query=review_query,
@@ -580,13 +584,16 @@ def list_issues(
         scoped_raw.append(issue)
 
     if sync_state == "needs_attention":
-        attention_keys = set(db.scalars(select(ReliableAction.resource_id).where(
-            ReliableAction.resource_type == "tracker_issue",
-            ReliableAction.state == "needs_attention",
-        )).all())
+        attention_keys = set(
+            db.scalars(
+                select(ReliableAction.resource_id).where(
+                    ReliableAction.resource_type == "tracker_issue",
+                    ReliableAction.state == "needs_attention",
+                )
+            ).all()
+        )
         scoped_raw = [
-            issue for issue in scoped_raw
-            if str(issue.get("key") or "").strip() in attention_keys
+            issue for issue in scoped_raw if str(issue.get("key") or "").strip() in attention_keys
         ]
 
     total = len(scoped_raw)

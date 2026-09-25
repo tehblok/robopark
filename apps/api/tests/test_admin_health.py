@@ -8,9 +8,7 @@ from robopark_api.services import sync_health
 from robopark_api.task_workflow_models import ReliableAction
 
 
-def test_sync_health_reads_shared_heartbeat_and_finite_queue_projection(
-    db_session, seed_mechanic
-):
+def test_sync_health_reads_shared_heartbeat_and_finite_queue_projection(db_session, seed_mechanic):
     now = datetime.now(UTC)
     db_session.add(
         TrackerNotificationCursor(

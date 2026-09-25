@@ -151,10 +151,13 @@ def public_result(value):
             if type(item.get("removable")) is not bool or type(item.get("mounted")) is not bool:
                 continue
             try:
-                devices.append(UsbDeviceOut(
-                    device_uuid=item.get("device_uuid"),
-                    removable=item["removable"], mounted=item["mounted"],
-                ))
+                devices.append(
+                    UsbDeviceOut(
+                        device_uuid=item.get("device_uuid"),
+                        removable=item["removable"],
+                        mounted=item["mounted"],
+                    )
+                )
             except ValueError:
                 continue
 
@@ -179,9 +182,9 @@ class AvailableReleaseOut(BaseModel):
 
 
 class AvailableUpdateOut(BaseModel):
-    state: Literal["available", "up_to_date", "discovery_stale", "disabled", "manual", "approved"] = (
-        "discovery_stale"
-    )
+    state: Literal[
+        "available", "up_to_date", "discovery_stale", "disabled", "manual", "approved"
+    ] = "discovery_stale"
     checked_at: datetime | None = None
     release: AvailableReleaseOut | None = None
 
@@ -216,7 +219,9 @@ class HostOperationKind(StrEnum):
 class HostOperationCapabilityOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
     available: bool = Field(strict=True)
-    unavailable_reason: Literal["capability_unavailable", "capabilities_unavailable", "context_unavailable"] | None
+    unavailable_reason: (
+        Literal["capability_unavailable", "capabilities_unavailable", "context_unavailable"] | None
+    )
 
 
 class HostCapabilitiesOut(BaseModel):

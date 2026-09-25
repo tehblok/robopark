@@ -75,9 +75,10 @@ def test_enabled_geo_provider_requires_public_ip_before_reporting_lookup_failure
     from robopark_api.services import ip_location
 
     monkeypatch.setattr(ip_location, "resolve_for_user", lambda *_args: None)
-    assert client.post(
-        "/auth/login", json={"username": "royal", "password": "secret"}
-    ).status_code == 204
+    assert (
+        client.post("/auth/login", json={"username": "royal", "password": "secret"}).status_code
+        == 204
+    )
     test_settings.ip_geo_provider = "ipwhois"
     for ineligible_ip in (None, "192.168.1.5", "not-an-ip"):
         seed_royal.last_ip = ineligible_ip
@@ -96,9 +97,7 @@ def test_enabled_geo_provider_requires_public_ip_before_reporting_lookup_failure
     db_session.commit()
     unavailable = next(
         row
-        for row in client.get(
-            "/admin/users", headers={"x-real-ip": "8.8.8.8"}
-        ).json()
+        for row in client.get("/admin/users", headers={"x-real-ip": "8.8.8.8"}).json()
         if row["id"] == seed_royal.id
     )
     assert unavailable["location_source"] == "ipwhois"
@@ -163,10 +162,7 @@ def test_public_lookup_returns_approximate_place_and_timeout_is_nonfatal(monkeyp
         return Response()
 
     monkeypatch.setattr(ip_location.httpx, "get", successful_get)
-    assert (
-        ip_location.lookup_public_ip("8.8.8.8", provider="ipwhois")
-        == "Москва, Москва, Россия"
-    )
+    assert ip_location.lookup_public_ip("8.8.8.8", provider="ipwhois") == "Москва, Москва, Россия"
     assert request_options == {"timeout": 2.0, "follow_redirects": False}
     monkeypatch.setattr(
         ip_location.httpx,

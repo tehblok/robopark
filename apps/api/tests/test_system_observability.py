@@ -59,14 +59,23 @@ def test_admin_system_history_requires_admin_and_bounds_days(client, seed_mechan
 
 
 def test_custom_role_with_nav_admin_cannot_read_system_telemetry(client, db_session):
-    permission = db_session.scalar(select(Permission).where(Permission.key == rbac.PERMISSION_NAV_ADMIN))
-    role = Role(slug="system-viewer", name="System viewer", is_system=False, permissions=[permission])
+    permission = db_session.scalar(
+        select(Permission).where(Permission.key == rbac.PERMISSION_NAV_ADMIN)
+    )
+    role = Role(
+        slug="system-viewer", name="System viewer", is_system=False, permissions=[permission]
+    )
     db_session.add(role)
     db_session.flush()
-    db_session.add(User(
-        username="system-viewer", password_hash=hash_password("secret"), role_id=role.id,
-        access_status=AccessStatus.approved.value, is_active=True,
-    ))
+    db_session.add(
+        User(
+            username="system-viewer",
+            password_hash=hash_password("secret"),
+            role_id=role.id,
+            access_status=AccessStatus.approved.value,
+            is_active=True,
+        )
+    )
     db_session.commit()
     login_as(client, "system-viewer", "secret")
     assert client.get("/admin/system/summary").status_code == 403
@@ -175,16 +184,27 @@ def test_summary_reports_metric_sample_time_and_staleness(client, db_session, se
 
 
 def test_system_attention_metric_counts_only_tracker_issues_linked_by_the_console(
-    client, db_session, seed_royal,
+    client,
+    db_session,
+    seed_royal,
 ):
     for index, resource_type in enumerate(("schedule_park", "task_control", "tracker_issue")):
-        db_session.add(ReliableAction(
-            id=f"attention-{index}", actor_user_id=seed_royal.id,
-            resource_type=resource_type, resource_id=f"resource-{index}", action="sync",
-            idempotency_key=f"attention-key-{index}", payload_hash=str(index) * 64,
-            payload_json="{}", state="needs_attention", next_attempt_at=0,
-            created_at=1.0 + index, updated_at=1.0 + index,
-        ))
+        db_session.add(
+            ReliableAction(
+                id=f"attention-{index}",
+                actor_user_id=seed_royal.id,
+                resource_type=resource_type,
+                resource_id=f"resource-{index}",
+                action="sync",
+                idempotency_key=f"attention-key-{index}",
+                payload_hash=str(index) * 64,
+                payload_json="{}",
+                state="needs_attention",
+                next_attempt_at=0,
+                created_at=1.0 + index,
+                updated_at=1.0 + index,
+            )
+        )
     db_session.commit()
     login_as(client, "royal", "secret")
 

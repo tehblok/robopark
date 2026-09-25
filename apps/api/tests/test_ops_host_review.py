@@ -90,7 +90,8 @@ def test_invalid_marker_blocks_writes_and_terminal_reconciliation(
     job.state = "running"
     job.phase = "running"
     job.extra = {
-        "host_updater": True, "host_dispatch": "dispatched",
+        "host_updater": True,
+        "host_dispatch": "dispatched",
         "host_request": {"actor_user_id": seed_royal.id},
     }
     save_job(Path(test_settings.ops_dir), job)

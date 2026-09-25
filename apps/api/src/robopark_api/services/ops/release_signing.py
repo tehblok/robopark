@@ -76,8 +76,11 @@ def validate_policy_metadata(manifest):
             or not channels
             or len(channels) != len(set(channels))
             or not set(channels) <= {"stable", "rc", "manual"}
-            or prerelease and channels != ["rc"]
-            or not prerelease and "stable" in channels and "rc" not in channels
+            or prerelease
+            and channels != ["rc"]
+            or not prerelease
+            and "stable" in channels
+            and "rc" not in channels
             or manifest.get("support_class") not in {"candidate", "standard", "lts"}
             or type(manifest.get("support_months")) is not int
             or not re.fullmatch(r"[a-f0-9]{20}", manifest.get("build_id", ""))

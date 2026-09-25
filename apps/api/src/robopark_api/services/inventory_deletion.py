@@ -232,9 +232,7 @@ def delete_component(
     component = components[0]
     part_ids = set(
         db.scalars(
-            select(InventoryCatalogPart.id).where(
-                InventoryCatalogPart.component_id == component_id
-            )
+            select(InventoryCatalogPart.id).where(InventoryCatalogPart.component_id == component_id)
         )
     )
     graph_ids: set[int] = set()
@@ -286,11 +284,13 @@ def delete_count(db: Session, user: User, count_id: int) -> None:
     try:
         movements = list(
             db.scalars(
-                select(InventoryMovement).where(
+                select(InventoryMovement)
+                .where(
                     InventoryMovement.park_id == count.park_id,
                     InventoryMovement.source_kind == "count",
                     InventoryMovement.source_id.like(f"{count.id}:%"),
-                ).with_for_update()
+                )
+                .with_for_update()
             )
         )
         reverse_by_part: dict[int, int] = {}

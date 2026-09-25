@@ -87,7 +87,11 @@ def test_installed_context_has_separate_host_root(installed, test_settings):
 
 
 def test_exact_operation_status_is_actor_bound_and_sanitized(
-    client, seed_royal, installed, test_settings, db_session,
+    client,
+    seed_royal,
+    installed,
+    test_settings,
+    db_session,
 ):
     login_as(client, "royal", "secret")
     job = new_job("diagnostics", exempt_token_hash="old-session")
@@ -102,20 +106,35 @@ def test_exact_operation_status_is_actor_bound_and_sanitized(
     }
     save_job(Path(test_settings.ops_dir), job)
     operation_registry.reserve(
-        db_session, operation_id=job.id, actor_user_id=seed_royal.id, kind=job.kind,
+        db_session,
+        operation_id=job.id,
+        actor_user_id=seed_royal.id,
+        kind=job.kind,
     )
 
     response = client.get(f"/admin/ops/operations/{job.id}")
 
     assert response.status_code == 200
     assert response.json() == {
-        "id": job.id, "kind": "diagnostics", "receipt_state": "accepted", "state": "running",
-        "phase": "awaiting_host", "error": None,
-        "host_result": {"before": [], "after": [], "performed": ["restart_tuna"], "failed": [], "devices": []},
+        "id": job.id,
+        "kind": "diagnostics",
+        "receipt_state": "accepted",
+        "state": "running",
+        "phase": "awaiting_host",
+        "error": None,
+        "host_result": {
+            "before": [],
+            "after": [],
+            "performed": ["restart_tuna"],
+            "failed": [],
+            "devices": [],
+        },
         "progress_percent": None,
     }
     assert "SECRET" not in response.text
-    assert client.get("/admin/ops/operations/22222222-2222-4222-8222-222222222222").status_code == 404
+    assert (
+        client.get("/admin/ops/operations/22222222-2222-4222-8222-222222222222").status_code == 404
+    )
 
     saved = load_job(Path(test_settings.ops_dir))
     saved.exempt_token_hash = "different-session"
@@ -299,7 +318,9 @@ def test_signed_inspection_approval_is_bound_and_idempotent(
     }
 
 
-def test_diagnostics_download_only_completed_exact_job_artifact(client, seed_royal, installed, test_settings):
+def test_diagnostics_download_only_completed_exact_job_artifact(
+    client, seed_royal, installed, test_settings
+):
     import zipfile
 
     login_as(client, "royal", "secret")
@@ -308,7 +329,8 @@ def test_diagnostics_download_only_completed_exact_job_artifact(client, seed_roy
     job.state = "running"
     job.phase = "running"
     job.extra = {
-        "host_updater": True, "host_dispatch": "dispatched",
+        "host_updater": True,
+        "host_dispatch": "dispatched",
         "host_request": {"actor_user_id": seed_royal.id},
     }
     save_job(Path(test_settings.ops_dir), job)
@@ -501,17 +523,30 @@ def test_repair_job_exposes_only_sanitized_before_after_outcome(client, seed_roy
 
 def test_public_result_projects_only_sanitized_usb_device_selection_metadata():
     device_uuid = "11111111-1111-4111-8111-111111111111"
-    result = host_bridge.public_result({
-        "detail": {"devices": [
-            {"device_uuid": device_uuid, "removable": True, "mounted": False, "path": "/dev/secret"},
-            {"device_uuid": "not-a-uuid", "removable": True, "mounted": False},
-        ]},
-        "secret": "LEAK",
-    }).model_dump(mode="json")
+    result = host_bridge.public_result(
+        {
+            "detail": {
+                "devices": [
+                    {
+                        "device_uuid": device_uuid,
+                        "removable": True,
+                        "mounted": False,
+                        "path": "/dev/secret",
+                    },
+                    {"device_uuid": "not-a-uuid", "removable": True, "mounted": False},
+                ]
+            },
+            "secret": "LEAK",
+        }
+    ).model_dump(mode="json")
 
-    assert result["devices"] == [{
-        "device_uuid": device_uuid, "removable": True, "mounted": False,
-    }]
+    assert result["devices"] == [
+        {
+            "device_uuid": device_uuid,
+            "removable": True,
+            "mounted": False,
+        }
+    ]
     assert "LEAK" not in json.dumps(result)
     assert host_bridge.public_result(result).model_dump(mode="json")["devices"] == result["devices"]
 

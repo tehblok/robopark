@@ -502,9 +502,7 @@ def test_pack_extracted_release_resolves_sha_without_git(
     (root / "apps/web").mkdir(parents=True)
     (root / "apps/web/package.json").write_text("{}")
     (root / "deploy").mkdir()
-    shutil.copyfile(
-        repository / "deploy/support-policy.json", root / "deploy/support-policy.json"
-    )
+    shutil.copyfile(repository / "deploy/support-policy.json", root / "deploy/support-policy.json")
     (root / "deploy/migration-policy.json").write_text(
         json.dumps(
             {

@@ -33,8 +33,7 @@ def _totp(secret: str, counter: int) -> str:
 def _consume_token(db, actor, raw_token: str, operation_kind: str, operation_id: str) -> bool:
     grant = db.scalar(
         select(PrivilegedReauthorization).where(
-            PrivilegedReauthorization.token_hash
-            == hashlib.sha256(raw_token.encode()).hexdigest()
+            PrivilegedReauthorization.token_hash == hashlib.sha256(raw_token.encode()).hexdigest()
         )
     )
     assert grant is not None
@@ -126,19 +125,24 @@ def test_reauthorization_is_session_operation_bound_one_use_and_audited(
         },
     )
     assert recovery_auth.status_code == 200
-    assert client.post(
-        "/admin/privileged-auth/reauthorize",
-        json={
-            "password": "secret",
-            "code": recovery,
-            "operation_kind": "repair",
-            "operation_id": "repair-2",
-        },
-    ).status_code == 401
+    assert (
+        client.post(
+            "/admin/privileged-auth/reauthorize",
+            json={
+                "password": "secret",
+                "code": recovery,
+                "operation_kind": "repair",
+                "operation_id": "repair-2",
+            },
+        ).status_code
+        == 401
+    )
     audits = db_session.scalars(select(PrivilegedAuthAudit)).all()
     assert {row.outcome for row in audits} >= {"success", "denied"}
     assert all(row.actor_username == "royal" and row.actor_role == "royal" for row in audits)
-    assert all(secret not in (row.reason or "") and recovery not in (row.reason or "") for row in audits)
+    assert all(
+        secret not in (row.reason or "") and recovery not in (row.reason or "") for row in audits
+    )
 
 
 def test_only_enrolled_active_royal_cannot_be_deactivated(
@@ -156,10 +160,13 @@ def test_only_enrolled_active_royal_cannot_be_deactivated(
     login_as(client, "royal", "secret")
     secret = client.post("/admin/privileged-auth/enrollment").json()["secret"]
     monkeypatch.setattr("robopark_api.services.privileged_auth._unix_time", lambda: 9_000.0)
-    assert client.post(
-        "/admin/privileged-auth/enrollment/confirm",
-        json={"password": "secret", "code": _totp(secret, 300)},
-    ).status_code == 200
+    assert (
+        client.post(
+            "/admin/privileged-auth/enrollment/confirm",
+            json={"password": "secret", "code": _totp(secret, 300)},
+        ).status_code
+        == 200
+    )
 
     login_as(client, "other-royal", "secret")
     response = client.patch(f"/admin/users/{seed_royal.id}", json={"is_active": False})
@@ -189,25 +196,26 @@ def test_recovery_reset_begin_is_loss_safe_replaceable_and_secret_stays_encrypte
     assert payload["secret"] != secret
     assert payload["pending_id"]
     assert len(payload["recovery_codes"]) == len(set(payload["recovery_codes"])) == 10
-    assert db_session.get(PrivilegedCredential, seed_royal.id).totp_secret_encrypted == old_ciphertext
+    assert (
+        db_session.get(PrivilegedCredential, seed_royal.id).totp_secret_encrypted == old_ciphertext
+    )
     rows = db_session.scalars(select(PrivilegedRecoveryCode)).all()
     assert len([row for row in rows if row.used_at is None]) == 10
     assert {row.hash_version for row in rows} == {"scrypt-v1"}
     pending_ciphertext = db_session.execute(
-        text(
-            "SELECT totp_secret_encrypted FROM privileged_recovery_resets "
-            "WHERE id = :pending_id"
-        ),
+        text("SELECT totp_secret_encrypted FROM privileged_recovery_resets WHERE id = :pending_id"),
         {"pending_id": payload["pending_id"]},
     ).scalar_one()
     assert payload["secret"] not in pending_ciphertext
-    assert db_session.execute(
-        text(
-            "SELECT count(*) FROM privileged_recovery_reset_codes "
-            "WHERE reset_id = :pending_id"
-        ),
-        {"pending_id": payload["pending_id"]},
-    ).scalar_one() == 10
+    assert (
+        db_session.execute(
+            text(
+                "SELECT count(*) FROM privileged_recovery_reset_codes WHERE reset_id = :pending_id"
+            ),
+            {"pending_id": payload["pending_id"]},
+        ).scalar_one()
+        == 10
+    )
     audit_text = " ".join(
         str(value)
         for audit in db_session.scalars(select(PrivilegedAuthAudit))
@@ -248,9 +256,7 @@ def test_recovery_reset_confirm_retries_and_expiry_preserve_confirmed_credential
     login_as(client, "royal", "secret")
     secret = client.post("/admin/privileged-auth/enrollment").json()["secret"]
     clock = {"value": 21_000.0}
-    monkeypatch.setattr(
-        "robopark_api.services.privileged_auth._unix_time", lambda: clock["value"]
-    )
+    monkeypatch.setattr("robopark_api.services.privileged_auth._unix_time", lambda: clock["value"])
     old_codes = client.post(
         "/admin/privileged-auth/enrollment/confirm",
         json={"password": "secret", "code": _totp(secret, 700)},
@@ -268,18 +274,23 @@ def test_recovery_reset_confirm_retries_and_expiry_preserve_confirmed_credential
         json={"pending_id": begun["pending_id"], "code": "000000"},
     )
     assert wrong.status_code == 401
-    assert db_session.get(PrivilegedCredential, seed_royal.id).totp_secret_encrypted == old_ciphertext
+    assert (
+        db_session.get(PrivilegedCredential, seed_royal.id).totp_secret_encrypted == old_ciphertext
+    )
 
     clock["value"] += 30
-    assert client.post(
-        "/admin/privileged-auth/reauthorize",
-        json={
-            "password": "secret",
-            "code": _totp(secret, 701),
-            "operation_kind": "repair",
-            "operation_id": "pending-reset-does-not-replace-totp",
-        },
-    ).status_code == 200
+    assert (
+        client.post(
+            "/admin/privileged-auth/reauthorize",
+            json={
+                "password": "secret",
+                "code": _totp(secret, 701),
+                "operation_kind": "repair",
+                "operation_id": "pending-reset-does-not-replace-totp",
+            },
+        ).status_code
+        == 200
+    )
 
     confirmed = client.post(
         "/admin/privileged-auth/recovery/reset/confirm",
@@ -290,11 +301,14 @@ def test_recovery_reset_confirm_retries_and_expiry_preserve_confirmed_credential
     credential = db_session.get(PrivilegedCredential, seed_royal.id)
     assert credential.totp_secret_encrypted != old_ciphertext
     assert credential.credential_generation == 2
-    assert len(
-        db_session.scalars(
-            select(PrivilegedRecoveryCode).where(PrivilegedRecoveryCode.used_at.is_(None))
-        ).all()
-    ) == 10
+    assert (
+        len(
+            db_session.scalars(
+                select(PrivilegedRecoveryCode).where(PrivilegedRecoveryCode.used_at.is_(None))
+            ).all()
+        )
+        == 10
+    )
 
     clock["value"] += 30
     expiring = client.post(
@@ -313,7 +327,10 @@ def test_recovery_reset_confirm_retries_and_expiry_preserve_confirmed_credential
     assert expired.status_code == 410
     assert expired.json()["detail"] == "pending_reset_expired"
     db_session.expire_all()
-    assert db_session.get(PrivilegedCredential, seed_royal.id).totp_secret_encrypted == confirmed_ciphertext
+    assert (
+        db_session.get(PrivilegedCredential, seed_royal.id).totp_secret_encrypted
+        == confirmed_ciphertext
+    )
     restarted = client.post(
         "/admin/privileged-auth/recovery/reset",
         json={"password": "secret", "code": begun["recovery_codes"][0]},
@@ -347,8 +364,7 @@ def test_confirmed_reset_invalidates_old_snapshot_grant_before_any_side_effect(
     ).json()["token"]
     grant = db_session.scalar(
         select(PrivilegedReauthorization).where(
-            PrivilegedReauthorization.token_hash
-            == hashlib.sha256(old_token.encode()).hexdigest()
+            PrivilegedReauthorization.token_hash == hashlib.sha256(old_token.encode()).hexdigest()
         )
     )
     assert grant.credential_generation == 1
@@ -356,15 +372,16 @@ def test_confirmed_reset_invalidates_old_snapshot_grant_before_any_side_effect(
         "/admin/privileged-auth/recovery/reset",
         json={"password": "secret", "code": old_codes[0]},
     ).json()
-    assert client.post(
-        "/admin/privileged-auth/recovery/reset/confirm",
-        json={"pending_id": begun["pending_id"], "code": _totp(begun["secret"], 801)},
-    ).status_code == 204
+    assert (
+        client.post(
+            "/admin/privileged-auth/recovery/reset/confirm",
+            json={"pending_id": begun["pending_id"], "code": _totp(begun["secret"], 801)},
+        ).status_code
+        == 204
+    )
 
     ops_root = Path(test_settings.ops_dir)
-    assert _consume_token(
-        db_session, seed_royal, old_token, "snapshot", "snapshot"
-    ) is False
+    assert _consume_token(db_session, seed_royal, old_token, "snapshot", "snapshot") is False
     assert db_session.scalars(
         select(PrivilegedAuthAudit).where(
             PrivilegedAuthAudit.reason == "credential_generation_mismatch"
@@ -383,9 +400,7 @@ def test_confirmed_reset_invalidates_old_snapshot_grant_before_any_side_effect(
             "operation_id": "snapshot",
         },
     ).json()["token"]
-    assert _consume_token(
-        db_session, seed_royal, new_token, "snapshot", "snapshot"
-    ) is True
+    assert _consume_token(db_session, seed_royal, new_token, "snapshot", "snapshot") is True
 
 
 def test_key_loss_is_controlled_and_recovery_is_checked_before_totp_decryption(
@@ -402,12 +417,22 @@ def test_key_loss_is_controlled_and_recovery_is_checked_before_totp_decryption(
 
     recovered = client.post(
         "/admin/privileged-auth/reauthorize",
-        json={"password": "secret", "code": recovery, "operation_kind": "repair", "operation_id": "repair"},
+        json={
+            "password": "secret",
+            "code": recovery,
+            "operation_kind": "repair",
+            "operation_id": "repair",
+        },
     )
     assert recovered.status_code == 200
     totp = client.post(
         "/admin/privileged-auth/reauthorize",
-        json={"password": "secret", "code": "123456", "operation_kind": "repair", "operation_id": "repair-2"},
+        json={
+            "password": "secret",
+            "code": "123456",
+            "operation_kind": "repair",
+            "operation_id": "repair-2",
+        },
     )
     assert totp.status_code == 409
     assert totp.json()["detail"] == "credential_unavailable"
@@ -502,9 +527,7 @@ def test_legacy_recovery_hashes_require_totp_rotation_before_key_change(
     } == {"scrypt-v1"}
     assert db_session.get(PrivilegedCredential, seed_royal.id).credential_generation == 2
     ops_root = Path(test_settings.ops_dir)
-    assert _consume_token(
-        db_session, seed_royal, old_token, "snapshot", "snapshot"
-    ) is False
+    assert _consume_token(db_session, seed_royal, old_token, "snapshot", "snapshot") is False
     assert not ops_root.exists() or not [
         path for path in ops_root.rglob("*") if path.is_file() and path.name != "begin.lock"
     ]
@@ -541,7 +564,12 @@ def test_audit_insert_failure_rolls_back_enrollment_grant_consumption_and_thrott
     with pytest.raises(RuntimeError, match="audit unavailable"):
         client.post(
             "/admin/privileged-auth/reauthorize",
-            json={"password": "secret", "code": _totp(secret, 601), "operation_kind": "snapshot", "operation_id": "snapshot"},
+            json={
+                "password": "secret",
+                "code": _totp(secret, 601),
+                "operation_kind": "snapshot",
+                "operation_id": "snapshot",
+            },
         )
     db_session.expire_all()
     assert db_session.query(PrivilegedReauthorization).count() == 0
@@ -551,7 +579,12 @@ def test_audit_insert_failure_rolls_back_enrollment_grant_consumption_and_thrott
     monkeypatch.setattr("robopark_api.services.privileged_auth._unix_time", lambda: 18_030.0)
     token = client.post(
         "/admin/privileged-auth/reauthorize",
-        json={"password": "secret", "code": _totp(secret, 601), "operation_kind": "snapshot", "operation_id": "snapshot"},
+        json={
+            "password": "secret",
+            "code": _totp(secret, 601),
+            "operation_kind": "snapshot",
+            "operation_id": "snapshot",
+        },
     ).json()["token"]
     monkeypatch.setattr("robopark_api.services.privileged_auth._add_audit", fail_audit)
     with pytest.raises(RuntimeError, match="audit unavailable"):
@@ -564,7 +597,12 @@ def test_audit_insert_failure_rolls_back_enrollment_grant_consumption_and_thrott
     with pytest.raises(RuntimeError, match="audit unavailable"):
         client.post(
             "/admin/privileged-auth/reauthorize",
-            json={"password": "wrong", "code": codes[0], "operation_kind": "repair", "operation_id": "repair"},
+            json={
+                "password": "wrong",
+                "code": codes[0],
+                "operation_kind": "repair",
+                "operation_id": "repair",
+            },
         )
     from robopark_api.models import AuthThrottleState
 
@@ -594,8 +632,7 @@ def test_reset_lock_serializes_concurrent_old_grant_consumption(
     ).json()["token"]
     grant = db_session.scalar(
         select(PrivilegedReauthorization).where(
-            PrivilegedReauthorization.token_hash
-            == hashlib.sha256(raw_token.encode()).hexdigest()
+            PrivilegedReauthorization.token_hash == hashlib.sha256(raw_token.encode()).hexdigest()
         )
     )
     session_hash = grant.session_token_hash
@@ -706,12 +743,18 @@ def test_reset_audit_failure_rolls_back_pending_and_promotion(
                 "/admin/privileged-auth/recovery/reset",
                 json={"password": "secret", "code": recovery},
             )
-    assert db_session.execute(text("SELECT count(*) FROM privileged_recovery_resets")).scalar_one() == 0
-    assert len(
-        db_session.scalars(
-            select(PrivilegedRecoveryCode).where(PrivilegedRecoveryCode.used_at.is_(None))
-        ).all()
-    ) == 10
+    assert (
+        db_session.execute(text("SELECT count(*) FROM privileged_recovery_resets")).scalar_one()
+        == 0
+    )
+    assert (
+        len(
+            db_session.scalars(
+                select(PrivilegedRecoveryCode).where(PrivilegedRecoveryCode.used_at.is_(None))
+            ).all()
+        )
+        == 10
+    )
 
     begun = client.post(
         "/admin/privileged-auth/recovery/reset",
@@ -731,4 +774,7 @@ def test_reset_audit_failure_rolls_back_pending_and_promotion(
     credential = db_session.get(PrivilegedCredential, seed_royal.id)
     assert credential.totp_secret_encrypted == old_ciphertext
     assert credential.credential_generation == 1
-    assert db_session.execute(text("SELECT count(*) FROM privileged_recovery_resets")).scalar_one() == 1
+    assert (
+        db_session.execute(text("SELECT count(*) FROM privileged_recovery_resets")).scalar_one()
+        == 1
+    )

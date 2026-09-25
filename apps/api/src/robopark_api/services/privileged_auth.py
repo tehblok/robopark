@@ -228,9 +228,7 @@ def _deny(
 
 
 @_atomic
-def begin_enrollment(
-    db: Session, actor: User, settings: Settings, *, context: AuditContext
-) -> str:
+def begin_enrollment(db: Session, actor: User, settings: Settings, *, context: AuditContext) -> str:
     row = db.get(PrivilegedCredential, actor.id)
     if row is not None and row.enrolled_at is not None:
         _deny(
@@ -471,11 +469,16 @@ def issue_reauthorization(
     if verify_password(password, actor.password_hash):
         valid, reason = _verify_second_factor(db, actor, settings, code)
     if not valid:
-        status_code = 409 if reason in {
-            "credential_unavailable",
-            "privileged_enrollment_required",
-            "recovery_hash_unsupported",
-        } else 401
+        status_code = (
+            409
+            if reason
+            in {
+                "credential_unavailable",
+                "privileged_enrollment_required",
+                "recovery_hash_unsupported",
+            }
+            else 401
+        )
         _deny(
             db,
             actor,
@@ -549,15 +552,19 @@ def consume_reauthorization(
         .values(token_hash=PrivilegedReauthorization.token_hash)
     )
     row = db.scalar(
-        select(PrivilegedReauthorization).where(
+        select(PrivilegedReauthorization)
+        .where(
             PrivilegedReauthorization.token_hash == token_hash,
             PrivilegedReauthorization.user_id == actor.id,
-        ).with_for_update()
+        )
+        .with_for_update()
     )
     now = _now()
     expires = None
     if row is not None:
-        expires = row.expires_at.replace(tzinfo=UTC) if row.expires_at.tzinfo is None else row.expires_at
+        expires = (
+            row.expires_at.replace(tzinfo=UTC) if row.expires_at.tzinfo is None else row.expires_at
+        )
     valid = bool(
         row is not None
         and expires is not None
@@ -609,9 +616,7 @@ def _delete_pending_reset(db: Session, pending_id: str) -> None:
             PrivilegedRecoveryResetCode.reset_id == pending_id
         )
     )
-    db.execute(
-        delete(PrivilegedRecoveryReset).where(PrivilegedRecoveryReset.id == pending_id)
-    )
+    db.execute(delete(PrivilegedRecoveryReset).where(PrivilegedRecoveryReset.id == pending_id))
 
 
 @_atomic

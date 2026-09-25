@@ -98,7 +98,10 @@ class MediaUploadSession(Base):
         Index("ix_media_upload_expiry", "completed", "expires_at", "id"),
         Index(
             "ix_media_upload_dependency_cleanup",
-            "completed", "dependency_terminal_at", "completed_at", "id",
+            "completed",
+            "dependency_terminal_at",
+            "completed_at",
+            "id",
         ),
     )
 

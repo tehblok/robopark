@@ -13,7 +13,9 @@ def upgrade() -> None:
     with op.batch_alter_table("host_operation_status") as batch:
         batch.add_column(
             sa.Column(
-                "request_digest", sa.String(64), nullable=False,
+                "request_digest",
+                sa.String(64),
+                nullable=False,
                 server_default="0" * 64,
             )
         )

@@ -58,7 +58,8 @@ _DESTRUCTIVE_PHRASES = {
     HostOperationKind.CLEANUP_EXECUTE: "CLEAN ROBOPARK",
 }
 _SAFE_PHRASES = {
-    kind: f"ЗАПУСТИТЬ {kind.value.upper()}" for kind in (
+    kind: f"ЗАПУСТИТЬ {kind.value.upper()}"
+    for kind in (
         HostOperationKind.PACKAGE_INSPECT,
         HostOperationKind.BACKUP_VERIFY,
         HostOperationKind.CLEANUP_PREVIEW,
@@ -186,7 +187,8 @@ def read_json(path: Path, limit=65536):
 def _host_boot_id():
     try:
         descriptor = os.open(
-            "/proc/sys/kernel/random/boot_id", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            "/proc/sys/kernel/random/boot_id",
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
         )
         with os.fdopen(descriptor, "rb") as stream:
             value = stream.read(38).decode("ascii").strip()
@@ -198,7 +200,8 @@ def _host_boot_id():
 def operation_capabilities(root):
     """Read the host's atomic cache anew; no process cache can retain a revoked kind."""
     unavailable = HostCapabilitiesOut(
-        state="unavailable", operations={
+        state="unavailable",
+        operations={
             kind: {"available": False, "unavailable_reason": "capabilities_unavailable"}
             for kind in HostOperationKind
         },
@@ -212,29 +215,45 @@ def operation_capabilities(root):
         lifetime = value["valid_for_seconds"]
         operations = value["operations"]
         if (
-            type(value["schema"]) is not int or value["schema"] != 1
-            or boot_id is None or value["boot_id"] != boot_id
-            or stamp is None or stamp.utcoffset().total_seconds() != 0
-            or type(lifetime) is not int or not 0 < lifetime <= 300
+            type(value["schema"]) is not int
+            or value["schema"] != 1
+            or boot_id is None
+            or value["boot_id"] != boot_id
+            or stamp is None
+            or stamp.utcoffset().total_seconds() != 0
+            or type(lifetime) is not int
+            or not 0 < lifetime <= 300
             or not 0 <= (datetime.now(UTC) - stamp).total_seconds() < lifetime
-            or not isinstance(operations, dict) or set(operations) != set(HostOperationKind)
+            or not isinstance(operations, dict)
+            or set(operations) != set(HostOperationKind)
         ):
             return unavailable
         for item in operations.values():
             if (
-                not isinstance(item, dict) or set(item) != {"available", "unavailable_reason"}
+                not isinstance(item, dict)
+                or set(item) != {"available", "unavailable_reason"}
                 or type(item["available"]) is not bool
-                or item["unavailable_reason"] not in (
-                    (None,) if item["available"] else ("capability_unavailable", "context_unavailable")
+                or item["unavailable_reason"]
+                not in (
+                    (None,)
+                    if item["available"]
+                    else ("capability_unavailable", "context_unavailable")
                 )
             ):
                 return unavailable
-        revision = hashlib.sha256(json.dumps(
-            {"boot_id": boot_id, "operations": operations}, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")).hexdigest()
+        revision = hashlib.sha256(
+            json.dumps(
+                {"boot_id": boot_id, "operations": operations},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         return HostCapabilitiesOut(
-            state="ready", generated_at=stamp, expires_at=stamp + timedelta(seconds=lifetime),
-            revision=revision, operations=operations,
+            state="ready",
+            generated_at=stamp,
+            expires_at=stamp + timedelta(seconds=lifetime),
+            revision=revision,
+            operations=operations,
         )
     except (ValueError, TypeError, AttributeError, OverflowError):
         return unavailable

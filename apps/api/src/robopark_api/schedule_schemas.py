@@ -69,8 +69,10 @@ class SchedulePatternCreate(BaseModel):
             "2/2": (2, 4),
             "4/4": (4, 8),
         }[self.pattern]
-        generated_days = 1 if self.pattern == "none" else sum(
-            offset % cycle_days < on_days for offset in range(day_count)
+        generated_days = (
+            1
+            if self.pattern == "none"
+            else sum(offset % cycle_days < on_days for offset in range(day_count))
         )
         if generated_days * len(self.owner_user_ids) > 5000:
             raise ValueError("too_many_entries")

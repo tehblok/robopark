@@ -443,7 +443,9 @@ def test_local_attachment_has_authorized_content_url_and_safe_image_headers(
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import task_timeline, tracker_cache
 
-    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "key": kwargs["key"]})
+    monkeypatch.setattr(
+        tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "key": kwargs["key"]}
+    )
     monkeypatch.setattr(tracker_cache, "list_comments", lambda **_kwargs: [])
     root = tmp_path / "task-attachments"
     monkeypatch.setattr(task_timeline, "staged_attachments_root", lambda: root)
@@ -475,15 +477,9 @@ def test_local_attachment_has_authorized_content_url_and_safe_image_headers(
     login_as(client, seed_royal.username, "secret")
 
     timeline = client.get("/tracker/issues/ROBOPARK-1/timeline")
-    content = client.get(
-        f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
-    )
-    authorization = client.head(
-        f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
-    )
-    wrong_issue = client.get(
-        f"/tracker/issues/ROBOPARK-2/attachments/{attachment.id}/content"
-    )
+    content = client.get(f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content")
+    authorization = client.head(f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content")
+    wrong_issue = client.get(f"/tracker/issues/ROBOPARK-2/attachments/{attachment.id}/content")
 
     assert timeline.status_code == 200
     assert timeline.json()[0]["attachments"][0]["url"] == (
@@ -500,13 +496,15 @@ def test_local_attachment_has_authorized_content_url_and_safe_image_headers(
     assert wrong_issue.status_code == 404
 
 
-def test_attachment_head_rejects_closed_issue(
-    client, db_session, seed_royal, monkeypatch
-):
+def test_attachment_head_rejects_closed_issue(client, db_session, seed_royal, monkeypatch):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import tracker_cache
 
-    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "status": "Closed", "status_key": "closed"})
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **kwargs: {**ISSUE, "status": "Closed", "status_key": "closed"},
+    )
     login_as(client, seed_royal.username, "secret")
 
     response = client.head("/tracker/issues/ROBOPARK-1/attachments/missing/content")
@@ -585,7 +583,9 @@ def test_attachment_content_rejects_traversal_from_corrupt_metadata(
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import task_timeline, tracker_cache
 
-    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "key": kwargs["key"]})
+    monkeypatch.setattr(
+        tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "key": kwargs["key"]}
+    )
     root = tmp_path / "task-attachments"
     root.mkdir()
     monkeypatch.setattr(task_timeline, "staged_attachments_root", lambda: root)
@@ -623,9 +623,7 @@ def test_attachment_content_rejects_traversal_from_corrupt_metadata(
     db_session.expire_all()
     login_as(client, seed_royal.username, "secret")
 
-    response = client.get(
-        f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
-    )
+    response = client.get(f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content")
 
     assert response.status_code == 404
     assert response.content != PNG
@@ -637,7 +635,9 @@ def test_attachment_content_rejects_symlink_escape(
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import task_timeline, tracker_cache
 
-    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "key": kwargs["key"]})
+    monkeypatch.setattr(
+        tracker_cache, "get_issue", lambda **kwargs: {**ISSUE, "key": kwargs["key"]}
+    )
     root = tmp_path / "task-attachments"
     root.mkdir()
     monkeypatch.setattr(task_timeline, "staged_attachments_root", lambda: root)
@@ -669,9 +669,7 @@ def test_attachment_content_rejects_symlink_escape(
     db_session.commit()
     login_as(client, seed_royal.username, "secret")
 
-    response = client.get(
-        f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
-    )
+    response = client.get(f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content")
 
     assert response.status_code == 404
     assert response.content != PNG

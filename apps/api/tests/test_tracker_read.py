@@ -80,21 +80,37 @@ def test_tracker_read_list_issues(client, db_session, seed_park_with_tracker, mo
 
 
 def test_tracker_read_filters_attention_state_before_pagination(
-    client, db_session, seed_park_with_tracker, monkeypatch,
+    client,
+    db_session,
+    seed_park_with_tracker,
+    monkeypatch,
 ):
     operator = _seed_operator(db_session, seed_park_with_tracker)
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import tracker_client
 
-    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: [
-        _scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
-        _scoped_issue("ROBOPARK-2", "2026-01-02T00:00:00Z"),
-    ])
-    db_session.add(ReliableAction(
-        id="attention-action", actor_user_id=operator.id, resource_type="tracker_issue",
-        resource_id="ROBOPARK-2", action="comment", idempotency_key="attention",
-        payload_hash="a" * 64, state="needs_attention", created_at=1.0, updated_at=1.0,
-    ))
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [
+            _scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+            _scoped_issue("ROBOPARK-2", "2026-01-02T00:00:00Z"),
+        ],
+    )
+    db_session.add(
+        ReliableAction(
+            id="attention-action",
+            actor_user_id=operator.id,
+            resource_type="tracker_issue",
+            resource_id="ROBOPARK-2",
+            action="comment",
+            idempotency_key="attention",
+            payload_hash="a" * 64,
+            state="needs_attention",
+            created_at=1.0,
+            updated_at=1.0,
+        )
+    )
     db_session.commit()
     login_as(client, "op2", "secret")
 
@@ -278,20 +294,40 @@ def test_operator_owned_by_me_returns_only_assigned_pending_reviews(
     db_session.add(other)
     db_session.flush()
     db_session.add(UserPark(user_id=other.id, park_id=seed_park_with_tracker.id))
-    db_session.add_all([
-        TaskReview(id="mine", issue_key="ROBOPARK-MINE", state="pending", actor_user_id=seed_mechanic.id,
-                   reviewer_user_id=operator.id, created_at=1, updated_at=1),
-        TaskReview(id="other", issue_key="ROBOPARK-OTHER", state="pending", actor_user_id=seed_mechanic.id,
-                   reviewer_user_id=other.id, created_at=1, updated_at=1),
-    ])
+    db_session.add_all(
+        [
+            TaskReview(
+                id="mine",
+                issue_key="ROBOPARK-MINE",
+                state="pending",
+                actor_user_id=seed_mechanic.id,
+                reviewer_user_id=operator.id,
+                created_at=1,
+                updated_at=1,
+            ),
+            TaskReview(
+                id="other",
+                issue_key="ROBOPARK-OTHER",
+                state="pending",
+                actor_user_id=seed_mechanic.id,
+                reviewer_user_id=other.id,
+                created_at=1,
+                updated_at=1,
+            ),
+        ]
+    )
     db_session.commit()
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import tracker_client
 
-    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: [
-        _scoped_issue("ROBOPARK-OTHER", "2026-01-01T00:00:00Z"),
-        _scoped_issue("ROBOPARK-MINE", "2026-01-02T00:00:00Z"),
-    ])
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [
+            _scoped_issue("ROBOPARK-OTHER", "2026-01-01T00:00:00Z"),
+            _scoped_issue("ROBOPARK-MINE", "2026-01-02T00:00:00Z"),
+        ],
+    )
     login_as(client, operator.username, "secret")
 
     response = client.get("/tracker/issues?owned_by_me=true")

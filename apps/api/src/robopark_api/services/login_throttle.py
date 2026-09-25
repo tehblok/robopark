@@ -145,9 +145,7 @@ class LoginThrottle:
         """Clear state after a successful attempt."""
         with self._session(db) as session:
             session.execute(
-                delete(AuthThrottleState).where(
-                    AuthThrottleState.key_hash == self._key_hash(key)
-                )
+                delete(AuthThrottleState).where(AuthThrottleState.key_hash == self._key_hash(key))
             )
             if commit:
                 session.commit()

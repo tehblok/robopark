@@ -15,8 +15,7 @@ def upgrade() -> None:
         sa.Column("credential_generation", sa.Integer(), server_default="0", nullable=False),
     )
     op.execute(
-        "UPDATE privileged_credentials SET credential_generation = 1 "
-        "WHERE enrolled_at IS NOT NULL"
+        "UPDATE privileged_credentials SET credential_generation = 1 WHERE enrolled_at IS NOT NULL"
     )
     op.add_column(
         "privileged_reauthorizations",

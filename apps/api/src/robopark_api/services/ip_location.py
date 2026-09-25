@@ -19,9 +19,7 @@ POSITIVE_TTL = timedelta(days=7)
 NEGATIVE_TTL = timedelta(hours=1)
 
 
-def lookup_public_ip(
-    ip: str, *, provider: Literal["off", "ipwhois"] | None = None
-) -> str | None:
+def lookup_public_ip(ip: str, *, provider: Literal["off", "ipwhois"] | None = None) -> str | None:
     selected_provider = get_settings().ip_geo_provider if provider is None else provider
     if selected_provider == "off":
         return None

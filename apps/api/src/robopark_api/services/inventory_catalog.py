@@ -136,9 +136,7 @@ def set_catalog_photo(
         if new_key:
             inventory_photo_cleanup.recover_ambiguous_blob(bind, new_key)
         raise
-    cleanup_pending = inventory_photo_cleanup.cleanup_pending(
-        db, {old_key} if old_key else set()
-    )
+    cleanup_pending = inventory_photo_cleanup.cleanup_pending(db, {old_key} if old_key else set())
     db.refresh(row)
     return row, cleanup_pending
 

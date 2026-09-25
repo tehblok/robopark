@@ -50,9 +50,7 @@ def upgrade() -> None:
 
     with op.batch_alter_table("task_messages") as batch_op:
         batch_op.add_column(
-            sa.Column(
-                "visibility", sa.String(16), nullable=False, server_default="participants"
-            )
+            sa.Column("visibility", sa.String(16), nullable=False, server_default="participants")
         )
         batch_op.create_check_constraint(
             "ck_task_messages_visibility", "visibility IN ('participants', 'staff')"

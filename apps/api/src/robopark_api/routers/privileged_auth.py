@@ -129,9 +129,7 @@ def begin_enrollment(
     settings: Settings = Depends(get_settings),
 ) -> EnrollmentOut:
     try:
-        secret = privileged_auth.begin_enrollment(
-            db, royal, settings, context=_context(request)
-        )
+        secret = privileged_auth.begin_enrollment(db, royal, settings, context=_context(request))
     except privileged_auth.PrivilegedAuthError as exc:
         _raise(exc)
     return EnrollmentOut(secret=secret)
@@ -174,7 +172,10 @@ def reauthorize(
 ) -> TokenOut:
     try:
         host_bridge.require_typed_reauthorization(
-            settings, payload.operation_kind, payload.operation_id, payload.capability_revision,
+            settings,
+            payload.operation_kind,
+            payload.operation_id,
+            payload.capability_revision,
         )
     except host_bridge.BridgeError as exc:
         detail = str(exc)
@@ -189,7 +190,9 @@ def reauthorize(
     def validate_capability_context() -> tuple[str, int] | None:
         try:
             host_bridge.require_typed_reauthorization(
-                settings, payload.operation_kind, payload.operation_id,
+                settings,
+                payload.operation_kind,
+                payload.operation_id,
                 payload.capability_revision,
             )
         except host_bridge.BridgeError as exc:

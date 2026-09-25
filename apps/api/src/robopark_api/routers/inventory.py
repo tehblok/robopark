@@ -478,9 +478,7 @@ def permanently_delete_catalog_component(
     if not permanent:
         raise HTTPException(400, "inventory_permanent_delete_required")
     result = _run(
-        lambda: inventory_deletion.delete_component(
-            db, user, component_id, query=q, mode=mode
-        )
+        lambda: inventory_deletion.delete_component(db, user, component_id, query=q, mode=mode)
     )
     if result.pop("_cleanup_pending", False):
         response.status_code = status.HTTP_202_ACCEPTED
@@ -579,9 +577,7 @@ def permanently_delete_catalog_part(
 ):
     if not permanent:
         raise HTTPException(400, "inventory_permanent_delete_required")
-    result = _run(
-        lambda: inventory_deletion.delete_part(db, user, part_id, query=q, mode=mode)
-    )
+    result = _run(lambda: inventory_deletion.delete_part(db, user, part_id, query=q, mode=mode))
     if result.pop("_cleanup_pending", False):
         response.status_code = status.HTTP_202_ACCEPTED
     return result

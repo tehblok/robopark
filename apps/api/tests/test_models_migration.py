@@ -139,9 +139,7 @@ def test_alembic_head_includes_host_operation_status():
     assert script.get_heads() == ["0050_media_action_dependency"]
 
 
-def test_privileged_audit_is_immutable_after_sqlite_migration(
-    sqlite_database_url, monkeypatch
-):
+def test_privileged_audit_is_immutable_after_sqlite_migration(sqlite_database_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
     config = Config(Path(__file__).parents[1] / "alembic.ini")
     command.upgrade(config, "head")
@@ -193,9 +191,7 @@ def test_privileged_audit_postgresql_migration_emits_update_delete_trigger():
     assert "RAISE EXCEPTION 'privileged_auth_audit_immutable'" in ddl
 
 
-def test_privileged_recovery_hash_migration_labels_legacy_rows(
-    sqlite_database_url, monkeypatch
-):
+def test_privileged_recovery_hash_migration_labels_legacy_rows(sqlite_database_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
     config = Config(Path(__file__).parents[1] / "alembic.ini")
     command.upgrade(config, "0044_privileged_auth")
@@ -209,14 +205,15 @@ def test_privileged_recovery_hash_migration_labels_legacy_rows(
         )
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(
-            text("SELECT hash_version FROM privileged_recovery_codes WHERE id = 1")
-        ) == "legacy-hmac-v1"
+        assert (
+            connection.scalar(
+                text("SELECT hash_version FROM privileged_recovery_codes WHERE id = 1")
+            )
+            == "legacy-hmac-v1"
+        )
 
 
-def test_privileged_generation_migration_binds_existing_grants(
-    sqlite_database_url, monkeypatch
-):
+def test_privileged_generation_migration_binds_existing_grants(sqlite_database_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
     config = Config(Path(__file__).parents[1] / "alembic.ini")
     command.upgrade(config, "0045_privileged_recovery_hashes")
@@ -240,20 +237,29 @@ def test_privileged_generation_migration_binds_existing_grants(
         )
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(
-            text(
-                "SELECT credential_generation FROM privileged_credentials WHERE user_id = 999"
+        assert (
+            connection.scalar(
+                text("SELECT credential_generation FROM privileged_credentials WHERE user_id = 999")
             )
-        ) == 1
-        assert connection.scalar(
-            text(
-                "SELECT credential_generation FROM privileged_reauthorizations "
-                "WHERE user_id = 999"
+            == 1
+        )
+        assert (
+            connection.scalar(
+                text(
+                    "SELECT credential_generation FROM privileged_reauthorizations "
+                    "WHERE user_id = 999"
+                )
             )
-        ) == 1
-        assert connection.scalar(text(
-            "SELECT capability_revision FROM privileged_reauthorizations WHERE user_id = 999"
-        )) is None
+            == 1
+        )
+        assert (
+            connection.scalar(
+                text(
+                    "SELECT capability_revision FROM privileged_reauthorizations WHERE user_id = 999"
+                )
+            )
+            is None
+        )
     inspector = inspect(engine)
     assert {
         "privileged_recovery_resets",
@@ -273,7 +279,9 @@ def test_sync_closure_scan_migration_adds_review_index(sqlite_database_url, monk
     command.upgrade(config, "0038_inventory_photo_cleanup")
     command.upgrade(config, "head")
     inspector = inspect(create_engine(sqlite_database_url, future=True))
-    indexes = {index["name"]: index["column_names"] for index in inspector.get_indexes("task_reviews")}
+    indexes = {
+        index["name"]: index["column_names"] for index in inspector.get_indexes("task_reviews")
+    }
     assert indexes["ix_task_reviews_closure_scan"] == ["state", "closed_at", "issue_key"]
 
 
@@ -286,11 +294,21 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
     inspector = inspect(engine)
     assert "notification_deliveries" in inspector.get_table_names()
     assert {column["name"] for column in inspector.get_columns("notification_deliveries")} >= {
-        "event_id", "channel", "state", "attempts", "next_attempt_at", "expires_at",
-        "idempotency_key", "lease_owner", "lease_until",
+        "event_id",
+        "channel",
+        "state",
+        "attempts",
+        "next_attempt_at",
+        "expires_at",
+        "idempotency_key",
+        "lease_owner",
+        "lease_until",
     }
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0050_media_action_dependency"
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0050_media_action_dependency"
+        )
 
 
 def test_schedule_series_lookup_index_is_used(sqlite_database_url, monkeypatch):
@@ -299,25 +317,34 @@ def test_schedule_series_lookup_index_is_used(sqlite_database_url, monkeypatch):
     command.upgrade(config, "0042_user_timezone")
     engine = create_engine(sqlite_database_url, future=True)
     with engine.begin() as connection:
-        connection.execute(text(
-            "INSERT INTO schedule_entries "
-            "(id, owner_user_id, park_id, kind, start_at, end_at, source, series_id, "
-            "created_by_user_id, updated_by_user_id) VALUES "
-            "('kept-series-row', 1, 1, 'shift', '2026-01-01 09:00:00', "
-            "'2026-01-01 21:00:00', 'self', 'series', 1, 1)"
-        ))
+        connection.execute(
+            text(
+                "INSERT INTO schedule_entries "
+                "(id, owner_user_id, park_id, kind, start_at, end_at, source, series_id, "
+                "created_by_user_id, updated_by_user_id) VALUES "
+                "('kept-series-row', 1, 1, 'shift', '2026-01-01 09:00:00', "
+                "'2026-01-01 21:00:00', 'self', 'series', 1, 1)"
+            )
+        )
     command.upgrade(config, "head")
     inspector = inspect(engine)
-    indexes = {item["name"]: item["column_names"] for item in inspector.get_indexes("schedule_entries")}
+    indexes = {
+        item["name"]: item["column_names"] for item in inspector.get_indexes("schedule_entries")
+    }
     assert indexes["ix_schedule_owner_series_end"] == ["owner_user_id", "series_id", "end_at"]
     with engine.connect() as connection:
-        assert connection.scalar(text(
-            "SELECT count(*) FROM schedule_entries WHERE id = 'kept-series-row'"
-        )) == 1
-        plan = connection.execute(text(
-            "EXPLAIN QUERY PLAN SELECT id FROM schedule_entries "
-            "WHERE owner_user_id = 1 AND series_id = 'series' AND end_at > '2026-01-01' LIMIT 1"
-        )).all()
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM schedule_entries WHERE id = 'kept-series-row'")
+            )
+            == 1
+        )
+        plan = connection.execute(
+            text(
+                "EXPLAIN QUERY PLAN SELECT id FROM schedule_entries "
+                "WHERE owner_user_id = 1 AND series_id = 'series' AND end_at > '2026-01-01' LIMIT 1"
+            )
+        ).all()
     assert "ix_schedule_owner_series_end" in " ".join(str(row) for row in plan)
     command.downgrade(config, "0042_user_timezone")
     inspector = inspect(engine)
@@ -325,9 +352,12 @@ def test_schedule_series_lookup_index_is_used(sqlite_database_url, monkeypatch):
         item["name"] for item in inspector.get_indexes("schedule_entries")
     }
     with engine.connect() as connection:
-        assert connection.scalar(text(
-            "SELECT count(*) FROM schedule_entries WHERE id = 'kept-series-row'"
-        )) == 1
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM schedule_entries WHERE id = 'kept-series-row'")
+            )
+            == 1
+        )
 
 
 def test_inventory_photo_cleanup_migration_is_additive(sqlite_database_url, monkeypatch):
@@ -389,12 +419,18 @@ def test_claim_and_message_visibility_columns(sqlite_database_url, monkeypatch):
     assert "visibility" in message
 
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT state FROM tracker_claims WHERE issue_key = 'SDCFLEETOPS-1'")
-        ).scalar_one() == "active"
-        assert connection.execute(
-            text("SELECT visibility FROM task_messages WHERE id = 'message-1'")
-        ).scalar_one() == "participants"
+        assert (
+            connection.execute(
+                text("SELECT state FROM tracker_claims WHERE issue_key = 'SDCFLEETOPS-1'")
+            ).scalar_one()
+            == "active"
+        )
+        assert (
+            connection.execute(
+                text("SELECT visibility FROM task_messages WHERE id = 'message-1'")
+            ).scalar_one()
+            == "participants"
+        )
 
     claim_foreign_keys = {
         tuple(foreign_key["constrained_columns"]): foreign_key
@@ -424,16 +460,16 @@ def test_audit_remediation_models_support_atomic_claims_and_bounded_cleanup():
         "ix_tracker_notification_lease"
     }
 
-    incident_indexes = {
-        index.name: index for index in system_incident_occurrence.__table__.indexes
-    }
+    incident_indexes = {index.name: index for index in system_incident_occurrence.__table__.indexes}
     assert set(incident_indexes) == {
         "uq_system_incident_active_key",
         "ix_system_incident_cleanup",
     }
     assert incident_indexes["uq_system_incident_active_key"].unique
     assert (
-        str(incident_indexes["uq_system_incident_active_key"].dialect_options["postgresql"]["where"])
+        str(
+            incident_indexes["uq_system_incident_active_key"].dialect_options["postgresql"]["where"]
+        )
         == "resolved_at IS NULL"
     )
 
@@ -476,8 +512,7 @@ def test_audit_remediation_state_upgrade_and_downgrade(sqlite_database_url, monk
         "ix_auth_throttle_expiry"
     }
     assert {
-        constraint["name"]
-        for constraint in inspector.get_check_constraints("auth_throttle_states")
+        constraint["name"] for constraint in inspector.get_check_constraints("auth_throttle_states")
     } == {"ck_auth_throttle_failure_count", "ck_auth_throttle_key_hash"}
     assert compare_metadata(MigrationContext.configure(engine.connect()), Base.metadata) == []
 
@@ -925,9 +960,9 @@ def test_models_match_required_schema():
         "last_seen_at",
         "last_ip",
         "last_device",
-            "last_location",
-            "timezone",
-        }
+        "last_location",
+        "timezone",
+    }
     assert set(AuthSession.__table__.columns.keys()) == {
         "id",
         "user_id",

@@ -38,7 +38,9 @@ def list_schedules(
     owner_user_id: int | None = None,
     start_at: datetime | None = Query(default=None),
     end_at: datetime | None = Query(default=None),
-    limit: int = Query(default=schedules.SCHEDULE_PAGE_LIMIT, ge=1, le=schedules.SCHEDULE_PAGE_LIMIT),
+    limit: int = Query(
+        default=schedules.SCHEDULE_PAGE_LIMIT, ge=1, le=schedules.SCHEDULE_PAGE_LIMIT
+    ),
     after_start_at: datetime | None = Query(default=None),
     after_id: str | None = Query(default=None, min_length=1, max_length=64),
     user: User = Depends(require_user),

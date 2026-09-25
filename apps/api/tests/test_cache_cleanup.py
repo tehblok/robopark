@@ -556,26 +556,48 @@ def test_uploaded_attachment_metadata_survives_transient_unlink_failure(
     cutoff = datetime(2026, 9, 15, tzinfo=UTC).timestamp()
     old = cutoff - 31 * 86400
     message = TaskMessage(
-        id="retry-message", issue_key="ROBOPARK-1", kind="system", author_name="system",
-        text="audit", sync_state="synced", created_at=old, updated_at=old,
+        id="retry-message",
+        issue_key="ROBOPARK-1",
+        kind="system",
+        author_name="system",
+        text="audit",
+        sync_state="synced",
+        created_at=old,
+        updated_at=old,
     )
     action = ReliableAction(
-        id="retry-attachment", actor_user_id=seed_mechanic.id,
-        resource_type="tracker_issue", resource_id="ROBOPARK-1", action="attach",
-        idempotency_key="retry-attachment-0001", payload_hash="0" * 64, payload_json="{}",
-        state="succeeded", result_json='{"attachment_id":"remote","external_id":"comment"}',
-        next_attempt_at=0, created_at=old, updated_at=old,
+        id="retry-attachment",
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-1",
+        action="attach",
+        idempotency_key="retry-attachment-0001",
+        payload_hash="0" * 64,
+        payload_json="{}",
+        state="succeeded",
+        result_json='{"attachment_id":"remote","external_id":"comment"}',
+        next_attempt_at=0,
+        created_at=old,
+        updated_at=old,
     )
     db_session.add_all([message, action])
     db_session.flush()
     message.action_id = action.id
     blob = tmp_path / "retry-blob"
     blob.write_bytes(b"old")
-    db_session.add(TaskAttachment(
-        id=action.id, message_id=message.id, blob_name=blob.name, original_name="old.png",
-        mime_type="image/png", size_bytes=3, sha256="0" * 64, created_at=old,
-        uploaded_at=cutoff - 8 * 86400,
-    ))
+    db_session.add(
+        TaskAttachment(
+            id=action.id,
+            message_id=message.id,
+            blob_name=blob.name,
+            original_name="old.png",
+            mime_type="image/png",
+            size_bytes=3,
+            sha256="0" * 64,
+            created_at=old,
+            uploaded_at=cutoff - 8 * 86400,
+        )
+    )
     db_session.commit()
     monkeypatch.setattr(cache_cleanup, "staged_attachments_root", lambda: tmp_path)
     real_unlink = cache_cleanup.unlink_unchanged

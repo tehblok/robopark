@@ -176,9 +176,7 @@ class PrivilegedRecoveryCode(Base):
     __table_args__ = (UniqueConstraint("user_id", "code_hash", name="uq_recovery_user_code"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     code_hash: Mapped[str] = mapped_column(String(64))
     hash_version: Mapped[str] = mapped_column(
         String(32), default="scrypt-v1", server_default="legacy-hmac-v1"
@@ -220,9 +218,7 @@ class PrivilegedRecoveryReset(Base):
 
 class PrivilegedRecoveryResetCode(Base):
     __tablename__ = "privileged_recovery_reset_codes"
-    __table_args__ = (
-        UniqueConstraint("reset_id", "code_hash", name="uq_recovery_reset_code"),
-    )
+    __table_args__ = (UniqueConstraint("reset_id", "code_hash", name="uq_recovery_reset_code"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     reset_id: Mapped[str] = mapped_column(
@@ -582,9 +578,7 @@ class InventoryPhotoCleanup(Base):
     storage_key: Mapped[str] = mapped_column(String(128), primary_key=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     last_error: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

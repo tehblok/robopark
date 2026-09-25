@@ -59,9 +59,15 @@ def eligible_recipients(event: RoutingEvent, at: datetime) -> list[User]:
     result: list[User] = []
     after_id = 0
     while True:
-        query = select(User).join(Role).where(
-            Role.slug.in_(roles), User.access_status == AccessStatus.approved.value,
-            User.is_active.is_(True), User.id > after_id,
+        query = (
+            select(User)
+            .join(Role)
+            .where(
+                Role.slug.in_(roles),
+                User.access_status == AccessStatus.approved.value,
+                User.is_active.is_(True),
+                User.id > after_id,
+            )
         )
         if event.target_user_ids is not None:
             query = query.where(User.id.in_(event.target_user_ids))
@@ -107,27 +113,65 @@ def _eligible_recipient_batch(
     series_tail = aliased(ScheduleEntry)
     for (day_start, day_end), owner_ids in day_groups.items():
         pattern_span = and_(
-            ScheduleEntry.series_id.is_not(None), ScheduleEntry.start_at < day_end,
-            select(series_tail.id).where(
+            ScheduleEntry.series_id.is_not(None),
+            ScheduleEntry.start_at < day_end,
+            select(series_tail.id)
+            .where(
                 series_tail.series_id == ScheduleEntry.series_id,
                 series_tail.owner_user_id == ScheduleEntry.owner_user_id,
                 series_tail.end_at > day_start,
-            ).limit(1).exists(),
+            )
+            .limit(1)
+            .exists(),
         )
-        day_predicates.append(and_(ScheduleEntry.owner_user_id.in_(owner_ids), or_(
-            and_(ScheduleEntry.start_at < day_end, ScheduleEntry.end_at > day_start),
-            pattern_span,
-        )))
+        day_predicates.append(
+            and_(
+                ScheduleEntry.owner_user_id.in_(owner_ids),
+                or_(
+                    and_(ScheduleEntry.start_at < day_end, ScheduleEntry.end_at > day_start),
+                    pattern_span,
+                ),
+            )
+        )
     park_filter = ScheduleEntry.park_id == event.park_id if event.park_id is not None else True
     state_rows = db.execute(
         select(
             ScheduleEntry.owner_user_id,
-            func.max(case((and_(ScheduleEntry.kind == "shift", ScheduleEntry.start_at <= at, ScheduleEntry.end_at > at), 1), else_=0)),
-            func.max(case((and_(ScheduleEntry.kind.in_(("vacation", "sick")), ScheduleEntry.start_at <= at, ScheduleEntry.end_at > at), 1), else_=0)),
+            func.max(
+                case(
+                    (
+                        and_(
+                            ScheduleEntry.kind == "shift",
+                            ScheduleEntry.start_at <= at,
+                            ScheduleEntry.end_at > at,
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+            func.max(
+                case(
+                    (
+                        and_(
+                            ScheduleEntry.kind.in_(("vacation", "sick")),
+                            ScheduleEntry.start_at <= at,
+                            ScheduleEntry.end_at > at,
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
             func.count(ScheduleEntry.id),
-        ).where(park_filter, or_(*day_predicates)).group_by(ScheduleEntry.owner_user_id)
+        )
+        .where(park_filter, or_(*day_predicates))
+        .group_by(ScheduleEntry.owner_user_id)
     ).all()
-    states = {owner: (bool(shift), bool(leave), bool(covered)) for owner, shift, leave, covered in state_rows}
+    states = {
+        owner: (bool(shift), bool(leave), bool(covered))
+        for owner, shift, leave, covered in state_rows
+    }
     return [
         user
         for user in users
@@ -448,9 +492,7 @@ def create_bulk(db: Session, actor: User, payload: ScheduleBulkCreate) -> list[d
 
 
 def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> list[dict]:
-    if actor.role == "admin" or (
-        actor.role != "royal" and payload.owner_user_ids != [actor.id]
-    ):
+    if actor.role == "admin" or (actor.role != "royal" and payload.owner_user_ids != [actor.id]):
         raise PermissionError
     on_days, cycle_days = {
         "none": (1, None),
@@ -528,9 +570,7 @@ def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> 
                         start_at=start_at,
                         end_at=end_at,
                         source=(
-                            "royal"
-                            if actor.role == "royal" and owner_id != actor.id
-                            else "self"
+                            "royal" if actor.role == "royal" and owner_id != actor.id else "self"
                         ),
                         series_id=series_id,
                         created_by_user_id=actor.id,

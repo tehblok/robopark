@@ -83,7 +83,9 @@ def _bucket(now: datetime) -> datetime:
     return datetime.fromtimestamp(int(now.timestamp() // BUCKET_SECONDS) * BUCKET_SECONDS, UTC)
 
 
-def heartbeat(db: Session, user: User, *, now: datetime | None = None, timezone: str | None = None) -> None:
+def heartbeat(
+    db: Session, user: User, *, now: datetime | None = None, timezone: str | None = None
+) -> None:
     current = now or datetime.now(UTC)
     if timezone is not None:
         user.timezone = timezone
