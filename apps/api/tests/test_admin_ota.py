@@ -10,8 +10,12 @@ from conftest import login_as
 from robopark_api.services.ops.ota_uploads import OtaUploadError, OtaUploadStore
 
 
-def ota_bytes(version="0.2.0-rc.7") -> bytes:
-    payload = b"print('ota')\n"
+def ota_bytes(
+    version="0.2.0-rc.7",
+    *,
+    payload: bytes = b"print('ota')\n",
+    compression: int = zipfile.ZIP_STORED,
+) -> bytes:
     manifest = {
         "app_version": version,
         "changes": ["test"],
@@ -19,7 +23,7 @@ def ota_bytes(version="0.2.0-rc.7") -> bytes:
         "files": [{"path": "__main__.py", "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}],
         "format_version": 1,
         "git_sha": "a" * 40,
-        "max_expanded_bytes": 1024,
+        "max_expanded_bytes": max(1024, len(payload)),
         "migration_head": "0050_media_action_dependency",
         "required_free_bytes": 1,
         "requirements": {
@@ -31,13 +35,38 @@ def ota_bytes(version="0.2.0-rc.7") -> bytes:
     from io import BytesIO
 
     output = BytesIO()
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as archive:
+    with zipfile.ZipFile(output, "w", compression) as archive:
         archive.writestr("__main__.py", payload)
         archive.writestr(
             "manifest.json",
             json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode(),
         )
     return output.getvalue()
+
+
+def test_store_rejects_zip_bomb_before_staging(tmp_path):
+    content = ota_bytes(
+        payload=b"0" * (1024 * 1024),
+        compression=zipfile.ZIP_DEFLATED,
+    )
+    digest = hashlib.sha256(content).hexdigest()
+    store = OtaUploadStore(
+        tmp_path / "state",
+        tmp_path / "host",
+        chunk_bytes=len(content),
+    )
+    upload = store.create(
+        actor_id=7,
+        filename="compressed.ota",
+        size=len(content),
+        sha256=digest,
+    )
+    store.append(upload.upload_id, actor_id=7, offset=0, chunk=content)
+
+    with pytest.raises(OtaUploadError, match="^ota_invalid_container$"):
+        store.finalize(upload.upload_id, actor_id=7)
+
+    assert not (tmp_path / "host" / f"{upload.upload_id}.ota").exists()
 
 
 def test_store_resumes_exact_offsets_deduplicates_chunks_and_finalizes(tmp_path):

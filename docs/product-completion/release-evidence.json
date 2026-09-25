@@ -6,7 +6,7 @@
   "gates": {
     "ota": {
       "command": "./scripts/verify.sh ota",
-      "result": "85 passed",
+      "result": "86 passed",
       "status": "PASS"
     },
     "fast": {

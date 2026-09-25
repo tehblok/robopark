@@ -20,6 +20,10 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_CHUNK_BYTES = 4 * 1024 * 1024
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_MEMBERS = 20_000
+MAX_FILE_BYTES = 768 * 1024 * 1024
+MAX_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 250
+VERIFY_CHUNK_BYTES = 1024 * 1024
 
 
 class OtaUploadError(ValueError):
@@ -53,6 +57,17 @@ def _safe_member(name: str) -> str:
     return name
 
 
+def _stream_member_digest(source, *, limit: int) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    total = 0
+    while chunk := source.read(VERIFY_CHUNK_BYTES):
+        total += len(chunk)
+        if total > limit:
+            raise OtaUploadError("ota_invalid_container")
+        digest.update(chunk)
+    return total, digest.hexdigest()
+
+
 def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     try:
         with zipfile.ZipFile(path) as archive:
@@ -67,7 +82,19 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]
                 raise OtaUploadError("ota_invalid_container")
             for info in infos:
                 mode = info.external_attr >> 16
-                if info.flag_bits & 1 or stat.S_IFMT(mode) not in {0, stat.S_IFREG}:
+                if (
+                    info.flag_bits & 1
+                    or stat.S_IFMT(mode) not in {0, stat.S_IFREG}
+                    or info.file_size > MAX_FILE_BYTES
+                    or (
+                        info.file_size
+                        and (
+                            info.compress_size <= 0
+                            or info.file_size
+                            > info.compress_size * MAX_COMPRESSION_RATIO
+                        )
+                    )
+                ):
                     raise OtaUploadError("ota_invalid_container")
             info = archive.getinfo("manifest.json")
             if info.file_size > MAX_MANIFEST_BYTES:
@@ -89,6 +116,7 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]
             changes = manifest["changes"]
             compatible = manifest["compatible_from"]
             files = manifest["files"]
+            max_expanded = manifest["max_expanded_bytes"]
             if (
                 manifest["format_version"] != 1
                 or not isinstance(version, str)
@@ -96,6 +124,8 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]
                 or not isinstance(changes, list)
                 or not isinstance(compatible, list)
                 or not isinstance(files, list)
+                or type(max_expanded) is not int
+                or not 0 < max_expanded <= MAX_EXPANDED_BYTES
             ):
                 raise OtaUploadError("ota_manifest_invalid")
             declared = {}
@@ -105,8 +135,8 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]
                 member = _safe_member(row["path"])
                 if (
                     member in declared
-                    or not isinstance(row["size"], int)
-                    or row["size"] < 0
+                    or type(row["size"]) is not int
+                    or not 0 <= row["size"] <= MAX_FILE_BYTES
                     or not isinstance(row["sha256"], str)
                     or re.fullmatch(r"[a-f0-9]{64}", row["sha256"]) is None
                 ):
@@ -114,9 +144,18 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]
                 declared[member] = row
             if set(declared) != set(names) - {"manifest.json"} or "__main__.py" not in declared:
                 raise OtaUploadError("ota_manifest_invalid")
+            if sum(archive.getinfo(member).file_size for member in declared) > max_expanded:
+                raise OtaUploadError("ota_manifest_invalid")
             for member, row in declared.items():
-                payload = archive.read(member)
-                if len(payload) != row["size"] or hashlib.sha256(payload).hexdigest() != row["sha256"]:
+                member_info = archive.getinfo(member)
+                if member_info.file_size != row["size"]:
+                    raise OtaUploadError("ota_hash_mismatch")
+                with archive.open(member_info, "r") as source:
+                    actual_size, digest = _stream_member_digest(
+                        source,
+                        limit=MAX_FILE_BYTES,
+                    )
+                if actual_size != row["size"] or digest != row["sha256"]:
                     raise OtaUploadError("ota_hash_mismatch")
             return version, tuple(str(item)[:500] for item in changes[:100]), tuple(compatible[:256])
     except OtaUploadError:
