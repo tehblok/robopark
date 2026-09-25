@@ -6,11 +6,10 @@ import { LoadingState } from '../../design-system/feedback/AsyncState'
 import { systemClient, type HostCapabilities, type SystemClient, type SystemHistory, type SystemJob, type SystemSummary } from '../../opsApi'
 import { SystemMetrics } from './SystemMetrics'
 import { SystemOperations } from './SystemOperations'
+import { clearOperationReservation, NOT_FOUND_GRACE_MS, readOperationReservation } from './operationReservation'
 import './system.css'
 
 const POLL_MS = 30_000
-const OPERATION_KEY = 'robopark:system-operation'
-
 function reconcilingJob(id: string): SystemJob {
   return { id, kind: '', state: 'queued', phase: 'Проверяем получение запроса', progress_percent: 0, error: null }
 }
@@ -23,12 +22,13 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
   const [history, setHistory] = useState<SystemHistory | null>(null)
   const [capabilities, setCapabilities] = useState<HostCapabilities | null>(null)
   const [job, setJob] = useState<SystemJob | null>(() => {
-    const stored = localStorage.getItem(OPERATION_KEY)
-    return stored ? reconcilingJob(stored) : null
+    const stored = readOperationReservation()
+    return stored ? reconcilingJob(stored.id) : null
   })
   const [failed, setFailed] = useState(false)
   const mounted = useRef(false)
   const pending = useRef<Promise<void> | null>(null)
+  const postingOperation = useRef<string | null>(null)
 
   const clearProtected = useCallback(() => {
     setSummary(null); setHistory(null); setCapabilities(null); setJob(null)
@@ -45,13 +45,19 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
     if (pending.current) return pending.current
     const work = (async () => {
       try {
-        const stored = royal ? localStorage.getItem(OPERATION_KEY) : null
+        const stored = royal ? readOperationReservation() : null
         const royalReads = royal
           ? Promise.all([
               client.getCapabilities(),
               stored
-                ? client.getOperation(stored).then(value => ({ state: 'found' as const, value })).catch(caught => {
-                    if (caught instanceof ApiError && caught.status === 404) return { state: 'absent' as const }
+                ? postingOperation.current === stored.id
+                  ? Promise.resolve({ state: 'posting' as const })
+                  : client.getOperation(stored.id).then(value => ({ state: 'found' as const, value })).catch(caught => {
+                    if (caught instanceof ApiError && caught.status === 404) {
+                      return Date.now() - stored.created_at >= NOT_FOUND_GRACE_MS
+                        ? { state: 'absent' as const }
+                        : { state: 'waiting' as const }
+                    }
                     throw caught
                   })
                 : Promise.resolve({ state: 'none' as const }),
@@ -66,10 +72,10 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
           setCapabilities(nextCapabilities ?? null)
           if (stored && operation.state === 'found') {
             setJob(operation.value)
-            if (operation.value.state === 'succeeded' || operation.value.state === 'failed') localStorage.removeItem(OPERATION_KEY)
+            if (operation.value.receipt_state === 'terminal' || operation.value.state === 'succeeded' || operation.value.state === 'failed') clearOperationReservation()
           } else if (stored && operation.state === 'absent') {
-            localStorage.removeItem(OPERATION_KEY)
-            setJob({ id: stored, kind: '', state: 'failed', phase: 'Запрос не получен', progress_percent: 100, error: null })
+            clearOperationReservation()
+            setJob({ id: stored.id, kind: '', state: 'failed', phase: 'Запрос не получен', progress_percent: 100, error: null })
           }
         }
       } catch (caught) {
@@ -108,6 +114,6 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
   return <PageShell title="Система" subtitle="Состояние Robopark и управляемые операции без доступа к командной строке.">
     {failed && <Alert tone="warning">Не удалось получить свежие данные. Повторная проверка продолжится после восстановления связи.</Alert>}
     {!summary || !history ? <LoadingState label="Загружаем состояние системы" variant="page" /> : <SystemMetrics history={history} summary={summary} />}
-    {royal && capabilities && <SystemOperations key={capabilities.revision ?? capabilities.generated_at} capabilities={capabilities} client={client} job={job} onAccepted={setJob} onRefreshCapabilities={refreshCapabilities} />}
+    {royal && capabilities && <SystemOperations key={capabilities.revision ?? capabilities.generated_at} capabilities={capabilities} client={client} job={job} onAccepted={setJob} onPostingChange={id => { postingOperation.current = id }} onRefreshCapabilities={refreshCapabilities} />}
   </PageShell>
 }

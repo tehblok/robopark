@@ -5,6 +5,7 @@ import { Button } from '../../design-system/actions/Button'
 import { Dialog } from '../../design-system/overlays/Dialog'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { HOST_OPERATION_KINDS, type HostCapabilities, type HostOperationKind, type HostOperationPayload, type SystemClient, type SystemJob } from '../../opsApi'
+import { readOperationReservation, writeOperationReservation } from './operationReservation'
 
 const labels: Record<HostOperationKind, string> = {
   'release-update': 'Обновить Robopark', reinstall: 'Переустановить Robopark', rollback: 'Откатить версию',
@@ -29,9 +30,10 @@ function payloadFor(kind: HostOperationKind, operationId: string, capabilityRevi
   return common
 }
 
-export function SystemOperations({ client, capabilities, job, onAccepted, onRefreshCapabilities }: {
+export function SystemOperations({ client, capabilities, job, onAccepted, onPostingChange, onRefreshCapabilities }: {
   client: SystemClient; capabilities: HostCapabilities; job: SystemJob | null
-  onAccepted: (job: SystemJob) => void; onRefreshCapabilities: () => Promise<void>
+  onAccepted: (job: SystemJob) => void; onPostingChange: (operationId: string | null) => void
+  onRefreshCapabilities: () => Promise<void>
 }) {
   const [selected, setSelected] = useState<HostOperationKind | null>(null)
   const [confirmation, setConfirmation] = useState('')
@@ -42,7 +44,7 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [fresh, setFresh] = useState(capabilities.state === 'ready' && typeof capabilities.expires_at === 'string')
-  const [reservedOperationId, setReservedOperationId] = useState(() => localStorage.getItem('robopark:system-operation'))
+  const [reservedOperationId, setReservedOperationId] = useState(() => readOperationReservation()?.id ?? null)
   const initialFocus = useRef<HTMLInputElement>(null)
   const phrase = selected ? phrases[selected] : ''
   const revision = fresh ? capabilities.revision : null
@@ -86,13 +88,14 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
   }, [capabilities.expires_at, capabilities.state])
 
   useEffect(() => {
-    if (job && (job.state === 'succeeded' || job.state === 'failed')) setReservedOperationId(null)
+    if (job && (job.receipt_state === 'terminal' || job.state === 'succeeded' || job.state === 'failed')) setReservedOperationId(null)
   }, [job])
 
   const submit = async () => {
     if (!selected || !revision || !valid || busy || active || Date.parse(capabilities.expires_at ?? '') <= Date.now()) return
     const operationId = crypto.randomUUID()
     const operationKind = selected
+    const reservedAt = Date.now()
     setBusy(true); setError('')
     try {
       const authorization = await client.reauthorize({
@@ -100,17 +103,20 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
         capability_revision: revision,
       })
       try {
-        localStorage.setItem('robopark:system-operation', operationId)
+        writeOperationReservation({ id: operationId, kind: operationKind, created_at: reservedAt, phase: 'posting' })
         setReservedOperationId(operationId)
+        onPostingChange(operationId)
       } catch {
         setError('Не удалось безопасно сохранить идентификатор операции. Запуск отменён.')
         return
       }
       try {
         const next = await client.startOperation(payloadFor(operationKind, operationId, revision, confirmation, deviceUuid, backupId), authorization.token)
+        writeOperationReservation({ id: operationId, kind: operationKind, created_at: reservedAt, phase: 'reconciling' })
         onAccepted(next)
         setSelected(null)
       } catch {
+        writeOperationReservation({ id: operationId, kind: operationKind, created_at: reservedAt, phase: 'reconciling' })
         onAccepted({ id: operationId, kind: operationKind, state: 'queued', phase: 'Проверяем получение запроса', progress_percent: 0, error: null })
         setSelected(null)
       }
@@ -120,7 +126,7 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
         setConfirmation(''); setPassword(''); setCode('')
         await onRefreshCapabilities()
       } else setError('Операция не запущена. Проверьте пароль и одноразовый код.')
-    } finally { setBusy(false) }
+    } finally { onPostingChange(null); setBusy(false) }
   }
 
   return <section aria-label="Управляемые операции" className="rp-system-operations">

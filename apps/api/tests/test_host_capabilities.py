@@ -234,7 +234,9 @@ def test_supported_api_operation_requires_and_consumes_one_bound_grant(
     assert request["authorization"]["consumed"] is True
     db_session.expire_all()
     assert db_session.scalars(select(PrivilegedReauthorization)).one().used_at is not None
-    assert client.post("/admin/ops/operations", json=payload, headers=headers).status_code == 401
+    replay = client.post("/admin/ops/operations", json=payload, headers=headers)
+    assert replay.status_code == 200
+    assert replay.json()["id"] == identity
 
 
 def test_capability_drift_after_credentials_denies_and_audits_without_issuing_grant(

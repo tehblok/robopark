@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../../auth-context'
 import { ApiError, type User } from '../../api'
 import { SystemPage } from './SystemPage'
-import type { HostCapabilities, SystemClient, SystemSummary } from '../../opsApi'
+import type { HostCapabilities, SystemClient, SystemJob, SystemSummary } from '../../opsApi'
+import { readOperationReservation, writeOperationReservation } from './operationReservation'
 
 const revision = 'a'.repeat(64)
 const kinds = [
@@ -117,7 +118,7 @@ describe('SystemPage', () => {
     expect(reauth.operation_id).toMatch(/^[a-f0-9-]{36}$/)
     expect(operation[0]).toEqual({ operation_id: reauth.operation_id, kind: 'diagnostics', capability_revision: revision, confirmation: 'ЗАПУСТИТЬ DIAGNOSTICS' })
     expect(operation[1]).toBe('reauth-token')
-    expect(localStorage.getItem('robopark:system-operation')).toBe(reauth.operation_id)
+    expect(readOperationReservation()?.id).toBe(reauth.operation_id)
   })
 
   it('refreshes capabilities and never submits after revision drift', async () => {
@@ -167,7 +168,7 @@ describe('SystemPage', () => {
     let submittedId = ''
     const startOperation = vi.fn().mockImplementation(async payload => {
       submittedId = payload.operation_id
-      expect(localStorage.getItem('robopark:system-operation')).toBe(submittedId)
+      expect(readOperationReservation()?.id).toBe(submittedId)
       throw failure
     })
     const api = client({ startOperation })
@@ -180,7 +181,7 @@ describe('SystemPage', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Запустить' }))
     await waitFor(() => expect(startOperation).toHaveBeenCalledOnce())
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Подтвердить операцию' })).not.toBeInTheDocument())
-    expect(localStorage.getItem('robopark:system-operation')).toBe(submittedId)
+    expect(readOperationReservation()?.id).toBe(submittedId)
     first.unmount()
 
     const resumed = client({
@@ -191,6 +192,28 @@ describe('SystemPage', () => {
     expect(await screen.findByRole('progressbar', { name: 'Прогресс операции' })).toHaveAttribute('value', '25')
     expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeDisabled()
     expect(startOperation).toHaveBeenCalledOnce()
+  })
+
+  it('does not reconcile a reserved UUID while its POST is still unresolved', async () => {
+    let release: ((value: SystemJob) => void) | undefined
+    const getOperation = vi.fn().mockRejectedValue(new ApiError(404, 'operation_not_found'))
+    const startOperation = vi.fn().mockImplementation(() => new Promise<SystemJob>(resolve => { release = resolve }))
+    const api = client({ getOperation, startOperation })
+    render(tree('royal', api))
+    fireEvent.click(await screen.findByRole('button', { name: 'Собрать диагностику' }))
+    const dialog = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
+    fireEvent.change(within(dialog).getByLabelText('Введите ЗАПУСТИТЬ DIAGNOSTICS'), { target: { value: 'ЗАПУСТИТЬ DIAGNOSTICS' } })
+    fireEvent.change(within(dialog).getByLabelText('Пароль'), { target: { value: 'secret' } })
+    fireEvent.change(within(dialog).getByLabelText('Код TOTP или восстановления'), { target: { value: '123456' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Запустить' }))
+    await waitFor(() => expect(startOperation).toHaveBeenCalledOnce())
+
+    fireEvent(window, new Event('focus'))
+    await act(async () => { await Promise.resolve() })
+    expect(getOperation).not.toHaveBeenCalled()
+    expect(readOperationReservation()).not.toBeNull()
+
+    release?.({ id: 'accepted', kind: 'diagnostics', state: 'running', phase: 'awaiting_host', progress_percent: 0, error: null })
   })
 
   it('keeps an unknown reservation locked, then clears it only after authoritative exact 404', async () => {
@@ -211,15 +234,17 @@ describe('SystemPage', () => {
     fireEvent.change(within(dialog).getByLabelText('Код TOTP или восстановления'), { target: { value: '123456' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Запустить' }))
     expect(await screen.findByText('Проверяем получение запроса')).toBeVisible()
-    expect(localStorage.getItem('robopark:system-operation')).toBe(submittedId)
+    expect(readOperationReservation()?.id).toBe(submittedId)
     expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeDisabled()
 
     fireEvent(window, new Event('focus'))
     await waitFor(() => expect(getOperation).toHaveBeenCalledWith(submittedId))
-    expect(localStorage.getItem('robopark:system-operation')).toBe(submittedId)
+    expect(readOperationReservation()?.id).toBe(submittedId)
     expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeDisabled()
     expect(startOperation).toHaveBeenCalledOnce()
 
+    const reservation = readOperationReservation()
+    if (reservation) writeOperationReservation({ ...reservation, created_at: 0 })
     fireEvent(window, new Event('focus'))
     expect(await screen.findByText('Запрос не получен')).toBeVisible()
     await waitFor(() => expect(localStorage.getItem('robopark:system-operation')).toBeNull())
@@ -242,7 +267,7 @@ describe('SystemPage', () => {
   })
 
   it('resumes progress by stored operation UUID after reload', async () => {
-    localStorage.setItem('robopark:system-operation', '11111111-1111-4111-8111-111111111111')
+    writeOperationReservation({ id: '11111111-1111-4111-8111-111111111111', kind: 'diagnostics', created_at: 0, phase: 'reconciling' })
     const api = client({ getOperation: vi.fn().mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', kind: 'diagnostics', state: 'running', phase: 'executing', progress_percent: 50, error: null }) })
     render(tree('royal', api))
     expect(await screen.findByRole('progressbar', { name: 'Прогресс операции' })).toHaveAttribute('value', '50')

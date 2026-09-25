@@ -335,7 +335,7 @@ def test_default_cli_consumer_verifies_backup_with_external_runtime_key(host_pat
         backups / f"backup-{_BACKUP_UUID}.rpb",
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0047_capability_revision",
+        schema_version="0048_host_operation_status",
     )
     device = host_paths.root / "dev/fake-usb"
     device.parent.mkdir(parents=True)
@@ -414,7 +414,7 @@ def _production_backup_verify_fixture(host_paths):
             artifact,
             recovery_key=key,
             app_version="0.2.0-rc.6",
-            schema_version="0047_capability_revision",
+            schema_version="0048_host_operation_status",
         )
         artifact.chmod(0o600)
         return artifact
@@ -974,7 +974,7 @@ def test_encrypted_backup_never_contains_key_and_restore_requires_external_key(t
         artifact,
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0047_capability_revision",
+        schema_version="0048_host_operation_status",
     )
     assert created["verified"] is False
     metadata = verify_encrypted_backup(artifact, recovery_key=key)
@@ -1006,7 +1006,7 @@ def test_restore_rejects_unverified_or_incompatible_backup(tmp_path):
         artifact,
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0047_capability_revision",
+        schema_version="0048_host_operation_status",
     )
     receipt = verify_encrypted_backup(artifact, recovery_key=key)
     with pytest.raises(ReleaseError, match="verified_backup_required"):
@@ -1058,7 +1058,7 @@ def test_backup_verification_rejects_bounded_archive_limits(tmp_path, limits):
         artifact,
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0047_capability_revision",
+        schema_version="0048_host_operation_status",
     )
 
     with pytest.raises(ReleaseError, match="backup_archive_limit"):
@@ -1082,7 +1082,7 @@ def test_backup_verification_streams_without_extractall(tmp_path, monkeypatch):
         artifact,
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0047_capability_revision",
+        schema_version="0048_host_operation_status",
     )
 
     def forbidden(*args, **kwargs):
@@ -1120,7 +1120,7 @@ def test_backup_zip_directory_bounds_reject_before_zipfile_allocation(
         artifact,
         recovery_key=key,
         app_version="0.2.0-rc.6",
-        schema_version="0047_capability_revision",
+        schema_version="0048_host_operation_status",
     )
 
     def forbidden(*args, **kwargs):

@@ -35,6 +35,7 @@ from robopark_api.services.diagnostic_unknowns import prune_diagnostic_unknowns
 from robopark_api.services.live_merge import get_live_merge_store
 from robopark_api.services.ops.context import resolved_ops_dir
 from robopark_api.services.ops.maintenance import host_maintenance_active
+from robopark_api.services.ops.operation_registry import prune as prune_operation_registry
 from robopark_api.services.report_attachments import (
     prune_deleted_report_files,
     reconcile_pending_report_deletions,
@@ -510,6 +511,7 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         sync_receipts_removed = prune_offline_sync_receipts(db, now=current.timestamp())
         throttle_states_removed = prune_auth_throttle_states(db, now=current)
         incident_occurrences_removed = prune_system_incident_occurrences(db, now=current)
+        operation_receipts_removed = prune_operation_registry(db, now=current)
         prune_observability(db, now=current)
         notification_cleanup = push.prune_notification_data(db, now=current)
         schedules_removed = schedules.prune_old_entries(db, now=current)
@@ -540,6 +542,8 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         logger.info(
             "Pruned %s resolved system incident occurrence(s)", incident_occurrences_removed
         )
+    if operation_receipts_removed:
+        logger.info("Pruned %s host operation receipt(s)", operation_receipts_removed)
     if notification_cleanup["subscriptions"] or notification_cleanup["notifications"]:
         logger.info("Pruned notification data: %s", notification_cleanup)
     if schedules_removed:

@@ -9,9 +9,9 @@ import pytest
 
 from conftest import login_as, role_id_for
 from robopark_api.models import AuditLog, User
-from robopark_api.security import hash_password, hash_session_token
+from robopark_api.security import hash_password
 from robopark_api.services import rbac
-from robopark_api.services.ops import host_bridge
+from robopark_api.services.ops import host_bridge, operation_registry
 from robopark_api.services.ops.archives import KIND_RELEASE, build_archive
 from robopark_api.services.ops.context import build_ops_context
 from robopark_api.services.ops.jobs import load_job, new_job, save_job
@@ -86,12 +86,11 @@ def test_installed_context_has_separate_host_root(installed, test_settings):
     assert ctx.config_targets == {}
 
 
-def test_exact_operation_status_is_royal_session_bound_and_sanitized(
-    client, seed_royal, installed, test_settings,
+def test_exact_operation_status_is_actor_bound_and_sanitized(
+    client, seed_royal, installed, test_settings, db_session,
 ):
     login_as(client, "royal", "secret")
-    raw_session = client.cookies.get(test_settings.session_cookie_name)
-    job = new_job("diagnostics", exempt_token_hash=hash_session_token(raw_session))
+    job = new_job("diagnostics", exempt_token_hash="old-session")
     job.id = "11111111-1111-4111-8111-111111111111"
     job.state = "running"
     job.phase = "awaiting_host"
@@ -102,12 +101,15 @@ def test_exact_operation_status_is_royal_session_bound_and_sanitized(
         "host_result": {"performed": ["restart_tuna", "SECRET"]},
     }
     save_job(Path(test_settings.ops_dir), job)
+    operation_registry.reserve(
+        db_session, operation_id=job.id, actor_user_id=seed_royal.id, kind=job.kind,
+    )
 
     response = client.get(f"/admin/ops/operations/{job.id}")
 
     assert response.status_code == 200
     assert response.json() == {
-        "id": job.id, "kind": "diagnostics", "state": "running",
+        "id": job.id, "kind": "diagnostics", "receipt_state": "accepted", "state": "running",
         "phase": "awaiting_host", "error": None,
         "host_result": {"before": [], "after": [], "performed": ["restart_tuna"], "failed": [], "devices": []},
         "progress_percent": None,
@@ -118,7 +120,7 @@ def test_exact_operation_status_is_royal_session_bound_and_sanitized(
     saved = load_job(Path(test_settings.ops_dir))
     saved.exempt_token_hash = "different-session"
     save_job(Path(test_settings.ops_dir), saved)
-    assert client.get(f"/admin/ops/operations/{job.id}").status_code == 404
+    assert client.get(f"/admin/ops/operations/{job.id}").status_code == 200
 
 
 @pytest.mark.parametrize(

@@ -38,6 +38,7 @@ export type HostCapabilities = {
 }
 export type SystemJob = {
   id: string; kind: string; state: string; phase: string
+  receipt_state?: 'received' | 'accepted' | 'terminal'
   progress_percent: number | null; error: string | null
   host_result?: { devices?: Array<{ device_uuid: string; removable: boolean; mounted: boolean }> } | null
 }

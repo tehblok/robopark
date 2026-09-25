@@ -255,6 +255,45 @@ class PrivilegedAuthAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class HostOperationStatus(Base):
+    """Bounded, sanitized receipt for one client-generated host operation UUID."""
+
+    __tablename__ = "host_operation_status"
+    __table_args__ = (
+        CheckConstraint(
+            "receipt_state IN ('received', 'accepted', 'terminal')",
+            name="ck_host_operation_status_receipt_state",
+        ),
+        CheckConstraint(
+            "state IN ('queued', 'running', 'succeeded', 'failed')",
+            name="ck_host_operation_status_state",
+        ),
+        CheckConstraint(
+            "progress_percent IS NULL OR (progress_percent >= 0 AND progress_percent <= 100)",
+            name="ck_host_operation_status_progress",
+        ),
+        Index("ix_host_operation_status_actor_created", "actor_user_id", "created_at"),
+        Index("ix_host_operation_status_updated", "updated_at", "operation_id"),
+    )
+
+    operation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    actor_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(64))
+    receipt_state: Mapped[str] = mapped_column(String(16), default="received")
+    state: Mapped[str] = mapped_column(String(16), default="queued")
+    phase: Mapped[str] = mapped_column(String(64), default="request_received")
+    error: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    host_result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    progress_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class IpGeoCache(Base):
     __tablename__ = "ip_geo_cache"
 

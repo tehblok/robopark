@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import suppress
 from functools import partial
 from uuid import UUID
@@ -24,7 +25,7 @@ from sqlalchemy.orm import Session
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.deps import require_builtin_admin_or_royal, require_royal
-from robopark_api.models import User
+from robopark_api.models import HostOperationStatus, User
 from robopark_api.ops_schemas import (
     AvailableUpdateOut,
     GithubApprovalIn,
@@ -40,7 +41,7 @@ from robopark_api.ops_schemas import (
 from robopark_api.security import hash_session_token
 from robopark_api.services import audit, privileged_auth
 from robopark_api.services.login_throttle import client_ip
-from robopark_api.services.ops import host_bridge
+from robopark_api.services.ops import host_bridge, operation_registry
 from robopark_api.services.ops.archives import ArchiveError
 from robopark_api.services.ops.context import build_ops_context, resolved_ops_dir
 from robopark_api.services.ops.jobs import (
@@ -97,11 +98,29 @@ class OpsJobOut(BaseModel):
 class ExactOperationStatusOut(BaseModel):
     id: str
     kind: str
+    receipt_state: str
     state: str
     phase: str
     error: str | None
     host_result: HostResultOut | None = None
     progress_percent: int | None = None
+
+
+def _operation_out(row: HostOperationStatus) -> ExactOperationStatusOut:
+    projected = None
+    if row.host_result_json:
+        with suppress(ValueError):
+            projected = HostResultOut.model_validate(json.loads(row.host_result_json))
+    return ExactOperationStatusOut(
+        id=row.operation_id,
+        kind=row.kind,
+        receipt_state=row.receipt_state,
+        state=row.state,
+        phase=row.phase,
+        error=row.error,
+        host_result=projected,
+        progress_percent=row.progress_percent,
+    )
 
 
 def _token_hash(request: Request, settings: Settings) -> str:
@@ -255,35 +274,25 @@ def get_exact_operation(
     settings: Settings = Depends(get_settings),
 ) -> ExactOperationStatusOut:
     _reconcile_if_needed(settings)
-    job = load_job(resolved_ops_dir(settings))
-    host_request = job.extra.get("host_request") if job else None
-    request_actor = host_request.get("actor_user_id") if isinstance(host_request, dict) else None
-    found = bool(
-        job
-        and job.id == str(operation_id)
-        and request_actor == royal.id
-        and job.exempt_token_hash == _token_hash(request, settings)
-    )
+    row = db.get(HostOperationStatus, str(operation_id))
+    found = row is not None and row.actor_user_id == royal.id
     audit.record(
         db, action="admin.ops.operation.status", actor=royal,
         outcome=audit.OUTCOME_SUCCESS if found else audit.OUTCOME_DENIED,
         detail="found" if found else "not_found",
     )
-    if not found or job is None:
+    if not found or row is None:
         raise HTTPException(status_code=404, detail="operation_not_found")
-    progress = (None, None)
-    if settings.ops_host_root:
-        with suppress(host_bridge.BridgeError):
-            progress = host_bridge.update_progress(host_bridge.host_root(settings), job)
-    return ExactOperationStatusOut(
-        id=job.id,
-        kind=job.kind,
-        state=job.state,
-        phase=progress[0] or job.phase,
-        error=job.error,
-        host_result=public_result(job.extra.get("host_result")),
-        progress_percent=progress[1],
-    )
+    job = load_job(resolved_ops_dir(settings))
+    if job is not None and job.id == row.operation_id:
+        progress = (None, None)
+        if settings.ops_host_root:
+            with suppress(host_bridge.BridgeError):
+                progress = host_bridge.update_progress(host_bridge.host_root(settings), job)
+        row = operation_registry.update_from_job(
+            db, operation_id=row.operation_id, job=job, progress=progress,
+        )
+    return _operation_out(row)
 
 
 @router.get("/admin/ops/artifact")
@@ -506,7 +515,7 @@ def get_host_capabilities(
     return host_bridge.operation_capabilities(_bridge_root(settings))
 
 
-@router.post("/admin/ops/operations", response_model=OpsJobOut)
+@router.post("/admin/ops/operations", response_model=ExactOperationStatusOut)
 def post_host_operation(
     payload: HostOperationIn,
     request: Request,
@@ -514,11 +523,21 @@ def post_host_operation(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    root = _bridge_root(settings)
+    identity = str(payload.operation_id)
+    try:
+        receipt = operation_registry.reserve(
+            db, operation_id=identity, actor_user_id=royal.id, kind=payload.kind.value,
+        )
+    except operation_registry.OperationIdentityConflict as exc:
+        raise HTTPException(status_code=409, detail="duplicate_operation_id") from exc
+    except operation_registry.OperationRegistryFull as exc:
+        raise HTTPException(status_code=503, detail="operation_registry_full") from exc
+    if receipt.receipt_state != "received":
+        return _operation_out(receipt)
 
     def authorize():
         _require_privileged(
-            request, royal, db, settings, payload.kind.value, str(payload.operation_id),
+            request, royal, db, settings, payload.kind.value, identity,
             payload.capability_revision,
         )
         return {
@@ -526,14 +545,31 @@ def post_host_operation(
             "actor_user_id": royal.id, "consumed": True,
         }
 
-    def enqueue():
+    def enqueue(root):
         host_bridge.require_operation_capability(root, payload.kind)
         return host_bridge.enqueue_typed_operation(
             resolved_ops_dir(settings), root, payload.model_dump(mode="json"), royal.id,
             _token_hash(request, settings), authorize=authorize,
         )
 
-    return _job_out(_host_action(db, royal, "admin.ops." + payload.kind.value, enqueue))
+    try:
+        root = _bridge_root(settings)
+        job = _host_action(
+            db, royal, "admin.ops." + payload.kind.value, lambda: enqueue(root)
+        )
+    except HTTPException as exc:
+        current = load_job(resolved_ops_dir(settings))
+        if current is not None and current.id == identity:
+            receipt = operation_registry.update_from_job(
+                db, operation_id=identity, job=current,
+            )
+        else:
+            receipt = operation_registry.mark_rejected(
+                db, operation_id=identity, error=str(exc.detail),
+            )
+        raise
+    receipt = operation_registry.update_from_job(db, operation_id=identity, job=job)
+    return _operation_out(receipt)
 
 
 @router.get("/admin/ops/system-health", response_model=SystemHealthOut)
