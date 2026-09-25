@@ -21,6 +21,71 @@ function coordinator(db: Awaited<ReturnType<typeof openOfflineDb>>) {
 }
 
 describe('SyncEngine', () => {
+  it('atomically stores linked review media and action before starting upload', async () => {
+    const db = await openOfflineDb(scope)
+    const engine = new SyncEngine({
+      db, coordinator: coordinator(db), deviceId: 'phone',
+      uploadMedia: vi.fn(async () => {}),
+      sendBatch: vi.fn(async () => ({ results: [], deltas: {}, revisions: {}, revoked_scopes: [] })),
+    })
+    const review = {
+      ...input('review-linked'), action: 'submit_review',
+      payload: { media_id: 'media-linked' }, dependencies: ['media-linked'],
+    }
+
+    await engine.enqueueMedia({
+      id: 'media-linked', actionId: review.id, issueKey: 'TASK-1', name: 'robot.jpg',
+      blob: new Blob(['photo']), mimeType: 'image/jpeg', sha256: 'same-sha', sizeBytes: 5,
+    }, review)
+
+    expect(await db.getMedia('media-linked')).toMatchObject({ actionId: review.id, state: 'ready' })
+    expect(await db.getAction(review.id)).toMatchObject({ id: review.id, state: 'ready', idempotencyKey: review.idempotencyKey })
+    engine.dispose()
+  })
+
+  it('reuploads a deleted legacy upload and retries the same review action identity', async () => {
+    const db = await openOfflineDb(scope)
+    await db.putMedia({
+      id: 'media-legacy', actionId: 'review-legacy', issueKey: 'TASK-1', name: 'robot.jpg',
+      blob: new Blob(['photo']), mimeType: 'image/jpeg', sha256: 'same-sha', sizeBytes: 5,
+      state: 'confirmed', attempts: 0, createdAt: 10, updatedAt: 20,
+    })
+    await db.putAction({
+      ...input('review-legacy'), action: 'submit_review', idempotencyKey: 'stable-review-key',
+      payload: { media_id: 'media-legacy' }, state: 'ready', attempts: 0, createdAt: 10, updatedAt: 20,
+    })
+    const uploadMedia = vi.fn(async () => {})
+    const sent: SyncBatchRequest['actions'] = []
+    let attempt = 0
+    const engine = new SyncEngine({
+      db, coordinator: coordinator(db), deviceId: 'phone', uploadMedia,
+      scheduleRetry: vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>), random: () => 0,
+      sendBatch: async batch => {
+        sent.push(...batch.actions)
+        attempt += 1
+        return {
+          results: batch.actions.map(item => attempt === 1
+            ? { client_action_id: item.client_action_id, state: 'conflict' as const, code: 'media_dependency_pending', result: null }
+            : { client_action_id: item.client_action_id, state: 'confirmed' as const, code: null, result: {} }),
+          deltas: {}, revisions: {}, revoked_scopes: [],
+        }
+      },
+    })
+
+    await engine.syncNow('legacy-missing')
+    expect(await db.getMedia('media-legacy')).toMatchObject({ state: 'ready' })
+    expect(await db.getAction('review-legacy')).toMatchObject({ state: 'ready' })
+
+    await engine.syncNow('legacy-reupload')
+    expect(uploadMedia).toHaveBeenCalledOnce()
+    expect(sent).toHaveLength(2)
+    expect(sent[0]).toMatchObject({ client_action_id: 'review-legacy', idempotency_key: 'stable-review-key' })
+    expect(sent[1]).toMatchObject({ client_action_id: 'review-legacy', idempotency_key: 'stable-review-key' })
+    expect(await db.getMedia('media-legacy')).toMatchObject({ state: 'confirmed' })
+    expect(await db.getAction('review-legacy')).toMatchObject({ state: 'confirmed' })
+    engine.dispose()
+  })
+
   it('recovers interrupted action and media transfers on restart with the same identities', async () => {
     const db = await openOfflineDb(scope)
     await db.putMedia({

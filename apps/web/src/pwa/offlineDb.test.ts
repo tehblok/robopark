@@ -298,11 +298,15 @@ describe('offline database', () => {
     await db.cleanup({ maxBytes: 1_000_000, now: 10_000, confirmedTtlMs: 100, entityTtlMs: 100 })
     expect(await db.getMedia('review-photo')).toMatchObject({ actionId: 'review', state: 'confirmed' })
 
-    await db.putAction({ ...pendingReview, state: 'confirmed', updatedAt: 9_950 })
-    await db.cleanup({ maxBytes: 1_000_000, now: 10_000, confirmedTtlMs: 100, entityTtlMs: 100 })
+    await db.putAction({ ...pendingReview, state: 'conflict', updatedAt: 1 })
+    await db.cleanup({ maxBytes: 1_000_000, now: 20_000, confirmedTtlMs: 100, entityTtlMs: 100 })
+    expect(await db.getMedia('review-photo')).toMatchObject({ actionId: 'review', state: 'confirmed' })
+
+    await db.putAction({ ...pendingReview, state: 'confirmed', updatedAt: 19_950 })
+    await db.cleanup({ maxBytes: 1_000_000, now: 20_000, confirmedTtlMs: 100, entityTtlMs: 100 })
     expect(await db.getMedia('review-photo')).toMatchObject({ state: 'confirmed' })
 
-    await db.cleanup({ maxBytes: 1_000_000, now: 10_050, confirmedTtlMs: 100, entityTtlMs: 100 })
+    await db.cleanup({ maxBytes: 1_000_000, now: 20_050, confirmedTtlMs: 100, entityTtlMs: 100 })
     expect(await db.getMedia('review-photo')).toBeUndefined()
   })
 

@@ -4,6 +4,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from conftest import login_as
@@ -12,17 +13,30 @@ from robopark_api.services import media_uploads
 from robopark_api.task_workflow_models import MediaUploadSession
 
 
-def _start(client, content: bytes, *, media_id="media-12345678", issue_key="ROBOPARK-51"):
+def _start(
+    client,
+    content: bytes,
+    *,
+    media_id="media-12345678",
+    issue_key="ROBOPARK-51",
+    dependent_action_id=None,
+    device_id=None,
+):
+    payload = {
+        "media_id": media_id,
+        "issue_key": issue_key,
+        "name": "robot.jpg",
+        "mime_type": "image/jpeg",
+        "size_bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+    if dependent_action_id is not None:
+        payload["dependent_action_id"] = dependent_action_id
+    if device_id is not None:
+        payload["device_id"] = device_id
     return client.post(
         "/media/uploads",
-        json={
-            "media_id": media_id,
-            "issue_key": issue_key,
-            "name": "robot.jpg",
-            "mime_type": "image/jpeg",
-            "size_bytes": len(content),
-            "sha256": hashlib.sha256(content).hexdigest(),
-        },
+        json=payload,
     )
 
 
@@ -74,6 +88,61 @@ def test_resumable_upload_validates_offsets_checksums_and_replays(
         "media_id": "media-12345678",
         "completed": True,
     }
+
+
+def test_upload_creation_persists_exact_action_dependency_before_content(
+    client, db_session, seed_mechanic
+):
+    login_as(client, seed_mechanic.username, "secret")
+    started = _start(
+        client,
+        b"\xff\xd8\xffphoto",
+        media_id="media-bound-1234",
+        dependent_action_id="review-action-1234",
+        device_id="account-42",
+    )
+
+    assert started.status_code == 201
+    row = db_session.scalar(
+        select(MediaUploadSession).where(MediaUploadSession.media_id == "media-bound-1234")
+    )
+    assert row.dependent_action_id == "review-action-1234"
+    assert row.dependent_device_id == "account-42"
+    assert row.dependency_bound_at is not None
+
+    replay = _start(
+        client,
+        b"\xff\xd8\xffphoto",
+        media_id="media-bound-1234",
+        dependent_action_id="review-action-1234",
+        device_id="account-42",
+    )
+    conflict = _start(
+        client,
+        b"\xff\xd8\xffphoto",
+        media_id="media-bound-1234",
+        dependent_action_id="other-action-1234",
+        device_id="account-42",
+    )
+    assert replay.status_code == 201
+    assert replay.json()["upload_id"] == started.json()["upload_id"]
+    assert conflict.status_code == 409
+
+    incomplete = _start(
+        client,
+        b"\xff\xd8\xffother",
+        media_id="media-bound-5678",
+        dependent_action_id="review-action-5678",
+    )
+    unsafe = _start(
+        client,
+        b"\xff\xd8\xffother",
+        media_id="media-bound-9012",
+        dependent_action_id="review action 9012",
+        device_id="account-42",
+    )
+    assert incomplete.status_code == 422
+    assert unsafe.status_code == 422
 
 
 def test_sqlite_concurrent_media_completion_returns_same_completed_upload(
@@ -245,9 +314,12 @@ def test_cleanup_retains_completed_upload_while_dependent_action_is_pending(
 
     row.dependency_terminal_at = now
     db_session.commit()
-    assert media_uploads.cleanup_expired(
-        db_session, now=now + media_uploads.COMPLETED_RETENTION_SECONDS + 1
-    ) == 1
+    assert (
+        media_uploads.cleanup_expired(
+            db_session, now=now + media_uploads.COMPLETED_RETENTION_SECONDS + 1
+        )
+        == 1
+    )
     assert db_session.get(MediaUploadSession, row.id) is None
     assert not (tmp_path / row.blob_name).exists()
 
@@ -295,3 +367,49 @@ def test_cleanup_retries_transient_upload_unlink_failure(
     assert media_uploads.cleanup_expired(db_session, now=now) == 1
     assert db_session.get(MediaUploadSession, row.id) is None
     assert not path.exists()
+
+
+def test_deleted_legacy_unbound_upload_can_be_recreated_with_same_media_identity(
+    client, db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    now = time.time()
+    content = b"\xff\xd8\xfflegacy"
+    old = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        media_id="legacy-media-1234",
+        issue_key="ROBOPARK-51",
+        original_name="robot.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        received_offset=len(content),
+        blob_name="legacy.ready",
+        completed=True,
+        created_at=now - 9 * 86400,
+        updated_at=now - 9 * 86400,
+        completed_at=now - 8 * 86400,
+        expires_at=now - 7 * 86400,
+    )
+    db_session.add(old)
+    db_session.commit()
+    (tmp_path / old.blob_name).write_bytes(content)
+
+    assert media_uploads.cleanup_expired(db_session, now=now) == 1
+    assert db_session.get(MediaUploadSession, old.id) is None
+
+    login_as(client, seed_mechanic.username, "secret")
+    recreated = _start(
+        client,
+        content,
+        media_id=old.media_id,
+        dependent_action_id="review-action-legacy",
+        device_id="account-42",
+    )
+    assert recreated.status_code == 201
+    row = db_session.scalar(
+        select(MediaUploadSession).where(MediaUploadSession.media_id == old.media_id)
+    )
+    assert row.id != old.id
+    assert row.dependent_action_id == "review-action-legacy"
+    assert row.dependent_device_id == "account-42"

@@ -1,8 +1,8 @@
-export type UploadableMedia = { id: string, blob: Blob, mimeType: string, sha256: string, name: string }
+export type UploadableMedia = { id: string, actionId: string, deviceId: string, blob: Blob, mimeType: string, sha256: string, name: string }
 export type UploadSession = { upload_id: string, received_offset: number, completed: boolean, media_id?: string }
 export type CompletedUpload = { upload_id: string, media_id: string, completed: true }
 export type ResumableUploadApi = {
-  create(input: { media_id: string, name: string, mime_type: string, size_bytes: number, sha256: string }): Promise<UploadSession>
+  create(input: { media_id: string, dependent_action_id: string, device_id: string, name: string, mime_type: string, size_bytes: number, sha256: string }): Promise<UploadSession>
   putChunk(uploadId: string, offset: number, chunk: Blob, sha256: string): Promise<{ received_offset: number }>
   complete(uploadId: string): Promise<CompletedUpload>
 }
@@ -19,6 +19,8 @@ export async function uploadMedia(
 ): Promise<CompletedUpload> {
   const session = await api.create({
     media_id: media.id,
+    dependent_action_id: media.actionId,
+    device_id: media.deviceId,
     name: media.name,
     mime_type: media.mimeType,
     size_bytes: media.blob.size,

@@ -19,7 +19,7 @@ export type SyncEngineLike = {
   getState(): SyncState
   enqueueAction?(input: OfflineActionInput): Promise<unknown>
   enqueueOptimistic?(input: OfflineActionInput, projection?: unknown): Promise<unknown>
-  enqueueMedia?(input: OfflineMediaInput): Promise<unknown>
+  enqueueMedia?(input: OfflineMediaInput, dependentAction?: OfflineActionInput): Promise<unknown>
   syncNow?(reason: string): Promise<boolean>
   cancelAction?(id: string): Promise<void>
   resolveConflict?(id: string, baseRevision: string | null): Promise<void>
@@ -35,7 +35,7 @@ export type SyncContextValue = {
   actionTrackingReady?: boolean
   enqueueAction(input: OfflineActionInput): Promise<unknown>
   enqueueOptimistic?(input: OfflineActionInput, projection?: unknown): Promise<unknown>
-  enqueueMedia(input: OfflineMediaInput): Promise<unknown>
+  enqueueMedia(input: OfflineMediaInput, dependentAction?: OfflineActionInput): Promise<unknown>
   syncNow(reason?: string): Promise<boolean>
   cancelAction(id: string): Promise<void>
   resolveConflict(id: string, baseRevision: string | null): Promise<void>
@@ -56,8 +56,9 @@ async function defaultEngineFactory(options: Parameters<SyncEngineFactory>[0]): 
   if (!options.user) throw new Error('sync_user_required')
   const scope = offlineScopeForUser(options.user, options.park)
   const sendBatch = (batch: Parameters<typeof api.syncBatch>[0], signal?: AbortSignal) => api.syncBatch(batch, signal)
+  const deviceId = `account-${options.accountId}`
   const sendMedia = (media: OfflineMedia) => uploadMedia(
-    { id: media.id, blob: media.blob, mimeType: media.mimeType, sha256: media.sha256, name: media.name },
+    { id: media.id, actionId: media.actionId, deviceId, blob: media.blob, mimeType: media.mimeType, sha256: media.sha256, name: media.name },
     {
       create: input => api.createMediaUpload({ ...input, issue_key: media.issueKey }),
       putChunk: (uploadId, offset, chunk, sha256) => api.putMediaChunk(uploadId, offset, chunk, sha256),
@@ -68,14 +69,14 @@ async function defaultEngineFactory(options: Parameters<SyncEngineFactory>[0]): 
   try {
     db = await openOfflineDb(scope)
   } catch {
-    return new NetworkOnlySyncEngine({ deviceId: `account-${options.accountId}`, sendBatch, uploadMedia: sendMedia })
+    return new NetworkOnlySyncEngine({ deviceId, sendBatch, uploadMedia: sendMedia })
   }
   try {
     await db.cleanup({ maxBytes: await estimateOfflineBudget() })
   } catch (error) {
     if (!(error instanceof OfflineStorageFullError)) {
       db.close()
-      return new NetworkOnlySyncEngine({ deviceId: `account-${options.accountId}`, sendBatch, uploadMedia: sendMedia })
+      return new NetworkOnlySyncEngine({ deviceId, sendBatch, uploadMedia: sendMedia })
     }
   }
   const lockManager = typeof navigator !== 'undefined' && 'locks' in navigator
@@ -89,7 +90,7 @@ async function defaultEngineFactory(options: Parameters<SyncEngineFactory>[0]): 
   return new SyncEngine({
     db,
     coordinator,
-    deviceId: `account-${options.accountId}`,
+    deviceId,
     sendBatch,
     uploadMedia: sendMedia,
     weakLink: () => {
@@ -156,7 +157,7 @@ export function SyncProvider({ children, engineFactory = defaultEngineFactory }:
     actionTrackingReady: engine !== null,
     enqueueAction: input => runLocalWork(() => engine?.enqueueAction?.(input) ?? Promise.reject(new Error('sync_not_ready'))),
     enqueueOptimistic: (input, projection) => runLocalWork(() => engine?.enqueueOptimistic?.(input, projection) ?? Promise.reject(new Error('sync_not_ready'))),
-    enqueueMedia: input => runLocalWork(() => engine?.enqueueMedia?.(input) ?? Promise.reject(new Error('sync_not_ready'))),
+    enqueueMedia: (input, dependentAction) => runLocalWork(() => engine?.enqueueMedia?.(input, dependentAction) ?? Promise.reject(new Error('sync_not_ready'))),
     syncNow: reason => engine?.syncNow?.(reason ?? 'manual') ?? Promise.resolve(false),
     cancelAction: id => engine?.cancelAction?.(id) ?? Promise.resolve(),
     resolveConflict: (id, revision) => engine?.resolveConflict?.(id, revision) ?? Promise.resolve(),

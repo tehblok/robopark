@@ -845,8 +845,11 @@ describe('IssueWorkbench', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Передать на проверку' }).at(-1)!)
 
     await waitFor(() => expect(enqueueMedia).toHaveBeenCalledOnce())
-    expect(enqueueMedia).toHaveBeenCalledWith(expect.objectContaining({ issueKey: issue.key, name: 'robot.jpg', blob: expect.any(Blob) }))
-    expect(enqueueAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'submit_review', dependencies: [expect.stringMatching(/^media-/)] }))
+    expect(enqueueMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ issueKey: issue.key, name: 'robot.jpg', blob: expect.any(Blob) }),
+      expect.objectContaining({ action: 'submit_review', dependencies: [expect.stringMatching(/^media-/)] }),
+    )
+    expect(enqueueAction).not.toHaveBeenCalled()
     expect(taskSubmitReview).not.toHaveBeenCalled()
   })
 

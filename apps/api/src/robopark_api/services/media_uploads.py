@@ -82,6 +82,17 @@ def start(db: Session, actor: User, payload: MediaUploadCreateIn) -> MediaUpload
             payload.sha256,
         ):
             raise HTTPException(409, "media_upload_payload_conflict")
+        requested_dependency = (payload.device_id, payload.dependent_action_id)
+        existing_dependency = (existing.dependent_device_id, existing.dependent_action_id)
+        if payload.dependent_action_id is not None:
+            if existing_dependency == (None, None):
+                existing.dependent_device_id = payload.device_id
+                existing.dependent_action_id = payload.dependent_action_id
+                existing.dependency_bound_at = time.time()
+                db.commit()
+                db.refresh(existing)
+            elif existing_dependency != requested_dependency:
+                raise HTTPException(409, "media_dependency_conflict")
         return existing
     now = time.time()
     row = MediaUploadSession(
@@ -98,6 +109,9 @@ def start(db: Session, actor: User, payload: MediaUploadCreateIn) -> MediaUpload
         created_at=now,
         updated_at=now,
         expires_at=now + SESSION_TTL_SECONDS,
+        dependent_device_id=payload.device_id,
+        dependent_action_id=payload.dependent_action_id,
+        dependency_bound_at=now if payload.dependent_action_id is not None else None,
     )
     db.add(row)
     db.commit()
@@ -274,8 +288,7 @@ def cleanup_expired(db: Session, *, now: float | None = None) -> int:
                     & or_(
                         and_(
                             MediaUploadSession.dependent_action_id.is_(None),
-                            MediaUploadSession.completed_at
-                            <= cutoff - COMPLETED_RETENTION_SECONDS,
+                            MediaUploadSession.completed_at <= cutoff - COMPLETED_RETENTION_SECONDS,
                         ),
                         MediaUploadSession.dependency_terminal_at
                         <= cutoff - COMPLETED_RETENTION_SECONDS,

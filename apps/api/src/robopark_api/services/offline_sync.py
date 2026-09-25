@@ -331,7 +331,7 @@ def synchronize(
                             state=state,
                             code=code,
                         )
-                    if dependent_media_id and result.state != "attention":
+                    if dependent_media_id and result.state == "confirmed":
                         media_uploads.acknowledge_action_dependency(
                             db,
                             actor_user_id=user.id,
@@ -339,9 +339,10 @@ def synchronize(
                             device_id=batch.device_id,
                             action_id=item.client_action_id,
                         )
-                # Temporary upstream failures must remain replayable. Persist only
-                # terminal outcomes; otherwise one 503 becomes permanent.
-                if result.state != "attention":
+                # Attention and conflict are nonterminal. Persist only applied or
+                # irreversible rejection outcomes; otherwise a resolved conflict
+                # would replay the old response forever.
+                if result.state in {"confirmed", "rejected"}:
                     db.add(
                         OfflineSyncReceipt(
                             actor_user_id=user.id,

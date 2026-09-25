@@ -1097,6 +1097,15 @@ export function TaskController({
                           const mediaId = `media-${reviewId}`
                           const prepared = await prepareImage(value.photo)
                           try {
+                            const commentId = value.comment?.trim() ? await enqueueComment(value.comment) : null
+                            const reviewAction = buildSubmitReviewAction({
+                              issueKey: detail.data!.key,
+                              parkId: taskParkId,
+                              id: reviewId,
+                              defectCode: value.defectCode,
+                              mediaActionId: mediaId,
+                              commentActionId: commentId,
+                            })
                             await sync.enqueueMedia({
                               id: mediaId,
                               actionId: reviewId,
@@ -1107,16 +1116,7 @@ export function TaskController({
                               mimeType: prepared.mimeType,
                               sha256: prepared.sha256,
                               sizeBytes: prepared.sizeBytes,
-                            })
-                            const commentId = value.comment?.trim() ? await enqueueComment(value.comment) : null
-                            await sync.enqueueAction(buildSubmitReviewAction({
-                              issueKey: detail.data!.key,
-                              parkId: taskParkId,
-                              id: reviewId,
-                              defectCode: value.defectCode,
-                              mediaActionId: mediaId,
-                              commentActionId: commentId,
-                            }))
+                            }, reviewAction)
                             mutationKeys.current.succeeded('submit-review', serialized)
                           } finally {
                             prepared.releasePreview()

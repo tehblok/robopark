@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class MediaUploadCreateIn(BaseModel):
@@ -8,6 +8,8 @@ class MediaUploadCreateIn(BaseModel):
     mime_type: str = Field(min_length=1, max_length=128)
     size_bytes: int = Field(gt=0, le=15 * 1024 * 1024)
     sha256: str = Field(min_length=64, max_length=64)
+    dependent_action_id: str | None = Field(default=None, min_length=1, max_length=64)
+    device_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     @field_validator("sha256")
     @classmethod
@@ -16,6 +18,25 @@ class MediaUploadCreateIn(BaseModel):
         if any(char not in "0123456789abcdef" for char in value):
             raise ValueError("media_sha256_invalid")
         return value
+
+    @field_validator("dependent_action_id", "device_id")
+    @classmethod
+    def valid_dependency_identity(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if (
+            value != value.strip()
+            or not value.isprintable()
+            or any(char.isspace() for char in value)
+        ):
+            raise ValueError("media_dependency_identity_invalid")
+        return value
+
+    @model_validator(mode="after")
+    def complete_dependency_identity(self):
+        if (self.dependent_action_id is None) != (self.device_id is None):
+            raise ValueError("media_dependency_identity_incomplete")
+        return self
 
 
 class MediaUploadSessionOut(BaseModel):

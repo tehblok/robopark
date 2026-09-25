@@ -1782,7 +1782,7 @@ export const api = {
   taskAttachmentContent: (url: string) => requestTaskAttachmentBlob(url),
   taskAttachmentAuthorization: (url: string) => authorizeTaskAttachment(url),
   taskDefectCodes: () => request<DefectCode[]>('/tracker/defect-codes'),
-  createMediaUpload: (value: { media_id: string, issue_key: string, name: string, mime_type: string, size_bytes: number, sha256: string }) =>
+  createMediaUpload: (value: { media_id: string, issue_key: string, dependent_action_id: string, device_id: string, name: string, mime_type: string, size_bytes: number, sha256: string }) =>
     request<MediaUploadSession>('/media/uploads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }),
   putMediaChunk: (uploadId: string, offset: number, chunk: Blob, sha256: string) =>
     request<{ received_offset: number }>(`/media/uploads/${encodeURIComponent(uploadId)}/chunks/${offset}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'X-Chunk-SHA256': sha256 }, body: chunk }),

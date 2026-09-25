@@ -422,7 +422,7 @@ def test_mixed_batch_classifies_closed_task_stale_stock_and_server_failure(
     from robopark_api.task_workflow_models import OfflineSyncReceipt
 
     receipts = set(db_session.scalars(select(OfflineSyncReceipt.client_action_id)))
-    assert receipts == {"ok", "closed", "stock"}
+    assert receipts == {"ok"}
 
 
 def test_failed_dependency_is_not_dispatched(
@@ -514,10 +514,73 @@ def test_review_media_survives_beyond_retention_until_retry_is_acknowledged(
     db_session.expire_all()
     terminal_at = db_session.get(MediaUploadSession, row.id).dependency_terminal_at
     assert terminal_at is not None
-    assert media_uploads.cleanup_expired(
-        db_session, now=terminal_at + media_uploads.COMPLETED_RETENTION_SECONDS + 1
-    ) == 1
+    assert (
+        media_uploads.cleanup_expired(
+            db_session, now=terminal_at + media_uploads.COMPLETED_RETENTION_SECONDS + 1
+        )
+        == 1
+    )
     assert not (tmp_path / row.blob_name).exists()
+
+
+def test_review_media_conflict_is_nonterminal_and_survives_until_resolved(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch, tmp_path
+):
+    from robopark_api.services import media_uploads, offline_sync
+
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        media_id="conflicting-review-photo",
+        issue_key="ROBOPARK-51",
+        original_name="review.jpg",
+        mime_type="image/jpeg",
+        size_bytes=4,
+        sha256="f" * 64,
+        received_offset=4,
+        blob_name="conflict.ready",
+        completed=True,
+        created_at=now,
+        updated_at=now,
+        completed_at=now,
+        expires_at=now + 86400,
+        dependent_device_id="phone-1",
+        dependent_action_id="conflicting-review-action",
+        dependency_bound_at=now,
+    )
+    db_session.add(row)
+    db_session.commit()
+    (tmp_path / row.blob_name).write_bytes(b"data")
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        offline_sync,
+        "dispatch_action",
+        lambda *_args: (_ for _ in ()).throw(HTTPException(409, "review_revision_conflict")),
+    )
+    login_as(client, seed_mechanic.username, "secret")
+    body = _batch(
+        _action(
+            "conflicting-review-action",
+            action="submit_review",
+            park_id=seed_park_with_tracker.id,
+            payload={"media_id": row.media_id, "defect_code": "BD-01"},
+        )
+    )
+
+    first = client.post("/sync/batch", json=body)
+
+    assert first.json()["results"][0]["state"] == "conflict"
+    db_session.expire_all()
+    assert db_session.get(MediaUploadSession, row.id).dependency_terminal_at is None
+    assert media_uploads.cleanup_expired(db_session, now=now + 8 * 86400) == 0
+    assert (tmp_path / row.blob_name).exists()
+
+    monkeypatch.setattr(offline_sync, "dispatch_action", lambda *_args: {"review_id": "done"})
+    second = client.post("/sync/batch", json=body)
+    assert second.json()["results"][0]["state"] == "confirmed"
+    db_session.expire_all()
+    terminal_at = db_session.get(MediaUploadSession, row.id).dependency_terminal_at
+    assert terminal_at is not None
 
 
 def test_receipt_stores_canonical_result_json(

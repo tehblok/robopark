@@ -207,10 +207,17 @@ export class SyncEngine {
     return action
   }
 
-  async enqueueMedia(input: OfflineMediaInput): Promise<OfflineMedia> {
+  async enqueueMedia(input: OfflineMediaInput, dependentAction?: OfflineActionInput): Promise<OfflineMedia> {
     const now = this.now()
     const media: OfflineMedia = { ...input, state: 'ready', attempts: 0, createdAt: now, updatedAt: now }
-    if (!await this.db.putMedia(media)) throw new Error('offline_scope_inactive')
+    if (dependentAction && dependentAction.id !== input.actionId) throw new Error('media_action_identity_mismatch')
+    if (dependentAction) {
+      const action: OfflineAction = { ...dependentAction, state: 'ready', attempts: 0, createdAt: now, updatedAt: now }
+      await this.db.transaction(writer => {
+        writer.putMedia(media)
+        writer.putAction(action)
+      })
+    } else if (!await this.db.putMedia(media)) throw new Error('offline_scope_inactive')
     await this.refreshState()
     if (this.started) void this.syncNow('media')
     return media
@@ -325,6 +332,22 @@ export class SyncEngine {
           const attempts = (item.attempts ?? 0) + 1
           retryAttempts = Math.max(retryAttempts, attempts)
           await this.db.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() })
+        } else if (result.state === 'conflict' && ['media_dependency_pending', 'media_dependency_missing', 'media_upload_not_found'].includes(result.code ?? '')) {
+          const mediaId = item.action === 'submit_review' && typeof item.payload === 'object' && item.payload
+            ? String((item.payload as { media_id?: unknown }).media_id ?? '')
+            : ''
+          const media = mediaId ? await this.db.getMedia(mediaId) : undefined
+          if (media && media.actionId === item.id && media.sizeBytes > 0) {
+            const attempts = (item.attempts ?? 0) + 1
+            retryAttempts = Math.max(retryAttempts, attempts)
+            await this.db.transaction(writer => {
+              writer.putMedia({ ...media, state: 'ready', attempts: (media.attempts ?? 0) + 1, updatedAt: this.now() })
+              writer.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() })
+            })
+          } else {
+            await this.db.putAction({ ...item, state: 'conflict', updatedAt: this.now() })
+            this.batcher.settle(item.id)
+          }
         } else {
           const state = result.state === 'confirmed' ? 'confirmed' : result.state === 'conflict' ? 'conflict' : 'attention'
           await this.db.putAction({ ...item, state, updatedAt: this.now() })
@@ -441,13 +464,15 @@ export class NetworkOnlySyncEngine {
     return promise
   }
 
-  async enqueueMedia(input: OfflineMediaInput): Promise<OfflineMedia> {
+  async enqueueMedia(input: OfflineMediaInput, dependentAction?: OfflineActionInput): Promise<OfflineMedia> {
     if (!this.options.uploadMedia) throw new Error('media_network_unavailable')
+    if (dependentAction && dependentAction.id !== input.actionId) throw new Error('media_action_identity_mismatch')
     const now = Date.now()
     const media: OfflineMedia = { ...input, state: 'uploading', attempts: 0, createdAt: now, updatedAt: now }
     this.publish({ status: 'syncing', pending: 1, conflicts: 0 })
     try {
       await this.options.uploadMedia(media)
+      if (dependentAction) await this.enqueueAction(dependentAction)
       this.publish({ status: 'idle', pending: 0, conflicts: 0 })
       return { ...media, state: 'confirmed' }
     } catch (error) {
