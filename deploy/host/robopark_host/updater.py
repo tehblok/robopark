@@ -550,9 +550,12 @@ def _successful_release_receipts(paths):
 
 
 def _retained_successful_releases(paths, limit=3, receipts=None):
-    keep = {_release_target(paths, paths.current).name}
-    if paths.previous.is_symlink():
-        keep.add(_release_target(paths, paths.previous).name)
+    from .restore_retention import protected_release_names
+
+    # The restore recovery release can intentionally be older than the normal
+    # three-release window. Treat every stable link as an independent pin.
+    keep = protected_release_names(paths)
+    keep.add(_release_target(paths, paths.current).name)
     records = _successful_release_receipts(paths) if receipts is None else receipts
     for release, _, _ in sorted(records, key=lambda item: item[2], reverse=True):
         if len(keep) >= limit:

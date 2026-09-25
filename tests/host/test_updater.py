@@ -631,6 +631,45 @@ def test_retention_keeps_three_successes_after_third_update(host):
     assert len(list((host.paths.ops / "rollbacks").iterdir())) == 2
 
 
+def test_production_retention_preserves_old_recovery_current_and_previous(host):
+    from robopark_host.updater import _retention
+
+    releases = [f"{name}-{uuid.uuid4()}" for name in ("recovery-a", "obsolete-b", "previous-c", "current-d")]
+    recovery, obsolete, previous, current = releases
+    for index, name in enumerate(releases):
+        target = host.paths.releases / name
+        target.mkdir()
+        receipt = host.paths.state / "successful-releases" / f"{name}.json"
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text('{"successful":true}')
+        os.utime(receipt, ns=(index + 1, index + 1))
+    host.paths.current.unlink()
+    host.paths.current.symlink_to(host.paths.releases / current)
+    host.paths.previous.unlink(missing_ok=True)
+    host.paths.previous.symlink_to(host.paths.releases / previous)
+    host.paths.recovery.unlink(missing_ok=True)
+    host.paths.recovery.symlink_to(host.paths.releases / recovery)
+    compose = host.paths.state / "compose/current-production.json"
+    compose.parent.mkdir(parents=True, exist_ok=True)
+    compose.write_text("{}")
+    current_compose = host.paths.state / "current-compose.json"
+    current_compose.unlink(missing_ok=True)
+    current_compose.symlink_to(compose)
+
+    _retention(
+        host.paths,
+        {
+            "job_id": str(uuid.uuid4()),
+            "previous_config": "compose/current-production.json",
+        },
+    )
+
+    assert (host.paths.releases / recovery).is_dir()
+    assert (host.paths.releases / previous).is_dir()
+    assert (host.paths.releases / current).is_dir()
+    assert not (host.paths.releases / obsolete).exists()
+
+
 def test_failure_after_partial_restore_is_recoverable(host, monkeypatch):
     import robopark_host.rollback as rollback
     import robopark_host.updater as updater

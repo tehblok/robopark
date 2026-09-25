@@ -1,4 +1,8 @@
+import hashlib
+import os
+import time
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -98,6 +102,123 @@ def test_cleanup_execute_requires_the_exact_immutable_preview(tmp_path):
     )
     assert result["plan_id"] == plan["plan_id"]
     assert not victim.exists()
+
+
+def _managed_cleanup_fixture(host_paths, *, guard_age=0):
+    from robopark_host.state import atomic_write_json
+
+    now = time.time()
+    releases = {name: host_paths.releases / name for name in ("recovery-a", "obsolete-b", "previous-c", "current-d")}
+    receipts = host_paths.state / "successful-releases"
+    receipts.mkdir(parents=True, exist_ok=True)
+    for index, (name, path) in enumerate(releases.items()):
+        path.mkdir(parents=True)
+        (path / "payload").write_bytes((name * 8).encode())
+        receipt = receipts / f"{name}.json"
+        receipt.write_text('{"successful":true}')
+        os.utime(receipt, (index + 1, index + 1))
+    host_paths.current.symlink_to(releases["current-d"])
+    host_paths.previous.symlink_to(releases["previous-c"])
+    host_paths.recovery.symlink_to(releases["recovery-a"])
+
+    backup_root = host_paths.var / "backups"
+    backup_root.mkdir(parents=True)
+    guard_id = str(uuid4())
+    guard = backup_root / f"backup-{guard_id}.rpb"
+    guard.write_bytes(b"verified recovery backup")
+    receipt = {
+        "schema": 1,
+        "backup_id": guard_id,
+        "verified": True,
+        "sha256": hashlib.sha256(guard.read_bytes()).hexdigest(),
+        "verified_at": now - guard_age,
+        "recovery_required": True,
+    }
+    atomic_write_json(host_paths.state / "backup-receipts" / f"{guard_id}.json", receipt)
+    old_id = str(uuid4())
+    old = backup_root / f"backup-{old_id}.rpb"
+    old.write_bytes(b"old unverified backup")
+    os.utime(old, (1, 1))
+    return now, guard, old, releases
+
+
+def test_managed_cleanup_plans_actual_backup_and_release_candidates(host_paths):
+    from robopark_host.retention import (
+        StorageBudget,
+        execute_host_cleanup_plan,
+        preview_host_cleanup_plan,
+    )
+
+    now, guard, old, releases = _managed_cleanup_fixture(host_paths)
+    plan = preview_host_cleanup_plan(
+        host_paths,
+        ["backups", "releases"],
+        StorageBudget(10_000, 0, minimum_free_bytes=10_000),
+        now=now,
+        large_cleanup_bytes=1,
+    )
+
+    planned = {(item["category"], item["path"]) for item in plan["planned"]}
+    assert ("backups", old.name) in planned
+    assert ("releases", "obsolete-b") in planned
+    assert all(guard.name != item["path"] for item in plan["planned"])
+    assert not any(item["path"] in {"recovery-a", "previous-c", "current-d"} for item in plan["planned"])
+    assert plan["blocked"] is False
+    result = execute_host_cleanup_plan(
+        host_paths,
+        ["backups", "releases"],
+        StorageBudget(10_000, 0, minimum_free_bytes=10_000),
+        plan,
+        now=now,
+        large_cleanup_bytes=1,
+    )
+    assert result["plan_id"] == plan["plan_id"]
+    assert not old.exists() and not releases["obsolete-b"].exists()
+    assert guard.exists() and releases["recovery-a"].exists()
+
+
+@pytest.mark.parametrize("guard", ["missing", "stale", "changed"])
+def test_managed_cleanup_requires_fresh_unchanged_verified_backup_guard(
+    host_paths, guard
+):
+    from robopark_host.retention import (
+        StorageBudget,
+        execute_host_cleanup_plan,
+        preview_host_cleanup_plan,
+    )
+
+    now, verified, old, releases = _managed_cleanup_fixture(
+        host_paths, guard_age=90_000 if guard == "stale" else 0
+    )
+    if guard == "missing":
+        next((host_paths.state / "backup-receipts").iterdir()).unlink()
+    budget = StorageBudget(10_000, 0, minimum_free_bytes=10_000)
+    plan = preview_host_cleanup_plan(
+        host_paths,
+        ["backups", "releases"],
+        budget,
+        now=now,
+        large_cleanup_bytes=1,
+        backup_guard_max_age=86_400,
+    )
+    if guard in {"missing", "stale"}:
+        assert plan["blocked"] is True
+        assert old.exists() and releases["obsolete-b"].exists()
+        return
+
+    assert plan["blocked"] is False
+    verified.write_bytes(b"changed after preview")
+    with pytest.raises(ValueError, match="cleanup_plan_changed"):
+        execute_host_cleanup_plan(
+            host_paths,
+            ["backups", "releases"],
+            budget,
+            plan,
+            now=now,
+            large_cleanup_bytes=1,
+            backup_guard_max_age=86_400,
+        )
+    assert old.exists() and releases["obsolete-b"].exists()
 
 
 def test_storage_cleanup_rejects_a_root_below_a_symlinked_parent(tmp_path):

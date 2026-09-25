@@ -99,6 +99,16 @@ class TypedOperation:
 class TypedHostEffects:
     """Explicit host-effect interface. Production adapters may implement only this allowlist."""
 
+    def reconcile(self, operation):
+        """Reconcile a durable dispatch checkpoint without replaying its effect."""
+
+        del operation
+        return {
+            "state": "failed",
+            "detail": {},
+            "error": "manual_recovery_required",
+        }
+
     def release_update(self, operation_id, release_id):
         raise ReleaseError("operation_unavailable")
 
@@ -148,6 +158,70 @@ class TypedHostEffects:
         raise ReleaseError("operation_unavailable")
 
 
+class SystemTypedHostEffects(TypedHostEffects):
+    """Typed adapter over an equally closed, explicitly injected action surface.
+
+    Neither layer accepts an executable, argv, shell text, environment, or output path.
+    """
+
+    def __init__(self, paths, system=None, *, runner=None, http=None):
+        del paths, runner, http
+        if system is None:
+            raise ValueError("typed_system_adapter_required")
+        self.system = system
+
+    def reconcile(self, operation):
+        return self.system.reconcile(operation)
+
+    def release_update(self, operation_id, release_id):
+        return self.system.release_update(operation_id, release_id)
+
+    def reinstall(self, operation_id):
+        return self.system.reinstall(operation_id)
+
+    def rollback(self, operation_id, release):
+        return self.system.rollback(operation_id, release)
+
+    def package_inspect(self, operation_id, package):
+        return self.system.package_inspect(operation_id, package)
+
+    def package_update(self, operation_id, package):
+        return self.system.package_update(operation_id, package)
+
+    def service_restart(self, operation_id, service):
+        return self.system.service_restart(operation_id, service)
+
+    def reboot(self, operation_id):
+        return self.system.reboot(operation_id)
+
+    def backup(self, operation_id, device_uuid):
+        return self.system.backup(operation_id, device_uuid)
+
+    def backup_verify(self, operation_id, backup_id):
+        return self.system.backup_verify(operation_id, backup_id)
+
+    def backup_restore(self, operation_id, backup_id):
+        return self.system.backup_restore(operation_id, backup_id)
+
+    def cleanup_preview(self, operation_id, categories):
+        return self.system.cleanup_preview(operation_id, categories)
+
+    def cleanup_execute(self, operation_id, plan_id):
+        return self.system.cleanup_execute(operation_id, plan_id)
+
+    def diagnostics(self, operation_id):
+        return self.system.diagnostics(operation_id)
+
+    def usb_discover(self, operation_id):
+        return self.system.usb_discover(operation_id)
+
+    def usb_format(self, operation_id, device):
+        return self.system.usb_format(operation_id, device)
+
+    def usb_select(self, operation_id, device):
+        return self.system.usb_select(operation_id, device)
+
+
 _TYPED_FIELDS = {
     OperationKind.RELEASE_UPDATE: {"release_id"},
     OperationKind.REINSTALL: set(),
@@ -174,7 +248,7 @@ def _canonical_uuid(value):
     return value
 
 
-def _validate_authorization(value, operation):
+def _validate_authorization(value, operation, *, fresh=True):
     expected = {
         "operation_id",
         "operation_kind",
@@ -192,7 +266,8 @@ def _validate_authorization(value, operation):
             or value["actor_user_id"] != operation["actor_user_id"]
             or value["consumed"] is not True
             or stamp.utcoffset().total_seconds() != 0
-            or not -30 <= (datetime.now(UTC) - stamp).total_seconds() <= 300
+            or fresh
+            and not -30 <= (datetime.now(UTC) - stamp).total_seconds() <= 300
         ):
             raise ValueError()
     except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as exc:
@@ -209,7 +284,7 @@ def _required_confirmation(kind, value):
     return DESTRUCTIVE_CONFIRMATIONS.get(kind)
 
 
-def validate_typed_operation(value, *, fresh=True):
+def validate_typed_operation(value, *, fresh=True, authorization_fresh=True):
     """Parse the closed operation union; unknown fields are always rejected."""
 
     try:
@@ -259,7 +334,9 @@ def validate_typed_operation(value, *, fresh=True):
         ):
             raise ValueError()
         if "authorization" in value:
-            _validate_authorization(value["authorization"], value)
+            _validate_authorization(
+                value["authorization"], value, fresh=authorization_fresh
+            )
         phrase = _required_confirmation(kind, value)
         if phrase is not None and value["confirmation"] != phrase:
             raise ReleaseError("confirmation_required")
@@ -342,16 +419,29 @@ def _perform_typed(effect, operation, devices):
     raise ReleaseError("invalid_command")
 
 
-def execute_typed_operation(paths, request, effects, *, devices=()):
+def execute_typed_operation(
+    paths, request, effects, *, devices=(), authorization_fresh=True
+):
     """Execute one idempotent typed operation and atomically retain its result."""
 
-    operation = validate_typed_operation(request)
+    operation = validate_typed_operation(
+        request, authorization_fresh=authorization_fresh
+    )
+    if operation.kind in {OperationKind.USB_FORMAT, OperationKind.USB_SELECT}:
+        # Device safety is request validation, not a host-effect failure. Resolve it
+        # before publishing a dispatch checkpoint so an invalid device cannot strand
+        # a durable operation.
+        select_removable_device(
+            devices,
+            operation.payload["device_uuid"],
+            destructive=operation.kind is OperationKind.USB_FORMAT,
+        )
     with exclusive_lock(paths.ops / "typed-operation.lock"):
         return _execute_typed_operation_locked(paths, operation, effects, tuple(devices))
 
 
 def _execute_typed_operation_locked(paths, operation, effects, devices):
-    from .state import write_operation_progress
+    from .state import read_operation_progress, write_operation_progress
 
     receipt = paths.state / "typed-operation-receipts" / f"{operation.operation_id}.json"
     if receipt.is_file():
@@ -368,36 +458,103 @@ def _execute_typed_operation_locked(paths, operation, effects, devices):
             raise ReleaseError("invalid_command_receipt")
         write_operation_progress(paths, operation.operation_id, result["state"], 100)
         return result
-    write_operation_progress(paths, operation.operation_id, "accepted", 0)
-    write_operation_progress(paths, operation.operation_id, "executing", 50)
+    intent = paths.state / "typed-operation-intents" / f"{operation.operation_id}.json"
+    if intent.exists() or intent.is_symlink():
+        saved_intent = _read(intent, limit=65536)
+        if saved_intent != {"schema": 1, "request": operation.request}:
+            if saved_intent.get("request") != operation.request:
+                raise ReleaseError("duplicate_operation_id")
+            raise ReleaseError("invalid_operation_intent")
+    else:
+        atomic_write_json(intent, {"schema": 1, "request": operation.request})
+    checkpoint = paths.state / "typed-operation-dispatch" / f"{operation.operation_id}.json"
+    dispatched = False
+    if checkpoint.exists() or checkpoint.is_symlink():
+        saved = _read(checkpoint, limit=65536)
+        if saved != {"schema": 1, "request": operation.request, "state": "dispatched"}:
+            if saved.get("request") != operation.request:
+                raise ReleaseError("duplicate_operation_id")
+            raise ReleaseError("invalid_dispatch_checkpoint")
+        dispatched = True
+    progress = read_operation_progress(paths, operation.operation_id)
+    if progress is None:
+        write_operation_progress(paths, operation.operation_id, "accepted", 0)
+        progress = read_operation_progress(paths, operation.operation_id)
+    if progress["phase"] == "accepted":
+        write_operation_progress(paths, operation.operation_id, "executing", 50)
+    elif progress["phase"] != "executing":
+        raise ReleaseError("invalid_operation_progress")
+
+    def terminal(state, detail, error):
+        result = {
+            "job_id": operation.operation_id,
+            "operation_id": operation.operation_id,
+            "kind": operation.kind.value,
+            "actor_user_id": operation.actor_user_id,
+            "state": state,
+            "detail": detail if isinstance(detail, dict) else {},
+            "error": error,
+        }
+        atomic_write_json(receipt, {"request": operation.request, "result": result})
+        write_operation_progress(paths, operation.operation_id, state, 100)
+        return result
+
+    if dispatched:
+        try:
+            reconciliation = effects.reconcile(operation)
+        except Exception:
+            reconciliation = None
+        if not isinstance(reconciliation, dict) or reconciliation.get("state") not in {
+            "succeeded",
+            "failed",
+        }:
+            return terminal("failed", {}, "manual_recovery_required")
+        state = reconciliation["state"]
+        error = reconciliation.get("error")
+        if state == "failed" and not isinstance(error, str):
+            error = "manual_recovery_required"
+        return terminal(state, reconciliation.get("detail", {}), error)
+
+    atomic_write_json(
+        checkpoint,
+        {"schema": 1, "request": operation.request, "state": "dispatched"},
+    )
     try:
         detail = _perform_typed(effects, operation, devices)
-        result = {
-            "operation_id": operation.operation_id,
-            "kind": operation.kind.value,
-            "state": "succeeded",
-            "detail": detail if isinstance(detail, dict) else {},
-            "error": None,
-        }
-        atomic_write_json(receipt, {"request": operation.request, "result": result})
-        write_operation_progress(paths, operation.operation_id, "succeeded", 100)
-        return result
-    except ReleaseError:
-        raise
-    except Exception as exc:
-        result = {
-            "operation_id": operation.operation_id,
-            "kind": operation.kind.value,
-            "state": "failed",
-            "detail": {},
-            "error": "host_operation_failed",
-        }
-        atomic_write_json(receipt, {"request": operation.request, "result": result})
-        write_operation_progress(paths, operation.operation_id, "failed", 100)
-        raise ReleaseError("host_operation_failed") from exc
+        return terminal("succeeded", detail, None)
+    except ReleaseError as exc:
+        return terminal("failed", {}, str(exc) or "host_operation_failed")
+    except Exception:
+        return terminal("failed", {}, "host_operation_failed")
 
 
 _BACKUP_MAGIC = b"RPBK1\n"
+
+
+@dataclass(frozen=True, slots=True)
+class BackupArchiveLimits:
+    """Hard bounds applied before and while reading authenticated ZIP payloads."""
+
+    max_members: int = 20_000
+    max_member_bytes: int = 2 * 1024**3
+    max_total_bytes: int = 16 * 1024**3
+    max_compression_ratio: int = 200
+    max_metadata_bytes: int = 4 * 1024**2
+    max_archive_bytes: int = 4 * 1024**3
+
+    def __post_init__(self):
+        if any(type(value) is not int or value <= 0 for value in (
+            self.max_members,
+            self.max_member_bytes,
+            self.max_total_bytes,
+            self.max_compression_ratio,
+            self.max_metadata_bytes,
+            self.max_archive_bytes,
+        )):
+            raise ValueError("invalid_backup_archive_limits")
+
+
+DEFAULT_BACKUP_ARCHIVE_LIMITS = BackupArchiveLimits()
 
 
 def _sha256_path(path):
@@ -485,18 +642,26 @@ def create_encrypted_backup(source, artifact, *, recovery_key, app_version, sche
         encrypted_path.unlink(missing_ok=True)
 
 
-def verify_encrypted_backup(artifact, *, recovery_key):
+def verify_encrypted_backup(
+    artifact, *, recovery_key, archive_limits=DEFAULT_BACKUP_ARCHIVE_LIMITS
+):
     """Read back, authenticate and inspect a backup before issuing a verified receipt."""
 
     artifact = Path(artifact)
     if not isinstance(recovery_key, bytes) or len(recovery_key) != 32:
         raise ReleaseError("recovery_key_required")
     try:
+        if artifact.stat().st_size > archive_limits.max_archive_bytes + 8192:
+            raise ReleaseError("backup_archive_limit")
         with artifact.open("rb") as source:
             if source.readline() != _BACKUP_MAGIC:
                 raise ReleaseError("backup_manifest_invalid")
             manifest_line = source.readline(4097)
+            if len(manifest_line) > 4096 or not manifest_line.endswith(b"\n"):
+                raise ReleaseError("backup_manifest_invalid")
             manifest = json.loads(manifest_line, object_pairs_hook=unique_object)
+    except ReleaseError:
+        raise
     except (OSError, ValueError, UnicodeError) as exc:
         raise ReleaseError("backup_manifest_invalid") from exc
     receipt = {
@@ -506,11 +671,98 @@ def verify_encrypted_backup(artifact, *, recovery_key):
         "schema_version": manifest.get("schema_version"),
         "payload_sha256": manifest.get("payload_sha256"),
     }
-    with tempfile.TemporaryDirectory(prefix="robopark-backup-verify-") as directory:
-        restore_encrypted_backup(
-            artifact, Path(directory) / "payload", recovery_key=recovery_key, verified=receipt
-        )
+    restore_encrypted_backup(
+        artifact,
+        None,
+        recovery_key=recovery_key,
+        verified=receipt,
+        archive_limits=archive_limits,
+        _verify_only=True,
+    )
     return receipt
+
+
+def _inspect_backup_archive(plain, staging, limits):
+    """Validate the complete central directory, then stream each bounded member."""
+
+    try:
+        with zipfile.ZipFile(plain) as archive:
+            members = archive.infolist()
+            if len(members) > limits.max_members:
+                raise ReleaseError("backup_archive_limit")
+            seen = set()
+            total_declared = 0
+            metadata = len(archive.comment)
+            for member in members:
+                name = member.filename
+                path = Path(name)
+                mode = member.external_attr >> 16
+                metadata += (
+                    46
+                    + len(name.encode("utf-8"))
+                    + len(member.extra)
+                    + len(member.comment)
+                )
+                ratio = member.file_size / max(1, member.compress_size)
+                if (
+                    not name
+                    or "\\" in name
+                    or "\x00" in name
+                    or path.is_absolute()
+                    or ".." in path.parts
+                    or ":" in path.parts[0]
+                    or member.is_dir()
+                    or name in seen
+                    or mode and not stat.S_ISREG(mode)
+                ):
+                    raise ReleaseError("backup_manifest_invalid")
+                if (
+                    member.file_size > limits.max_member_bytes
+                    or total_declared + member.file_size > limits.max_total_bytes
+                    or ratio > limits.max_compression_ratio
+                    or metadata > limits.max_metadata_bytes
+                ):
+                    raise ReleaseError("backup_archive_limit")
+                total_declared += member.file_size
+                seen.add(name)
+            total_read = 0
+            for member in members:
+                written = 0
+                output = None
+                if staging is not None:
+                    destination = staging.joinpath(*Path(member.filename).parts)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    descriptor = os.open(
+                        destination,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600,
+                    )
+                    output = os.fdopen(descriptor, "wb")
+                try:
+                    with archive.open(member, "r") as source:
+                        while chunk := source.read(1024 * 1024):
+                            written += len(chunk)
+                            total_read += len(chunk)
+                            if (
+                                written > member.file_size
+                                or written > limits.max_member_bytes
+                                or total_read > limits.max_total_bytes
+                            ):
+                                raise ReleaseError("backup_archive_limit")
+                            if output is not None:
+                                output.write(chunk)
+                    if written != member.file_size:
+                        raise ReleaseError("backup_integrity_failed")
+                    if output is not None:
+                        output.flush()
+                        os.fsync(output.fileno())
+                finally:
+                    if output is not None:
+                        output.close()
+    except ReleaseError:
+        raise
+    except (OSError, ValueError, zipfile.BadZipFile, RuntimeError) as exc:
+        raise ReleaseError("backup_manifest_invalid") from exc
 
 
 def restore_encrypted_backup(
@@ -521,6 +773,8 @@ def restore_encrypted_backup(
     verified,
     expected_app_version=None,
     expected_schema_version=None,
+    archive_limits=DEFAULT_BACKUP_ARCHIVE_LIMITS,
+    _verify_only=False,
 ):
     """Authenticate manifest and ciphertext before extracting into an empty target."""
 
@@ -530,6 +784,11 @@ def restore_encrypted_backup(
     if not isinstance(recovery_key, bytes) or len(recovery_key) != 32:
         raise ReleaseError("recovery_key_required")
     artifact = Path(artifact)
+    try:
+        if artifact.stat().st_size > archive_limits.max_archive_bytes + 8192:
+            raise ReleaseError("backup_archive_limit")
+    except OSError as exc:
+        raise ReleaseError("backup_integrity_failed") from exc
     if not isinstance(verified, dict) or verified.get("verified") is not True:
         raise ReleaseError("verified_backup_required")
     if verified.get("sha256") != _sha256_path(artifact):
@@ -581,7 +840,11 @@ def restore_encrypted_backup(
             source.seek(0, os.SEEK_END)
             ciphertext_end = source.tell()
             ciphertext_bytes = ciphertext_end - ciphertext_start - 16
-            if len(nonce) != 12 or ciphertext_bytes < 0:
+            if (
+                len(nonce) != 12
+                or ciphertext_bytes < 0
+                or ciphertext_bytes > archive_limits.max_archive_bytes
+            ):
                 raise ReleaseError("backup_integrity_failed")
             source.seek(ciphertext_end - 16)
             tag = source.read(16)
@@ -597,6 +860,8 @@ def restore_encrypted_backup(
                             raise ReleaseError("backup_integrity_failed")
                         remaining -= len(chunk)
                         output.write(decryptor.update(chunk))
+                        if output.tell() > archive_limits.max_archive_bytes:
+                            raise ReleaseError("backup_archive_limit")
                     output.write(decryptor.finalize())
                 except InvalidTag as exc:
                     raise ReleaseError("backup_integrity_failed") from exc
@@ -604,25 +869,16 @@ def restore_encrypted_backup(
                 os.fsync(output.fileno())
         if _sha256_path(plain) != manifest["payload_sha256"]:
             raise ReleaseError("backup_integrity_failed")
+        if _verify_only:
+            _inspect_backup_archive(plain, None, archive_limits)
+            return {**manifest, "verified": True}
         target = Path(target)
         if target.exists() or target.is_symlink():
             raise ReleaseError("restore_target_not_empty")
         target.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(dir=target.parent, prefix=f".{target.name}.restore-"))
         try:
-            with zipfile.ZipFile(plain) as archive:
-                seen = set()
-                for member in archive.infolist():
-                    path = Path(member.filename)
-                    if (
-                        path.is_absolute()
-                        or ".." in path.parts
-                        or member.is_dir()
-                        or member.filename in seen
-                    ):
-                        raise ReleaseError("backup_manifest_invalid")
-                    seen.add(member.filename)
-                archive.extractall(staging)
+            _inspect_backup_archive(plain, staging, archive_limits)
             os.replace(staging, target)
         finally:
             if staging.exists():
@@ -647,7 +903,15 @@ def _read(path, limit=4096):
         raise ReleaseError("invalid_command") from exc
 
 
-def _validate(value, *, fresh=True):
+def _validate(value, *, fresh=True, trusted_typed=False):
+    try:
+        kind = OperationKind(value.get("kind"))
+    except (TypeError, ValueError):
+        kind = None
+    if kind is not None and (kind is not OperationKind.DIAGNOSTICS or "authorization" in value):
+        return validate_typed_operation(
+            value, fresh=fresh, authorization_fresh=not trusted_typed
+        ).request
     if value.get("kind") == "update":
         try:
             stamp = timestamp(value.get("created_at"))
@@ -839,7 +1103,16 @@ def _superseded_by_successful_update(paths, request):
     )
 
 
-def consume_commands(paths, runner, http, *, update_runner=None, github_http=None):
+def consume_commands(
+    paths,
+    runner,
+    http,
+    *,
+    update_runner=None,
+    github_http=None,
+    typed_effects=None,
+    typed_devices=None,
+):
     """All privileged work is serialized; API never chooses argv or output paths."""
     if paths.root == Path("/") and os.geteuid() != 0:
         return 1
@@ -863,7 +1136,7 @@ def consume_commands(paths, runner, http, *, update_runner=None, github_http=Non
                 inbox.unlink(missing_ok=True)
             else:
                 try:
-                    request = _validate(_read(pending), fresh=False)
+                    request = _validate(_read(pending), fresh=False, trusted_typed=True)
                 except ReleaseError:
                     return 1
             if resumed and inbox.exists():
@@ -926,6 +1199,24 @@ def consume_commands(paths, runner, http, *, update_runner=None, github_http=Non
                 else:
                     _finish(paths, request, saved["result"])
                 return 0
+            try:
+                typed_kind = OperationKind(request["kind"])
+            except (KeyError, ValueError):
+                typed_kind = None
+            if typed_kind is not None and (
+                typed_kind is not OperationKind.DIAGNOSTICS or "authorization" in request
+            ):
+                effects = typed_effects or TypedHostEffects()
+                devices = typed_devices() if callable(typed_devices) else ()
+                result = execute_typed_operation(
+                    paths,
+                    request,
+                    effects,
+                    devices=devices,
+                    authorization_fresh=not resumed,
+                )
+                _finish(paths, request, result)
+                return int(result["state"] != "succeeded")
             if (
                 resumed
                 and request["kind"] == "update"

@@ -185,3 +185,22 @@ def test_release_retention_protects_current_previous_and_recovery(host_paths):
         "previous-release",
         "recovery-release",
     }
+
+
+@pytest.mark.parametrize("unsafe", ["dangling", "outside"])
+def test_release_protection_fails_closed_for_uncertain_symlink(host_paths, tmp_path, unsafe):
+    from robopark_host.release import ReleaseError
+    from robopark_host.restore_retention import protected_release_names
+
+    current = host_paths.releases / "current-release"
+    current.mkdir(parents=True)
+    host_paths.current.symlink_to(current)
+    if unsafe == "dangling":
+        host_paths.recovery.symlink_to(host_paths.releases / "missing")
+    else:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        host_paths.recovery.symlink_to(outside)
+
+    with pytest.raises(ReleaseError, match="unsafe_release_path"):
+        protected_release_names(host_paths)

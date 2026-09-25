@@ -38,6 +38,7 @@ MIN_FREE_BYTES = 6 * GIB
 MIN_FREE_RATIO = 0.15
 MAX_STORAGE_DELETIONS = 128
 STORAGE_CATEGORIES = ("diagnostics", "logs")
+MANAGED_STORAGE_CATEGORIES = ("backups", "releases")
 STORAGE_PRIORITY = {name: index for index, name in enumerate(STORAGE_CATEGORIES)}
 STORAGE_TTL = {
     "diagnostics": 7 * 86400,
@@ -261,6 +262,260 @@ def execute_cleanup_plan(
         roots, budget, dry_run=False, max_deletions=max_deletions, now=now
     )
     return {**result, "plan_id": expected["plan_id"]}
+
+
+def _regular_sha256(path: Path, *, max_bytes: int = 4 * 1024**3) -> tuple[int, str]:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    digest = hashlib.sha256()
+    total = 0
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid not in {0, os.geteuid()}
+        ):
+            raise RetentionBlocked("unsafe_cleanup_artifact")
+        while chunk := stream.read(1024 * 1024):
+            total += len(chunk)
+            if total > max_bytes:
+                raise RetentionBlocked("cleanup_artifact_limit")
+            digest.update(chunk)
+    return total, digest.hexdigest()
+
+
+def _backup_receipts(paths):
+    receipts = paths.state / "backup-receipts"
+    result = {}
+    if not receipts.exists():
+        return result
+    if receipts.is_symlink() or not receipts.is_dir():
+        raise RetentionBlocked("unsafe_backup_receipts")
+    entries = list(receipts.iterdir())
+    if len(entries) > MAX_ENTRIES:
+        raise RetentionBlocked("backup_receipt_limit")
+    for receipt in entries:
+        if receipt.is_symlink() or not re.fullmatch(UUID + r"\.json", receipt.name):
+            raise RetentionBlocked("unsafe_backup_receipt")
+        try:
+            value = read_object(receipt)
+        except (OSError, ValueError, TypeError) as exc:
+            raise RetentionBlocked("unsafe_backup_receipt") from exc
+        identity = receipt.stem
+        if (
+            not isinstance(value, dict)
+            or set(value)
+            != {
+                "schema",
+                "backup_id",
+                "verified",
+                "sha256",
+                "verified_at",
+                "recovery_required",
+            }
+            or value["schema"] != 1
+            or value["backup_id"] != identity
+            or value["verified"] is not True
+            or not re.fullmatch(r"[a-f0-9]{64}", str(value["sha256"]))
+            or not isinstance(value["verified_at"], (int, float))
+            or type(value["recovery_required"]) is not bool
+        ):
+            raise RetentionBlocked("unsafe_backup_receipt")
+        result[identity] = value
+    return result
+
+
+def _managed_cleanup_snapshot(
+    paths,
+    categories,
+    budget,
+    *,
+    now,
+    max_deletions,
+    large_cleanup_bytes,
+    backup_guard_max_age,
+):
+    requested = tuple(categories)
+    unknown = sorted(set(requested) - set(MANAGED_STORAGE_CATEGORIES))
+    blocked = bool(unknown) or not requested or len(requested) != len(set(requested))
+    planned = []
+    guard = None
+    try:
+        receipts = _backup_receipts(paths)
+        backup_root = paths.var / "backups"
+        if "backups" in requested and backup_root.exists():
+            if (
+                backup_root.is_symlink()
+                or not backup_root.is_dir()
+                or backup_root.resolve().parent != paths.var.resolve()
+            ):
+                raise RetentionBlocked("unsafe_backup_root")
+            entries = list(backup_root.iterdir())
+            if len(entries) > MAX_ENTRIES:
+                raise RetentionBlocked("backup_artifact_limit")
+            for artifact in sorted(entries, key=lambda item: item.name):
+                match = re.fullmatch(r"backup-(" + UUID + r")\.rpb", artifact.name)
+                if match is None:
+                    raise RetentionBlocked("unknown_backup_artifact")
+                identity = match.group(1)
+                size, digest = _regular_sha256(artifact)
+                receipt = receipts.get(identity)
+                if receipt is not None:
+                    if digest != receipt["sha256"]:
+                        raise RetentionBlocked("verified_backup_changed")
+                    if now - receipt["verified_at"] <= backup_guard_max_age:
+                        candidate = {
+                            "backup_id": identity,
+                            "sha256": digest,
+                            "verified_at": receipt["verified_at"],
+                        }
+                        if guard is None or candidate["verified_at"] > guard["verified_at"]:
+                            guard = candidate
+                    # Every verified or recovery-required artifact is protected.
+                    continue
+                planned.append(
+                    {
+                        "category": "backups",
+                        "path": artifact.name,
+                        "bytes": size,
+                        "fingerprint": digest,
+                    }
+                )
+        if "releases" in requested:
+            from .restore_retention import protected_release_names
+            from .updater import _successful_release_receipts
+
+            protected = protected_release_names(paths)
+            for name, _, _ in _successful_release_receipts(paths):
+                if name in protected:
+                    continue
+                target = paths.releases / name
+                if target.parent != paths.releases or target.is_symlink() or not target.is_dir():
+                    raise RetentionBlocked("unsafe_release_path")
+                digest = hashlib.sha256()
+                size = 0
+                count = 0
+                for root, directories, files in os.walk(target, followlinks=False):
+                    directories.sort()
+                    files.sort()
+                    for entry_name in [*directories, *files]:
+                        entry = Path(root) / entry_name
+                        info = entry.lstat()
+                        count += 1
+                        if count > MAX_ENTRIES or entry.is_symlink():
+                            raise RetentionBlocked("unsafe_release_path")
+                        if stat.S_ISREG(info.st_mode):
+                            size += info.st_size
+                        elif not stat.S_ISDIR(info.st_mode):
+                            raise RetentionBlocked("unsafe_release_path")
+                        digest.update(entry.relative_to(target).as_posix().encode())
+                        digest.update(str((info.st_mode, info.st_size, info.st_mtime_ns)).encode())
+                planned.append(
+                    {
+                        "category": "releases",
+                        "path": name,
+                        "bytes": size,
+                        "fingerprint": digest.hexdigest(),
+                    }
+                )
+    except (OSError, ValueError, RetentionBlocked):
+        blocked = True
+    planned.sort(key=lambda item: (item["category"], item["path"]))
+    planned = planned[:max(0, max_deletions)]
+    target = budget.bytes_to_reclaim
+    selected = []
+    reclaimed = 0
+    for item in planned:
+        if reclaimed >= target:
+            break
+        selected.append(item)
+        reclaimed += item["bytes"]
+    if sum(item["bytes"] for item in selected) >= large_cleanup_bytes and guard is None:
+        blocked = True
+    return {
+        "schema": 1,
+        "bounded": len(selected) <= max(0, max_deletions),
+        "floor_bytes": budget.floor_bytes,
+        "bytes_to_reclaim": target,
+        "planned": selected,
+        "blocked": blocked,
+        "unknown_categories": unknown,
+        "guard": guard,
+    }
+
+
+def preview_host_cleanup_plan(
+    paths,
+    categories,
+    budget,
+    *,
+    max_deletions=MAX_STORAGE_DELETIONS,
+    now=None,
+    large_cleanup_bytes=512 * 1024**2,
+    backup_guard_max_age=86400,
+):
+    """Plan backup/release cleanup from fixed roots and protected receipts."""
+
+    now = time.time() if now is None else now
+    body = _managed_cleanup_snapshot(
+        paths,
+        categories,
+        budget,
+        now=now,
+        max_deletions=max_deletions,
+        large_cleanup_bytes=large_cleanup_bytes,
+        backup_guard_max_age=backup_guard_max_age,
+    )
+    encoded = json.dumps(body, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    return {**body, "plan_id": str(uuid.uuid5(uuid.NAMESPACE_URL, encoded))}
+
+
+def execute_host_cleanup_plan(
+    paths,
+    categories,
+    budget,
+    plan,
+    *,
+    max_deletions=MAX_STORAGE_DELETIONS,
+    now=None,
+    large_cleanup_bytes=512 * 1024**2,
+    backup_guard_max_age=86400,
+):
+    """Revalidate the immutable managed plan and delete only its direct children."""
+
+    expected = preview_host_cleanup_plan(
+        paths,
+        categories,
+        budget,
+        max_deletions=max_deletions,
+        now=now,
+        large_cleanup_bytes=large_cleanup_bytes,
+        backup_guard_max_age=backup_guard_max_age,
+    )
+    if plan != expected or expected["blocked"]:
+        raise ValueError("cleanup_plan_changed")
+    deleted = []
+    for item in expected["planned"]:
+        if item["category"] == "backups":
+            target = paths.var / "backups" / item["path"]
+            _, digest = _regular_sha256(target)
+            if digest != item["fingerprint"]:
+                raise ValueError("cleanup_plan_changed")
+            target.unlink()
+        else:
+            from .restore_retention import protected_release_names
+
+            if item["path"] in protected_release_names(paths):
+                raise ValueError("cleanup_plan_changed")
+            target = paths.releases / item["path"]
+            if target.is_symlink() or not target.is_dir():
+                raise ValueError("cleanup_plan_changed")
+            if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+                raise ValueError("cleanup_plan_changed")
+            shutil.rmtree(target)
+            (paths.state / "successful-releases" / f"{item['path']}.json").unlink()
+        deleted.append({key: item[key] for key in ("category", "path", "bytes")})
+    return {**expected, "deleted": deleted, "deleted_count": len(deleted)}
 
 
 def retain_storage(

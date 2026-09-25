@@ -13,20 +13,75 @@ from robopark_host.checks import CheckResult, CommandResult, DiagnosticReport
 
 
 class FakeHostEffects:
-    def __init__(self):
+    def __init__(self, *, failure=None, reconciliation=None):
         self.calls = []
+        self.failure = failure
+        self.reconciliation = reconciliation
+
+    def _effect(self, name, operation_id, *values):
+        from robopark_host.release import ReleaseError
+
+        self.calls.append((name, operation_id, *values))
+        if self.failure == name:
+            raise ReleaseError("simulated_host_failure")
+        return {"effect": name, "operation_id": operation_id}
+
+    def reconcile(self, operation):
+        self.calls.append(("reconcile", operation.operation_id, operation.kind.value))
+        return self.reconciliation
+
+    def release_update(self, operation_id, release_id):
+        return self._effect("release_update", operation_id, release_id)
+
+    def reinstall(self, operation_id):
+        return self._effect("reinstall", operation_id)
+
+    def rollback(self, operation_id, release):
+        return self._effect("rollback", operation_id, release)
 
     def usb_format(self, operation_id, device):
         self.calls.append(("usb_format", operation_id, device.uuid, device.path))
+        if self.failure == "usb_format":
+            from robopark_host.release import ReleaseError
+
+            raise ReleaseError("simulated_host_failure")
         return {"device_uuid": device.uuid, "formatted": True}
 
     def reboot(self, operation_id):
-        self.calls.append(("reboot", operation_id))
-        return {"scheduled": True}
+        return self._effect("reboot", operation_id)
 
     def package_inspect(self, operation_id, package):
-        self.calls.append(("package_inspect", operation_id, package))
-        return {"package": package}
+        return self._effect("package_inspect", operation_id, package)
+
+    def package_update(self, operation_id, package):
+        return self._effect("package_update", operation_id, package)
+
+    def service_restart(self, operation_id, service):
+        return self._effect("service_restart", operation_id, service)
+
+    def backup(self, operation_id, device_uuid):
+        return self._effect("backup", operation_id, device_uuid)
+
+    def backup_verify(self, operation_id, backup_id):
+        return self._effect("backup_verify", operation_id, backup_id)
+
+    def backup_restore(self, operation_id, backup_id):
+        return self._effect("backup_restore", operation_id, backup_id)
+
+    def cleanup_preview(self, operation_id, categories):
+        return self._effect("cleanup_preview", operation_id, *categories)
+
+    def cleanup_execute(self, operation_id, plan_id):
+        return self._effect("cleanup_execute", operation_id, plan_id)
+
+    def diagnostics(self, operation_id):
+        return self._effect("diagnostics", operation_id)
+
+    def usb_discover(self, operation_id):
+        return self._effect("usb_discover", operation_id)
+
+    def usb_select(self, operation_id, device):
+        return self._effect("usb_select", operation_id, device.uuid, device.path)
 
 
 def request(paths, kind="diagnostics", **changes):
@@ -63,6 +118,85 @@ def authorization(command):
         "consumed": True,
         "validated_at": command["created_at"],
     }
+
+
+_DEVICE_UUID = "00000000-0000-4000-8000-000000000001"
+_BACKUP_UUID = "00000000-0000-4000-8000-000000000002"
+_PLAN_UUID = "00000000-0000-4000-8000-000000000003"
+
+
+@pytest.mark.parametrize(
+    ("payload", "effect"),
+    [
+        ({"kind": "release-update", "release_id": 7, "confirmation": "UPDATE ROBOPARK"}, "release_update"),
+        ({"kind": "reinstall", "confirmation": "REINSTALL ROBOPARK"}, "reinstall"),
+        ({"kind": "rollback", "release": "release-a", "confirmation": "ROLLBACK ROBOPARK"}, "rollback"),
+        ({"kind": "package-inspect", "package": "openssl"}, "package_inspect"),
+        ({"kind": "package-update", "package": "openssl", "confirmation": "UPDATE PACKAGE openssl"}, "package_update"),
+        ({"kind": "service-restart", "service": "robopark-api.service", "confirmation": "RESTART SERVICE robopark-api.service"}, "service_restart"),
+        ({"kind": "reboot", "confirmation": "REBOOT ROBOPARK"}, "reboot"),
+        ({"kind": "backup", "device_uuid": _DEVICE_UUID}, "backup"),
+        ({"kind": "backup-verify", "backup_id": _BACKUP_UUID}, "backup_verify"),
+        ({"kind": "backup-restore", "backup_id": _BACKUP_UUID, "confirmation": "RESTORE ROBOPARK BACKUP"}, "backup_restore"),
+        ({"kind": "cleanup-preview", "categories": ["backups", "releases"]}, "cleanup_preview"),
+        ({"kind": "cleanup-execute", "plan_id": _PLAN_UUID, "confirmation": "CLEAN ROBOPARK"}, "cleanup_execute"),
+        ({"kind": "diagnostics"}, "diagnostics"),
+        ({"kind": "usb-discover"}, "usb_discover"),
+        ({"kind": "usb-format", "device_uuid": _DEVICE_UUID, "confirmation": f"FORMAT USB {_DEVICE_UUID}", "confirmation_repeat": f"FORMAT USB {_DEVICE_UUID}"}, "usb_format"),
+        ({"kind": "usb-select", "device_uuid": _DEVICE_UUID}, "usb_select"),
+    ],
+)
+def test_api_bridge_to_real_consumer_dispatches_every_typed_kind(
+    host_paths, payload, effect
+):
+    """The production consumer path must accept the API bridge's exact envelope."""
+
+    from robopark_api.services.ops import host_bridge
+    from robopark_host.commands import (
+        BlockDevice,
+        SystemTypedHostEffects,
+        consume_commands,
+    )
+
+    operation_id = str(uuid4())
+    api_ops = host_paths.var / "api-ops"
+    (host_paths.ops / "inbox").mkdir(parents=True, exist_ok=True)
+    (host_paths.ops / "public").mkdir(parents=True, exist_ok=True)
+    (host_paths.ops / "public/command-claim.json").write_text(
+        json.dumps({"job_id": str(uuid4()), "kind": "diagnostics", "actor_user_id": 1, "active": False})
+    )
+    request_payload = {"operation_id": operation_id, **payload}
+    host_bridge.enqueue_typed_operation(
+        api_ops,
+        host_paths.ops,
+        request_payload,
+        7,
+        "session-hash",
+        authorization_consumed={
+            "operation_id": operation_id,
+            "operation_kind": payload["kind"],
+            "actor_user_id": 7,
+            "consumed": True,
+        },
+    )
+    system = FakeHostEffects()
+    effects = SystemTypedHostEffects(host_paths, system=system)
+    devices = [BlockDevice(_DEVICE_UUID, "/dev/fake-usb", removable=True)]
+
+    code = consume_commands(
+        host_paths,
+        lambda *args, **kwargs: None,
+        object(),
+        typed_effects=effects,
+        typed_devices=lambda: devices,
+    )
+
+    assert code == 0
+    assert system.calls[0][0] == effect
+    result = json.loads((host_paths.ops / "public/command-result.json").read_text())
+    assert result["job_id"] == operation_id
+    assert result["kind"] == payload["kind"]
+    assert result["state"] == "succeeded"
 
 
 def test_typed_schema_is_closed_and_has_no_execution_escape():
@@ -204,6 +338,113 @@ def test_destructive_operation_revalidates_consumed_authorization_and_phrase(hos
     assert effects.calls == []
 
 
+def test_typed_release_error_is_terminal_and_same_id_is_not_retried(host_paths):
+    from robopark_host.commands import execute_typed_operation
+
+    command = typed_request("package-inspect", package="openssl")
+    effects = FakeHostEffects(failure="package_inspect")
+
+    first = execute_typed_operation(host_paths, command, effects)
+    second = execute_typed_operation(host_paths, command, effects)
+
+    assert first == second
+    assert first["state"] == "failed"
+    assert first["error"] == "simulated_host_failure"
+    assert [call[0] for call in effects.calls] == ["package_inspect"]
+    progress = json.loads(
+        (host_paths.state / "operation-progress" / f"{command['job_id']}.json").read_text()
+    )
+    assert progress["phase"] == "failed"
+
+
+def test_typed_resume_from_accepted_never_regresses_progress(host_paths):
+    from robopark_host.commands import execute_typed_operation
+    from robopark_host.state import write_operation_progress
+
+    command = typed_request("package-inspect", package="openssl")
+    write_operation_progress(host_paths, command["job_id"], "accepted", 0)
+    effects = FakeHostEffects()
+
+    assert execute_typed_operation(host_paths, command, effects)["state"] == "succeeded"
+    assert [call[0] for call in effects.calls] == ["package_inspect"]
+
+
+def test_typed_power_loss_after_dispatch_reconciles_without_repeating_effect(host_paths):
+    from robopark_host.commands import execute_typed_operation, validate_typed_operation
+    from robopark_host.state import atomic_write_json, write_operation_progress
+
+    command = typed_request("reboot", confirmation="REBOOT ROBOPARK")
+    command["authorization"] = authorization(command)
+    operation = validate_typed_operation(command)
+    checkpoint = host_paths.state / "typed-operation-dispatch" / f"{command['job_id']}.json"
+    atomic_write_json(
+        checkpoint,
+        {"schema": 1, "request": operation.request, "state": "dispatched"},
+    )
+    write_operation_progress(host_paths, command["job_id"], "accepted", 0)
+    write_operation_progress(host_paths, command["job_id"], "executing", 50)
+    effects = FakeHostEffects(
+        reconciliation={"state": "succeeded", "detail": {"scheduled": True}}
+    )
+
+    result = execute_typed_operation(host_paths, command, effects)
+
+    assert result["state"] == "succeeded"
+    assert effects.calls == [("reconcile", command["job_id"], "reboot")]
+
+
+def test_consumer_resumes_durable_typed_checkpoint_after_authorization_window(host_paths):
+    from robopark_host.commands import SystemTypedHostEffects, consume_commands
+    from robopark_host.state import atomic_write_json, write_operation_progress
+
+    old = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    command = typed_request("reboot", confirmation="REBOOT ROBOPARK")
+    command["created_at"] = old
+    command["authorization"] = authorization(command)
+    atomic_write_json(host_paths.state / "command-request.json", command)
+    atomic_write_json(
+        host_paths.state / "typed-operation-intents" / f"{command['job_id']}.json",
+        {"schema": 1, "request": command},
+    )
+    atomic_write_json(
+        host_paths.state / "typed-operation-dispatch" / f"{command['job_id']}.json",
+        {"schema": 1, "request": command, "state": "dispatched"},
+    )
+    write_operation_progress(host_paths, command["job_id"], "accepted", 0)
+    write_operation_progress(host_paths, command["job_id"], "executing", 50)
+    system = FakeHostEffects(
+        reconciliation={"state": "succeeded", "detail": {"scheduled": True}}
+    )
+
+    code = consume_commands(
+        host_paths,
+        lambda *args, **kwargs: None,
+        object(),
+        typed_effects=SystemTypedHostEffects(host_paths, system=system),
+    )
+
+    assert code == 0
+    assert system.calls == [("reconcile", command["job_id"], "reboot")]
+
+
+def test_typed_dispatch_checkpoint_rejects_changed_request(host_paths):
+    from robopark_host.commands import execute_typed_operation, validate_typed_operation
+    from robopark_host.release import ReleaseError
+    from robopark_host.state import atomic_write_json
+
+    command = typed_request("package-inspect", package="openssl")
+    operation = validate_typed_operation(command)
+    checkpoint = host_paths.state / "typed-operation-dispatch" / f"{command['job_id']}.json"
+    atomic_write_json(
+        checkpoint,
+        {"schema": 1, "request": operation.request, "state": "dispatched"},
+    )
+    changed = {**command, "package": "docker-ce"}
+
+    with pytest.raises(ReleaseError, match="duplicate_operation_id"):
+        execute_typed_operation(host_paths, changed, FakeHostEffects())
+
+
 def test_encrypted_backup_never_contains_key_and_restore_requires_external_key(tmp_path):
     from robopark_host.commands import (
         create_encrypted_backup,
@@ -275,6 +516,69 @@ def test_restore_rejects_unverified_or_incompatible_backup(tmp_path):
             recovery_key=key,
             verified={**receipt, "app_version": "9.0.0"},
         )
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"max_members": 1},
+        {"max_member_bytes": 2},
+        {"max_total_bytes": 4},
+        {"max_compression_ratio": 1},
+        {"max_metadata_bytes": 1},
+    ],
+)
+def test_backup_verification_rejects_bounded_archive_limits(tmp_path, limits):
+    from robopark_host.commands import (
+        BackupArchiveLimits,
+        create_encrypted_backup,
+        verify_encrypted_backup,
+    )
+    from robopark_host.release import ReleaseError
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "one").write_bytes(b"a" * 64)
+    (source / "two").write_bytes(b"b" * 64)
+    artifact = tmp_path / "backup.rpb"
+    key = b"l" * 32
+    create_encrypted_backup(
+        source,
+        artifact,
+        recovery_key=key,
+        app_version="0.2.0-rc.6",
+        schema_version="0046_privileged_generation",
+    )
+
+    with pytest.raises(ReleaseError, match="backup_archive_limit"):
+        verify_encrypted_backup(
+            artifact,
+            recovery_key=key,
+            archive_limits=BackupArchiveLimits(**limits),
+        )
+
+
+def test_backup_verification_streams_without_extractall(tmp_path, monkeypatch):
+    from robopark_host.commands import create_encrypted_backup, verify_encrypted_backup
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "data").write_bytes(b"small")
+    artifact = tmp_path / "backup.rpb"
+    key = b"s" * 32
+    create_encrypted_backup(
+        source,
+        artifact,
+        recovery_key=key,
+        app_version="0.2.0-rc.6",
+        schema_version="0046_privileged_generation",
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("extractall must never be used")
+
+    monkeypatch.setattr(zipfile.ZipFile, "extractall", forbidden)
+    assert verify_encrypted_backup(artifact, recovery_key=key)["verified"] is True
 
 
 def test_diagnostics_consumes_once_and_exports_readable_zip(host_paths, monkeypatch):

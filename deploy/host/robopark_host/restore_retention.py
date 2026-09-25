@@ -18,15 +18,28 @@ from .state import atomic_write_json
 def protected_release_names(paths):
     """Return only resolved, in-tree release names protected from retention."""
 
+    from .release import ReleaseError
+
     protected = set()
-    release_root = paths.releases.resolve()
+    try:
+        release_root = paths.releases.resolve(strict=True)
+    except OSError as exc:
+        raise ReleaseError("unsafe_release_path") from exc
     for link in (paths.current, paths.previous, paths.recovery):
+        if not link.exists() and not link.is_symlink():
+            continue
         try:
             target = link.resolve(strict=True)
-        except OSError:
-            continue
-        if target.parent == release_root and target.is_dir():
-            protected.add(target.name)
+        except OSError as exc:
+            raise ReleaseError("unsafe_release_path") from exc
+        if (
+            not link.is_symlink()
+            or target.parent != release_root
+            or target.is_symlink()
+            or not target.is_dir()
+        ):
+            raise ReleaseError("unsafe_release_path")
+        protected.add(target.name)
     return protected
 
 
