@@ -3,6 +3,7 @@
 import configparser
 import json
 import os
+import struct
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -197,6 +198,142 @@ def test_api_bridge_to_real_consumer_dispatches_every_typed_kind(
     assert result["job_id"] == operation_id
     assert result["kind"] == payload["kind"]
     assert result["state"] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("kind", "changes", "expected_state", "expected_error"),
+    [
+        ("package-inspect", {"package": "openssl"}, "succeeded", None),
+        ("cleanup-preview", {"categories": ["diagnostics"]}, "succeeded", None),
+        ("diagnostics", {}, "succeeded", None),
+        ("usb-discover", {}, "succeeded", None),
+        (
+            "reboot",
+            {"confirmation": "REBOOT ROBOPARK"},
+            "failed",
+            "capability_unavailable",
+        ),
+    ],
+)
+def test_default_cli_consumer_uses_safe_production_adapter(
+    host_paths, kind, changes, expected_state, expected_error, monkeypatch
+):
+    from robopark_host import commands
+    from robopark_host.cli import _consume_handler
+
+    monkeypatch.setattr(
+        commands,
+        "run_doctor",
+        lambda *args: DiagnosticReport([CheckResult("resources", "ok", "ok")]),
+    )
+
+    status = host_paths.root / "var/lib/dpkg/status"
+    status.parent.mkdir(parents=True, exist_ok=True)
+    status.write_text(
+        "Package: openssl\nStatus: install ok installed\nVersion: 3.0.0\n\n"
+    )
+    device = host_paths.root / "dev/fake-usb"
+    device.parent.mkdir(parents=True, exist_ok=True)
+    device.touch()
+    uuid_root = host_paths.root / "dev/disk/by-uuid"
+    uuid_root.mkdir(parents=True)
+    (uuid_root / _DEVICE_UUID).symlink_to("../../fake-usb")
+    removable = host_paths.root / "sys/class/block/fake-usb/removable"
+    removable.parent.mkdir(parents=True)
+    removable.write_text("1\n")
+    mountinfo = host_paths.root / "proc/self/mountinfo"
+    mountinfo.parent.mkdir(parents=True)
+    mountinfo.write_text("")
+    command = typed_request(kind, **changes)
+    command["authorization"] = authorization(command)
+    inbox = host_paths.ops / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / "approved.json").write_text(json.dumps(command))
+
+    code = _consume_handler(host_paths)
+
+    result = json.loads((host_paths.ops / "public/command-result.json").read_text())
+    assert code == int(expected_state != "succeeded")
+    assert result["state"] == expected_state
+    assert result["error"] == expected_error
+    if kind == "package-inspect":
+        assert result["detail"] == {
+            "package": "openssl",
+            "installed": True,
+            "version": "3.0.0",
+        }
+    if kind == "usb-discover":
+        assert result["detail"]["devices"] == [
+            {"device_uuid": _DEVICE_UUID, "mounted": False, "removable": True}
+        ]
+
+
+def test_default_cli_consumer_verifies_backup_with_external_runtime_key(host_paths):
+    from robopark_host.cli import _consume_handler
+    from robopark_host.commands import create_encrypted_backup
+
+    key = b"v" * 32
+    key_path = host_paths.root / "run/robopark/recovery.key"
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_bytes(key)
+    key_path.chmod(0o600)
+    source = host_paths.root / "backup-source"
+    source.mkdir()
+    (source / "data").write_bytes(b"safe")
+    mount = host_paths.root / "mnt/usb"
+    backups = mount / "robopark-backups"
+    backups.mkdir(parents=True)
+    create_encrypted_backup(
+        source,
+        backups / f"backup-{_BACKUP_UUID}.rpb",
+        recovery_key=key,
+        app_version="0.2.0-rc.6",
+        schema_version="0046_privileged_generation",
+    )
+    device = host_paths.root / "dev/fake-usb"
+    device.parent.mkdir(parents=True)
+    device.touch()
+    uuid_root = host_paths.root / "dev/disk/by-uuid"
+    uuid_root.mkdir(parents=True)
+    (uuid_root / _DEVICE_UUID).symlink_to("../../fake-usb")
+    removable = host_paths.root / "sys/class/block/fake-usb/removable"
+    removable.parent.mkdir(parents=True)
+    removable.write_text("1\n")
+    mountinfo = host_paths.root / "proc/self/mountinfo"
+    mountinfo.parent.mkdir(parents=True)
+    mountinfo.write_text(
+        "1 0 8:1 / /mnt/usb rw - ext4 /dev/fake-usb rw\n"
+    )
+    command = typed_request("backup-verify", backup_id=_BACKUP_UUID)
+    command["authorization"] = authorization(command)
+    inbox = host_paths.ops / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / "approved.json").write_text(json.dumps(command))
+
+    assert _consume_handler(host_paths) == 0
+    result = json.loads((host_paths.ops / "public/command-result.json").read_text())
+    assert result["detail"] == {"backup_id": _BACKUP_UUID, "verified": True}
+    receipt = json.loads(
+        (host_paths.state / "backup-receipts" / f"{_BACKUP_UUID}.json").read_text()
+    )
+    assert receipt["verified"] is True
+
+
+def test_safe_production_adapter_declares_exact_fail_closed_kinds():
+    from robopark_host.commands import OperationKind, SafeProductionTypedHostEffects
+
+    assert SafeProductionTypedHostEffects.unsupported_kinds() == {
+        OperationKind.RELEASE_UPDATE,
+        OperationKind.REINSTALL,
+        OperationKind.ROLLBACK,
+        OperationKind.PACKAGE_UPDATE,
+        OperationKind.SERVICE_RESTART,
+        OperationKind.REBOOT,
+        OperationKind.BACKUP,
+        OperationKind.BACKUP_RESTORE,
+        OperationKind.CLEANUP_EXECUTE,
+        OperationKind.USB_FORMAT,
+    }
 
 
 def test_typed_schema_is_closed_and_has_no_execution_escape():
@@ -579,6 +716,86 @@ def test_backup_verification_streams_without_extractall(tmp_path, monkeypatch):
 
     monkeypatch.setattr(zipfile.ZipFile, "extractall", forbidden)
     assert verify_encrypted_backup(artifact, recovery_key=key)["verified"] is True
+
+
+@pytest.mark.parametrize(
+    ("source_files", "limits"),
+    [
+        ({"one": b"1", "two": b"2"}, {"max_members": 1}),
+        ({"one": b"1"}, {"max_central_directory_bytes": 1}),
+    ],
+)
+def test_backup_zip_directory_bounds_reject_before_zipfile_allocation(
+    tmp_path, monkeypatch, source_files, limits
+):
+    from robopark_host.commands import (
+        BackupArchiveLimits,
+        create_encrypted_backup,
+        verify_encrypted_backup,
+    )
+    from robopark_host.release import ReleaseError
+
+    source = tmp_path / "source"
+    source.mkdir()
+    for name, body in source_files.items():
+        (source / name).write_bytes(body)
+    artifact = tmp_path / "backup.rpb"
+    key = b"e" * 32
+    create_encrypted_backup(
+        source,
+        artifact,
+        recovery_key=key,
+        app_version="0.2.0-rc.6",
+        schema_version="0046_privileged_generation",
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("ZipFile must not be constructed before EOCD bounds")
+
+    monkeypatch.setattr(zipfile, "ZipFile", forbidden)
+    with pytest.raises(ReleaseError, match="backup_archive_limit"):
+        verify_encrypted_backup(
+            artifact,
+            recovery_key=key,
+            archive_limits=BackupArchiveLimits(**limits),
+        )
+
+
+@pytest.mark.parametrize(
+    ("fields", "error"),
+    [
+        ((1, 0, 0, 0, 0, 0, 0), "backup_manifest_invalid"),
+        ((0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0), "backup_archive_limit"),
+        ((0, 0, 1, 1, 1, 100, 0), "backup_manifest_invalid"),
+    ],
+)
+def test_zip_preflight_rejects_multidisk_zip64_and_bad_offsets(tmp_path, fields, error):
+    from robopark_host.commands import BackupArchiveLimits, _preflight_zip_directory
+    from robopark_host.release import ReleaseError
+
+    payload = tmp_path / "payload.zip"
+    payload.write_bytes(struct.pack("<4s4H2LH", b"PK\x05\x06", *fields))
+
+    with pytest.raises(ReleaseError, match=error):
+        _preflight_zip_directory(payload, BackupArchiveLimits())
+
+
+def test_zip_preflight_counts_actual_central_headers_not_only_eocd(tmp_path):
+    from robopark_host.commands import BackupArchiveLimits, _preflight_zip_directory
+    from robopark_host.release import ReleaseError
+
+    payload = tmp_path / "payload.zip"
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("one", b"1")
+        archive.writestr("two", b"2")
+    raw = bytearray(payload.read_bytes())
+    eocd = raw.rfind(b"PK\x05\x06")
+    struct.pack_into("<H", raw, eocd + 8, 1)
+    struct.pack_into("<H", raw, eocd + 10, 1)
+    payload.write_bytes(raw)
+
+    with pytest.raises(ReleaseError, match="backup_archive_limit"):
+        _preflight_zip_directory(payload, BackupArchiveLimits(max_members=1))
 
 
 def test_diagnostics_consumes_once_and_exports_readable_zip(host_paths, monkeypatch):

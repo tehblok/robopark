@@ -205,9 +205,28 @@ def _bootstrap_handler(paths: HostPaths) -> int:
 
 
 def _consume_handler(paths: HostPaths) -> int:
-    from .commands import consume_commands
+    from .commands import (
+        SafeProductionTypedHostEffects,
+        consume_commands,
+        discover_usb_devices,
+    )
 
-    return consume_commands(paths, _system_runner, _Http())
+    def devices():
+        return discover_usb_devices(paths)
+
+    http = _Http()
+    return consume_commands(
+        paths,
+        _system_runner,
+        http,
+        typed_effects=SafeProductionTypedHostEffects(
+            paths,
+            runner=_system_runner,
+            http=http,
+            device_provider=devices,
+        ),
+        typed_devices=devices,
+    )
 
 
 def _restore_check_handler(paths: HostPaths) -> int:

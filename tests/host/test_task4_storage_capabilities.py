@@ -221,6 +221,52 @@ def test_managed_cleanup_requires_fresh_unchanged_verified_backup_guard(
     assert old.exists() and releases["obsolete-b"].exists()
 
 
+@pytest.mark.parametrize("guard", ["fresh", "missing", "stale", "changed"])
+def test_release_only_cleanup_uses_independent_verified_backup_guard(host_paths, guard):
+    from robopark_host.retention import (
+        StorageBudget,
+        execute_host_cleanup_plan,
+        preview_host_cleanup_plan,
+    )
+
+    now, verified, old, releases = _managed_cleanup_fixture(
+        host_paths, guard_age=90_000 if guard == "stale" else 0
+    )
+    if guard == "missing":
+        next((host_paths.state / "backup-receipts").iterdir()).unlink()
+    if guard == "changed":
+        verified.write_bytes(b"changed before preview")
+    budget = StorageBudget(10_000, 0, minimum_free_bytes=10_000)
+    plan = preview_host_cleanup_plan(
+        host_paths,
+        ["releases"],
+        budget,
+        now=now,
+        large_cleanup_bytes=1,
+        backup_guard_max_age=86_400,
+    )
+
+    if guard != "fresh":
+        assert plan["blocked"] is True
+        assert releases["obsolete-b"].exists()
+        return
+
+    assert plan["blocked"] is False
+    assert plan["guard"]["backup_id"] in verified.name
+    result = execute_host_cleanup_plan(
+        host_paths,
+        ["releases"],
+        budget,
+        plan,
+        now=now,
+        large_cleanup_bytes=1,
+        backup_guard_max_age=86_400,
+    )
+    assert result["deleted_count"] == 1
+    assert not releases["obsolete-b"].exists()
+    assert verified.exists() and old.exists()
+
+
 def test_storage_cleanup_rejects_a_root_below_a_symlinked_parent(tmp_path):
     from robopark_host.retention import StorageBudget, cleanup_storage_roots
 

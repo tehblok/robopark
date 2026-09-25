@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import stat
+import struct
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -76,12 +77,20 @@ class BlockDevice:
     system_device: bool = False
     root_device: bool = False
     data_device: bool = False
+    mount_point: str | None = None
 
     def __post_init__(self):
         if (
             str(UUID(self.uuid)) != self.uuid
             or not re.fullmatch(r"/dev/[A-Za-z0-9._+-]+", self.path)
             or Path(self.path).name in {".", ".."}
+            or self.mount_point is not None
+            and (
+                not self.mounted
+                or not self.mount_point.startswith("/")
+                or ".." in Path(self.mount_point).parts
+                or len(self.mount_point) > 4096
+            )
         ):
             raise ValueError("invalid_block_device")
 
@@ -540,6 +549,7 @@ class BackupArchiveLimits:
     max_total_bytes: int = 16 * 1024**3
     max_compression_ratio: int = 200
     max_metadata_bytes: int = 4 * 1024**2
+    max_central_directory_bytes: int = 64 * 1024**2
     max_archive_bytes: int = 4 * 1024**3
 
     def __post_init__(self):
@@ -549,12 +559,19 @@ class BackupArchiveLimits:
             self.max_total_bytes,
             self.max_compression_ratio,
             self.max_metadata_bytes,
+            self.max_central_directory_bytes,
             self.max_archive_bytes,
         )):
             raise ValueError("invalid_backup_archive_limits")
 
 
 DEFAULT_BACKUP_ARCHIVE_LIMITS = BackupArchiveLimits()
+_ZIP_EOCD = b"PK\x05\x06"
+_ZIP_EOCD_BYTES = 22
+_ZIP_MAX_COMMENT_BYTES = 65535
+_ZIP_CENTRAL_HEADER = b"PK\x01\x02"
+_ZIP_CENTRAL_HEADER_BYTES = 46
+_ZIP64_LOCATOR = b"PK\x06\x07"
 
 
 def _sha256_path(path):
@@ -682,14 +699,120 @@ def verify_encrypted_backup(
     return receipt
 
 
+def _preflight_zip_directory(plain, limits):
+    """Bound EOCD and central-directory metadata before ZipFile allocates entries."""
+
+    try:
+        size = plain.stat().st_size
+        tail_size = min(size, _ZIP_EOCD_BYTES + _ZIP_MAX_COMMENT_BYTES)
+        with plain.open("rb") as stream:
+            stream.seek(size - tail_size)
+            tail = stream.read(tail_size)
+        relative = tail.rfind(_ZIP_EOCD)
+        if relative < 0 or len(tail) - relative < _ZIP_EOCD_BYTES:
+            raise ReleaseError("backup_manifest_invalid")
+        (
+            signature,
+            disk,
+            central_disk,
+            disk_entries,
+            total_entries,
+            central_bytes,
+            central_offset,
+            comment_bytes,
+        ) = struct.unpack_from("<4s4H2LH", tail, relative)
+        eocd_offset = size - tail_size + relative
+        if (
+            signature != _ZIP_EOCD
+            or comment_bytes != len(tail) - relative - _ZIP_EOCD_BYTES
+            or disk != 0
+            or central_disk != 0
+            or disk_entries != total_entries
+        ):
+            raise ReleaseError("backup_manifest_invalid")
+        if (
+            total_entries == 0xFFFF
+            or central_bytes == 0xFFFFFFFF
+            or central_offset == 0xFFFFFFFF
+        ):
+            raise ReleaseError("backup_archive_limit")
+        if (
+            total_entries > limits.max_members
+            or central_bytes > limits.max_central_directory_bytes
+            or central_bytes > limits.max_metadata_bytes
+        ):
+            raise ReleaseError("backup_archive_limit")
+        if central_offset > eocd_offset or central_offset + central_bytes != eocd_offset:
+            raise ReleaseError("backup_manifest_invalid")
+        if eocd_offset >= 20:
+            with plain.open("rb") as stream:
+                stream.seek(eocd_offset - 20)
+                if stream.read(4) == _ZIP64_LOCATOR:
+                    raise ReleaseError("backup_archive_limit")
+        actual_entries = 0
+        cursor = central_offset
+        central_end = central_offset + central_bytes
+        with plain.open("rb") as stream:
+            while cursor < central_end:
+                if central_end - cursor < _ZIP_CENTRAL_HEADER_BYTES:
+                    raise ReleaseError("backup_manifest_invalid")
+                stream.seek(cursor)
+                header = stream.read(_ZIP_CENTRAL_HEADER_BYTES)
+                fields = struct.unpack("<4s6H3L5H2L", header)
+                if fields[0] != _ZIP_CENTRAL_HEADER or fields[13] != 0:
+                    raise ReleaseError("backup_manifest_invalid")
+                compressed, uncompressed = fields[8], fields[9]
+                name_bytes, extra_bytes, member_comment_bytes = fields[10:13]
+                local_offset = fields[16]
+                if (
+                    compressed == 0xFFFFFFFF
+                    or uncompressed == 0xFFFFFFFF
+                    or local_offset == 0xFFFFFFFF
+                ):
+                    raise ReleaseError("backup_archive_limit")
+                entry_bytes = (
+                    _ZIP_CENTRAL_HEADER_BYTES
+                    + name_bytes
+                    + extra_bytes
+                    + member_comment_bytes
+                )
+                if entry_bytes > central_end - cursor:
+                    raise ReleaseError("backup_manifest_invalid")
+                stream.seek(cursor + _ZIP_CENTRAL_HEADER_BYTES + name_bytes)
+                extra = stream.read(extra_bytes)
+                offset = 0
+                while offset < len(extra):
+                    if len(extra) - offset < 4:
+                        raise ReleaseError("backup_manifest_invalid")
+                    field_id, field_bytes = struct.unpack_from("<HH", extra, offset)
+                    offset += 4
+                    if field_bytes > len(extra) - offset:
+                        raise ReleaseError("backup_manifest_invalid")
+                    if field_id == 0x0001:
+                        raise ReleaseError("backup_archive_limit")
+                    offset += field_bytes
+                actual_entries += 1
+                if actual_entries > limits.max_members:
+                    raise ReleaseError("backup_archive_limit")
+                cursor += entry_bytes
+        if actual_entries != total_entries or cursor != central_end:
+            raise ReleaseError("backup_manifest_invalid")
+        return total_entries, central_bytes
+    except ReleaseError:
+        raise
+    except (OSError, ValueError, struct.error) as exc:
+        raise ReleaseError("backup_manifest_invalid") from exc
+
+
 def _inspect_backup_archive(plain, staging, limits):
     """Validate the complete central directory, then stream each bounded member."""
 
     try:
+        declared_members, _ = _preflight_zip_directory(plain, limits)
         with zipfile.ZipFile(plain) as archive:
             members = archive.infolist()
-            if len(members) > limits.max_members:
-                raise ReleaseError("backup_archive_limit")
+            if len(members) != declared_members:
+                raise ReleaseError("backup_manifest_invalid")
             seen = set()
             total_declared = 0
             metadata = len(archive.comment)
@@ -901,6 +1024,342 @@ def _read(path, limit=4096):
         return value
     except (OSError, ValueError, UnicodeError, RecursionError) as exc:
         raise ReleaseError("invalid_command") from exc
+
+
+def discover_usb_devices(paths):
+    """Read the kernel UUID/removable/mount projections without invoking a command."""
+
+    device_root = paths.root / "dev"
+    uuid_root = device_root / "disk/by-uuid"
+    mountinfo = paths.root / "proc/self/mountinfo"
+    mounts = {}
+    try:
+        if mountinfo.is_file() and not mountinfo.is_symlink():
+            raw = mountinfo.read_bytes()
+            if len(raw) > 1024 * 1024:
+                raise ReleaseError("usb_discovery_failed")
+            for line in raw.decode("utf-8").splitlines():
+                fields = line.split()
+                separator = fields.index("-")
+                source = fields[separator + 2]
+                point = fields[4].replace("\\040", " ").replace("\\134", "\\")
+                if re.fullmatch(r"/dev/[A-Za-z0-9._+-]+", source):
+                    mounts.setdefault(source, []).append(point)
+        if not uuid_root.exists():
+            return ()
+        if uuid_root.resolve().parent != (device_root / "disk").resolve() or not uuid_root.is_dir():
+            raise ReleaseError("usb_discovery_failed")
+        entries = list(uuid_root.iterdir())
+        if len(entries) > 256:
+            raise ReleaseError("usb_discovery_failed")
+        devices = []
+        for entry in entries:
+            try:
+                identity = _canonical_uuid(entry.name.lower())
+                if not entry.is_symlink():
+                    raise ValueError()
+                target = entry.resolve(strict=True)
+                target_info = target.stat()
+                if target.parent != device_root.resolve() or not (
+                    stat.S_ISBLK(target_info.st_mode)
+                    or paths.root != Path("/")
+                    and stat.S_ISREG(target_info.st_mode)
+                ):
+                    raise ValueError()
+                logical_path = "/dev/" + target.name
+                removable = (
+                    paths.root / "sys/class/block" / target.name / "removable"
+                ).read_text().strip() == "1"
+                points = mounts.get(logical_path, [])
+                root_device = "/" in points
+                data_relative = str(paths.var.relative_to(paths.root))
+                data_device = any(
+                    point == "/"
+                    or data_relative == point.lstrip("/")
+                    or data_relative.startswith(point.lstrip("/") + "/")
+                    for point in points
+                )
+                devices.append(
+                    BlockDevice(
+                        identity,
+                        logical_path,
+                        removable=removable,
+                        mounted=bool(points),
+                        root_device=root_device,
+                        data_device=data_device,
+                        mount_point=points[0] if len(points) == 1 else None,
+                    )
+                )
+            except (OSError, ValueError, UnicodeError):
+                continue
+        return tuple(devices)
+    except ReleaseError:
+        raise
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise ReleaseError("usb_discovery_failed") from exc
+
+
+class SafeProductionTypedHostEffects(TypedHostEffects):
+    """Fail-closed production adapter for policy-safe read/file-only operations."""
+
+    supported_kinds = frozenset(
+        {
+            OperationKind.PACKAGE_INSPECT,
+            OperationKind.BACKUP_VERIFY,
+            OperationKind.CLEANUP_PREVIEW,
+            OperationKind.DIAGNOSTICS,
+            OperationKind.USB_DISCOVER,
+            OperationKind.USB_SELECT,
+        }
+    )
+
+    def __init__(self, paths, *, runner=None, http=None, device_provider=None):
+        self.paths = paths
+        self.runner = runner
+        self.http = http
+        self.device_provider = device_provider or (lambda: discover_usb_devices(paths))
+
+    @classmethod
+    def unsupported_kinds(cls):
+        return frozenset(set(OperationKind) - set(cls.supported_kinds))
+
+    @staticmethod
+    def _unavailable():
+        raise ReleaseError("capability_unavailable")
+
+    def release_update(self, operation_id, release_id):
+        del operation_id, release_id
+        return self._unavailable()
+
+    def reinstall(self, operation_id):
+        del operation_id
+        return self._unavailable()
+
+    def rollback(self, operation_id, release):
+        del operation_id, release
+        return self._unavailable()
+
+    def package_update(self, operation_id, package):
+        del operation_id, package
+        return self._unavailable()
+
+    def service_restart(self, operation_id, service):
+        del operation_id, service
+        return self._unavailable()
+
+    def reboot(self, operation_id):
+        del operation_id
+        return self._unavailable()
+
+    def backup(self, operation_id, device_uuid):
+        del operation_id, device_uuid
+        return self._unavailable()
+
+    def backup_restore(self, operation_id, backup_id):
+        del operation_id, backup_id
+        return self._unavailable()
+
+    def cleanup_execute(self, operation_id, plan_id):
+        del operation_id, plan_id
+        return self._unavailable()
+
+    def usb_format(self, operation_id, device):
+        del operation_id, device
+        return self._unavailable()
+
+    def reconcile(self, operation):
+        try:
+            if operation.kind is OperationKind.PACKAGE_INSPECT:
+                detail = self.package_inspect(
+                    operation.operation_id, operation.payload["package"]
+                )
+            elif operation.kind is OperationKind.CLEANUP_PREVIEW:
+                detail = self.cleanup_preview(
+                    operation.operation_id, tuple(operation.payload["categories"])
+                )
+            elif operation.kind is OperationKind.USB_DISCOVER:
+                detail = self.usb_discover(operation.operation_id)
+            elif operation.kind is OperationKind.BACKUP_VERIFY:
+                receipt = _read(
+                    self.paths.state
+                    / "backup-receipts"
+                    / f"{operation.payload['backup_id']}.json"
+                )
+                if receipt.get("verified") is not True:
+                    raise ReleaseError("backup_not_verified")
+                detail = {
+                    "backup_id": operation.payload["backup_id"],
+                    "verified": True,
+                }
+            elif operation.kind is OperationKind.DIAGNOSTICS:
+                detail = self.diagnostics(operation.operation_id)
+            elif operation.kind is OperationKind.USB_SELECT:
+                selected = _read(self.paths.state / "selected-usb.json")
+                if selected != {
+                    "schema": 1,
+                    "device_uuid": operation.payload["device_uuid"],
+                }:
+                    raise ReleaseError("usb_not_selected")
+                detail = selected
+            else:
+                return super().reconcile(operation)
+            return {"state": "succeeded", "detail": detail, "error": None}
+        except ReleaseError:
+            return {
+                "state": "failed",
+                "detail": {},
+                "error": "manual_recovery_required",
+            }
+
+    def _host_path(self, logical):
+        return self.paths.root / logical.lstrip("/")
+
+    def _external_key(self):
+        target = self.paths.root / "run/robopark/recovery.key"
+        try:
+            descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                key = stream.read(33)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) & 0o077
+                or len(key) != 32
+            ):
+                raise ValueError()
+            return key
+        except (OSError, ValueError) as exc:
+            raise ReleaseError("recovery_key_required") from exc
+
+    def _mounted_device(self, identity):
+        device = select_removable_device(self.device_provider(), identity)
+        if not device.mounted or device.mount_point is None:
+            raise ReleaseError("backup_device_not_mounted")
+        target = self._host_path(device.mount_point).resolve(strict=True)
+        allowed = tuple(
+            (self.paths.root / name).resolve(strict=False)
+            for name in ("media", "mnt", "run/media")
+        )
+        if not any(target.is_relative_to(root) for root in allowed):
+            raise ReleaseError("unsafe_usb_device")
+        return target
+
+    def _backup_artifact(self, backup_id):
+        identity = _canonical_uuid(backup_id)
+        matches = []
+        for device in self.device_provider():
+            if not device.removable or not device.mounted or device.mount_point is None:
+                continue
+            try:
+                candidate = (
+                    self._mounted_device(device.uuid)
+                    / "robopark-backups"
+                    / f"backup-{identity}.rpb"
+                )
+                if candidate.is_file() and not candidate.is_symlink():
+                    matches.append(candidate)
+            except ReleaseError:
+                continue
+        if len(matches) != 1:
+            raise ReleaseError("backup_not_found")
+        return matches[0]
+
+    def package_inspect(self, operation_id, package):
+        del operation_id
+        if package not in ALLOWED_PACKAGES:
+            raise ReleaseError("package_not_allowed")
+        target = self.paths.root / "var/lib/dpkg/status"
+        if not target.exists():
+            return {"package": package, "installed": False, "version": None}
+        try:
+            descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 32 * 1024**2:
+                    raise ValueError()
+                raw = stream.read(32 * 1024**2 + 1).decode("utf-8")
+            for paragraph in raw.split("\n\n"):
+                fields = {}
+                for line in paragraph.splitlines():
+                    if ": " in line:
+                        key, value = line.split(": ", 1)
+                        fields[key] = value
+                if fields.get("Package") == package:
+                    version = fields.get("Version")
+                    if not isinstance(version, str) or not re.fullmatch(
+                        r"[A-Za-z0-9.+:~_-]{1,200}", version
+                    ):
+                        raise ValueError()
+                    return {
+                        "package": package,
+                        "installed": fields.get("Status") == "install ok installed",
+                        "version": version,
+                    }
+            return {"package": package, "installed": False, "version": None}
+        except (OSError, ValueError, UnicodeError) as exc:
+            raise ReleaseError("package_inspection_failed") from exc
+
+    def backup_verify(self, operation_id, backup_id):
+        del operation_id
+        artifact = self._backup_artifact(backup_id)
+        detail = verify_encrypted_backup(artifact, recovery_key=self._external_key())
+        atomic_write_json(
+            self.paths.state / "backup-receipts" / f"{backup_id}.json",
+            {
+                "schema": 1,
+                "backup_id": backup_id,
+                "verified": True,
+                "sha256": detail["sha256"],
+                "verified_at": datetime.now(UTC).timestamp(),
+                "recovery_required": False,
+            },
+        )
+        return {"backup_id": backup_id, "verified": True}
+
+    def cleanup_preview(self, operation_id, categories):
+        from .retention import StorageBudget, preview_system_cleanup_plan
+
+        del operation_id
+        return preview_system_cleanup_plan(
+            self.paths,
+            categories,
+            StorageBudget.for_path(self.paths.var),
+        )
+
+    def diagnostics(self, operation_id):
+        del operation_id
+        if self.runner is None or self.http is None:
+            raise ReleaseError("capability_unavailable")
+        report = run_doctor(self.paths, self.runner, self.http)
+        publish_health(self.paths, report)
+        return {"completed": True}
+
+    def usb_discover(self, operation_id):
+        del operation_id
+        return {
+            "devices": [
+                {
+                    "device_uuid": device.uuid,
+                    "removable": device.removable,
+                    "mounted": device.mounted,
+                }
+                for device in self.device_provider()
+                if device.removable
+                and not device.system_device
+                and not device.root_device
+                and not device.data_device
+            ]
+        }
+
+    def usb_select(self, operation_id, device):
+        del operation_id
+        selected = select_removable_device(self.device_provider(), device.uuid)
+        if selected.path != device.path:
+            raise ReleaseError("unsafe_usb_device")
+        value = {"schema": 1, "device_uuid": selected.uuid}
+        atomic_write_json(self.paths.state / "selected-usb.json", value)
+        return value
 
 
 def _validate(value, *, fresh=True, trusted_typed=False):

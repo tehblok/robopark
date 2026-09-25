@@ -343,7 +343,9 @@ def _managed_cleanup_snapshot(
     try:
         receipts = _backup_receipts(paths)
         backup_root = paths.var / "backups"
-        if "backups" in requested and backup_root.exists():
+        # A verified backup is the safety guard for destructive release cleanup,
+        # independently of whether backup artifacts themselves were requested.
+        if set(requested) & set(MANAGED_STORAGE_CATEGORIES) and backup_root.exists():
             if (
                 backup_root.is_symlink()
                 or not backup_root.is_dir()
@@ -373,14 +375,15 @@ def _managed_cleanup_snapshot(
                             guard = candidate
                     # Every verified or recovery-required artifact is protected.
                     continue
-                planned.append(
-                    {
-                        "category": "backups",
-                        "path": artifact.name,
-                        "bytes": size,
-                        "fingerprint": digest,
-                    }
-                )
+                if "backups" in requested:
+                    planned.append(
+                        {
+                            "category": "backups",
+                            "path": artifact.name,
+                            "bytes": size,
+                            "fingerprint": digest,
+                        }
+                    )
         if "releases" in requested:
             from .restore_retention import protected_release_names
             from .updater import _successful_release_receipts
@@ -466,6 +469,77 @@ def preview_host_cleanup_plan(
         large_cleanup_bytes=large_cleanup_bytes,
         backup_guard_max_age=backup_guard_max_age,
     )
+    encoded = json.dumps(body, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    return {**body, "plan_id": str(uuid.uuid5(uuid.NAMESPACE_URL, encoded))}
+
+
+def preview_system_cleanup_plan(
+    paths,
+    categories,
+    budget,
+    *,
+    max_deletions=MAX_STORAGE_DELETIONS,
+    now=None,
+):
+    """Preview any public cleanup category without granting an execute capability."""
+
+    now = time.time() if now is None else now
+    requested = tuple(categories)
+    allowed = set(STORAGE_CATEGORIES) | set(MANAGED_STORAGE_CATEGORIES)
+    unknown = sorted(set(requested) - allowed)
+    duplicate = len(requested) != len(set(requested))
+    ephemeral = {
+        "diagnostics": paths.var / "diagnostics",
+        "logs": paths.root / "var/log/robopark",
+    }
+    ephemeral = {key: value for key, value in ephemeral.items() if key in requested}
+    regular = preview_cleanup_plan(
+        ephemeral,
+        budget,
+        max_deletions=max_deletions,
+        now=now,
+    )
+    managed_categories = [
+        category for category in requested if category in MANAGED_STORAGE_CATEGORIES
+    ]
+    managed = (
+        preview_host_cleanup_plan(
+            paths,
+            managed_categories,
+            budget,
+            max_deletions=max_deletions,
+            now=now,
+        )
+        if managed_categories
+        else {
+            "planned": [],
+            "blocked": False,
+            "guard": None,
+            "unknown_categories": [],
+        }
+    )
+    priority = {
+        "diagnostics": 0,
+        "logs": 1,
+        "backups": 2,
+        "releases": 3,
+    }
+    planned = sorted(
+        [*regular["planned"], *managed["planned"]],
+        key=lambda item: (priority[item["category"]], item["path"]),
+    )[: max(0, max_deletions)]
+    body = {
+        "schema": 1,
+        "bounded": len(planned) <= max(0, max_deletions),
+        "floor_bytes": budget.floor_bytes,
+        "bytes_to_reclaim": budget.bytes_to_reclaim,
+        "planned": planned,
+        "blocked": bool(
+            unknown or duplicate or not requested or regular["blocked"] or managed["blocked"]
+        ),
+        "unknown_categories": unknown,
+        "guard": managed.get("guard"),
+    }
     encoded = json.dumps(body, allow_nan=False, sort_keys=True, separators=(",", ":"))
     return {**body, "plan_id": str(uuid.uuid5(uuid.NAMESPACE_URL, encoded))}
 
