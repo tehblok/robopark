@@ -16,3 +16,28 @@ def test_release_note_and_compatibility_match_release_metadata():
 def test_release_notes_disclose_unverified_long_gates():
     note = (ROOT / "docs/releases/0.2.0-rc.1.md").read_text()
     assert "нагрузочный" in note and "soak" in note and "не опубликован" in note
+
+
+def test_unified_ota_runbooks_cover_build_install_web_and_recovery():
+    paths = [
+        ROOT / "docs/runbooks/build-ota.md",
+        ROOT / "docs/runbooks/usb-clean-install.md",
+        ROOT / "docs/runbooks/web-ota-update.md",
+        ROOT / "docs/runbooks/ota-recovery.md",
+    ]
+    text = "\n".join(path.read_text() for path in paths)
+    required = [
+        "./scripts/build-ota.sh /absolute/output/directory",
+        "robopark-<версия>.ota",
+        "sudo python3 robopark-<версия>.ota",
+        "УДАЛИТЬ ВСЕ ДАННЫЕ",
+        "Резервная копия старых данных не создаётся",
+        "Система → Обновление",
+        "diagnose --output",
+        "ota_hash_mismatch",
+        "rollback",
+        "Ubuntu 22.04+",
+        "Python 3.10+",
+        "не аутентифицирует",
+    ]
+    assert all(item in text for item in required)

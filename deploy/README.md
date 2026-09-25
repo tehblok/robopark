@@ -229,14 +229,15 @@ target host, load, soak, installer/VM and OTA gates remain pending explicit
 approval. The checked-in release evidence is intentionally stale and validation
 must stay fail-closed until the required gates are rerun for the exact source tree.
 
-Pack a *release* ZIP on a machine with the repo (not a snapshot):
+Build the single OTA outside the source tree:
 
 ```sh
-chmod +x scripts/pack-release.sh
-scripts/pack-release.sh ./robopark-release.zip
+./scripts/build-ota.sh /absolute/output/directory
 ```
 
-Royal uploads that ZIP on the same admin tab, types `ОБНОВИТЬ`. The API checks the archive, runs tests on a copy, snapshots, then copies files onto the checkout. The `ops-agent` compose service rebuilds `api` and `web`.
+Royal uploads that OTA on the system page and confirms the operation. The API
+streams chunks; the root agent independently verifies the immutable package,
+snapshots data and applies it with automatic rollback.
 
 ## Residual risk (accepted)
 

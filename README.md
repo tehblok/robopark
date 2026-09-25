@@ -1,5 +1,18 @@
 # Robopark
 
+## Установка и обновление
+
+Каноническая поставка — один файл `robopark-<версия>.ota`. Сборка:
+
+```sh
+./scripts/build-ota.sh /absolute/output/directory
+```
+
+USB: `sudo python3 robopark-<версия>.ota`. Royal обновляет систему на странице
+«Система → Обновление» с resumable-загрузкой и автоматическим rollback.
+См. [runbooks](docs/runbooks/build-ota.md). SHA-256 обеспечивает целостность,
+но не аутентифицирует издателя.
+
 Текущая версия исходников: **0.2.0-rc.1**. Production-профиль и чистый
 установщик используют **PostgreSQL 17**. Для Armbian/Ubuntu смотрите
 [руководство оператора](deploy/INSTALL-ARMBIAN-RU.md) и
@@ -333,13 +346,14 @@ comments written through the platform are signed with the real author.
 
 Denied attempts are recorded too, so a blocked cross-park action leaves a trace.
 
-### Snapshot and ZIP update (royal only)
+### Snapshot and OTA update (royal only)
 
 The owner tab **Администрирование → Снимок и обновление** can:
 
 - download a full snapshot (database, files, `host.env`);
 - restore that snapshot on this host or another (after one first Compose start and royal login);
-- upload a *release* ZIP packed with `scripts/pack-release.sh`.
+- upload one `robopark-<версия>.ota`; browser upload is resumable and the host
+  verifies SHA-256 again before snapshot/cutover.
 
 Release flow: integrity check → tests on a copy → automatic snapshot → copy onto the checkout → `ops-agent` rebuilds `api` and `web`. Failed tests leave the live system unchanged. Other users see a maintenance screen for the whole job.
 
