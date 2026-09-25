@@ -120,10 +120,10 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_user_timezone():
+def test_alembic_head_is_schedule_series_lookup():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0042_user_timezone"]
+    assert script.get_heads() == ["0043_schedule_series_lookup"]
 
 
 def test_sync_closure_scan_migration_adds_review_index(sqlite_database_url, monkeypatch):
@@ -149,7 +149,44 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
         "idempotency_key", "lease_owner", "lease_until",
     }
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0042_user_timezone"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0043_schedule_series_lookup"
+
+
+def test_schedule_series_lookup_index_is_used(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0042_user_timezone")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO schedule_entries "
+            "(id, owner_user_id, park_id, kind, start_at, end_at, source, series_id, "
+            "created_by_user_id, updated_by_user_id) VALUES "
+            "('kept-series-row', 1, 1, 'shift', '2026-01-01 09:00:00', "
+            "'2026-01-01 21:00:00', 'self', 'series', 1, 1)"
+        ))
+    command.upgrade(config, "head")
+    inspector = inspect(engine)
+    indexes = {item["name"]: item["column_names"] for item in inspector.get_indexes("schedule_entries")}
+    assert indexes["ix_schedule_owner_series_end"] == ["owner_user_id", "series_id", "end_at"]
+    with engine.connect() as connection:
+        assert connection.scalar(text(
+            "SELECT count(*) FROM schedule_entries WHERE id = 'kept-series-row'"
+        )) == 1
+        plan = connection.execute(text(
+            "EXPLAIN QUERY PLAN SELECT id FROM schedule_entries "
+            "WHERE owner_user_id = 1 AND series_id = 'series' AND end_at > '2026-01-01' LIMIT 1"
+        )).all()
+    assert "ix_schedule_owner_series_end" in " ".join(str(row) for row in plan)
+    command.downgrade(config, "0042_user_timezone")
+    inspector = inspect(engine)
+    assert "ix_schedule_owner_series_end" not in {
+        item["name"] for item in inspector.get_indexes("schedule_entries")
+    }
+    with engine.connect() as connection:
+        assert connection.scalar(text(
+            "SELECT count(*) FROM schedule_entries WHERE id = 'kept-series-row'"
+        )) == 1
 
 
 def test_inventory_photo_cleanup_migration_is_additive(sqlite_database_url, monkeypatch):

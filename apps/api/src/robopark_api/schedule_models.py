@@ -24,6 +24,7 @@ class ScheduleEntry(Base):
         CheckConstraint("kind IN ('shift','vacation','sick')", name="ck_schedule_kind"),
         CheckConstraint("end_at > start_at", name="ck_schedule_range"),
         Index("ix_schedule_park_range", "park_id", "start_at", "end_at"),
+        Index("ix_schedule_owner_series_end", "owner_user_id", "series_id", "end_at"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
