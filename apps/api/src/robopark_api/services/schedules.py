@@ -98,6 +98,15 @@ def eligible_recipients(event: RoutingEvent, at: datetime) -> list[User]:
         if row.kind == "shift" and (event.park_id is None or row.park_id == event.park_id)
     }
     absent = {row.owner_user_id for row in schedule_rows if row.kind in {"vacation", "sick"}}
+    local_at = at.astimezone(MOSCOW)
+    explicitly_scheduled = set(
+        db.scalars(
+            select(ScheduleEntry.owner_user_id).distinct().where(
+                ScheduleEntry.owner_user_id.in_(user_ids),
+            )
+        )
+    )
+    fallback_open = 9 <= local_at.hour < 21
     return [
         user
         for user in users
@@ -106,7 +115,12 @@ def eligible_recipients(event: RoutingEvent, at: datetime) -> list[User]:
             user.role == "royal"
             and event.event_type in CRITICAL_ROYAL_EVENTS
             or user.id not in absent
-            and (not requires_shift or user.id in shifts)
+            and (
+                not requires_shift
+                or user.id in shifts
+                or user.id not in explicitly_scheduled
+                and fallback_open
+            )
         )
     ]
 
@@ -379,15 +393,16 @@ def create_entry(db: Session, actor: User, payload: ScheduleCreate) -> dict:
 
 
 def create_bulk(db: Session, actor: User, payload: ScheduleBulkCreate) -> list[dict]:
-    if actor.role != "royal":
+    owner_ids = payload.owner_user_ids
+    if actor.role == "admin" or (actor.role != "royal" and owner_ids != [actor.id]):
         raise PermissionError
     if db.get(Park, payload.park_id) is None:
         raise LookupError("park_not_found")
-    for owner_id in payload.owner_user_ids:
+    for owner_id in owner_ids:
         _owner_in_park(db, owner_id, payload.park_id)
     series_id = str(uuid4())
     rows = []
-    for owner_id in payload.owner_user_ids:
+    for owner_id in owner_ids:
         for offset in range(payload.repeat_count):
             delta = timedelta(days=offset * payload.repeat_every_days)
             row = ScheduleEntry(
@@ -396,7 +411,7 @@ def create_bulk(db: Session, actor: User, payload: ScheduleBulkCreate) -> list[d
                 kind=payload.kind,
                 start_at=payload.start_at + delta,
                 end_at=payload.end_at + delta,
-                source="royal",
+                source="royal" if actor.role == "royal" and owner_id != actor.id else "self",
                 series_id=series_id,
                 created_by_user_id=actor.id,
                 updated_by_user_id=actor.id,
@@ -408,7 +423,9 @@ def create_bulk(db: Session, actor: User, payload: ScheduleBulkCreate) -> list[d
 
 
 def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> list[dict]:
-    if actor.role != "royal":
+    if actor.role == "admin" or (
+        actor.role != "royal" and payload.owner_user_ids != [actor.id]
+    ):
         raise PermissionError
     on_days, cycle_days = {
         "none": (1, None),
@@ -459,15 +476,18 @@ def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> 
                     )
                 )
             )
-            if eligible_owner_ids != set(payload.owner_user_ids):
+            if actor.role == "royal" and eligible_owner_ids != set(payload.owner_user_ids):
+                raise PermissionError
+            if actor.role != "royal" and not _park_access(db, actor, payload.park_id):
                 raise PermissionError
 
             series_id = str(uuid4())
+            local_timezone = ZoneInfo(payload.timezone)
             rows: list[ScheduleEntry] = []
             for owner_id in payload.owner_user_ids:
                 for work_date in active_dates:
-                    start_at = datetime.combine(work_date, payload.start_time, tzinfo=MOSCOW)
-                    end_at = datetime.combine(work_date, payload.end_time, tzinfo=MOSCOW)
+                    start_at = datetime.combine(work_date, payload.start_time, tzinfo=local_timezone)
+                    end_at = datetime.combine(work_date, payload.end_time, tzinfo=local_timezone)
                     if end_at <= start_at:
                         end_at += timedelta(days=1)
                     row = ScheduleEntry(
@@ -476,7 +496,11 @@ def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> 
                         kind=payload.kind,
                         start_at=start_at,
                         end_at=end_at,
-                        source="royal",
+                        source=(
+                            "royal"
+                            if actor.role == "royal" and owner_id != actor.id
+                            else "self"
+                        ),
                         series_id=series_id,
                         created_by_user_id=actor.id,
                         updated_by_user_id=actor.id,

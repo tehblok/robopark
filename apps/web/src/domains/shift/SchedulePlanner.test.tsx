@@ -36,6 +36,7 @@ describe('SchedulePlanner', () => {
       park_id: 7,
       pattern: '4/4',
       owner_user_ids: [11, 12],
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     })))
   })
 
@@ -55,9 +56,9 @@ describe('SchedulePlanner', () => {
     await waitFor(() => expect(apiClient.scheduleCopy).toHaveBeenCalledWith(expect.objectContaining({
       park_id: 7,
       owner_user_ids: [11],
-      source_start: '2026-09-01T00:00:00+03:00',
-      source_end: '2026-09-08T00:00:00+03:00',
-      target_start: '2026-10-01T00:00:00+03:00',
+      source_start: new Date('2026-09-01T00:00').toISOString(),
+      source_end: new Date('2026-09-08T00:00').toISOString(),
+      target_start: new Date('2026-10-01T00:00').toISOString(),
     })))
   })
 

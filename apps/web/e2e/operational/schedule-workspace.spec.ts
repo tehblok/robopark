@@ -2,8 +2,10 @@ import { expect, test } from '@playwright/test'
 import { userForRole } from './fixtures'
 import { openRouteFixture, routeSchedule } from './routeFixtures'
 
+test.use({ hasTouch: true })
+
 test('desktop schedule keeps the team grid sticky across range navigation', async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.setViewportSize({ width: 1366, height: 1000 })
   await openRouteFixture(page, 'schedule', userForRole('royal'), { routes: [{
     method: 'GET',
     path: '/api/schedules/participants',
@@ -60,7 +62,7 @@ test('desktop schedule keeps the team grid sticky across range navigation', asyn
 
 test('royal can edit a team schedule entry', async ({ page }) => {
   let update: unknown
-  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.setViewportSize({ width: 1366, height: 1000 })
   await openRouteFixture(page, 'schedule', userForRole('royal'), { routes: [{
     method: 'PATCH',
     path: `/api/schedules/${routeSchedule.id}`,
@@ -70,15 +72,17 @@ test('royal can edit a team schedule entry', async ({ page }) => {
     },
   }] })
 
-  await page.getByRole('button', { name: 'Изменить' }).click()
+  await page.getByRole('button', { name: 'Изменить' }).focus()
+  await page.keyboard.press('Enter')
   await expect(page.getByRole('heading', { name: 'Изменить период' })).toBeVisible()
   await page.getByLabel('Конец').fill('2026-09-02T22:00')
-  await page.getByRole('button', { name: 'Сохранить' }).click()
+  await page.getByRole('button', { name: 'Сохранить' }).focus()
+  await page.keyboard.press('Enter')
 
   await expect.poll(() => update).toMatchObject({
     kind: 'shift',
-    start_at: '2026-09-02T09:00:00+03:00',
-    end_at: '2026-09-02T22:00:00+03:00',
+    start_at: new Date('2026-09-02T09:00').toISOString(),
+    end_at: new Date('2026-09-02T22:00').toISOString(),
   })
   await expect(page.getByTestId('schedule-team-grid').getByText('09:00 — 22:00')).toBeVisible()
 })
@@ -88,7 +92,7 @@ for (const width of [360, 390] as const) {
     await page.setViewportSize({ width, height: width === 360 ? 800 : 844 })
     await openRouteFixture(page, 'schedule', userForRole('mechanic'))
     await expect(page.getByTestId('schedule-day-cards')).toBeVisible()
-    await page.getByRole('button', { name: '2 сентября' }).click()
+    await page.getByRole('button', { name: '2 сентября' }).tap()
     await expect(page.getByText('Моя смена')).toBeVisible()
     await expect(page.getByTestId('schedule-team-grid')).toHaveCount(0)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true)

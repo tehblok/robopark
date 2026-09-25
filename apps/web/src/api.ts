@@ -106,7 +106,7 @@ export type ScheduleParticipant = { id: number; display_name: string; role: 'mec
 export type SchedulePattern = 'none' | '5/2' | '2/2' | '4/4'
 export type SchedulePatternCreate = {
   idempotency_key: string; park_id: number; owner_user_ids: number[]; kind: ScheduleEntry['kind']; pattern: SchedulePattern
-  start_date: string; end_date: string; start_time: string; end_time: string
+  start_date: string; end_date: string; start_time: string; end_time: string; timezone: string
 }
 export type ScheduleCopyCreate = {
   idempotency_key?: string; park_id: number; owner_user_ids: number[]; source_start: string; source_end: string; target_start: string

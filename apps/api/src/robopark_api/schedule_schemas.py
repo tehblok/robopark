@@ -1,7 +1,8 @@
 from datetime import date, datetime, time
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 ScheduleKind = Literal["shift", "vacation", "sick"]
 SchedulePattern = Literal["none", "5/2", "2/2", "4/4"]
@@ -40,6 +41,16 @@ class SchedulePatternCreate(BaseModel):
     start_time: time
     end_time: time
     pattern: SchedulePattern
+    timezone: str = "Europe/Moscow"
+
+    @field_validator("timezone")
+    @classmethod
+    def valid_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            raise ValueError("invalid_timezone") from exc
+        return value
 
     @model_validator(mode="after")
     def valid_pattern_range(self):

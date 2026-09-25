@@ -127,6 +127,14 @@ describe('ScheduleWorkspace', () => {
     await waitFor(() => expect(scheduleCreate).toHaveBeenCalledWith(expect.objectContaining({ owner_user_id: undefined, kind: 'vacation' })))
   })
 
+  it('lets an employee open reusable self-only patterns', async () => {
+    render(<ScheduleWorkspace apiClient={client()} selectedParkId={1} user={mechanic} />)
+    expect(await screen.findByRole('tab', { name: 'Шаблоны' })).toBeVisible()
+    fireEvent.click(screen.getByRole('tab', { name: 'Шаблоны' }))
+    expect(screen.getByRole('checkbox', { name: 'mech · Механик' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'mech · Механик' })).toBeDisabled()
+  })
+
   it('keeps admin controls read-only', async () => {
     render(<ScheduleWorkspace apiClient={client()} selectedParkId={1} user={{ ...mechanic, role: 'admin' }} />)
     expect(await screen.findByRole('heading', { level: 1, name: 'График команды' })).toBeInTheDocument()

@@ -11,20 +11,22 @@ const roleLabel: Record<ScheduleParticipant['role'], string> = {
   mechanic: 'Механик',
   operator: 'Оператор',
 }
-const moscowIso = (value: string) => `${value}:00+03:00`
+const localIso = (value: string) => new Date(value).toISOString()
 
 export function SchedulePlanner({
   apiClient,
   employees,
   onCreated,
   parkId,
+  lockEmployees = false,
 }: {
   apiClient: PlannerApiClient
   employees: ScheduleParticipant[]
   onCreated?: (entries: ScheduleEntry[]) => void
   parkId: number
+  lockEmployees?: boolean
 }) {
-  const [ownerIds, setOwnerIds] = useState<number[]>([])
+  const [ownerIds, setOwnerIds] = useState<number[]>(() => lockEmployees ? employees.map(employee => employee.id) : [])
   const [kind, setKind] = useState<ScheduleEntry['kind']>('shift')
   const [pattern, setPattern] = useState<SchedulePattern>('none')
   const [startDate, setStartDate] = useState('')
@@ -67,6 +69,7 @@ export function SchedulePlanner({
       end_date: endDate,
       start_time: startTime,
       end_time: endTime,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     }
     const fingerprint = JSON.stringify(body)
     const key = patternAttempt.current?.fingerprint === fingerprint
@@ -83,9 +86,9 @@ export function SchedulePlanner({
     const body = {
       park_id: parkId,
       owner_user_ids: ownerIds,
-      source_start: moscowIso(sourceStart),
-      source_end: moscowIso(sourceEnd),
-      target_start: moscowIso(targetStart),
+      source_start: localIso(sourceStart),
+      source_end: localIso(sourceEnd),
+      target_start: localIso(targetStart),
     }
     const fingerprint = JSON.stringify(body)
     const key = copyAttempt.current?.fingerprint === fingerprint
@@ -101,7 +104,7 @@ export function SchedulePlanner({
     <fieldset className="rp-schedule__employees">
       <legend>Сотрудники</legend>
       {employees.length ? employees.map(employee => <label key={employee.id}>
-        <input checked={ownerIds.includes(employee.id)} disabled={!ownerIds.includes(employee.id) && ownerIds.length >= 50} onChange={event => toggleOwner(employee.id, event.target.checked)} type="checkbox" />
+        <input checked={ownerIds.includes(employee.id)} disabled={lockEmployees || !ownerIds.includes(employee.id) && ownerIds.length >= 50} onChange={event => toggleOwner(employee.id, event.target.checked)} type="checkbox" />
         {employee.display_name} · {roleLabel[employee.role]}
       </label>) : <span>Нет доступных сотрудников</span>}
     </fieldset>

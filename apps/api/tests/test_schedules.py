@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import event
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, Park, User, UserPark
+from robopark_api.schedule_models import ScheduleEntry
 from robopark_api.schedule_schemas import SchedulePatternCreate
 from robopark_api.security import hash_password
 from robopark_api.services import schedules
@@ -53,6 +55,106 @@ def _pattern_payload(park_id: int, owner_ids: list[int], **overrides) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+def test_employee_creates_only_own_bulk_and_pattern_in_device_timezone(
+    client, db_session, seed_mechanic, seed_park_with_tracker
+):
+    login_as(client, seed_mechanic.username, "secret")
+
+    bulk = client.post(
+        "/schedules/bulk",
+        json={
+            **_interval("vacation"),
+            "park_id": seed_park_with_tracker.id,
+            "owner_user_ids": [seed_mechanic.id],
+            "repeat_count": 2,
+            "repeat_every_days": 7,
+        },
+    )
+    assert bulk.status_code == 201
+    assert {row["owner_user_id"] for row in bulk.json()} == {seed_mechanic.id}
+    assert {row["source"] for row in bulk.json()} == {"self"}
+
+    pattern = client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(
+            seed_park_with_tracker.id,
+            [seed_mechanic.id],
+            timezone="America/New_York",
+            start_date="2026-11-01",
+            end_date="2026-11-01",
+            start_time="09:00:00",
+            end_time="21:00:00",
+            pattern="none",
+        ),
+    )
+    assert pattern.status_code == 201
+    assert datetime.fromisoformat(pattern.json()[0]["start_at"]).astimezone(UTC) == datetime(
+        2026, 11, 1, 14, tzinfo=UTC
+    )
+    assert datetime.fromisoformat(pattern.json()[0]["end_at"]).astimezone(UTC) == datetime(
+        2026, 11, 2, 2, tzinfo=UTC
+    )
+
+
+def test_employee_bulk_and_pattern_reject_other_owner(
+    client, db_session, seed_mechanic, seed_park_with_tracker
+):
+    other = _add_user(
+        db_session,
+        username="other-schedule-owner",
+        role=RoleSlug.MECHANIC,
+        park_id=seed_park_with_tracker.id,
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    bulk = client.post(
+        "/schedules/bulk",
+        json={
+            **_interval(),
+            "park_id": seed_park_with_tracker.id,
+            "owner_user_ids": [other.id],
+            "repeat_count": 1,
+            "repeat_every_days": 7,
+        },
+    )
+    pattern = client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(seed_park_with_tracker.id, [other.id]),
+    )
+    assert bulk.status_code == 403
+    assert pattern.status_code == 403
+
+
+def test_notification_fallback_uses_local_hours_only_without_explicit_state(
+    db_session, seed_mechanic, seed_park_with_tracker
+):
+    event = schedules.RoutingEvent(db_session, "new_task", seed_park_with_tracker.id)
+    local = ZoneInfo("Europe/Moscow")
+
+    at_ten = datetime(2026, 9, 21, 10, tzinfo=local)
+    assert seed_mechanic.id in {user.id for user in schedules.eligible_recipients(event, at_ten)}
+    assert seed_mechanic.id not in {
+        user.id
+        for user in schedules.eligible_recipients(
+            event, datetime(2026, 9, 21, 21, tzinfo=local)
+        )
+    }
+
+    db_session.add(
+        ScheduleEntry(
+            owner_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            kind="shift",
+            start_at=datetime(2026, 9, 21, 12, tzinfo=local),
+            end_at=datetime(2026, 9, 21, 20, tzinfo=local),
+            created_by_user_id=seed_mechanic.id,
+            updated_by_user_id=seed_mechanic.id,
+        )
+    )
+    db_session.commit()
+    assert seed_mechanic.id not in {user.id for user in schedules.eligible_recipients(event, at_ten)}
 
 
 def test_four_on_four_off_pattern_dates(
