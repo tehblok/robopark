@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 
 def test_storage_budget_uses_larger_partition_floor():
     from robopark_host.retention import StorageBudget
@@ -61,6 +63,41 @@ def test_storage_cleanup_dry_run_has_no_side_effects(tmp_path):
     assert victim.exists()
     assert report["deleted"] == []
     assert report["planned"][0]["path"] == "entry"
+
+
+def test_cleanup_execute_requires_the_exact_immutable_preview(tmp_path):
+    from robopark_host.retention import (
+        StorageBudget,
+        execute_cleanup_plan,
+        preview_cleanup_plan,
+    )
+
+    diagnostics = tmp_path / "diagnostics"
+    diagnostics.mkdir()
+    victim = diagnostics / "entry"
+    victim.write_bytes(b"123")
+    roots = {"diagnostics": diagnostics}
+    plan = preview_cleanup_plan(
+        roots,
+        StorageBudget(100, 0, minimum_free_bytes=3),
+        now=10_000,
+    )
+    assert victim.exists()
+    with pytest.raises(ValueError, match="cleanup_plan_changed"):
+        execute_cleanup_plan(
+            roots,
+            StorageBudget(100, 0, minimum_free_bytes=3),
+            {**plan, "plan_id": "00000000-0000-4000-8000-000000000000"},
+            now=10_000,
+        )
+    result = execute_cleanup_plan(
+        roots,
+        StorageBudget(100, 0, minimum_free_bytes=3),
+        plan,
+        now=10_000,
+    )
+    assert result["plan_id"] == plan["plan_id"]
+    assert not victim.exists()
 
 
 def test_storage_cleanup_rejects_a_root_below_a_symlinked_parent(tmp_path):

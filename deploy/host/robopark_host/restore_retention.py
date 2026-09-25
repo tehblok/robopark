@@ -15,6 +15,21 @@ from contextlib import ExitStack, suppress
 from .state import atomic_write_json
 
 
+def protected_release_names(paths):
+    """Return only resolved, in-tree release names protected from retention."""
+
+    protected = set()
+    release_root = paths.releases.resolve()
+    for link in (paths.current, paths.previous, paths.recovery):
+        try:
+            target = link.resolve(strict=True)
+        except OSError:
+            continue
+        if target.parent == release_root and target.is_dir():
+            protected.add(target.name)
+    return protected
+
+
 def record(paths, journal):
     atomic_write_json(
         paths.state / "restore-owned" / (journal["request"]["job_id"] + ".json"),

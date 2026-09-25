@@ -1,10 +1,11 @@
 """Finite public projections at the privileged host boundary."""
 
 from datetime import datetime
-from typing import Literal
+from enum import StrEnum
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 CHECK_LABELS = {
     "supported_platform": "ОС и архитектура",
@@ -161,6 +162,146 @@ class GithubApprovalIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     release_id: int = Field(strict=True, gt=0, lt=2**63)
     confirm: str
+
+
+class HostOperationKind(StrEnum):
+    RELEASE_UPDATE = "release-update"
+    REINSTALL = "reinstall"
+    ROLLBACK = "rollback"
+    PACKAGE_INSPECT = "package-inspect"
+    PACKAGE_UPDATE = "package-update"
+    SERVICE_RESTART = "service-restart"
+    REBOOT = "reboot"
+    BACKUP = "backup"
+    BACKUP_VERIFY = "backup-verify"
+    BACKUP_RESTORE = "backup-restore"
+    CLEANUP_PREVIEW = "cleanup-preview"
+    CLEANUP_EXECUTE = "cleanup-execute"
+    DIAGNOSTICS = "diagnostics"
+    USB_DISCOVER = "usb-discover"
+    USB_FORMAT = "usb-format"
+    USB_SELECT = "usb-select"
+
+
+class _HostOperationBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_id: UUID
+
+
+class HostReleaseUpdateIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.RELEASE_UPDATE]
+    release_id: int = Field(strict=True, gt=0, lt=2**63)
+    confirmation: str
+
+
+class HostReinstallIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.REINSTALL]
+    confirmation: str
+
+
+class HostRollbackIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.ROLLBACK]
+    release: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,150}$")
+    confirmation: str
+
+
+class HostPackageInspectIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.PACKAGE_INSPECT]
+    package: Literal["docker-ce", "docker-ce-cli", "containerd.io", "openssl"]
+
+
+class HostPackageUpdateIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.PACKAGE_UPDATE]
+    package: Literal["docker-ce", "docker-ce-cli", "containerd.io", "openssl"]
+    confirmation: str
+
+
+class HostServiceRestartIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.SERVICE_RESTART]
+    service: Literal[
+        "robopark-api.service",
+        "robopark-worker.service",
+        "robopark-tuna.service",
+        "docker.service",
+    ]
+    confirmation: str
+
+
+class HostRebootIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.REBOOT]
+    confirmation: str
+
+
+class HostBackupIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.BACKUP]
+    device_uuid: UUID
+
+
+class HostBackupReferenceIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.BACKUP_VERIFY]
+    backup_id: UUID
+
+
+class HostBackupRestoreIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.BACKUP_RESTORE]
+    backup_id: UUID
+    confirmation: str
+
+
+class HostCleanupPreviewIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.CLEANUP_PREVIEW]
+    categories: list[Literal["diagnostics", "logs", "backups", "releases"]] = Field(
+        min_length=1, max_length=4
+    )
+
+    @field_validator("categories")
+    @classmethod
+    def unique_categories(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("duplicate_cleanup_category")
+        return value
+
+
+class HostCleanupExecuteIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.CLEANUP_EXECUTE]
+    plan_id: UUID
+    confirmation: str
+
+
+class HostNoArgumentIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.DIAGNOSTICS, HostOperationKind.USB_DISCOVER]
+
+
+class HostUsbFormatIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.USB_FORMAT]
+    device_uuid: UUID
+    confirmation: str
+    confirmation_repeat: str
+
+
+class HostUsbSelectIn(_HostOperationBase):
+    kind: Literal[HostOperationKind.USB_SELECT]
+    device_uuid: UUID
+
+
+HostOperationIn = Annotated[
+    HostReleaseUpdateIn
+    | HostReinstallIn
+    | HostRollbackIn
+    | HostPackageInspectIn
+    | HostPackageUpdateIn
+    | HostServiceRestartIn
+    | HostRebootIn
+    | HostBackupIn
+    | HostBackupReferenceIn
+    | HostBackupRestoreIn
+    | HostCleanupPreviewIn
+    | HostCleanupExecuteIn
+    | HostNoArgumentIn
+    | HostUsbFormatIn
+    | HostUsbSelectIn,
+    Field(discriminator="kind"),
+]
 
 
 class ReleaseStatusOut(BaseModel):

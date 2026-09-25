@@ -14,6 +14,7 @@ import re
 import shutil
 import stat
 import time
+import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -221,6 +222,45 @@ def cleanup_storage_roots(
         "pressure_category": pressure_category,
         "completed_at": time.time(),
     }
+
+
+def _cleanup_plan_body(report):
+    return {
+        "schema": 1,
+        "bounded": report["bounded"],
+        "floor_bytes": report["floor_bytes"],
+        "bytes_to_reclaim": report["bytes_to_reclaim"],
+        "planned": report["planned"],
+        "blocked": report["blocked"],
+        "unknown_categories": report["unknown_categories"],
+    }
+
+
+def preview_cleanup_plan(roots, budget, *, max_deletions=MAX_STORAGE_DELETIONS, now=None):
+    """Create a content-addressed plan; execution must present this exact preview."""
+
+    report = cleanup_storage_roots(
+        roots, budget, dry_run=True, max_deletions=max_deletions, now=now
+    )
+    body = _cleanup_plan_body(report)
+    encoded = json.dumps(body, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    return {**body, "plan_id": str(uuid.uuid5(uuid.NAMESPACE_URL, encoded))}
+
+
+def execute_cleanup_plan(
+    roots, budget, plan, *, max_deletions=MAX_STORAGE_DELETIONS, now=None
+):
+    """Execute only when a fresh scan still equals the immutable preview."""
+
+    expected = preview_cleanup_plan(
+        roots, budget, max_deletions=max_deletions, now=now
+    )
+    if plan != expected or expected["blocked"]:
+        raise ValueError("cleanup_plan_changed")
+    result = cleanup_storage_roots(
+        roots, budget, dry_run=False, max_deletions=max_deletions, now=now
+    )
+    return {**result, "plan_id": expected["plan_id"]}
 
 
 def retain_storage(

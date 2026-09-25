@@ -17,9 +17,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from pydantic import TypeAdapter, ValidationError
+
 from robopark_api.ops_schemas import (
     AvailableReleaseOut,
     AvailableUpdateOut,
+    HostOperationIn,
+    HostOperationKind,
     SystemHealthOut,
     UpdateInspectionOut,
     public_checks,
@@ -41,6 +45,27 @@ from robopark_api.services.ops.maintenance import host_marker_active
 
 class BridgeError(ValueError):
     pass
+
+
+_HOST_OPERATION_ADAPTER = TypeAdapter(HostOperationIn)
+_DESTRUCTIVE_PHRASES = {
+    HostOperationKind.RELEASE_UPDATE: "UPDATE ROBOPARK",
+    HostOperationKind.REINSTALL: "REINSTALL ROBOPARK",
+    HostOperationKind.ROLLBACK: "ROLLBACK ROBOPARK",
+    HostOperationKind.REBOOT: "REBOOT ROBOPARK",
+    HostOperationKind.BACKUP_RESTORE: "RESTORE ROBOPARK BACKUP",
+    HostOperationKind.CLEANUP_EXECUTE: "CLEAN ROBOPARK",
+}
+
+
+def _required_confirmation(operation):
+    if operation.kind is HostOperationKind.PACKAGE_UPDATE:
+        return f"UPDATE PACKAGE {operation.package}"
+    if operation.kind is HostOperationKind.SERVICE_RESTART:
+        return f"RESTART SERVICE {operation.service}"
+    if operation.kind is HostOperationKind.USB_FORMAT:
+        return f"FORMAT USB {operation.device_uuid}"
+    return _DESTRUCTIVE_PHRASES.get(operation.kind)
 
 
 UPDATE_PROGRESS_PERCENT = {
@@ -440,6 +465,76 @@ def enqueue_operation(ops, root, kind, actor, exempt):
         require_idle(ops)
         require_host_idle(root)
         job = _new_host_job(kind, actor, exempt)
+        _save_job_unlocked(ops, job)
+        _dispatch(ops, root, job)
+        return job
+
+
+def enqueue_typed_operation(
+    ops,
+    root,
+    payload,
+    actor,
+    exempt,
+    *,
+    authorization_consumed,
+):
+    """Validate the typed API union again before publishing the root request."""
+
+    try:
+        operation = _HOST_OPERATION_ADAPTER.validate_python(payload)
+    except ValidationError as exc:
+        raise BridgeError("invalid_command") from exc
+    identity = str(operation.operation_id)
+    kind = operation.kind
+    if type(actor) is not int or not 0 < actor < 2**63:
+        raise BridgeError("actor_required")
+    expected_authorization = {
+        "operation_id": identity,
+        "operation_kind": kind.value,
+        "actor_user_id": actor,
+        "consumed": True,
+    }
+    if authorization_consumed != expected_authorization:
+        raise BridgeError("authorization_required")
+    phrase = _required_confirmation(operation)
+    if phrase is not None and operation.confirmation != phrase:
+        raise BridgeError("confirm_required")
+    if kind is HostOperationKind.USB_FORMAT and operation.confirmation_repeat != phrase:
+        raise BridgeError("confirm_required")
+    with _locked(ops):
+        current = load_job(ops)
+        if current and current.id == identity:
+            saved = dict(current.extra.get("host_request", {}))
+            saved["operation_id"] = saved.pop("job_id", None)
+            for key in ("actor_user_id", "created_at", "authorization"):
+                saved.pop(key, None)
+            if (
+                current.kind != kind.value
+                or current.extra.get("host_request", {}).get("actor_user_id") != actor
+                or saved != operation.model_dump(mode="json")
+            ):
+                raise JobConflict("duplicate_operation_id")
+            if current.state in ACTIVE_STATES:
+                _dispatch(ops, root, current)
+            return current
+        require_idle(ops)
+        require_host_idle(root)
+        job = new_job(kind.value, exempt_token_hash=exempt)
+        job.id = identity
+        job.state = STATE_RUNNING
+        job.phase = "awaiting_host"
+        request = operation.model_dump(mode="json")
+        request["job_id"] = request.pop("operation_id")
+        request.update(
+            actor_user_id=actor,
+            created_at=job.created_at,
+            authorization={
+                **expected_authorization,
+                "validated_at": job.created_at,
+            },
+        )
+        job.extra = {"host_updater": True, "host_request": request}
         _save_job_unlocked(ops, job)
         _dispatch(ops, root, job)
         return job

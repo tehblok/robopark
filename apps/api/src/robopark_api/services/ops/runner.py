@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 from robopark_api.services.ops.archives import (
     KIND_RELEASE,
@@ -68,6 +70,33 @@ class ReleaseTestsFailed(OpsError):
     def __init__(self, log: str):
         super().__init__("tests_failed")
         self.log = log
+
+
+def require_external_recovery_key(recovery_key: bytes | None) -> bytes:
+    """Accept key material only as an external 256-bit input, never from host state."""
+
+    if not isinstance(recovery_key, bytes) or len(recovery_key) != 32:
+        raise OpsError("recovery_key_required")
+    return recovery_key
+
+
+def require_verified_backup(receipt: dict | None, backup_id: str) -> dict:
+    """Fail closed unless a private verification receipt names the exact backup."""
+
+    try:
+        identity = str(UUID(backup_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise OpsError("verified_backup_required") from exc
+    if (
+        identity != backup_id
+        or not isinstance(receipt, dict)
+        or receipt.get("backup_id") != identity
+        or receipt.get("verified") is not True
+        or not isinstance(receipt.get("sha256"), str)
+        or re.fullmatch(r"[a-f0-9]{64}", receipt["sha256"]) is None
+    ):
+        raise OpsError("verified_backup_required")
+    return receipt
 
 
 @dataclass

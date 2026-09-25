@@ -268,11 +268,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     values = list(sys.argv[1:] if argv is None else argv)
     if values == ["--self-test"]:
+        from .commands import OperationKind, TypedHostEffects
         from .release import INSTALLER_VERSION, version
         from .updater import SystemRunner
 
         version(INSTALLER_VERSION)
         assert callable(SystemRunner.wait_ready)
+        assert len(OperationKind) == 16 and callable(TypedHostEffects.usb_format)
+        assert not {"shell", "exec", "command"} & set(COMMAND_HANDLERS)
         for source in Path(__file__).parent.glob("*.py"):
             compile(source.read_bytes(), str(source), "exec")
         return 0

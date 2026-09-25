@@ -5,8 +5,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
+import tempfile
+import zipfile
+from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from uuid import UUID
 
@@ -16,6 +21,615 @@ from .operational_state import backup_state, public_version, update_state
 from .release import UTC, ReleaseError, UpdateRequest, timestamp, unique_object
 from .repair import DEFAULT_REPAIRS, run_repairs
 from .state import atomic_write_json, exclusive_lock
+
+
+class OperationKind(StrEnum):
+    RELEASE_UPDATE = "release-update"
+    REINSTALL = "reinstall"
+    ROLLBACK = "rollback"
+    PACKAGE_INSPECT = "package-inspect"
+    PACKAGE_UPDATE = "package-update"
+    SERVICE_RESTART = "service-restart"
+    REBOOT = "reboot"
+    BACKUP = "backup"
+    BACKUP_VERIFY = "backup-verify"
+    BACKUP_RESTORE = "backup-restore"
+    CLEANUP_PREVIEW = "cleanup-preview"
+    CLEANUP_EXECUTE = "cleanup-execute"
+    DIAGNOSTICS = "diagnostics"
+    USB_DISCOVER = "usb-discover"
+    USB_FORMAT = "usb-format"
+    USB_SELECT = "usb-select"
+
+
+DESTRUCTIVE_CONFIRMATIONS = {
+    OperationKind.RELEASE_UPDATE: "UPDATE ROBOPARK",
+    OperationKind.REINSTALL: "REINSTALL ROBOPARK",
+    OperationKind.ROLLBACK: "ROLLBACK ROBOPARK",
+    OperationKind.REBOOT: "REBOOT ROBOPARK",
+    OperationKind.BACKUP_RESTORE: "RESTORE ROBOPARK BACKUP",
+    OperationKind.CLEANUP_EXECUTE: "CLEAN ROBOPARK",
+}
+_DYNAMIC_CONFIRMATION_KINDS = {
+    OperationKind.PACKAGE_UPDATE,
+    OperationKind.SERVICE_RESTART,
+    OperationKind.USB_FORMAT,
+}
+ALLOWED_SERVICES = frozenset(
+    {
+        "robopark-api.service",
+        "robopark-worker.service",
+        "robopark-tuna.service",
+        "docker.service",
+    }
+)
+ALLOWED_PACKAGES = frozenset({"docker-ce", "docker-ce-cli", "containerd.io", "openssl"})
+ALLOWED_CLEANUP_CATEGORIES = frozenset({"diagnostics", "logs", "backups", "releases"})
+
+
+@dataclass(frozen=True, slots=True)
+class BlockDevice:
+    uuid: str
+    path: str
+    removable: bool
+    mounted: bool = False
+    system_device: bool = False
+    root_device: bool = False
+    data_device: bool = False
+
+    def __post_init__(self):
+        if (
+            str(UUID(self.uuid)) != self.uuid
+            or not re.fullmatch(r"/dev/[A-Za-z0-9._+-]+", self.path)
+            or Path(self.path).name in {".", ".."}
+        ):
+            raise ValueError("invalid_block_device")
+
+
+@dataclass(frozen=True, slots=True)
+class TypedOperation:
+    operation_id: str
+    kind: OperationKind
+    actor_user_id: int
+    created_at: str
+    payload: dict
+    request: dict
+
+
+class TypedHostEffects:
+    """Explicit host-effect interface. Production adapters may implement only this allowlist."""
+
+    def release_update(self, operation_id, release_id):
+        raise ReleaseError("operation_unavailable")
+
+    def reinstall(self, operation_id):
+        raise ReleaseError("operation_unavailable")
+
+    def rollback(self, operation_id, release):
+        raise ReleaseError("operation_unavailable")
+
+    def package_inspect(self, operation_id, package):
+        raise ReleaseError("operation_unavailable")
+
+    def package_update(self, operation_id, package):
+        raise ReleaseError("operation_unavailable")
+
+    def service_restart(self, operation_id, service):
+        raise ReleaseError("operation_unavailable")
+
+    def reboot(self, operation_id):
+        raise ReleaseError("operation_unavailable")
+
+    def backup(self, operation_id, device_uuid):
+        raise ReleaseError("operation_unavailable")
+
+    def backup_verify(self, operation_id, backup_id):
+        raise ReleaseError("operation_unavailable")
+
+    def backup_restore(self, operation_id, backup_id):
+        raise ReleaseError("operation_unavailable")
+
+    def cleanup_preview(self, operation_id, categories):
+        raise ReleaseError("operation_unavailable")
+
+    def cleanup_execute(self, operation_id, plan_id):
+        raise ReleaseError("operation_unavailable")
+
+    def diagnostics(self, operation_id):
+        raise ReleaseError("operation_unavailable")
+
+    def usb_discover(self, operation_id):
+        raise ReleaseError("operation_unavailable")
+
+    def usb_format(self, operation_id, device):
+        raise ReleaseError("operation_unavailable")
+
+    def usb_select(self, operation_id, device):
+        raise ReleaseError("operation_unavailable")
+
+
+_TYPED_FIELDS = {
+    OperationKind.RELEASE_UPDATE: {"release_id"},
+    OperationKind.REINSTALL: set(),
+    OperationKind.ROLLBACK: {"release"},
+    OperationKind.PACKAGE_INSPECT: {"package"},
+    OperationKind.PACKAGE_UPDATE: {"package"},
+    OperationKind.SERVICE_RESTART: {"service"},
+    OperationKind.REBOOT: set(),
+    OperationKind.BACKUP: {"device_uuid"},
+    OperationKind.BACKUP_VERIFY: {"backup_id"},
+    OperationKind.BACKUP_RESTORE: {"backup_id"},
+    OperationKind.CLEANUP_PREVIEW: {"categories"},
+    OperationKind.CLEANUP_EXECUTE: {"plan_id"},
+    OperationKind.DIAGNOSTICS: set(),
+    OperationKind.USB_DISCOVER: set(),
+    OperationKind.USB_FORMAT: {"device_uuid", "confirmation_repeat"},
+    OperationKind.USB_SELECT: {"device_uuid"},
+}
+
+
+def _canonical_uuid(value):
+    if not isinstance(value, str) or str(UUID(value)) != value:
+        raise ValueError()
+    return value
+
+
+def _validate_authorization(value, operation):
+    expected = {
+        "operation_id",
+        "operation_kind",
+        "actor_user_id",
+        "consumed",
+        "validated_at",
+    }
+    try:
+        stamp = timestamp(value["validated_at"])
+        if (
+            not isinstance(value, dict)
+            or set(value) != expected
+            or value["operation_id"] != operation["job_id"]
+            or value["operation_kind"] != operation["kind"]
+            or value["actor_user_id"] != operation["actor_user_id"]
+            or value["consumed"] is not True
+            or stamp.utcoffset().total_seconds() != 0
+            or not -30 <= (datetime.now(UTC) - stamp).total_seconds() <= 300
+        ):
+            raise ValueError()
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as exc:
+        raise ReleaseError("authorization_required") from exc
+
+
+def _required_confirmation(kind, value):
+    if kind is OperationKind.PACKAGE_UPDATE:
+        return f"UPDATE PACKAGE {value.get('package', '')}"
+    if kind is OperationKind.SERVICE_RESTART:
+        return f"RESTART SERVICE {value.get('service', '')}"
+    if kind is OperationKind.USB_FORMAT:
+        return f"FORMAT USB {value.get('device_uuid', '')}"
+    return DESTRUCTIVE_CONFIRMATIONS.get(kind)
+
+
+def validate_typed_operation(value, *, fresh=True):
+    """Parse the closed operation union; unknown fields are always rejected."""
+
+    try:
+        if not isinstance(value, dict):
+            raise ValueError()
+        kind = OperationKind(value.get("kind"))
+        required = set(_TYPED_FIELDS[kind])
+        if kind in DESTRUCTIVE_CONFIRMATIONS or kind in _DYNAMIC_CONFIRMATION_KINDS:
+            required.update({"confirmation", "authorization"})
+            if "authorization" not in value:
+                raise ReleaseError("authorization_required")
+            if "confirmation" not in value:
+                raise ReleaseError("confirmation_required")
+        elif "authorization" in value:
+            required.add("authorization")
+        common = {"job_id", "kind", "actor_user_id", "created_at"}
+        if set(value) != common | required:
+            raise ValueError()
+        operation_id = _canonical_uuid(value["job_id"])
+        if type(value["actor_user_id"]) is not int or not 0 < value["actor_user_id"] < 2**63:
+            raise ValueError()
+        stamp = timestamp(value["created_at"])
+        if stamp.utcoffset().total_seconds() != 0 or fresh and not -300 <= (
+            datetime.now(UTC) - stamp
+        ).total_seconds() <= 86400:
+            raise ValueError()
+        for key in ("device_uuid", "backup_id", "plan_id"):
+            if key in value:
+                _canonical_uuid(value[key])
+        if "release_id" in value and (
+            type(value["release_id"]) is not int or not 0 < value["release_id"] < 2**63
+        ):
+            raise ValueError()
+        if "release" in value and not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._+-]{0,150}", value["release"]
+        ):
+            raise ValueError()
+        if "package" in value and value["package"] not in ALLOWED_PACKAGES:
+            raise ValueError()
+        if "service" in value and value["service"] not in ALLOWED_SERVICES:
+            raise ValueError()
+        if "categories" in value and (
+            not isinstance(value["categories"], list)
+            or not value["categories"]
+            or len(value["categories"]) != len(set(value["categories"]))
+            or any(item not in ALLOWED_CLEANUP_CATEGORIES for item in value["categories"])
+        ):
+            raise ValueError()
+        if "authorization" in value:
+            _validate_authorization(value["authorization"], value)
+        phrase = _required_confirmation(kind, value)
+        if phrase is not None and value["confirmation"] != phrase:
+            raise ReleaseError("confirmation_required")
+        if kind is OperationKind.USB_FORMAT and value["confirmation_repeat"] != phrase:
+            raise ReleaseError("confirmation_required")
+        payload = {key: value[key] for key in required if key not in {"authorization", "confirmation"}}
+        return TypedOperation(
+            operation_id=operation_id,
+            kind=kind,
+            actor_user_id=value["actor_user_id"],
+            created_at=value["created_at"],
+            payload=payload,
+            request=dict(value),
+        )
+    except ReleaseError:
+        raise
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as exc:
+        raise ReleaseError("invalid_command") from exc
+
+
+def select_removable_device(devices, identity, *, destructive=False):
+    """Resolve exactly one discovered device by filesystem UUID, never by raw path."""
+
+    _canonical_uuid(identity)
+    matches = [device for device in devices if device.uuid == identity]
+    if len(matches) != 1:
+        raise ReleaseError("unsafe_usb_device")
+    device = matches[0]
+    if (
+        not device.removable
+        or device.system_device
+        or device.root_device
+        or device.data_device
+        or destructive
+        and device.mounted
+    ):
+        raise ReleaseError("unsafe_usb_device")
+    return device
+
+
+def _perform_typed(effect, operation, devices):
+    identity = operation.operation_id
+    value = operation.payload
+    kind = operation.kind
+    if kind is OperationKind.RELEASE_UPDATE:
+        return effect.release_update(identity, value["release_id"])
+    if kind is OperationKind.REINSTALL:
+        return effect.reinstall(identity)
+    if kind is OperationKind.ROLLBACK:
+        return effect.rollback(identity, value["release"])
+    if kind is OperationKind.PACKAGE_INSPECT:
+        return effect.package_inspect(identity, value["package"])
+    if kind is OperationKind.PACKAGE_UPDATE:
+        return effect.package_update(identity, value["package"])
+    if kind is OperationKind.SERVICE_RESTART:
+        return effect.service_restart(identity, value["service"])
+    if kind is OperationKind.REBOOT:
+        return effect.reboot(identity)
+    if kind is OperationKind.BACKUP:
+        return effect.backup(identity, value["device_uuid"])
+    if kind is OperationKind.BACKUP_VERIFY:
+        return effect.backup_verify(identity, value["backup_id"])
+    if kind is OperationKind.BACKUP_RESTORE:
+        return effect.backup_restore(identity, value["backup_id"])
+    if kind is OperationKind.CLEANUP_PREVIEW:
+        return effect.cleanup_preview(identity, tuple(value["categories"]))
+    if kind is OperationKind.CLEANUP_EXECUTE:
+        return effect.cleanup_execute(identity, value["plan_id"])
+    if kind is OperationKind.DIAGNOSTICS:
+        return effect.diagnostics(identity)
+    if kind is OperationKind.USB_DISCOVER:
+        return effect.usb_discover(identity)
+    device = select_removable_device(
+        devices, value["device_uuid"], destructive=kind is OperationKind.USB_FORMAT
+    )
+    if kind is OperationKind.USB_FORMAT:
+        return effect.usb_format(identity, device)
+    if kind is OperationKind.USB_SELECT:
+        return effect.usb_select(identity, device)
+    raise ReleaseError("invalid_command")
+
+
+def execute_typed_operation(paths, request, effects, *, devices=()):
+    """Execute one idempotent typed operation and atomically retain its result."""
+
+    operation = validate_typed_operation(request)
+    with exclusive_lock(paths.ops / "typed-operation.lock"):
+        return _execute_typed_operation_locked(paths, operation, effects, tuple(devices))
+
+
+def _execute_typed_operation_locked(paths, operation, effects, devices):
+    from .state import write_operation_progress
+
+    receipt = paths.state / "typed-operation-receipts" / f"{operation.operation_id}.json"
+    if receipt.is_file():
+        saved = _read(receipt, limit=65536)
+        if saved.get("request") != operation.request:
+            raise ReleaseError("duplicate_operation_id")
+        result = saved.get("result")
+        if (
+            not isinstance(result, dict)
+            or result.get("operation_id") != operation.operation_id
+            or result.get("kind") != operation.kind.value
+            or result.get("state") not in {"succeeded", "failed"}
+        ):
+            raise ReleaseError("invalid_command_receipt")
+        write_operation_progress(paths, operation.operation_id, result["state"], 100)
+        return result
+    write_operation_progress(paths, operation.operation_id, "accepted", 0)
+    write_operation_progress(paths, operation.operation_id, "executing", 50)
+    try:
+        detail = _perform_typed(effects, operation, devices)
+        result = {
+            "operation_id": operation.operation_id,
+            "kind": operation.kind.value,
+            "state": "succeeded",
+            "detail": detail if isinstance(detail, dict) else {},
+            "error": None,
+        }
+        atomic_write_json(receipt, {"request": operation.request, "result": result})
+        write_operation_progress(paths, operation.operation_id, "succeeded", 100)
+        return result
+    except ReleaseError:
+        raise
+    except Exception as exc:
+        result = {
+            "operation_id": operation.operation_id,
+            "kind": operation.kind.value,
+            "state": "failed",
+            "detail": {},
+            "error": "host_operation_failed",
+        }
+        atomic_write_json(receipt, {"request": operation.request, "result": result})
+        write_operation_progress(paths, operation.operation_id, "failed", 100)
+        raise ReleaseError("host_operation_failed") from exc
+
+
+_BACKUP_MAGIC = b"RPBK1\n"
+
+
+def _sha256_path(path):
+    import hashlib
+
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def create_encrypted_backup(source, artifact, *, recovery_key, app_version, schema_version):
+    """Create an AES-256-GCM backup whose key is never persisted with host data."""
+
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    if not isinstance(recovery_key, bytes) or len(recovery_key) != 32:
+        raise ReleaseError("recovery_key_required")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", app_version):
+        raise ReleaseError("backup_version_invalid")
+    if not re.fullmatch(r"[A-Za-z0-9._+-]{1,100}", schema_version):
+        raise ReleaseError("backup_schema_invalid")
+    source = Path(source)
+    artifact = Path(artifact)
+    if source.is_symlink() or not source.is_dir():
+        raise ReleaseError("unsafe_backup_source")
+    if artifact.resolve(strict=False).is_relative_to(source.resolve()):
+        raise ReleaseError("unsafe_backup_destination")
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    if artifact.exists() or artifact.is_symlink():
+        raise ReleaseError("backup_exists")
+    descriptor, archive_name = tempfile.mkstemp(dir=artifact.parent, prefix=".backup-payload-")
+    os.close(descriptor)
+    archive_path = Path(archive_name)
+    descriptor, encrypted_name = tempfile.mkstemp(
+        dir=artifact.parent, prefix=f".{artifact.name}.encrypted-"
+    )
+    os.close(descriptor)
+    encrypted_path = Path(encrypted_name)
+    try:
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(source.rglob("*")):
+                if path.is_symlink():
+                    raise ReleaseError("unsafe_backup_source")
+                if path.is_file():
+                    archive.write(path, path.relative_to(source).as_posix())
+        payload_sha256 = _sha256_path(archive_path)
+        manifest = {
+            "format": 1,
+            "app_version": app_version,
+            "schema_version": schema_version,
+            "payload_sha256": payload_sha256,
+        }
+        header = _BACKUP_MAGIC + json.dumps(
+            manifest, allow_nan=False, sort_keys=True, separators=(",", ":")
+        ).encode() + b"\n"
+        nonce = os.urandom(12)
+        encryptor = Cipher(algorithms.AES(recovery_key), modes.GCM(nonce)).encryptor()
+        encryptor.authenticate_additional_data(header)
+        with archive_path.open("rb") as source_stream, encrypted_path.open("wb") as output:
+            output.write(header)
+            output.write(nonce)
+            while chunk := source_stream.read(1024 * 1024):
+                output.write(encryptor.update(chunk))
+            output.write(encryptor.finalize())
+            output.write(encryptor.tag)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(encrypted_path, artifact)
+        directory = os.open(artifact.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return {
+            "verified": False,
+            "sha256": _sha256_path(artifact),
+            "app_version": app_version,
+            "schema_version": schema_version,
+            "payload_sha256": payload_sha256,
+        }
+    finally:
+        archive_path.unlink(missing_ok=True)
+        encrypted_path.unlink(missing_ok=True)
+
+
+def verify_encrypted_backup(artifact, *, recovery_key):
+    """Read back, authenticate and inspect a backup before issuing a verified receipt."""
+
+    artifact = Path(artifact)
+    if not isinstance(recovery_key, bytes) or len(recovery_key) != 32:
+        raise ReleaseError("recovery_key_required")
+    try:
+        with artifact.open("rb") as source:
+            if source.readline() != _BACKUP_MAGIC:
+                raise ReleaseError("backup_manifest_invalid")
+            manifest_line = source.readline(4097)
+            manifest = json.loads(manifest_line, object_pairs_hook=unique_object)
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise ReleaseError("backup_manifest_invalid") from exc
+    receipt = {
+        "verified": True,
+        "sha256": _sha256_path(artifact),
+        "app_version": manifest.get("app_version"),
+        "schema_version": manifest.get("schema_version"),
+        "payload_sha256": manifest.get("payload_sha256"),
+    }
+    with tempfile.TemporaryDirectory(prefix="robopark-backup-verify-") as directory:
+        restore_encrypted_backup(
+            artifact, Path(directory) / "payload", recovery_key=recovery_key, verified=receipt
+        )
+    return receipt
+
+
+def restore_encrypted_backup(
+    artifact,
+    target,
+    *,
+    recovery_key,
+    verified,
+    expected_app_version=None,
+    expected_schema_version=None,
+):
+    """Authenticate manifest and ciphertext before extracting into an empty target."""
+
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    if not isinstance(recovery_key, bytes) or len(recovery_key) != 32:
+        raise ReleaseError("recovery_key_required")
+    artifact = Path(artifact)
+    if not isinstance(verified, dict) or verified.get("verified") is not True:
+        raise ReleaseError("verified_backup_required")
+    if verified.get("sha256") != _sha256_path(artifact):
+        raise ReleaseError("backup_integrity_failed")
+    descriptor, plain_name = tempfile.mkstemp(dir=artifact.parent, prefix=".restore-payload-")
+    os.close(descriptor)
+    plain = Path(plain_name)
+    try:
+        with artifact.open("rb") as source:
+            if source.readline() != _BACKUP_MAGIC:
+                raise ReleaseError("backup_manifest_invalid")
+            manifest_line = source.readline(4097)
+            if len(manifest_line) > 4096 or not manifest_line.endswith(b"\n"):
+                raise ReleaseError("backup_manifest_invalid")
+            try:
+                manifest = json.loads(manifest_line, object_pairs_hook=unique_object)
+            except (ValueError, UnicodeError) as exc:
+                raise ReleaseError("backup_manifest_invalid") from exc
+            if (
+                not isinstance(manifest, dict)
+                or set(manifest)
+                != {"format", "app_version", "schema_version", "payload_sha256"}
+                or manifest.get("format") != 1
+                or not re.fullmatch(
+                    r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?",
+                    str(manifest.get("app_version", "")),
+                )
+                or not re.fullmatch(
+                    r"[A-Za-z0-9._+-]{1,100}", str(manifest.get("schema_version", ""))
+                )
+                or not re.fullmatch(r"[a-f0-9]{64}", str(manifest.get("payload_sha256", "")))
+            ):
+                raise ReleaseError("backup_manifest_invalid")
+            if verified.get("app_version") != manifest["app_version"]:
+                raise ReleaseError("backup_version_incompatible")
+            if verified.get("schema_version") != manifest["schema_version"]:
+                raise ReleaseError("backup_schema_incompatible")
+            if expected_app_version is not None and expected_app_version != manifest["app_version"]:
+                raise ReleaseError("backup_version_incompatible")
+            if (
+                expected_schema_version is not None
+                and expected_schema_version != manifest["schema_version"]
+            ):
+                raise ReleaseError("backup_schema_incompatible")
+            if verified.get("payload_sha256") != manifest["payload_sha256"]:
+                raise ReleaseError("backup_integrity_failed")
+            nonce = source.read(12)
+            ciphertext_start = source.tell()
+            source.seek(0, os.SEEK_END)
+            ciphertext_end = source.tell()
+            ciphertext_bytes = ciphertext_end - ciphertext_start - 16
+            if len(nonce) != 12 or ciphertext_bytes < 0:
+                raise ReleaseError("backup_integrity_failed")
+            source.seek(ciphertext_end - 16)
+            tag = source.read(16)
+            source.seek(ciphertext_start)
+            decryptor = Cipher(algorithms.AES(recovery_key), modes.GCM(nonce, tag)).decryptor()
+            decryptor.authenticate_additional_data(_BACKUP_MAGIC + manifest_line)
+            remaining = ciphertext_bytes
+            with plain.open("wb") as output:
+                try:
+                    while remaining:
+                        chunk = source.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise ReleaseError("backup_integrity_failed")
+                        remaining -= len(chunk)
+                        output.write(decryptor.update(chunk))
+                    output.write(decryptor.finalize())
+                except InvalidTag as exc:
+                    raise ReleaseError("backup_integrity_failed") from exc
+                output.flush()
+                os.fsync(output.fileno())
+        if _sha256_path(plain) != manifest["payload_sha256"]:
+            raise ReleaseError("backup_integrity_failed")
+        target = Path(target)
+        if target.exists() or target.is_symlink():
+            raise ReleaseError("restore_target_not_empty")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(dir=target.parent, prefix=f".{target.name}.restore-"))
+        try:
+            with zipfile.ZipFile(plain) as archive:
+                seen = set()
+                for member in archive.infolist():
+                    path = Path(member.filename)
+                    if (
+                        path.is_absolute()
+                        or ".." in path.parts
+                        or member.is_dir()
+                        or member.filename in seen
+                    ):
+                        raise ReleaseError("backup_manifest_invalid")
+                    seen.add(member.filename)
+                archive.extractall(staging)
+            os.replace(staging, target)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+        return {**manifest, "verified": True}
+    finally:
+        plain.unlink(missing_ok=True)
 
 
 def _read(path, limit=4096):

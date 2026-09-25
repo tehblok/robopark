@@ -63,3 +63,45 @@ def test_host_lock_survives_data_root_replacement_and_still_excludes_operations(
         host_paths.state.mkdir(parents=True)
         with pytest.raises(HostBusy, match="host_busy"), host_operation(host_paths):
             pytest.fail("overlapping operation acquired a replaced in-tree lock")
+
+
+def test_operation_progress_receipt_is_atomic_and_monotonic(host_paths):
+    from uuid import uuid4
+
+    from robopark_host.state import read_operation_progress, write_operation_progress
+
+    identity = str(uuid4())
+    write_operation_progress(host_paths, identity, "accepted", 0)
+    write_operation_progress(host_paths, identity, "executing", 50)
+    assert read_operation_progress(host_paths, identity) == {
+        "operation_id": identity,
+        "phase": "executing",
+        "progress": 50,
+        "schema": 1,
+    }
+    with pytest.raises(ValueError, match="progress_regression"):
+        write_operation_progress(host_paths, identity, "accepted", 10)
+
+
+def test_operation_progress_rejects_symlink_receipt(host_paths, tmp_path):
+    from uuid import uuid4
+
+    from robopark_host.state import read_operation_progress
+
+    identity = str(uuid4())
+    receipt = host_paths.state / "operation-progress" / f"{identity}.json"
+    receipt.parent.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    outside.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "operation_id": identity,
+                "phase": "succeeded",
+                "progress": 100,
+            }
+        )
+    )
+    receipt.symlink_to(outside)
+    with pytest.raises(ValueError, match="invalid_operation_progress"):
+        read_operation_progress(host_paths, identity)

@@ -4,7 +4,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-
 _SYSTEM_ROOT = Path("/")
 
 
@@ -19,6 +18,7 @@ class HostPaths:
     releases: Path
     current: Path
     previous: Path
+    recovery: Path
     ops: Path
     state: Path
     lock_dir: Path
@@ -41,6 +41,7 @@ class HostPaths:
             releases=opt / "releases",
             current=opt / "current",
             previous=opt / "previous",
+            recovery=opt / "recovery",
             ops=ops,
             state=ops / "state",
             lock_dir=root / "run/lock/robopark",

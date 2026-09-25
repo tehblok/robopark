@@ -12,6 +12,23 @@ import pytest
 from robopark_host.checks import CheckResult, CommandResult, DiagnosticReport
 
 
+class FakeHostEffects:
+    def __init__(self):
+        self.calls = []
+
+    def usb_format(self, operation_id, device):
+        self.calls.append(("usb_format", operation_id, device.uuid, device.path))
+        return {"device_uuid": device.uuid, "formatted": True}
+
+    def reboot(self, operation_id):
+        self.calls.append(("reboot", operation_id))
+        return {"scheduled": True}
+
+    def package_inspect(self, operation_id, package):
+        self.calls.append(("package_inspect", operation_id, package))
+        return {"package": package}
+
+
 def request(paths, kind="diagnostics", **changes):
     command = {
         "job_id": str(uuid4()),
@@ -24,6 +41,240 @@ def request(paths, kind="diagnostics", **changes):
     inbox.mkdir(parents=True, exist_ok=True)
     (inbox / "approved.json").write_text(json.dumps(command))
     return command
+
+
+def typed_request(kind, **changes):
+    operation_id = str(uuid4())
+    value = {
+        "job_id": operation_id,
+        "kind": kind,
+        "actor_user_id": 7,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    value.update(changes)
+    return value
+
+
+def authorization(command):
+    return {
+        "operation_id": command["job_id"],
+        "operation_kind": command["kind"],
+        "actor_user_id": command["actor_user_id"],
+        "consumed": True,
+        "validated_at": command["created_at"],
+    }
+
+
+def test_typed_schema_is_closed_and_has_no_execution_escape():
+    from robopark_host.commands import OperationKind, validate_typed_operation
+    from robopark_host.release import ReleaseError
+
+    valid = typed_request(OperationKind.PACKAGE_INSPECT.value, package="openssl")
+    assert validate_typed_operation(valid).kind is OperationKind.PACKAGE_INSPECT
+    for injected in (
+        {**valid, "argv": ["sh", "-c", "id"]},
+        {**valid, "command": "id"},
+        {**valid, "kind": "shell"},
+        {**valid, "package": "openssl; id"},
+    ):
+        with pytest.raises(ReleaseError, match="invalid_command"):
+            validate_typed_operation(injected)
+
+
+def test_api_typed_union_and_bridge_revalidate_consumed_authorization(tmp_path):
+    from pydantic import TypeAdapter, ValidationError
+    from robopark_api.ops_schemas import HostOperationIn
+    from robopark_api.services.ops import host_bridge
+
+    identity = str(uuid4())
+    payload = {
+        "operation_id": identity,
+        "kind": "reboot",
+        "confirmation": "REBOOT ROBOPARK",
+    }
+    adapter = TypeAdapter(HostOperationIn)
+    assert str(adapter.validate_python(payload).operation_id) == identity
+    with pytest.raises(ValidationError):
+        adapter.validate_python({**payload, "argv": ["reboot"]})
+
+    ops = tmp_path / "api-ops"
+    root = tmp_path / "host-ops"
+    (root / "inbox").mkdir(parents=True)
+    (root / "state").mkdir()
+    (root / "public").mkdir()
+    (root / "public/command-claim.json").write_text(
+        json.dumps(
+            {
+                "job_id": str(uuid4()),
+                "kind": "diagnostics",
+                "actor_user_id": 1,
+                "active": False,
+            }
+        )
+    )
+    with pytest.raises(host_bridge.BridgeError, match="authorization_required"):
+        host_bridge.enqueue_typed_operation(
+            ops,
+            root,
+            payload,
+            7,
+            "session-hash",
+            authorization_consumed=False,
+        )
+    consumed = {
+        "operation_id": identity,
+        "operation_kind": "reboot",
+        "actor_user_id": 7,
+        "consumed": True,
+    }
+    job = host_bridge.enqueue_typed_operation(
+        ops,
+        root,
+        payload,
+        7,
+        "session-hash",
+        authorization_consumed=consumed,
+    )
+    request_value = json.loads((root / "inbox/approved.json").read_text())
+    assert job.id == identity == request_value["job_id"]
+    assert request_value["authorization"] == {
+        "operation_id": identity,
+        "operation_kind": "reboot",
+        "actor_user_id": 7,
+        "consumed": True,
+        "validated_at": job.created_at,
+    }
+
+
+def test_usb_format_requires_uuid_safe_removable_device_and_double_confirmation(
+    host_paths,
+):
+    from robopark_host.commands import BlockDevice, execute_typed_operation
+    from robopark_host.release import ReleaseError
+
+    identity = "00000000-0000-4000-8000-000000000001"
+    phrase = f"FORMAT USB {identity}"
+    command = typed_request(
+        "usb-format",
+        device_uuid=identity,
+        confirmation=phrase,
+        confirmation_repeat=phrase,
+    )
+    command["authorization"] = authorization(command)
+    effects = FakeHostEffects()
+    devices = [BlockDevice(identity, "/dev/fake-usb", removable=True)]
+
+    result = execute_typed_operation(host_paths, command, effects, devices=devices)
+    assert result["state"] == "succeeded"
+    assert effects.calls == [("usb_format", command["job_id"], identity, "/dev/fake-usb")]
+    progress = host_paths.state / "operation-progress" / f"{command['job_id']}.json"
+    progress.unlink()  # simulate a crash after the terminal receipt but before projection
+    assert execute_typed_operation(host_paths, command, effects, devices=devices) == result
+    assert json.loads(progress.read_text())["phase"] == "succeeded"
+    assert len(effects.calls) == 1
+    collision = typed_request("package-inspect", package="openssl")
+    collision["job_id"] = command["job_id"]
+    with pytest.raises(ReleaseError, match="duplicate_operation_id"):
+        execute_typed_operation(host_paths, collision, effects)
+
+    for unsafe in (
+        BlockDevice(identity, "/dev/fake-system", removable=False),
+        BlockDevice(identity, "/dev/fake-mounted", removable=True, mounted=True),
+        BlockDevice(identity, "/dev/fake-root", removable=True, root_device=True),
+        BlockDevice(identity, "/dev/fake-data", removable=True, data_device=True),
+    ):
+        other = {**command, "job_id": str(uuid4())}
+        other["authorization"] = authorization(other)
+        with pytest.raises(ReleaseError, match="unsafe_usb_device"):
+            execute_typed_operation(host_paths, other, effects, devices=[unsafe])
+
+
+def test_destructive_operation_revalidates_consumed_authorization_and_phrase(host_paths):
+    from robopark_host.commands import execute_typed_operation
+    from robopark_host.release import ReleaseError
+
+    command = typed_request("reboot", confirmation="REBOOT ROBOPARK")
+    effects = FakeHostEffects()
+    with pytest.raises(ReleaseError, match="authorization_required"):
+        execute_typed_operation(host_paths, command, effects)
+    command["authorization"] = authorization(command)
+    command["confirmation"] = "reboot robopark"
+    with pytest.raises(ReleaseError, match="confirmation_required"):
+        execute_typed_operation(host_paths, command, effects)
+    assert effects.calls == []
+
+
+def test_encrypted_backup_never_contains_key_and_restore_requires_external_key(tmp_path):
+    from robopark_host.commands import (
+        create_encrypted_backup,
+        restore_encrypted_backup,
+        verify_encrypted_backup,
+    )
+    from robopark_host.release import ReleaseError
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "db.dump").write_bytes(b"private database")
+    key = b"k" * 32
+    artifact = tmp_path / "backup.rpb"
+    created = create_encrypted_backup(
+        source,
+        artifact,
+        recovery_key=key,
+        app_version="0.2.0-rc.6",
+        schema_version="0046_privileged_generation",
+    )
+    assert created["verified"] is False
+    metadata = verify_encrypted_backup(artifact, recovery_key=key)
+    raw = artifact.read_bytes()
+    assert key not in raw and b"private database" not in raw
+    target = tmp_path / "restored"
+    with pytest.raises(ReleaseError, match="recovery_key_required"):
+        restore_encrypted_backup(artifact, target, recovery_key=None, verified=metadata)
+    restored = restore_encrypted_backup(artifact, target, recovery_key=key, verified=metadata)
+    assert restored["verified"] is True
+    assert (target / "db.dump").read_bytes() == b"private database"
+
+
+def test_restore_rejects_unverified_or_incompatible_backup(tmp_path):
+    from robopark_host.commands import (
+        create_encrypted_backup,
+        restore_encrypted_backup,
+        verify_encrypted_backup,
+    )
+    from robopark_host.release import ReleaseError
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "data").write_bytes(b"x")
+    artifact = tmp_path / "backup.rpb"
+    key = b"r" * 32
+    create_encrypted_backup(
+        source,
+        artifact,
+        recovery_key=key,
+        app_version="0.2.0-rc.6",
+        schema_version="0046_privileged_generation",
+    )
+    receipt = verify_encrypted_backup(artifact, recovery_key=key)
+    with pytest.raises(ReleaseError, match="verified_backup_required"):
+        restore_encrypted_backup(artifact, tmp_path / "no", recovery_key=key, verified=None)
+    wrong_target = tmp_path / "wrong-key"
+    with pytest.raises(ReleaseError, match="backup_integrity_failed"):
+        restore_encrypted_backup(
+            artifact,
+            wrong_target,
+            recovery_key=b"w" * 32,
+            verified=receipt,
+        )
+    assert not wrong_target.exists()
+    with pytest.raises(ReleaseError, match="backup_version_incompatible"):
+        restore_encrypted_backup(
+            artifact,
+            tmp_path / "bad",
+            recovery_key=key,
+            verified={**receipt, "app_version": "9.0.0"},
+        )
 
 
 def test_diagnostics_consumes_once_and_exports_readable_zip(host_paths, monkeypatch):

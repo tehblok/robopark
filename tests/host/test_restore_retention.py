@@ -169,3 +169,19 @@ def test_successful_scheduled_cleanup_clears_prior_restore_cleanup_failure(host_
     assert _artifact_check(host_paths, None).status == "failed"
     assert not retain_artifacts(host_paths)["blocked"]
     assert _artifact_check(host_paths, None).status == "ok"
+
+
+def test_release_retention_protects_current_previous_and_recovery(host_paths):
+    from robopark_host.restore_retention import protected_release_names
+
+    for name in ("current-release", "previous-release", "recovery-release", "obsolete"):
+        (host_paths.releases / name).mkdir(parents=True)
+    host_paths.current.symlink_to(host_paths.releases / "current-release")
+    host_paths.previous.symlink_to(host_paths.releases / "previous-release")
+    host_paths.recovery.symlink_to(host_paths.releases / "recovery-release")
+
+    assert protected_release_names(host_paths) == {
+        "current-release",
+        "previous-release",
+        "recovery-release",
+    }

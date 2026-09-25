@@ -3,13 +3,23 @@
 import fcntl
 import json
 import os
+import stat
 import tempfile
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Generator
+from uuid import UUID
+
+_PROGRESS_PHASES = {
+    "accepted": 0,
+    "executing": 1,
+    "succeeded": 2,
+    "failed": 2,
+    "manual_recovery_required": 2,
+}
 
 
-def atomic_write_json(path: Path, payload: Dict, mode: int = 0o600) -> None:
+def atomic_write_json(path: Path, payload: dict, mode: int = 0o600) -> None:
     """Atomically replace *path* with fsynced JSON protected by *mode*."""
 
     target = Path(path)
@@ -18,7 +28,7 @@ def atomic_write_json(path: Path, payload: Dict, mode: int = 0o600) -> None:
         json.dumps(payload, allow_nan=False, ensure_ascii=False, sort_keys=True) + "\n"
     ).encode("utf-8")
     descriptor, temporary_name = tempfile.mkstemp(
-        dir=str(target.parent), prefix=".{0}.".format(target.name)
+        dir=str(target.parent), prefix=f".{target.name}."
     )
     temporary = Path(temporary_name)
     try:
@@ -41,6 +51,68 @@ def atomic_write_json(path: Path, payload: Dict, mode: int = 0o600) -> None:
             temporary.unlink()
         except FileNotFoundError:
             pass
+
+
+def read_operation_progress(paths, operation_id: str) -> dict | None:
+    """Read one private, bounded operation receipt without accepting aliases."""
+
+    identity = str(UUID(operation_id))
+    if identity != operation_id:
+        raise ValueError("invalid_operation_id")
+    target = paths.state / "operation-progress" / f"{identity}.json"
+    try:
+        descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError("invalid_operation_progress") from exc
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_size > 4096
+                or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                raise ValueError("invalid_operation_progress")
+            value = json.loads(stream.read(4097))
+    except (OSError, ValueError, UnicodeError, RecursionError) as exc:
+        raise ValueError("invalid_operation_progress") from exc
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema", "operation_id", "phase", "progress"}
+        or value.get("schema") != 1
+        or value.get("operation_id") != identity
+        or value.get("phase") not in _PROGRESS_PHASES
+        or type(value.get("progress")) is not int
+        or not 0 <= value["progress"] <= 100
+    ):
+        raise ValueError("invalid_operation_progress")
+    return value
+
+
+def write_operation_progress(paths, operation_id: str, phase: str, progress: int) -> dict:
+    """Atomically publish monotonic private progress suitable for crash resume."""
+
+    if phase not in _PROGRESS_PHASES or type(progress) is not int or not 0 <= progress <= 100:
+        raise ValueError("invalid_operation_progress")
+    previous = read_operation_progress(paths, operation_id)
+    if previous and (
+        _PROGRESS_PHASES[phase] < _PROGRESS_PHASES[previous["phase"]]
+        or progress < previous["progress"]
+        or previous["phase"] in {"succeeded", "failed", "manual_recovery_required"}
+        and phase != previous["phase"]
+    ):
+        raise ValueError("progress_regression")
+    value = {
+        "schema": 1,
+        "operation_id": operation_id,
+        "phase": phase,
+        "progress": progress,
+    }
+    atomic_write_json(paths.state / "operation-progress" / f"{operation_id}.json", value)
+    return value
 
 
 @contextmanager
