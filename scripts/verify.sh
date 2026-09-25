@@ -90,10 +90,6 @@ run_host() {
     PYTHONPATH="$repo_root/deploy/host:$repo_root/apps/api/src" \
     uv run --project "$repo_root/apps/api" --frozen --extra dev \
       python -m pytest -p no:cacheprovider tests/host -q
-  PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH="$repo_root/deploy/host:$repo_root/apps/api/src" \
-    uv run --project "$repo_root/apps/api" --frozen --extra dev \
-      python tests/host/installer_scenarios.py
 }
 
 run_ota() {

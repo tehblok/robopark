@@ -102,7 +102,7 @@ def test_redaction_normalizes_secret_key_separators_without_redacting_normal_key
 
 
 @pytest.mark.parametrize(
-    "command", ["status", "doctor", "repair", "update", "check-update", "watchdog"]
+    "command", ["status", "doctor", "repair", "watchdog"]
 )
 def test_cli_dispatches_each_host_command(command, tmp_path, monkeypatch):
     monkeypatch.setenv("ROBOPARK_ROOT", str(tmp_path))

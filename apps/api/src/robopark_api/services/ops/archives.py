@@ -24,14 +24,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 
-# ``datetime.UTC`` is unavailable to the system Python used by pack-release.sh.
+# Keep Python 3.10 compatibility for snapshot creation.
 UTC = getattr(datetime, "UTC", timezone.utc)  # noqa: UP017
 FORMAT_VERSION = 1
 RELEASE_FORMAT_VERSION = 3
 KIND_SNAPSHOT = "snapshot"
 KIND_RELEASE = "release"
 MANIFEST_NAME = "manifest.json"
-MANIFEST_SIGNATURE_NAME = "manifest.sig"
 
 _RELEASE_METADATA_DEFAULTS = {
     "min_installer_version": "0",
@@ -98,7 +97,7 @@ def sha256_file(path: Path) -> str:
 def _normalize_member(name: str) -> str:
     if not isinstance(name, str) or not name or name != name.strip() or "\\" in name:
         raise ArchiveError("unsafe_path")
-    if name in {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME}:
+    if name == MANIFEST_NAME:
         return name
     if name.startswith("/") or "\x00" in name or name.endswith("/"):
         raise ArchiveError("unsafe_path")
@@ -180,12 +179,7 @@ def _validate_release_manifest(manifest: object) -> tuple[dict[str, str], str, s
         raise ArchiveError("invalid_manifest")
     if manifest.get("kind") != KIND_RELEASE or fmt not in {2, RELEASE_FORMAT_VERSION}:
         raise ArchiveError("unsupported_format")
-    from .release_signing import validate_policy_metadata
-
-    try:
-        validate_policy_metadata(manifest)
-    except (ValueError, TypeError, KeyError) as exc:
-        raise ArchiveError("invalid_manifest") from exc
+    raise ArchiveError("legacy_release_update_removed")
     app_version = manifest.get("app_version")
     git_sha = manifest.get("git_sha")
     migration_head = manifest.get("migration_head")
@@ -232,7 +226,7 @@ def _validate_release_manifest(manifest: object) -> tuple[dict[str, str], str, s
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             raise ArchiveError("invalid_manifest")
         normalized = _normalize_member(name)
-        if normalized in {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME} or normalized in listed:
+        if normalized == MANIFEST_NAME or normalized in listed:
             raise ArchiveError("invalid_manifest")
         listed[normalized] = digest
     if fmt == 3:
@@ -266,25 +260,14 @@ def build_archive(
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for path in _iter_files(source_root):
             rel = path.relative_to(source_root).as_posix()
-            if rel in {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME}:
+            if rel == MANIFEST_NAME:
                 raise ArchiveError("unsafe_path")
             data = path.read_bytes()
             files[rel] = sha256_bytes(data)
             release_files[rel] = {"sha256": files[rel], "size": len(data)}
             zf.writestr(rel, data)
         if kind == KIND_RELEASE:
-            if extra is not None or signing_key is None:
-                raise ArchiveError("signing_key_required")
-            manifest = _release_manifest(
-                app_version=app_version, files=release_files, release_meta=release_meta
-            )
-            from robopark_api.services.ops.release_signing import (
-                canonical_manifest_bytes,
-                sign_manifest,
-            )
-
-            zf.writestr(MANIFEST_NAME, canonical_manifest_bytes(manifest))
-            zf.writestr(MANIFEST_SIGNATURE_NAME, sign_manifest(manifest, signing_key))
+            raise ArchiveError("legacy_release_update_removed")
         else:
             manifest = {
                 "kind": kind,
@@ -359,18 +342,7 @@ def _inspect_open(
     git_sha: str | None = None
     migration_head: str | None = None
     if kind == KIND_RELEASE:
-        if fmt not in {2, RELEASE_FORMAT_VERSION}:
-            raise ArchiveError("unsupported_format")
-        listed, git_sha, migration_head = _validate_release_manifest(manifest)
-        if MANIFEST_SIGNATURE_NAME not in names:
-            raise ArchiveError("invalid_manifest")
-        from robopark_api.services.ops.release_signing import verify_manifest_signature
-
-        try:
-            signature = zf.read(MANIFEST_SIGNATURE_NAME)
-        except KeyError as exc:
-            raise ArchiveError("invalid_manifest") from exc
-        verify_manifest_signature(manifest, signature, public_key)
+        raise ArchiveError("legacy_release_update_removed")
     else:
         app_version = manifest.get("app_version")
         files = manifest.get("files")
@@ -390,7 +362,7 @@ def _inspect_open(
     member_set = set(members)
     if MANIFEST_NAME not in member_set:
         raise ArchiveError("missing_manifest")
-    payload_members = member_set - {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME}
+    payload_members = member_set - {MANIFEST_NAME}
     listed_set = set(listed)
     if payload_members != listed_set:
         raise ArchiveError("manifest_files_mismatch")
@@ -424,7 +396,7 @@ def unpack_archive(
     dest.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         for name in zf.namelist():
-            if name.endswith("/") or name in {MANIFEST_NAME, MANIFEST_SIGNATURE_NAME}:
+            if name.endswith("/") or name == MANIFEST_NAME:
                 continue
             rel = _normalize_member(name)
             target = (dest / rel).resolve()

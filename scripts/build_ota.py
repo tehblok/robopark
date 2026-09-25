@@ -28,9 +28,7 @@ _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,150}$")
 _SHA = re.compile(r"^[a-f0-9]{40}$")
 _SOURCE_PREFIXES = ("apps/", "deploy/", "scripts/")
 _SOURCE_FILES = {"VERSION", "README.md"}
-_EXCLUDED_EXACT = {
-    "deploy/keys/release-public-key.pem",
-}
+_EXCLUDED_EXACT: set[str] = set()
 _EXCLUDED_PARTS = {
     ".git",
     ".pnpm-store",
@@ -41,7 +39,7 @@ _EXCLUDED_PARTS = {
     "node_modules",
     "output",
 }
-_EXCLUDED_SUFFIXES = (".ota", ".sig", ".pem", ".pyc", ".log")
+_EXCLUDED_SUFFIXES = (".ota", ".pem", ".pyc", ".log")
 _ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 
 

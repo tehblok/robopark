@@ -67,13 +67,6 @@ def _config_files(settings: Settings) -> dict[str, Path]:
     return files
 
 
-def _release_public_key(settings: Settings) -> bytes | None:
-    try:
-        return Path(settings.ops_release_public_key_path).read_bytes()
-    except OSError:
-        return None
-
-
 def dispose_db_engines() -> None:
     get_engine().dispose()
 
@@ -108,7 +101,6 @@ def build_ops_context(settings: Settings | None = None) -> OpsContext:
         apply_root=resolved_apply_root(settings),
         app_version=APP_VERSION,
         migration_head=_migration_head(),
-        release_public_key=_release_public_key(settings),
         use_host_updater=host is not None,
         host_ops_dir=host,
         before_db_replace=dispose_db_engines,

@@ -20,7 +20,7 @@ export type SystemHistory = {
   metrics: Record<string, unknown>[]
 }
 export const HOST_OPERATION_KINDS = [
-  'ota-update', 'release-update', 'reinstall', 'rollback', 'package-inspect', 'package-update',
+  'ota-update', 'rollback', 'package-inspect', 'package-update',
   'service-restart', 'reboot', 'backup', 'backup-verify', 'backup-restore',
   'cleanup-preview', 'cleanup-execute', 'diagnostics', 'usb-discover', 'usb-format',
   'usb-select',

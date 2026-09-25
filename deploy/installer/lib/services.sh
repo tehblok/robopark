@@ -7,8 +7,8 @@ install_services() {
     python3 -I "$INSTALLER_DIR/lib/install-services.py" "$ROBOPARK_ROOT" || die unit_install_failed
     systemctl daemon-reload
     systemctl enable docker.service robopark.service robopark-tuna.service robopark-updater.service \
-        robopark-update-check.timer robopark-doctor.timer robopark-watchdog.timer robopark-commands.path
-    for unit in docker.service robopark.service robopark-tuna.service robopark-updater.service robopark-update-check.timer robopark-doctor.timer robopark-watchdog.timer robopark-commands.path; do
+        robopark-doctor.timer robopark-watchdog.timer robopark-commands.path
+    for unit in docker.service robopark.service robopark-tuna.service robopark-updater.service robopark-doctor.timer robopark-watchdog.timer robopark-commands.path; do
         systemctl is-enabled "$unit" >/dev/null 2>&1 || die autostart_not_enabled
     done
     systemctl start robopark.service
@@ -18,7 +18,6 @@ install_services() {
         [ "$ready_attempt" -lt 30 ] || die application_not_ready
         sleep 2
     done
-    python3 -I "$INSTALLER_DIR/lib/install-trust.py" "$ROBOPARK_ROOT" || die signing_trust_failed
     systemctl start robopark-tuna.service
     systemctl is-active robopark.service robopark-tuna.service >/dev/null 2>&1 || die service_not_active
     # Tuna terminates public TLS. Require a real HTTPS response so users do not
@@ -39,5 +38,5 @@ install_services() {
 }
 
 start_host_automation() {
-    systemctl start robopark-updater.service robopark-update-check.timer robopark-doctor.timer robopark-watchdog.timer robopark-commands.path
+    systemctl start robopark-updater.service robopark-doctor.timer robopark-watchdog.timer robopark-commands.path
 }

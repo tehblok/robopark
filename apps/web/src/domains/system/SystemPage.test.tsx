@@ -9,7 +9,7 @@ import { operationReservationKey, readOperationReservation as readScopedOperatio
 
 const revision = 'a'.repeat(64)
 const kinds = [
-  'ota-update', 'release-update', 'reinstall', 'rollback', 'package-inspect', 'package-update',
+  'ota-update', 'rollback', 'package-inspect', 'package-update',
   'service-restart', 'reboot', 'backup', 'backup-verify', 'backup-restore',
   'cleanup-preview', 'cleanup-execute', 'diagnostics', 'usb-discover', 'usb-format',
   'usb-select',

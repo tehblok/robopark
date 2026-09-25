@@ -35,8 +35,6 @@ def installed(test_settings, tmp_path):
         ("post", "diagnostics"),
         ("post", "repair"),
         ("get", "diagnostic-artifact"),
-        ("post", "update/inspect"),
-        ("post", "update/approve"),
         ("get", "operations/11111111-1111-4111-8111-111111111111"),
     ],
 )
@@ -360,14 +358,6 @@ def test_public_result_projects_only_sanitized_usb_device_selection_metadata():
     ]
     assert "LEAK" not in json.dumps(result)
     assert host_bridge.public_result(result).model_dump(mode="json")["devices"] == result["devices"]
-
-
-@pytest.mark.parametrize("role", [rbac.RoleSlug.ADMIN, rbac.RoleSlug.OPERATOR])
-@pytest.mark.parametrize(
-    "method,path", [("get", "available-update"), ("post", "github-update/approve")]
-)
-def test_github_routes_require_royal(client, seed_royal, db_session, role, method, path):
-    test_host_routes_require_royal(client, seed_royal, db_session, role, method, path)
 
 
 def test_royal_reload_bootstrap_is_read_only_during_host_maintenance(

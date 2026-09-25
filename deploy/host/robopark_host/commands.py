@@ -28,8 +28,6 @@ from .state import atomic_write_json, exclusive_lock
 
 class OperationKind(StrEnum):
     OTA_UPDATE = "ota-update"
-    RELEASE_UPDATE = "release-update"
-    REINSTALL = "reinstall"
     ROLLBACK = "rollback"
     PACKAGE_INSPECT = "package-inspect"
     PACKAGE_UPDATE = "package-update"
@@ -48,8 +46,6 @@ class OperationKind(StrEnum):
 
 DESTRUCTIVE_CONFIRMATIONS = {
     OperationKind.OTA_UPDATE: "UPDATE ROBOPARK",
-    OperationKind.RELEASE_UPDATE: "UPDATE ROBOPARK",
-    OperationKind.REINSTALL: "REINSTALL ROBOPARK",
     OperationKind.ROLLBACK: "ROLLBACK ROBOPARK",
     OperationKind.REBOOT: "REBOOT ROBOPARK",
     OperationKind.BACKUP_RESTORE: "RESTORE ROBOPARK BACKUP",
@@ -124,13 +120,7 @@ class TypedHostEffects:
             "error": "manual_recovery_required",
         }
 
-    def release_update(self, operation_id, release_id):
-        raise ReleaseError("operation_unavailable")
-
     def ota_update(self, operation_id, upload_id, sha256, version):
-        raise ReleaseError("operation_unavailable")
-
-    def reinstall(self, operation_id):
         raise ReleaseError("operation_unavailable")
 
     def rollback(self, operation_id, release):
@@ -195,14 +185,8 @@ class SystemTypedHostEffects(TypedHostEffects):
     def reconcile(self, operation):
         return self.system.reconcile(operation)
 
-    def release_update(self, operation_id, release_id):
-        return self.system.release_update(operation_id, release_id)
-
     def ota_update(self, operation_id, upload_id, sha256, version):
         return self.system.ota_update(operation_id, upload_id, sha256, version)
-
-    def reinstall(self, operation_id):
-        return self.system.reinstall(operation_id)
 
     def rollback(self, operation_id, release):
         return self.system.rollback(operation_id, release)
@@ -249,8 +233,6 @@ class SystemTypedHostEffects(TypedHostEffects):
 
 _TYPED_FIELDS = {
     OperationKind.OTA_UPDATE: {"upload_id", "sha256", "version"},
-    OperationKind.RELEASE_UPDATE: {"release_id"},
-    OperationKind.REINSTALL: set(),
     OperationKind.ROLLBACK: {"release"},
     OperationKind.PACKAGE_INSPECT: {"package"},
     OperationKind.PACKAGE_UPDATE: {"package"},
@@ -433,10 +415,6 @@ def _perform_typed(effect, operation, devices):
         return effect.ota_update(
             identity, value["upload_id"], value["sha256"], value["version"]
         )
-    if kind is OperationKind.RELEASE_UPDATE:
-        return effect.release_update(identity, value["release_id"])
-    if kind is OperationKind.REINSTALL:
-        return effect.reinstall(identity)
     if kind is OperationKind.ROLLBACK:
         return effect.rollback(identity, value["release"])
     if kind is OperationKind.PACKAGE_INSPECT:
@@ -1201,18 +1179,10 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
     def _unavailable():
         raise ReleaseError("capability_unavailable")
 
-    def release_update(self, operation_id, release_id):
-        del operation_id, release_id
-        return self._unavailable()
-
     def ota_update(self, operation_id, upload_id, sha256, version):
         if self.ota_effects is None:
             return self._unavailable()
         return self.ota_effects.ota_update(operation_id, upload_id, sha256, version)
-
-    def reinstall(self, operation_id):
-        del operation_id
-        return self._unavailable()
 
     def rollback(self, operation_id, release):
         del operation_id, release
@@ -1775,16 +1745,11 @@ def _validate(value, *, fresh=True, trusted_typed=False):
                 r"[a-f0-9]{64}", value["sha256"]
             ):
                 raise ValueError()
-        if value.get("kind") == "github-update":
-            expected.add("release_id")
-            if type(value.get("release_id")) is not int or not 0 < value["release_id"] < 2**63:
-                raise ValueError()
         if set(value) != expected:
             raise ValueError()
         if str(UUID(value["job_id"])) != value["job_id"] or value["kind"] not in {
             "diagnostics",
             "repair",
-            "github-update",
             "restore",
         }:
             raise ValueError()
@@ -1950,7 +1915,6 @@ def consume_commands(
     http,
     *,
     update_runner=None,
-    github_http=None,
     typed_effects=None,
     typed_devices=None,
 ):
@@ -1998,7 +1962,7 @@ def consume_commands(
             from .retention import command_retired
 
             if command_retired(paths, request["job_id"]):
-                if request["kind"] in {"update", "github-update"}:
+                if request["kind"] == "update":
                     atomic_write_json(
                         _public(paths) / "rebuild.result",
                         {
@@ -2035,7 +1999,7 @@ def consume_commands(
                     pending.unlink(missing_ok=True)
                     _claim_public(paths, request, False)
                     return 1
-                if request["kind"] in {"update", "github-update"}:
+                if request["kind"] == "update":
                     atomic_write_json(
                         _public(paths) / "rebuild.result", saved["result"], mode=0o644
                     )
@@ -2076,43 +2040,6 @@ def consume_commands(
                 _claim_public(paths, request, False)
                 pending.unlink(missing_ok=True)
                 return 1
-            if request["kind"] == "github-update":
-                from .github_releases import (
-                    GithubHttp,
-                    current_available,
-                    download_approved_release,
-                )
-                from .updater import publish_result
-
-                try:
-                    if resumed or not fresh:
-                        directory = paths.state / "github-artifacts"
-                        for suffix in (".zip.partial", ".zip.sig.partial"):
-                            (
-                                directory
-                                / ("github-release-" + str(request["release_id"]) + suffix)
-                            ).unlink(missing_ok=True)
-                        raise ReleaseError("github_approval_expired")
-                    release = current_available(paths, request["release_id"])
-                    artifact = download_approved_release(
-                        release, paths, github_http or GithubHttp()
-                    )
-                    request = {key: value for key, value in request.items() if key != "release_id"}
-                    request.update(kind="update", artifact=artifact.name)
-                    atomic_write_json(artifact.with_suffix(".zip.approval.json"), request)
-                    atomic_write_json(pending, request)
-                    _claim_public(paths, request, True)
-                except (OSError, ValueError, TypeError, KeyError, RecursionError):
-                    result = {
-                        "job_id": request["job_id"],
-                        "ok": False,
-                        "error": "github_download_failed",
-                    }
-                    publish_result(paths, result)
-                    atomic_write_json(receipt, {"request": request, "result": result})
-                    _claim_public(paths, request, False)
-                    pending.unlink(missing_ok=True)
-                    return 1
             if not _allow_attempt(paths, request):
                 return 0
             if request["kind"] == "restore":

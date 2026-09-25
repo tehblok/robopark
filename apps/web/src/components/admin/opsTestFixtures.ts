@@ -20,7 +20,6 @@ export function mockOpsServer(overrides: Record<string, unknown | (() => unknown
     '/admin/ops/job': jobFixture('', 'idle'),
     '/admin/ops/update/inspect': inspectionFixture,
     '/admin/ops/update/approve': jobFixture('update'),
-    '/admin/ops/github-update/approve': jobFixture('update'),
     '/admin/ops/diagnostics': jobFixture(),
     '/admin/ops/repair': { ...jobFixture('repair', 'succeeded'), host_result: { before: [], after: [], performed: ['restart_tuna'], failed: ['restart_app'] } },
     ...overrides,

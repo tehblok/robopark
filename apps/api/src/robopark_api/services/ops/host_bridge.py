@@ -20,8 +20,6 @@ from uuid import UUID, uuid4
 from pydantic import TypeAdapter, ValidationError
 
 from robopark_api.ops_schemas import (
-    AvailableReleaseOut,
-    AvailableUpdateOut,
     HostCapabilitiesOut,
     HostOperationIn,
     HostOperationKind,
@@ -51,8 +49,6 @@ class BridgeError(ValueError):
 _HOST_OPERATION_ADAPTER = TypeAdapter(HostOperationIn)
 _DESTRUCTIVE_PHRASES = {
     HostOperationKind.OTA_UPDATE: "UPDATE ROBOPARK",
-    HostOperationKind.RELEASE_UPDATE: "UPDATE ROBOPARK",
-    HostOperationKind.REINSTALL: "REINSTALL ROBOPARK",
     HostOperationKind.ROLLBACK: "ROLLBACK ROBOPARK",
     HostOperationKind.REBOOT: "REBOOT ROBOPARK",
     HostOperationKind.BACKUP_RESTORE: "RESTORE ROBOPARK BACKUP",
@@ -763,47 +759,3 @@ def diagnostic_artifact(root, job):
     ):
         return None
     return target
-
-
-def available_update(root):
-    value = read_json(root / "public/available-update.json")
-    output = AvailableUpdateOut()
-    try:
-        stamp = _timestamp(value.get("checked_at"))
-        if stamp is None or not 0 <= (datetime.now(UTC) - stamp).total_seconds() <= 86400:
-            return output
-        state = value.get("state")
-        if state not in {"available", "up_to_date", "discovery_stale", "disabled", "approved"}:
-            return output
-        release = None
-        if state == "available":
-            release = AvailableReleaseOut.model_validate(value.get("release"))
-        return AvailableUpdateOut(state=state, checked_at=stamp, release=release)
-    except (ValueError, TypeError):
-        return output
-
-
-def approve_github_update(ops, root, release_id, actor, exempt):
-    with _locked(ops):
-        job = load_job(ops)
-        if (
-            job
-            and job.extra.get("github_release_id") == release_id
-            and job.state in ACTIVE_STATES | {"succeeded"}
-        ):
-            if job.extra.get("host_request", {}).get("actor_user_id") != actor:
-                raise BridgeError("github_approval_actor_mismatch")
-            if job.state in ACTIVE_STATES:
-                _dispatch(ops, root, job)
-            return job
-        available = available_update(root)
-        if available.state != "available" or available.release.release_id != release_id:
-            raise BridgeError("github_release_unavailable")
-        require_idle(ops)
-        require_host_idle(root)
-        job = _new_host_job("update", actor, exempt)
-        job.extra["github_release_id"] = release_id
-        job.extra["host_request"].update(kind="github-update", release_id=release_id)
-        _save_job_unlocked(ops, job)
-        _dispatch(ops, root, job)
-        return job

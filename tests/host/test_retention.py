@@ -17,7 +17,7 @@ def old(path, content=b"x", seconds=10 * 86400):
     return path
 
 
-def test_cleanup_bounds_real_upload_github_diagnostic_and_inspection_paths(host_paths):
+def test_cleanup_bounds_real_upload_diagnostic_and_inspection_paths(host_paths):
     from robopark_host.retention import artifact_usage, retain_artifacts
 
     identity = str(uuid4())
@@ -31,18 +31,14 @@ def test_cleanup_bounds_real_upload_github_diagnostic_and_inspection_paths(host_
             }
         ).encode(),
     )
-    github = [
-        old(host_paths.state / "github-artifacts" / ("github-release-11.zip" + suffix), b"x" * 100)
-        for suffix in ("", ".sig", ".json", ".approval.json", ".partial", ".sig.partial")
-    ]
     diagnostic = old(host_paths.ops / "public/artifacts" / f"{uuid4()}.zip", b"x" * 100)
     foreign = old(host_paths.ops / "artifacts/do-not-delete.zip", b"foreign")
     release = old(host_paths.releases / "old-release/file", b"release")
     recovery = old(host_paths.ops / "rollbacks/known/data", b"snapshot")
     before = artifact_usage(host_paths)["bytes"]
     result = retain_artifacts(host_paths, max_bytes=400)
-    assert result["deleted"] >= 9
-    assert all(not path.exists() for path in [upload, record, *github, diagnostic])
+    assert result["deleted"] >= 3
+    assert all(not path.exists() for path in [upload, record, diagnostic])
     assert foreign.read_bytes() == b"foreign"
     assert release.exists() and recovery.exists()
     assert artifact_usage(host_paths)["bytes"] < before

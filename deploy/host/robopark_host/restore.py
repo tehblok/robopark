@@ -448,9 +448,7 @@ def _prepare(paths, journal, runner):
     current = paths.current.resolve(strict=True)
     if not paths.current.is_symlink() or current.parent != paths.releases.resolve():
         raise ReleaseError("snapshot_invalid")
-    from .trust import directory_key
-
-    release = verify_directory(current, directory_key(paths, current))
+    release = verify_directory(current, None)
     if (candidate / "robopark.dump").is_file():
         _validate_postgres_candidate(
             paths, journal, candidate / "robopark.dump", release["migration_head"], runner

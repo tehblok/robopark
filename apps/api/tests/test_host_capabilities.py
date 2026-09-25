@@ -25,8 +25,6 @@ SAFE_KINDS = {
     "usb-select",
 }
 UNAVAILABLE_PAYLOADS = [
-    {"kind": "release-update", "release_id": 7, "confirmation": "UPDATE ROBOPARK"},
-    {"kind": "reinstall", "confirmation": "REINSTALL ROBOPARK"},
     {"kind": "rollback", "release": "old", "confirmation": "ROLLBACK ROBOPARK"},
     {"kind": "package-update", "package": "openssl", "confirmation": "UPDATE PACKAGE openssl"},
     {
@@ -64,7 +62,11 @@ def capability_bridge(test_settings, tmp_path, monkeypatch):
                 "available": kind in SAFE_KINDS,
                 "unavailable_reason": None if kind in SAFE_KINDS else "capability_unavailable",
             }
-            for kind in SAFE_KINDS | {item["kind"] for item in UNAVAILABLE_PAYLOADS}
+            for kind in (
+                SAFE_KINDS
+                | {"ota-update"}
+                | {item["kind"] for item in UNAVAILABLE_PAYLOADS}
+            )
         },
     }
     (root / "public/operation-capabilities.json").write_text(json.dumps(value))
@@ -107,10 +109,7 @@ def test_legacy_mutating_ops_routes_are_retired_and_cannot_enqueue(
         raise AssertionError("retired route attempted to enqueue host work")
 
     monkeypatch.setattr("robopark_api.services.ops.host_bridge.enqueue_restore", forbidden)
-    monkeypatch.setattr("robopark_api.services.ops.host_bridge.inspect_update", forbidden)
-    monkeypatch.setattr("robopark_api.services.ops.host_bridge.approve_update", forbidden)
     monkeypatch.setattr("robopark_api.services.ops.host_bridge.enqueue_operation", forbidden)
-    monkeypatch.setattr("robopark_api.services.ops.host_bridge.approve_github_update", forbidden)
 
     calls = [
         client.post("/admin/ops/abort"),
@@ -120,24 +119,7 @@ def test_legacy_mutating_ops_routes_are_retired_and_cannot_enqueue(
             data={"confirm": "ВОССТАНОВИТЬ"},
             files={"archive": ("backup.zip", b"zip", "application/zip")},
         ),
-        client.post(
-            "/admin/ops/update",
-            data={"confirm": "ОБНОВИТЬ"},
-            files={"archive": ("release.zip", b"zip", "application/zip")},
-        ),
-        client.post(
-            "/admin/ops/update/inspect",
-            files={"archive": ("release.zip", b"zip", "application/zip")},
-        ),
-        client.post(
-            "/admin/ops/update/approve",
-            json={"inspection_id": BOOT_ID, "confirm": "ОБНОВИТЬ"},
-        ),
         client.post("/admin/ops/repair"),
-        client.post(
-            "/admin/ops/github-update/approve",
-            json={"release_id": 42, "confirm": "ОБНОВИТЬ"},
-        ),
     ]
 
     assert [(response.status_code, response.json()) for response in calls] == [

@@ -16,8 +16,6 @@ UNITS = (
     "robopark.service",
     "robopark-tuna.service",
     "robopark-updater.service",
-    "robopark-update-check.service",
-    "robopark-update-check.timer",
     "robopark-doctor.service",
     "robopark-doctor.timer",
     "robopark-watchdog.service",
@@ -144,10 +142,8 @@ def snapshot(paths, journal, runner=None, *, refresh=False):
     if refresh:
         shutil.rmtree(preliminary)
     if runner is not None:
-        from .trust import directory_key
-
         current = paths.current.resolve(strict=True)
-        expected_head = verify_directory(current, directory_key(paths, current))["migration_head"]
+        expected_head = verify_directory(current, None)["migration_head"]
         verify_source_head(paths, runner, expected_head)
         target = f"/host-rollbacks/{journal['job_id']}/database.dump"
         runner.run(
@@ -240,14 +236,10 @@ def restore_data(paths, journal, runner=None):
 def rollback_release(paths, journal, runner, phase):
     """Idempotent even if power is lost halfway through a snapshot restore."""
     previous = paths.releases / journal["previous"]
-    from .trust import directory_key
-    from .trust import restore as restore_trust
-
-    verify_directory(previous, directory_key(paths, previous))
+    verify_directory(previous, None)
     if journal["writes_resumed"]:
         raise ReleaseError("manual_recovery_required")
     phase("rolling_back")
-    restore_trust(paths, journal)
     runner.run(["systemctl", "stop", "robopark.service"], timeout=120)
     if journal["migration_started"]:
         restore_data(paths, journal, runner)

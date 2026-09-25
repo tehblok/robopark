@@ -99,8 +99,6 @@ class Settings(BaseSettings):
     ops_apply_root: str | None = None
     #: Optional path to deploy/host.env (or a test stand-in) packed into snapshots.
     ops_host_env_path: str | None = None
-    #: Public Ed25519 key trusted for format-2 release archives.
-    ops_release_public_key_path: str = "/etc/robopark/release-public-key.pem"
     #: When true, ops jobs finish inside the request (tests). When false, they
     #: run after the response so the royal UI can poll.
     ops_sync: bool = False

@@ -172,37 +172,10 @@ def public_result(value):
     )
 
 
-class AvailableReleaseOut(BaseModel):
-    release_id: int = Field(strict=True, gt=0, lt=2**63)
-    version: str = Field(
-        max_length=100,
-        pattern=r"^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$",
-    )
-    git_sha: str = Field(pattern=r"^[a-fA-F0-9]{40}$")
-    size: int = Field(strict=True, gt=0, le=512 * 1024 * 1024)
-    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-
-
-class AvailableUpdateOut(BaseModel):
-    state: Literal[
-        "available", "up_to_date", "discovery_stale", "disabled", "manual", "approved"
-    ] = "discovery_stale"
-    checked_at: datetime | None = None
-    release: AvailableReleaseOut | None = None
-
-
-class GithubApprovalIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    release_id: int = Field(strict=True, gt=0, lt=2**63)
-    confirm: str
-
-
 class HostOperationKind(StrEnum):
     """Protocol kinds, not an executable inventory; consult HostCapabilitiesOut."""
 
     OTA_UPDATE = "ota-update"
-    RELEASE_UPDATE = "release-update"
-    REINSTALL = "reinstall"
     ROLLBACK = "rollback"
     PACKAGE_INSPECT = "package-inspect"
     PACKAGE_UPDATE = "package-update"
@@ -244,22 +217,11 @@ class _HostOperationBase(BaseModel):
     confirmation: str = Field(min_length=1, max_length=160)
 
 
-class HostReleaseUpdateIn(_HostOperationBase):
-    kind: Literal[HostOperationKind.RELEASE_UPDATE]
-    release_id: int = Field(strict=True, gt=0, lt=2**63)
-    confirmation: str
-
-
 class HostOtaUpdateIn(_HostOperationBase):
     kind: Literal[HostOperationKind.OTA_UPDATE]
     upload_id: UUID
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,150}$")
-    confirmation: str
-
-
-class HostReinstallIn(_HostOperationBase):
-    kind: Literal[HostOperationKind.REINSTALL]
     confirmation: str
 
 
@@ -350,8 +312,6 @@ class HostUsbSelectIn(_HostOperationBase):
 
 HostOperationIn = Annotated[
     HostOtaUpdateIn
-    | HostReleaseUpdateIn
-    | HostReinstallIn
     | HostRollbackIn
     | HostPackageInspectIn
     | HostPackageUpdateIn

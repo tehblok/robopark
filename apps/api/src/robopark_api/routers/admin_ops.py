@@ -11,7 +11,6 @@ from fastapi import (
     Depends,
     HTTPException,
     Request,
-    UploadFile,
     status,
 )
 from fastapi.responses import FileResponse
@@ -23,7 +22,6 @@ from robopark_api.db import get_db
 from robopark_api.deps import require_builtin_admin_or_royal, require_royal
 from robopark_api.models import HostOperationStatus, User
 from robopark_api.ops_schemas import (
-    AvailableUpdateOut,
     HostCapabilitiesOut,
     HostOperationIn,
     HostOperationKind,
@@ -189,28 +187,6 @@ def _job_out(job, *, progress: tuple[str | None, int | None] = (None, None)) -> 
     )
 
 
-async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
-    # UploadFile uses a seekable spooled file. Measure it first so reading a
-    # small archive never reserves memory for the whole configured limit and
-    # joining chunks never keeps a second full archive copy alive.
-    stream = file.file
-    stream.seek(0, 2)
-    upload_bytes = stream.tell()
-    stream.seek(0)
-    if upload_bytes > max_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="archive_too_large"
-        )
-    content = await file.read()
-    if len(content) > max_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="archive_too_large"
-        )
-    if not content:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="archive_required")
-    return content
-
-
 @router.get("/ops/maintenance", response_model=MaintenanceOut)
 def maintenance_status(
     request: Request, settings: Settings = Depends(get_settings)
@@ -328,13 +304,6 @@ def post_snapshot(
 
 @router.post("/admin/ops/restore", response_model=OpsJobOut)
 async def post_restore(
-    _royal: User = Depends(require_royal),
-) -> OpsJobOut:
-    _typed_operation_required()
-
-
-@router.post("/admin/ops/update", response_model=OpsJobOut)
-async def post_update(
     _royal: User = Depends(require_royal),
 ) -> OpsJobOut:
     _typed_operation_required()
@@ -493,20 +462,6 @@ def get_release_status(
     return release_status(_bridge_root(settings))
 
 
-@router.post("/admin/ops/update/inspect")
-async def inspect_host_update(
-    _royal: User = Depends(require_royal),
-):
-    _typed_operation_required()
-
-
-@router.post("/admin/ops/update/approve", response_model=OpsJobOut)
-def approve_host_update(
-    _royal: User = Depends(require_royal),
-):
-    _typed_operation_required()
-
-
 @router.post("/admin/ops/diagnostics", response_model=OpsJobOut)
 def post_diagnostics(
     _royal: User = Depends(require_royal),
@@ -540,17 +495,3 @@ def download_diagnostic_artifact(
     if path is None:
         raise HTTPException(status_code=404, detail="artifact_missing")
     return FileResponse(path, filename=path.name, media_type="application/zip")
-
-
-@router.get("/admin/ops/available-update", response_model=AvailableUpdateOut)
-def get_available_update(
-    royal: User = Depends(require_royal), settings: Settings = Depends(get_settings)
-):
-    return host_bridge.available_update(_bridge_root(settings))
-
-
-@router.post("/admin/ops/github-update/approve", response_model=OpsJobOut)
-def approve_github_update(
-    _royal: User = Depends(require_royal),
-):
-    _typed_operation_required()

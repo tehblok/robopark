@@ -92,7 +92,6 @@ def test_units_that_replay_update_activation_can_publish_tmpfiles_policy(name):
     "name,command",
     [
         ("updater", "update"),
-        ("update-check", "check-update"),
         ("doctor", "doctor"),
         ("watchdog", "watchdog"),
     ],
@@ -119,7 +118,6 @@ def test_privileged_units_use_trusted_launcher_and_sandbox(name, command):
 @pytest.mark.parametrize(
     "name,key,value",
     [
-        ("update-check", "OnUnitActiveSec", "6h"),
         ("doctor", "OnCalendar", "*:0/15"),
         ("watchdog", "OnUnitActiveSec", "2min"),
     ],
@@ -217,10 +215,6 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     assert mounts["/ops"]["source"] == str(host_paths.var / "api-ops")
     assert mounts["/data"]["source"] == str(host_paths.var / "data")
     assert mounts["/host-ops/public"]["read_only"] is True
-    key_path = api["environment"]["OPS_RELEASE_PUBLIC_KEY_PATH"]
-    assert key_path == "/etc/robopark/release-public-key.pem"
-    assert mounts[key_path]["source"] == str(host_paths.etc / "release-public-key.pem")
-    assert mounts[key_path]["read_only"] is True
     assert mounts["/run/secrets/pgpass"] == {
         "type": "bind",
         "source": str(host_paths.etc / "pgpass"),
@@ -238,9 +232,9 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
         "/ops",
         "/data",
         "/host-ops/inbox",
-        "/host-ops/artifacts",
-        "/host-ops/public",
-        "/etc/robopark/release-public-key.pem",
+            "/host-ops/artifacts",
+            "/host-ops/ota-uploads",
+            "/host-ops/public",
         "/run/secrets/pgpass",
         "/run/robopark/snapshot.env",
         "/host-repo/deploy/host.env",

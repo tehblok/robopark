@@ -23,7 +23,6 @@ def release_status(root: Path, *, now: datetime | None = None) -> ReleaseStatusO
     now = now or datetime.now(UTC)
     lifecycle = read_json(root / "public/release-status.json")
     health = read_json(root / "public/system-health.json")
-    available = read_json(root / "public/available-update.json")
     retention = read_json(root / "public/retention-status.json")
     released_at = _date(lifecycle.get("released_at"))
     supported_until = _date(lifecycle.get("supported_until"))
@@ -64,9 +63,7 @@ def release_status(root: Path, *, now: datetime | None = None) -> ReleaseStatusO
         installer_version=lifecycle.get("installer_version")
         if isinstance(lifecycle.get("installer_version"), str)
         else None,
-        available_update=available.get("release")
-        if available.get("state") == "available"
-        else None,
+        available_update=None,
         bridges=lifecycle.get("bridges") if isinstance(lifecycle.get("bridges"), list) else [],
         cleanup=retention or None,
     )

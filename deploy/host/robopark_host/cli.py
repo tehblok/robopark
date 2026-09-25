@@ -246,12 +246,6 @@ def _restore_check_handler(paths: HostPaths) -> int:
     return 0 if check_app_start(paths) else 1
 
 
-def _check_update_handler(paths: HostPaths) -> int:
-    from .github_releases import run_check
-
-    return run_check(paths)
-
-
 def _retain_after_terminal_update(paths: HostPaths, state: str) -> None:
     if state not in {"current_healthy", "previous_restored", "rejected"}:
         return
@@ -270,7 +264,6 @@ COMMAND_HANDLERS: dict[str, Handler] = {
     "doctor": _doctor_handler,
     "repair": _repair_handler,
     "update": _foundation_handler,
-    "check-update": _check_update_handler,
     "watchdog": _watchdog_handler,
 }
 

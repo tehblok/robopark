@@ -11,8 +11,6 @@ UNITS = (
     "robopark.service",
     "robopark-tuna.service",
     "robopark-updater.service",
-    "robopark-update-check.service",
-    "robopark-update-check.timer",
     "robopark-doctor.service",
     "robopark-doctor.timer",
     "robopark-watchdog.service",

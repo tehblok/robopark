@@ -697,11 +697,6 @@ def _locations(paths):
             rf"(?:{UUID}\.json|\.bridge-[a-z0-9_]{{8}})",
             "inspection",
         ),
-        (
-            paths.state / "github-artifacts",
-            r"github-release-[1-9][0-9]{0,18}\.zip(?:\.sig|\.json|\.approval\.json|\.partial|\.sig\.partial)?",
-            "github",
-        ),
         (paths.ops / "public/artifacts", rf"{UUID}\.zip", "diagnostic"),
         (paths.state / "command-receipts", rf"{UUID}\.json", "receipt"),
     ]

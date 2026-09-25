@@ -6,40 +6,9 @@ from conftest import login_as, role_id_for
 from robopark_api.models import User
 from robopark_api.security import hash_password
 from robopark_api.services import rbac
-from robopark_api.services.ops.archives import KIND_RELEASE, build_archive
 from robopark_api.services.ops.jobs import STATE_RUNNING, new_job, save_job
-from robopark_api.services.ops.runner import UPDATE_PHRASE
 
 pytestmark = pytest.mark.usefixtures("authorize_privileged_ops")
-
-
-def test_ops_upload_keeps_only_one_archive_copy_in_python_memory():
-    import asyncio
-    import tempfile
-    import tracemalloc
-
-    from fastapi import UploadFile
-
-    from robopark_api.routers.admin_ops import _read_upload
-
-    size = 1 * 1024 * 1024
-    configured_limit = 64 * 1024 * 1024
-    with tempfile.SpooledTemporaryFile(max_size=1) as stream:
-        stream.write(b"x" * size)
-        stream.seek(0)
-        upload = UploadFile(file=stream, filename="release.zip")
-
-        tracemalloc.start()
-        try:
-            content = asyncio.run(_read_upload(upload, configured_limit))
-            _, peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
-
-    assert len(content) == size
-    assert content[:1] == b"x"
-    assert content[-1:] == b"x"
-    assert peak < size * 2
 
 
 def test_admin_cannot_create_snapshot(client, seed_royal, db_session):
@@ -84,11 +53,10 @@ def test_legacy_archive_update_route_is_retired(client, seed_royal, tmp_path, te
     login_as(client, "royal", "secret")
     updated = client.post(
         "/admin/ops/update",
-        data={"confirm": UPDATE_PHRASE},
+        data={"confirm": "ОБНОВИТЬ"},
         files={"archive": ("release.zip", b"PK", "application/zip")},
     )
-    assert updated.status_code == 410
-    assert updated.json()["detail"] == "typed_operation_required"
+    assert updated.status_code == 404
 
 
 def test_legacy_restore_is_retired_before_confirmation(client, seed_royal):
@@ -100,34 +68,6 @@ def test_legacy_restore_is_retired_before_confirmation(client, seed_royal):
     )
     assert response.status_code == 410
     assert response.json()["detail"] == "typed_operation_required"
-
-
-def test_release_tests_fail_leaves_apply_root_empty(
-    client, seed_royal, tmp_path, test_settings, release_key_pair
-):
-    login_as(client, "royal", "secret")
-    root = tmp_path / "rel"
-    api = root / "apps" / "api"
-    (api / "tests").mkdir(parents=True)
-    (api / "tests" / "test_ok.py").write_text(
-        "def test_ok():\n    assert False\n", encoding="utf-8"
-    )
-    blob = build_archive(
-        kind=KIND_RELEASE,
-        source_root=root,
-        app_version="9",
-        release_meta={"git_sha": "a" * 40, "migration_head": "0017_driver_work_reports"},
-        signing_key=release_key_pair[0],
-    )
-    updated = client.post(
-        "/admin/ops/update",
-        data={"confirm": UPDATE_PHRASE},
-        files={"archive": ("rel.zip", blob, "application/zip")},
-    )
-    assert updated.status_code == 410
-    assert updated.json()["detail"] == "typed_operation_required"
-    apply = Path(test_settings.ops_apply_root)
-    assert not (apply / "apps").exists()
 
 
 def test_legacy_abort_is_retired_and_preserves_maintenance(client, seed_royal, test_settings):

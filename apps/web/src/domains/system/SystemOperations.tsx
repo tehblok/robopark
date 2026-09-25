@@ -9,7 +9,7 @@ import { clearOperationReservation, readOperationReservation, safeOperationDraft
 
 const labels: Record<HostOperationKind, string> = {
   'ota-update': 'Установить OTA-пакет',
-  'release-update': 'Обновить Robopark', reinstall: 'Переустановить Robopark', rollback: 'Откатить версию',
+  rollback: 'Откатить версию',
   'package-inspect': 'Проверить пакет', 'package-update': 'Обновить пакет', 'service-restart': 'Перезапустить сервис',
   reboot: 'Перезагрузить хост', backup: 'Создать резервную копию', 'backup-verify': 'Проверить резервную копию',
   'backup-restore': 'Восстановить резервную копию', 'cleanup-preview': 'Предпросмотр очистки',
@@ -59,7 +59,7 @@ export function SystemOperations({ actor, client, capabilities, job, onAccepted,
   const needsRetry = job?.receipt_state === 'received' || job?.phase.startsWith('Запрос не подтверждён')
   const active = (Boolean(reservedOperationId) || job?.state === 'queued' || job?.state === 'running') && !retrying
   const devices = job?.host_result?.devices?.filter(device => device.removable) ?? []
-  const rows = HOST_OPERATION_KINDS.filter(kind => !['ota-update', 'release-update', 'reinstall'].includes(kind)).map(kind => {
+  const rows = HOST_OPERATION_KINDS.filter(kind => kind !== 'ota-update').map(kind => {
     const advertised = fresh && capabilities.operations[kind]?.available === true
     const runnable = advertised && (directlyRunnable.has(kind)
       || kind === 'usb-select' && devices.some(device => device.device_uuid === deviceUuid)

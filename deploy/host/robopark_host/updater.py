@@ -55,8 +55,15 @@ from .rollback import (
 )
 from .runtime import explain_process_failure, pin_images, production_config
 from .state import atomic_write_json, exclusive_lock
-from .trust import activate as activate_trust
-from .trust import admission_key, directory_key
+
+
+def _legacy_release_removed(*_args, **_kwargs):
+    raise ReleaseError("legacy_release_update_removed")
+
+
+admission_key = _legacy_release_removed
+directory_key = _legacy_release_removed
+activate_trust = _legacy_release_removed
 
 TMPFILES_SOURCE = Path("deploy/tmpfiles.d/robopark.conf")
 TMPFILES_TARGET = Path("etc/tmpfiles.d/robopark.conf")
@@ -1335,7 +1342,6 @@ def _complete(paths, journal, runner):
     _verify_database_head(paths, runner, manifest["migration_head"])
     phase("publication")
     for unit in (
-        "robopark-update-check.timer",
         "robopark-doctor.timer",
         "robopark-watchdog.timer",
         "robopark-commands.path",
