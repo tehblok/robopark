@@ -1,5 +1,11 @@
 export type UploadableMedia = { id: string, actionId: string, deviceId: string, blob: Blob, mimeType: string, sha256: string, name: string }
-export type UploadSession = { upload_id: string, received_offset: number, completed: boolean, media_id?: string }
+export type UploadSession = {
+  upload_id: string
+  received_offset: number
+  completed: boolean
+  media_id?: string
+  status: 'active' | 'reinitialized' | 'completed'
+}
 export type CompletedUpload = { upload_id: string, media_id: string, completed: true }
 export type ResumableUploadApi = {
   create(input: { media_id: string, dependent_action_id: string, device_id: string, name: string, mime_type: string, size_bytes: number, sha256: string }): Promise<UploadSession>
@@ -26,7 +32,9 @@ export async function uploadMedia(
     size_bytes: media.blob.size,
     sha256: media.sha256,
   })
-  if (session.completed && session.media_id) return { upload_id: session.upload_id, media_id: session.media_id, completed: true }
+  if (session.status === 'completed' && session.completed && session.media_id) {
+    return { upload_id: session.upload_id, media_id: session.media_id, completed: true }
+  }
   let offset = session.received_offset
   if (offset < 0 || offset > media.blob.size) throw new Error('media_offset_invalid')
   const chunkBytes = Math.max(64 * 1024, options.chunkBytes ?? 512 * 1024)

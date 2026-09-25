@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -20,6 +23,12 @@ MAX_CHUNK_BYTES = 1024 * 1024
 SESSION_TTL_SECONDS = 24 * 60 * 60
 COMPLETED_RETENTION_SECONDS = 7 * 24 * 60 * 60
 ALLOWED_MIMES = {"image/jpeg", "image/png", "image/webp"}
+
+
+@dataclass(frozen=True)
+class StartedUpload:
+    row: MediaUploadSession
+    status: Literal["active", "reinitialized", "completed"]
 
 
 def uploads_root() -> Path:
@@ -56,7 +65,7 @@ def _session(
     return row
 
 
-def start(db: Session, actor: User, payload: MediaUploadCreateIn) -> MediaUploadSession:
+def start(db: Session, actor: User, payload: MediaUploadCreateIn) -> StartedUpload:
     if payload.mime_type not in ALLOWED_MIMES:
         raise HTTPException(400, "media_invalid_type")
     name = _validate_name(payload.name)
@@ -84,16 +93,36 @@ def start(db: Session, actor: User, payload: MediaUploadCreateIn) -> MediaUpload
             raise HTTPException(409, "media_upload_payload_conflict")
         requested_dependency = (payload.device_id, payload.dependent_action_id)
         existing_dependency = (existing.dependent_device_id, existing.dependent_action_id)
-        if payload.dependent_action_id is not None:
-            if existing_dependency == (None, None):
+        if existing_dependency == (None, None):
+            if payload.dependent_action_id is not None:
                 existing.dependent_device_id = payload.device_id
                 existing.dependent_action_id = payload.dependent_action_id
                 existing.dependency_bound_at = time.time()
                 db.commit()
                 db.refresh(existing)
-            elif existing_dependency != requested_dependency:
-                raise HTTPException(409, "media_dependency_conflict")
-        return existing
+        elif existing_dependency != requested_dependency:
+            raise HTTPException(409, "media_dependency_conflict")
+        if existing.completed:
+            ready_path = uploads_root() / existing.blob_name
+            try:
+                ready_stat = ready_path.stat()
+            except FileNotFoundError:
+                now = time.time()
+                existing.received_offset = 0
+                existing.blob_name = f"{uuid4().hex}.part"
+                existing.completed = False
+                existing.completed_at = None
+                existing.updated_at = now
+                existing.expires_at = now + SESSION_TTL_SECONDS
+                db.commit()
+                db.refresh(existing)
+                return StartedUpload(existing, "reinitialized")
+            except OSError as exc:
+                raise HTTPException(503, "media_storage_unavailable") from exc
+            if not stat.S_ISREG(ready_stat.st_mode):
+                raise HTTPException(409, "media_upload_blob_invalid")
+            return StartedUpload(existing, "completed")
+        return StartedUpload(existing, "active")
     now = time.time()
     row = MediaUploadSession(
         actor_user_id=actor.id,
@@ -116,7 +145,7 @@ def start(db: Session, actor: User, payload: MediaUploadCreateIn) -> MediaUpload
     db.add(row)
     db.commit()
     db.refresh(row)
-    return row
+    return StartedUpload(row, "active")
 
 
 def append_chunk(

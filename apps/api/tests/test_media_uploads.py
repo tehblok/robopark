@@ -124,9 +124,25 @@ def test_upload_creation_persists_exact_action_dependency_before_content(
         dependent_action_id="other-action-1234",
         device_id="account-42",
     )
+    payload_conflict = _start(
+        client,
+        b"\xff\xd8\xffdifferent-photo",
+        media_id="media-bound-1234",
+        dependent_action_id="review-action-1234",
+        device_id="account-42",
+    )
+    device_conflict = _start(
+        client,
+        b"\xff\xd8\xffphoto",
+        media_id="media-bound-1234",
+        dependent_action_id="review-action-1234",
+        device_id="account-99",
+    )
     assert replay.status_code == 201
     assert replay.json()["upload_id"] == started.json()["upload_id"]
     assert conflict.status_code == 409
+    assert payload_conflict.status_code == 409
+    assert device_conflict.status_code == 409
 
     incomplete = _start(
         client,
@@ -143,6 +159,112 @@ def test_upload_creation_persists_exact_action_dependency_before_content(
     )
     assert incomplete.status_code == 422
     assert unsafe.status_code == 422
+
+
+def test_completed_missing_blob_reopens_same_upload_only_for_exact_identity(
+    client, db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    content = b"\xff\xd8\xffmissing-ready"
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        media_id="media-reopen-1234",
+        issue_key="ROBOPARK-51",
+        original_name="robot.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        received_offset=len(content),
+        blob_name="missing.ready",
+        completed=True,
+        created_at=now - 100,
+        updated_at=now - 100,
+        completed_at=now - 100,
+        expires_at=now + 86400,
+        dependent_device_id="account-42",
+        dependent_action_id="review-action-reopen",
+        dependency_bound_at=now - 100,
+    )
+    db_session.add(row)
+    db_session.commit()
+    login_as(client, seed_mechanic.username, "secret")
+
+    mismatch = _start(
+        client,
+        content,
+        media_id=row.media_id,
+        dependent_action_id="different-action",
+        device_id="account-42",
+    )
+    reopened = _start(
+        client,
+        content,
+        media_id=row.media_id,
+        dependent_action_id=row.dependent_action_id,
+        device_id=row.dependent_device_id,
+    )
+
+    assert mismatch.status_code == 409
+    assert reopened.status_code == 201
+    assert reopened.json() == {
+        "upload_id": row.id,
+        "received_offset": 0,
+        "completed": False,
+        "media_id": None,
+        "status": "reinitialized",
+    }
+    db_session.refresh(row)
+    assert row.completed is False
+    assert row.completed_at is None
+    assert row.received_offset == 0
+    assert row.blob_name.endswith(".part")
+    assert row.dependent_action_id == "review-action-reopen"
+
+
+def test_intact_completed_upload_remains_idempotent_and_is_not_reinitialized(
+    client, db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    content = b"\xff\xd8\xffintact-ready"
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        media_id="media-intact-1234",
+        issue_key="ROBOPARK-51",
+        original_name="robot.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        received_offset=len(content),
+        blob_name="intact.ready",
+        completed=True,
+        created_at=now - 100,
+        updated_at=now - 100,
+        completed_at=now - 100,
+        expires_at=now + 86400,
+        dependent_device_id="account-42",
+        dependent_action_id="review-action-intact",
+        dependency_bound_at=now - 100,
+    )
+    db_session.add(row)
+    db_session.commit()
+    (tmp_path / row.blob_name).write_bytes(content)
+    login_as(client, seed_mechanic.username, "secret")
+
+    replay = _start(
+        client,
+        content,
+        media_id=row.media_id,
+        dependent_action_id=row.dependent_action_id,
+        device_id=row.dependent_device_id,
+    )
+
+    assert replay.status_code == 201
+    assert replay.json()["status"] == "completed"
+    assert replay.json()["completed"] is True
+    assert replay.json()["upload_id"] == row.id
+    assert (tmp_path / row.blob_name).read_bytes() == content
 
 
 def test_sqlite_concurrent_media_completion_returns_same_completed_upload(
@@ -166,9 +288,9 @@ def test_sqlite_concurrent_media_completion_returns_same_completed_upload(
             ),
         )
         media_uploads.append_chunk(
-            db, user, upload.id, 0, content, hashlib.sha256(content).hexdigest()
+            db, user, upload.row.id, 0, content, hashlib.sha256(content).hexdigest()
         )
-        upload_id = upload.id
+        upload_id = upload.row.id
 
     original_replace = Path.replace
     replace_entered = threading.Event()

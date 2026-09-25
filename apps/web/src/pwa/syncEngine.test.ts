@@ -43,7 +43,8 @@ describe('SyncEngine', () => {
     engine.dispose()
   })
 
-  it('reuploads a deleted legacy upload and retries the same review action identity', async () => {
+  it.each(['media_upload_missing', 'media_dependency_pending'] as const)(
+    'reuploads retained media after %s and retries the same review action identity', async recoveryCode => {
     const db = await openOfflineDb(scope)
     await db.putMedia({
       id: 'media-legacy', actionId: 'review-legacy', issueKey: 'TASK-1', name: 'robot.jpg',
@@ -65,7 +66,7 @@ describe('SyncEngine', () => {
         attempt += 1
         return {
           results: batch.actions.map(item => attempt === 1
-            ? { client_action_id: item.client_action_id, state: 'conflict' as const, code: 'media_dependency_pending', result: null }
+            ? { client_action_id: item.client_action_id, state: 'conflict' as const, code: recoveryCode, result: null }
             : { client_action_id: item.client_action_id, state: 'confirmed' as const, code: null, result: {} }),
           deltas: {}, revisions: {}, revoked_scopes: [],
         }
@@ -84,7 +85,8 @@ describe('SyncEngine', () => {
     expect(await db.getMedia('media-legacy')).toMatchObject({ state: 'confirmed' })
     expect(await db.getAction('review-legacy')).toMatchObject({ state: 'confirmed' })
     engine.dispose()
-  })
+    },
+  )
 
   it('recovers interrupted action and media transfers on restart with the same identities', async () => {
     const db = await openOfflineDb(scope)

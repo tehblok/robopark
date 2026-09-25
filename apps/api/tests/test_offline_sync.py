@@ -583,6 +583,93 @@ def test_review_media_conflict_is_nonterminal_and_survives_until_resolved(
     assert terminal_at is not None
 
 
+def test_missing_completed_review_media_reopens_and_replays_same_action_once(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch, tmp_path
+):
+    from robopark_api.services import media_uploads, offline_sync
+
+    content = b"\xff\xd8\xffrecovered-review"
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        media_id="recovered-review-photo",
+        issue_key="ROBOPARK-51",
+        original_name="review.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        received_offset=len(content),
+        blob_name="lost.ready",
+        completed=True,
+        created_at=now,
+        updated_at=now,
+        completed_at=now,
+        expires_at=now + 86400,
+        dependent_device_id="phone-1",
+        dependent_action_id="recovered-review-action",
+        dependency_bound_at=now,
+    )
+    db_session.add(row)
+    db_session.commit()
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    applied = 0
+
+    def dispatch(db, user, item):
+        nonlocal applied
+        upload = db.scalar(
+            select(MediaUploadSession).where(
+                MediaUploadSession.actor_user_id == user.id,
+                MediaUploadSession.media_id == item.payload["media_id"],
+            )
+        )
+        media_uploads.content_path(upload)
+        applied += 1
+        return {"review_id": "applied-once"}
+
+    monkeypatch.setattr(offline_sync, "dispatch_action", dispatch)
+    login_as(client, seed_mechanic.username, "secret")
+    body = _batch(
+        _action(
+            "recovered-review-action",
+            action="submit_review",
+            park_id=seed_park_with_tracker.id,
+            payload={"media_id": row.media_id, "defect_code": "BD-01"},
+        )
+    )
+
+    missing = client.post("/sync/batch", json=body)
+    reopened = client.post(
+        "/media/uploads",
+        json={
+            "media_id": row.media_id,
+            "issue_key": row.issue_key,
+            "dependent_action_id": row.dependent_action_id,
+            "device_id": row.dependent_device_id,
+            "name": row.original_name,
+            "mime_type": row.mime_type,
+            "size_bytes": row.size_bytes,
+            "sha256": row.sha256,
+        },
+    )
+
+    assert missing.json()["results"][0]["code"] == "media_upload_missing"
+    assert reopened.json()["status"] == "reinitialized"
+    assert reopened.json()["upload_id"] == row.id
+    uploaded = client.put(
+        f"/media/uploads/{row.id}/chunks/0",
+        content=content,
+        headers={"X-Chunk-SHA256": hashlib.sha256(content).hexdigest()},
+    )
+    completed = client.post(f"/media/uploads/{row.id}/complete")
+    assert uploaded.status_code == completed.status_code == 200
+
+    applied_response = client.post("/sync/batch", json=body)
+    receipt_replay = client.post("/sync/batch", json=body)
+    assert applied_response.json()["results"][0]["state"] == "confirmed"
+    assert receipt_replay.json() == applied_response.json()
+    assert applied == 1
+
+
 def test_receipt_stores_canonical_result_json(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):

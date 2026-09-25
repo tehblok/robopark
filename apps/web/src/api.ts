@@ -437,7 +437,13 @@ export type SyncBatchResponse = {
   revisions: Record<string, number>
   revoked_scopes: string[]
 }
-export type MediaUploadSession = { upload_id: string, received_offset: number, completed: boolean, media_id?: string }
+export type MediaUploadSession = {
+  upload_id: string
+  received_offset: number
+  completed: boolean
+  media_id?: string
+  status: 'active' | 'reinitialized' | 'completed'
+}
 export type MediaUploadComplete = { upload_id: string, media_id: string, completed: true }
 export type TaskWorkflow = {
   owner: TrackerPerson | null

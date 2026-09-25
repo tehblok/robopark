@@ -20,12 +20,14 @@ def create_upload(
     payload: MediaUploadCreateIn, user: User = Depends(require_user), db: Session = Depends(get_db)
 ):
     rbac.assert_approved_or_staff(user)
-    row = media_uploads.start(db, user, payload)
+    started = media_uploads.start(db, user, payload)
+    row = started.row
     return MediaUploadSessionOut(
         upload_id=row.id,
         received_offset=row.received_offset,
         completed=row.completed,
         media_id=row.media_id if row.completed else None,
+        status=started.status,
     )
 
 

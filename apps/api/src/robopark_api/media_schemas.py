@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -44,6 +46,7 @@ class MediaUploadSessionOut(BaseModel):
     received_offset: int
     completed: bool
     media_id: str | None = None
+    status: Literal["active", "reinitialized", "completed"]
 
 
 class MediaChunkOut(BaseModel):

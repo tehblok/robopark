@@ -332,7 +332,7 @@ export class SyncEngine {
           const attempts = (item.attempts ?? 0) + 1
           retryAttempts = Math.max(retryAttempts, attempts)
           await this.db.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() })
-        } else if (result.state === 'conflict' && ['media_dependency_pending', 'media_dependency_missing', 'media_upload_not_found'].includes(result.code ?? '')) {
+        } else if (result.state === 'conflict' && ['media_upload_missing', 'media_dependency_pending'].includes(result.code ?? '')) {
           const mediaId = item.action === 'submit_review' && typeof item.payload === 'object' && item.payload
             ? String((item.payload as { media_id?: unknown }).media_id ?? '')
             : ''
