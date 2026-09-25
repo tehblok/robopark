@@ -6,6 +6,7 @@ import hmac
 import secrets
 import struct
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import wraps
@@ -453,6 +454,7 @@ def issue_reauthorization(
     context: AuditContext,
     throttle: LoginThrottle,
     throttle_key: str,
+    validate_context: Callable[[], tuple[str, int] | None] | None = None,
 ) -> str:
     retry = throttle.retry_after(throttle_key, db=db)
     if retry:
@@ -493,6 +495,17 @@ def issue_reauthorization(
             reason="privileged_enrollment_required",
             context=context,
             status_code=409,
+        )
+    invalid_context = validate_context() if validate_context is not None else None
+    if invalid_context is not None:
+        reason, status_code = invalid_context
+        _deny(
+            db,
+            actor,
+            action="privileged.reauthorize",
+            reason=reason,
+            context=context,
+            status_code=status_code,
         )
     raw = secrets.token_urlsafe(32)
     db.add(

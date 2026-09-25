@@ -174,6 +174,26 @@ def test_summary_reports_metric_sample_time_and_staleness(client, db_session, se
     assert body["metrics_stale"] is True
 
 
+def test_system_attention_metric_counts_only_tracker_issues_linked_by_the_console(
+    client, db_session, seed_royal,
+):
+    for index, resource_type in enumerate(("schedule_park", "task_control", "tracker_issue")):
+        db_session.add(ReliableAction(
+            id=f"attention-{index}", actor_user_id=seed_royal.id,
+            resource_type=resource_type, resource_id=f"resource-{index}", action="sync",
+            idempotency_key=f"attention-key-{index}", payload_hash=str(index) * 64,
+            payload_json="{}", state="needs_attention", next_attempt_at=0,
+            created_at=1.0 + index, updated_at=1.0 + index,
+        ))
+    db_session.commit()
+    login_as(client, "royal", "secret")
+
+    body = client.get("/admin/system/summary").json()
+
+    assert body["sync"]["pending_action_count"] == 1
+    assert body["sync"]["needs_attention_count"] == 1
+
+
 def test_active_user_history_obeys_requested_day_window(db_session, seed_royal, seed_mechanic):
     from robopark_api.services.system_observability import PresenceSample, active_user_history
 

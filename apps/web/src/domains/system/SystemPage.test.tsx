@@ -135,6 +135,75 @@ describe('SystemPage', () => {
     expect(within(dialog).getByRole('button', { name: 'Запустить' })).toBeDisabled()
   })
 
+  it('closes and clears an open confirmation when a background refresh changes the revision', async () => {
+    const revisionB = 'b'.repeat(64)
+    const getCapabilities = vi.fn()
+      .mockResolvedValueOnce(capabilities)
+      .mockResolvedValue({ ...capabilities, revision: revisionB })
+    const api = client({ getCapabilities })
+    render(tree('royal', api))
+    fireEvent.click(await screen.findByRole('button', { name: 'Собрать диагностику' }))
+    const dialog = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
+    fireEvent.change(within(dialog).getByLabelText('Введите ЗАПУСТИТЬ DIAGNOSTICS'), { target: { value: 'ЗАПУСТИТЬ DIAGNOSTICS' } })
+    fireEvent.change(within(dialog).getByLabelText('Пароль'), { target: { value: 'secret' } })
+    fireEvent.change(within(dialog).getByLabelText('Код TOTP или восстановления'), { target: { value: '123456' } })
+
+    fireEvent(window, new Event('focus'))
+    await waitFor(() => expect(getCapabilities).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Подтвердить операцию' })).not.toBeInTheDocument())
+    expect(api.reauthorize).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Собрать диагностику' }))
+    const reopened = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
+    expect(within(reopened).getByLabelText('Введите ЗАПУСТИТЬ DIAGNOSTICS')).toHaveValue('')
+    expect(within(reopened).getByLabelText('Пароль')).toHaveValue('')
+    expect(within(reopened).getByLabelText('Код TOTP или восстановления')).toHaveValue('')
+  })
+
+  it('persists the operation UUID before POST and resumes that exact UUID after a lost response', async () => {
+    let submittedId = ''
+    const startOperation = vi.fn().mockImplementation(async payload => {
+      submittedId = payload.operation_id
+      expect(localStorage.getItem('robopark:system-operation')).toBe(submittedId)
+      throw new Error('response lost')
+    })
+    const api = client({ startOperation })
+    const first = render(tree('royal', api))
+    fireEvent.click(await screen.findByRole('button', { name: 'Собрать диагностику' }))
+    const dialog = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
+    fireEvent.change(within(dialog).getByLabelText('Введите ЗАПУСТИТЬ DIAGNOSTICS'), { target: { value: 'ЗАПУСТИТЬ DIAGNOSTICS' } })
+    fireEvent.change(within(dialog).getByLabelText('Пароль'), { target: { value: 'secret' } })
+    fireEvent.change(within(dialog).getByLabelText('Код TOTP или восстановления'), { target: { value: '123456' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Запустить' }))
+    await waitFor(() => expect(startOperation).toHaveBeenCalledOnce())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Подтвердить операцию' })).not.toBeInTheDocument())
+    expect(localStorage.getItem('robopark:system-operation')).toBe(submittedId)
+    first.unmount()
+
+    const resumed = client({
+      getJob: vi.fn().mockResolvedValue({ id: submittedId, kind: 'diagnostics', state: 'running', phase: 'executing', progress_percent: 25, error: null }),
+      startOperation,
+    })
+    render(tree('royal', resumed))
+    expect(await screen.findByRole('progressbar', { name: 'Прогресс операции' })).toHaveAttribute('value', '25')
+    expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeDisabled()
+    expect(startOperation).toHaveBeenCalledOnce()
+  })
+
+  it('disables operations exactly when the capability snapshot expires', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-25T09:00:00Z'))
+    const api = client({
+      getCapabilities: vi.fn().mockResolvedValue({ ...capabilities, expires_at: '2026-09-25T09:00:01Z' }),
+    })
+    render(tree('royal', api))
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeEnabled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_001) })
+    expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeDisabled()
+    expect(api.getCapabilities).toHaveBeenCalledOnce()
+  })
+
   it('resumes progress by stored operation UUID after reload', async () => {
     localStorage.setItem('robopark:system-operation', '11111111-1111-4111-8111-111111111111')
     const api = client({ getJob: vi.fn().mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', kind: 'diagnostics', state: 'running', phase: 'executing', progress_percent: 50, error: null }) })

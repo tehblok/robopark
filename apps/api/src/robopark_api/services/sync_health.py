@@ -45,22 +45,32 @@ def release_worker_heartbeat(db: Session, *, owner_id: str) -> None:
         db.commit()
 
 
-def sync_health(db: Session, *, now: datetime | None = None) -> SyncHealthOut:
+def sync_health(
+    db: Session, *, now: datetime | None = None, resource_type: str | None = None,
+) -> SyncHealthOut:
     """Project only finite counters, age, and stable error codes for admin/royal."""
     current = now or datetime.now(UTC)
     poll = db.get(TrackerNotificationCursor, POLL_SCOPE)
     closure = db.get(TrackerNotificationCursor, "closures")
     worker = db.get(TrackerNotificationCursor, WORKER_SCOPE)
+    resource_filter = (
+        (ReliableAction.resource_type == resource_type,) if resource_type is not None else ()
+    )
     pending_count, oldest = db.execute(
         select(func.count(ReliableAction.id), func.min(ReliableAction.created_at)).where(
-            ReliableAction.state.in_(_PENDING_STATES)
+            ReliableAction.state.in_(_PENDING_STATES), *resource_filter,
         )
     ).one()
     retry_count = db.scalar(
-        select(func.count(ReliableAction.id)).where(ReliableAction.state == "retry_wait")
+        select(func.count(ReliableAction.id)).where(
+            ReliableAction.state == "retry_wait", *resource_filter,
+        )
     ) or 0
     needs_attention_count = db.scalar(
-        select(func.count(ReliableAction.id)).where(ReliableAction.state == "needs_attention")
+        select(func.count(ReliableAction.id)).where(
+            ReliableAction.state == "needs_attention",
+            *resource_filter,
+        )
     ) or 0
     worker_state = "unknown"
     if worker is not None:

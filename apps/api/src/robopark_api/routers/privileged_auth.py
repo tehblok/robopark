@@ -105,6 +105,14 @@ def _raise(error: privileged_auth.PrivilegedAuthError) -> None:
     ) from error
 
 
+def _capability_error_status(detail: str) -> int:
+    if detail == "invalid_command":
+        return 422
+    if detail in {"capability_unavailable", "capabilities_changed"}:
+        return 409
+    return 503
+
+
 @router.get("/status")
 def enrollment_status(
     royal: User = Depends(require_royal), db: Session = Depends(get_db)
@@ -171,14 +179,24 @@ def reauthorize(
     except host_bridge.BridgeError as exc:
         detail = str(exc)
         raise HTTPException(
-            status_code=422 if detail == "invalid_command" else 409 if detail in {
-                "capability_unavailable", "capabilities_changed",
-            } else 503,
+            status_code=_capability_error_status(detail),
             detail=detail,
         ) from exc
     ip = client_ip(request)
     throttle = _throttle(settings)
     throttle_key = f"privileged|{royal.id}|{ip}"
+
+    def validate_capability_context() -> tuple[str, int] | None:
+        try:
+            host_bridge.require_typed_reauthorization(
+                settings, payload.operation_kind, payload.operation_id,
+                payload.capability_revision,
+            )
+        except host_bridge.BridgeError as exc:
+            detail = str(exc)
+            return detail, _capability_error_status(detail)
+        return None
+
     try:
         token = privileged_auth.issue_reauthorization(
             db,
@@ -195,6 +213,7 @@ def reauthorize(
             ),
             throttle=throttle,
             throttle_key=throttle_key,
+            validate_context=validate_capability_context,
         )
     except privileged_auth.PrivilegedAuthError as exc:
         _raise(exc)

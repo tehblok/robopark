@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ApiError } from '../../api'
 import { Alert, Panel } from '../../components/PageShell'
 import { Button } from '../../design-system/actions/Button'
@@ -41,16 +41,15 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
   const [backupId, setBackupId] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [fresh, setFresh] = useState(capabilities.state === 'ready' && typeof capabilities.expires_at === 'string')
+  const [reservedOperationId, setReservedOperationId] = useState(() => localStorage.getItem('robopark:system-operation'))
   const initialFocus = useRef<HTMLInputElement>(null)
   const phrase = selected ? phrases[selected] : ''
-  const fresh = capabilities.state === 'ready'
-    && typeof capabilities.expires_at === 'string'
-    && Date.parse(capabilities.expires_at) > Date.now()
   const revision = fresh ? capabilities.revision : null
   const valid = Boolean(selected && revision && confirmation === phrase && password && code
     && (selected !== 'usb-select' || deviceUuid)
     && (selected !== 'backup-verify' || UUID_PATTERN.test(backupId)))
-  const active = job?.state === 'queued' || job?.state === 'running'
+  const active = Boolean(reservedOperationId) || job?.state === 'queued' || job?.state === 'running'
   const devices = job?.host_result?.devices?.filter(device => device.removable) ?? []
   const rows = HOST_OPERATION_KINDS.map(kind => {
     const advertised = fresh && capabilities.operations[kind]?.available === true
@@ -72,24 +71,58 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onRefr
     setSelected(kind); setConfirmation(''); setPassword(''); setCode(''); setError('')
   }
   const close = () => { if (!busy) setSelected(null) }
+
+  useLayoutEffect(() => {
+    let timer: number | undefined
+    const expiresAt = typeof capabilities.expires_at === 'string' ? Date.parse(capabilities.expires_at) : Number.NaN
+    const update = () => {
+      const remaining = expiresAt - Date.now()
+      const current = capabilities.state === 'ready' && Number.isFinite(expiresAt) && remaining > 0
+      setFresh(current)
+      if (current) timer = window.setTimeout(update, Math.min(remaining, 2_147_000_000))
+    }
+    update()
+    return () => window.clearTimeout(timer)
+  }, [capabilities.expires_at, capabilities.state])
+
+  useEffect(() => {
+    if (job && (job.state === 'succeeded' || job.state === 'failed')) setReservedOperationId(null)
+  }, [job])
+
   const submit = async () => {
     if (!selected || !revision || !valid || busy || active || Date.parse(capabilities.expires_at ?? '') <= Date.now()) return
     const operationId = crypto.randomUUID()
+    const operationKind = selected
+    let posted = false
     setBusy(true); setError('')
     try {
       const authorization = await client.reauthorize({
-        password, code, operation_kind: selected, operation_id: operationId,
+        password, code, operation_kind: operationKind, operation_id: operationId,
         capability_revision: revision,
       })
-      const next = await client.startOperation(payloadFor(selected, operationId, revision, confirmation, deviceUuid, backupId), authorization.token)
-      localStorage.setItem('robopark:system-operation', operationId)
+      try {
+        localStorage.setItem('robopark:system-operation', operationId)
+        setReservedOperationId(operationId)
+      } catch {
+        setError('Не удалось безопасно сохранить идентификатор операции. Запуск отменён.')
+        return
+      }
+      posted = true
+      const next = await client.startOperation(payloadFor(operationKind, operationId, revision, confirmation, deviceUuid, backupId), authorization.token)
       onAccepted(next)
       setSelected(null)
     } catch (caught) {
+      if (posted && caught instanceof ApiError) {
+        localStorage.removeItem('robopark:system-operation')
+        setReservedOperationId(null)
+      }
       if (caught instanceof ApiError && ['capabilities_changed', 'capability_unavailable', 'capabilities_unavailable'].includes(caught.detail ?? '')) {
         setError('Возможности хоста изменились. Список обновлён; подтвердите операцию заново.')
         setConfirmation(''); setPassword(''); setCode('')
         await onRefreshCapabilities()
+      } else if (posted && !(caught instanceof ApiError)) {
+        onAccepted({ id: operationId, kind: operationKind, state: 'queued', phase: 'Проверяем состояние', progress_percent: 0, error: null })
+        setSelected(null)
       } else setError('Операция не запущена. Проверьте пароль и одноразовый код.')
     } finally { setBusy(false) }
   }

@@ -67,7 +67,7 @@ def system_summary(
         "metrics_stale": latest is None
         or datetime.now(UTC) - latest.sampled_at.replace(tzinfo=UTC) > timedelta(minutes=2),
         "online": online_counts(db, actor=actor),
-        "sync": sync_health(db).model_dump(mode="json"),
+        "sync": sync_health(db, resource_type="tracker_issue").model_dump(mode="json"),
         "push": push_health(db),
         "metrics": latest.data if latest is not None else None,
         "release": release_status(resolved_ops_dir(settings)).model_dump(mode="json"),

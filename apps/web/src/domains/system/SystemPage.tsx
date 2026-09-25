@@ -86,6 +86,6 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
   return <PageShell title="Система" subtitle="Состояние Robopark и управляемые операции без доступа к командной строке.">
     {failed && <Alert tone="warning">Не удалось получить свежие данные. Повторная проверка продолжится после восстановления связи.</Alert>}
     {!summary || !history ? <LoadingState label="Загружаем состояние системы" variant="page" /> : <SystemMetrics history={history} summary={summary} />}
-    {royal && capabilities && <SystemOperations capabilities={capabilities} client={client} job={job} onAccepted={setJob} onRefreshCapabilities={refreshCapabilities} />}
+    {royal && capabilities && <SystemOperations key={capabilities.revision ?? capabilities.generated_at} capabilities={capabilities} client={client} job={job} onAccepted={setJob} onRefreshCapabilities={refreshCapabilities} />}
   </PageShell>
 }

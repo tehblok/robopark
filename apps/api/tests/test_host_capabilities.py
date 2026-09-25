@@ -237,6 +237,50 @@ def test_supported_api_operation_requires_and_consumes_one_bound_grant(
     assert client.post("/admin/ops/operations", json=payload, headers=headers).status_code == 401
 
 
+def test_capability_drift_after_credentials_denies_and_audits_without_issuing_grant(
+    client, seed_royal, db_session, capability_bridge, monkeypatch,
+):
+    login_as(client, "royal", "secret")
+    monkeypatch.setattr("robopark_api.services.privileged_auth._unix_time", lambda: 10_000.0)
+    secret = client.post("/admin/privileged-auth/enrollment").json()["secret"]
+    client.post("/admin/privileged-auth/enrollment/confirm", json={
+        "password": "secret", "code": _test_totp(secret, 333),
+    })
+    monkeypatch.setattr("robopark_api.services.privileged_auth._unix_time", lambda: 10_030.0)
+    root, value = capability_bridge
+    revision = host_bridge.operation_capabilities(root).revision
+    original = host_bridge.require_typed_reauthorization
+    checks = 0
+
+    def drift_after_credentials(*args, **kwargs):
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            value["operations"]["diagnostics"] = {
+                "available": False, "unavailable_reason": "capability_unavailable",
+            }
+            (root / "public/operation-capabilities.json").write_text(json.dumps(value))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(host_bridge, "require_typed_reauthorization", drift_after_credentials)
+    response = client.post("/admin/privileged-auth/reauthorize", json={
+        "password": "secret", "code": _test_totp(secret, 334),
+        "operation_kind": "package-inspect", "operation_id": str(uuid4()),
+        "capability_revision": revision,
+    })
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "capabilities_changed"
+    db_session.expire_all()
+    assert not db_session.scalars(select(PrivilegedReauthorization)).all()
+    audit = db_session.scalars(select(PrivilegedAuthAudit).where(
+        PrivilegedAuthAudit.action == "privileged.reauthorize",
+        PrivilegedAuthAudit.outcome == "denied",
+    ).order_by(PrivilegedAuthAudit.id.desc())).first()
+    assert audit.reason == "capabilities_changed"
+    assert audit.capability_revision == revision
+
+
 def test_revision_drift_invalidates_issued_grant_without_job_or_inbox(
     client, seed_royal, db_session, capability_bridge, monkeypatch,
 ):
