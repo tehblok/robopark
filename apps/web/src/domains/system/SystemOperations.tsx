@@ -5,7 +5,7 @@ import { Button } from '../../design-system/actions/Button'
 import { Dialog } from '../../design-system/overlays/Dialog'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { HOST_OPERATION_KINDS, type HostCapabilities, type HostOperationKind, type HostOperationPayload, type SystemClient, type SystemJob } from '../../opsApi'
-import { clearOperationReservation, readOperationReservation, safeOperationDraft, writeOperationReservation } from './operationReservation'
+import { clearOperationReservation, readOperationReservation, safeOperationDraft, writeOperationReservation, type OperationActor } from './operationReservation'
 
 const labels: Record<HostOperationKind, string> = {
   'release-update': 'Обновить Robopark', reinstall: 'Переустановить Robopark', rollback: 'Откатить версию',
@@ -30,7 +30,8 @@ function payloadFor(kind: HostOperationKind, operationId: string, capabilityRevi
   return common
 }
 
-export function SystemOperations({ client, capabilities, job, onAccepted, onPostingChange, onRefreshCapabilities }: {
+export function SystemOperations({ actor, client, capabilities, job, onAccepted, onPostingChange, onRefreshCapabilities }: {
+  actor: OperationActor
   client: SystemClient; capabilities: HostCapabilities; job: SystemJob | null
   onAccepted: (job: SystemJob) => void; onPostingChange: (operationId: string | null) => void
   onRefreshCapabilities: () => Promise<void>
@@ -45,14 +46,14 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onPost
   const [retrying, setRetrying] = useState(false)
   const [error, setError] = useState('')
   const [fresh, setFresh] = useState(capabilities.state === 'ready' && typeof capabilities.expires_at === 'string')
-  const [reservedOperationId, setReservedOperationId] = useState(() => readOperationReservation()?.id ?? null)
+  const [reservedOperationId, setReservedOperationId] = useState(() => readOperationReservation(actor)?.id ?? null)
   const initialFocus = useRef<HTMLInputElement>(null)
   const phrase = selected ? phrases[selected] : ''
   const revision = fresh ? capabilities.revision : null
   const valid = Boolean(selected && revision && confirmation === phrase && password && code
     && (selected !== 'usb-select' || deviceUuid)
     && (selected !== 'backup-verify' || UUID_PATTERN.test(backupId)))
-  const reservation = readOperationReservation()
+  const reservation = readOperationReservation(actor)
   const retryDraft = retrying ? reservation?.draft : undefined
   const needsRetry = job?.receipt_state === 'received' || job?.phase.startsWith('Запрос не подтверждён')
   const active = (Boolean(reservedOperationId) || job?.state === 'queued' || job?.state === 'running') && !retrying
@@ -77,7 +78,7 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onPost
     setRetrying(false); setSelected(kind); setConfirmation(''); setPassword(''); setCode(''); setError('')
   }
   const openRetry = () => {
-    const stored = readOperationReservation()
+    const stored = readOperationReservation(actor)
     if (!stored?.draft || !stored.kind) return
     setRetrying(true); setSelected(stored.kind); setConfirmation(''); setPassword(''); setCode(''); setError('')
     setDeviceUuid(typeof stored.draft.device_uuid === 'string' ? stored.draft.device_uuid : '')
@@ -113,7 +114,7 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onPost
       ? { ...retryDraft, confirmation: phrase } as HostOperationPayload
       : payloadFor(operationKind, operationId, operationRevision, confirmation, deviceUuid, backupId)
     try {
-      writeOperationReservation({ id: operationId, kind: operationKind, created_at: reservedAt, phase: 'posting', draft: safeOperationDraft(payload) })
+      writeOperationReservation(actor, { id: operationId, kind: operationKind, created_at: reservedAt, phase: 'posting', draft: safeOperationDraft(payload) })
       setReservedOperationId(operationId)
       onPostingChange(operationId)
     } catch {
@@ -128,11 +129,11 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onPost
       })
       try {
         const next = await client.startOperation(payload, authorization.token)
-        writeOperationReservation({ id: operationId, kind: operationKind, created_at: reservedAt, phase: 'reconciling', draft: safeOperationDraft(payload) })
+        writeOperationReservation(actor, { id: operationId, kind: operationKind, created_at: reservedAt, phase: 'reconciling', draft: safeOperationDraft(payload) })
         onAccepted(next)
         setSelected(null)
       } catch {
-        writeOperationReservation({ id: operationId, kind: operationKind, created_at: reservedAt, phase: 'reconciling', draft: safeOperationDraft(payload) })
+        writeOperationReservation(actor, { id: operationId, kind: operationKind, created_at: reservedAt, phase: 'reconciling', draft: safeOperationDraft(payload) })
         onAccepted({ id: operationId, kind: operationKind, state: 'queued', phase: 'Проверяем получение запроса', progress_percent: 0, error: null })
         setSelected(null)
       }
@@ -141,7 +142,7 @@ export function SystemOperations({ client, capabilities, job, onAccepted, onPost
       // A failed reauthorization on a retry must not release that reservation
       // or a corrected credential attempt could create a second operation.
       if (!retryDraft) {
-        clearOperationReservation(); setReservedOperationId(null)
+        clearOperationReservation(actor); setReservedOperationId(null)
       }
       if (caught instanceof ApiError && ['capabilities_changed', 'capability_unavailable', 'capabilities_unavailable'].includes(caught.detail ?? '')) {
         setError('Возможности хоста изменились. Список обновлён; подтвердите операцию заново.')

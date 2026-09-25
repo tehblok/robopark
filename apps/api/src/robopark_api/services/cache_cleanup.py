@@ -184,25 +184,29 @@ def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
         owner="normal",
     )
     root = staged_attachments_root()
-    pinned_blobs: list[tuple[str, os.stat_result]] = []
     manager = pinned_directory(root) if root.exists() else contextlib.nullcontext(None)
     with manager as root_fd:
-        confirmed = [attachment for attachment, _, _ in attachments]
-        for attachment in confirmed:
+        deleted_attachments = []
+        for attachment, _, _ in attachments:
             name = attachment.blob_name
             if name != Path(name).name:
                 continue
-            try:
-                info = (
-                    os.stat(name, dir_fd=root_fd, follow_symlinks=False)
-                    if root_fd is not None
-                    else None
-                )
-            except OSError:
-                info = None
-            if info is not None and stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                pinned_blobs.append((name, info))
+            if root_fd is not None:
+                try:
+                    info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    info = None
+                except OSError:
+                    continue
+                if info is not None:
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        continue
+                    try:
+                        unlink_unchanged(root_fd, name, info)
+                    except OSError:
+                        continue
             db.delete(attachment)
+            deleted_attachments.append(attachment)
 
         actions = list(
             db.scalars(
@@ -232,11 +236,7 @@ def prune_tracker_outbox(db: Session, *, now: float) -> tuple[int, int]:
         for action in actions:
             db.delete(action)
         db.commit()
-        for blob_name, before in pinned_blobs:
-            with contextlib.suppress(OSError):
-                assert root_fd is not None
-                unlink_unchanged(root_fd, blob_name, before)
-    return len(actions), len(confirmed)
+    return len(actions), len(deleted_attachments)
 
 
 def prune_offline_sync_receipts(db: Session, *, now: float) -> int:

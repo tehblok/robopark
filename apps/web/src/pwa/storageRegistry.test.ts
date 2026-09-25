@@ -18,6 +18,9 @@ describe('storage registry', () => {
     expect(entries.find(entry => entry.name === 'robopark:report-draft:')).toMatchObject({
       kind: 'localStorage', owner: 'reports', scope: 'account-park',
     })
+    expect(entries.find(entry => entry.name === 'robopark:system-operation:')).toMatchObject({
+      kind: 'localStorage', owner: 'system', scope: 'account',
+    })
     expect(entries.every(entry => entry.retention && entry.owner && entry.scope)).toBe(true)
   })
 

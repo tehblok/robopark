@@ -456,6 +456,70 @@ def test_failed_dependency_is_not_dispatched(
     assert response.json()["results"][1]["code"] == "dependency_failed"
 
 
+def test_review_media_survives_beyond_retention_until_retry_is_acknowledged(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch, tmp_path
+):
+    from robopark_api.services import media_uploads, offline_sync
+
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        media_id="durable-review-photo",
+        issue_key="ROBOPARK-51",
+        original_name="review.jpg",
+        mime_type="image/jpeg",
+        size_bytes=4,
+        sha256="e" * 64,
+        received_offset=4,
+        blob_name="durable.ready",
+        completed=True,
+        created_at=now - 10 * 86400,
+        updated_at=now - 10 * 86400,
+        completed_at=now - 10 * 86400,
+        expires_at=now - 9 * 86400,
+    )
+    db_session.add(row)
+    db_session.commit()
+    (tmp_path / row.blob_name).write_bytes(b"data")
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        offline_sync,
+        "dispatch_action",
+        lambda *_args: (_ for _ in ()).throw(HTTPException(503, "tracker_upstream_error")),
+    )
+    login_as(client, seed_mechanic.username, "secret")
+    body = _batch(
+        _action(
+            "durable-review-action",
+            action="submit_review",
+            park_id=seed_park_with_tracker.id,
+            payload={"media_id": row.media_id, "defect_code": "BD-01"},
+        )
+    )
+
+    first = client.post("/sync/batch", json=body)
+
+    assert first.json()["results"][0]["state"] == "attention"
+    db_session.expire_all()
+    bound = db_session.get(MediaUploadSession, row.id)
+    assert bound.dependent_device_id == "phone-1"
+    assert bound.dependent_action_id == "durable-review-action"
+    assert bound.dependency_terminal_at is None
+    assert media_uploads.cleanup_expired(db_session, now=now + 8 * 86400) == 0
+    assert (tmp_path / row.blob_name).exists()
+
+    monkeypatch.setattr(offline_sync, "dispatch_action", lambda *_args: {"review_id": "done"})
+    second = client.post("/sync/batch", json=body)
+    assert second.json()["results"][0]["state"] == "confirmed"
+    db_session.expire_all()
+    terminal_at = db_session.get(MediaUploadSession, row.id).dependency_terminal_at
+    assert terminal_at is not None
+    assert media_uploads.cleanup_expired(
+        db_session, now=terminal_at + media_uploads.COMPLETED_RETENTION_SECONDS + 1
+    ) == 1
+    assert not (tmp_path / row.blob_name).exists()
+
+
 def test_receipt_stores_canonical_result_json(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):

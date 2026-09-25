@@ -4,8 +4,9 @@ export const REPORT_DRAFT_STORAGE_PREFIX = 'robopark:report-draft:'
 const DISPOSABLE_BROWSER_STORAGE_PREFIXES = [
   RECENT_ROBOTS_V2_STORAGE_PREFIX,
   'robopark:res:',
+  'robopark:system-operation:',
 ] as const
-const DISPOSABLE_BROWSER_STORAGE_KEYS = new Set(['robopark.recentRobots'])
+const DISPOSABLE_BROWSER_STORAGE_KEYS = new Set(['robopark.recentRobots', 'robopark:system-operation'])
 
 function resolveStorage(storage?: Storage): Storage | null {
   if (storage) return storage

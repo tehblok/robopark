@@ -208,3 +208,90 @@ def test_cleanup_removes_abandoned_and_old_completed_uploads(
     assert media_uploads.cleanup_expired(db_session, now=now) == 2
     assert not (tmp_path / "abandoned.part").exists()
     assert not (tmp_path / "completed.ready").exists()
+
+
+def test_cleanup_retains_completed_upload_while_dependent_action_is_pending(
+    db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        media_id="media-pending-review",
+        issue_key="ROBOPARK-1",
+        original_name="review.jpg",
+        mime_type="image/jpeg",
+        size_bytes=4,
+        sha256="c" * 64,
+        received_offset=4,
+        blob_name="pending.ready",
+        completed=True,
+        created_at=now - 900000,
+        updated_at=now - 900000,
+        completed_at=now - media_uploads.COMPLETED_RETENTION_SECONDS - 1,
+        expires_at=now - 1,
+        dependent_device_id="phone-1",
+        dependent_action_id="review-action",
+        dependency_bound_at=now - 900000,
+        dependency_terminal_at=None,
+    )
+    db_session.add(row)
+    db_session.commit()
+    (tmp_path / row.blob_name).write_bytes(b"data")
+
+    assert media_uploads.cleanup_expired(db_session, now=now) == 0
+    assert db_session.get(MediaUploadSession, row.id) is not None
+    assert (tmp_path / row.blob_name).exists()
+
+    row.dependency_terminal_at = now
+    db_session.commit()
+    assert media_uploads.cleanup_expired(
+        db_session, now=now + media_uploads.COMPLETED_RETENTION_SECONDS + 1
+    ) == 1
+    assert db_session.get(MediaUploadSession, row.id) is None
+    assert not (tmp_path / row.blob_name).exists()
+
+
+def test_cleanup_retries_transient_upload_unlink_failure(
+    db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        media_id="media-unlink-retry",
+        issue_key="ROBOPARK-1",
+        original_name="review.jpg",
+        mime_type="image/jpeg",
+        size_bytes=4,
+        sha256="d" * 64,
+        received_offset=4,
+        blob_name="retry.ready",
+        completed=True,
+        created_at=now - 900000,
+        updated_at=now - 900000,
+        completed_at=now - media_uploads.COMPLETED_RETENTION_SECONDS - 1,
+        expires_at=now - 1,
+    )
+    db_session.add(row)
+    db_session.commit()
+    path = tmp_path / row.blob_name
+    path.write_bytes(b"data")
+    real_unlink = Path.unlink
+    attempts = 0
+
+    def flaky_unlink(candidate, *args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary filesystem error")
+        return real_unlink(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    assert media_uploads.cleanup_expired(db_session, now=now) == 0
+    assert db_session.get(MediaUploadSession, row.id) is not None
+    assert path.exists()
+
+    assert media_uploads.cleanup_expired(db_session, now=now) == 1
+    assert db_session.get(MediaUploadSession, row.id) is None
+    assert not path.exists()

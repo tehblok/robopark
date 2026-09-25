@@ -3,12 +3,11 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.media_schemas import MediaUploadCreateIn
@@ -192,6 +191,75 @@ def content_path(row: MediaUploadSession) -> Path:
     return path
 
 
+def bind_action_dependency(
+    db: Session,
+    actor: User,
+    *,
+    media_id: str,
+    issue_key: str,
+    device_id: str,
+    action_id: str,
+) -> MediaUploadSession:
+    row = db.scalar(
+        select(MediaUploadSession)
+        .where(
+            MediaUploadSession.actor_user_id == actor.id,
+            MediaUploadSession.media_id == media_id,
+            MediaUploadSession.issue_key == issue_key,
+            MediaUploadSession.completed.is_(True),
+        )
+        .with_for_update()
+    )
+    if row is None:
+        raise HTTPException(409, "media_dependency_pending")
+    requested = (device_id, action_id)
+    if (row.dependent_device_id, row.dependent_action_id) == requested:
+        return row
+    bound_at = time.time()
+    changed = db.execute(
+        update(MediaUploadSession)
+        .where(
+            MediaUploadSession.id == row.id,
+            MediaUploadSession.dependent_device_id.is_(None),
+            MediaUploadSession.dependent_action_id.is_(None),
+        )
+        .values(
+            dependent_device_id=device_id,
+            dependent_action_id=action_id,
+            dependency_bound_at=bound_at,
+        )
+    )
+    if changed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(409, "media_dependency_conflict")
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def acknowledge_action_dependency(
+    db: Session,
+    *,
+    actor_user_id: int,
+    media_id: str,
+    device_id: str,
+    action_id: str,
+    terminal_at: float | None = None,
+) -> None:
+    row = db.scalar(
+        select(MediaUploadSession).where(
+            MediaUploadSession.actor_user_id == actor_user_id,
+            MediaUploadSession.media_id == media_id,
+            MediaUploadSession.dependent_device_id == device_id,
+            MediaUploadSession.dependent_action_id == action_id,
+        )
+    )
+    if row is None or row.dependency_terminal_at is not None:
+        return
+    row.dependency_terminal_at = terminal_at or time.time()
+    db.commit()
+
+
 def cleanup_expired(db: Session, *, now: float | None = None) -> int:
     cutoff = now or time.time()
     rows = list(
@@ -203,15 +271,30 @@ def cleanup_expired(db: Session, *, now: float | None = None) -> int:
                 )
                 | (
                     MediaUploadSession.completed.is_(True)
-                    & (MediaUploadSession.completed_at <= cutoff - COMPLETED_RETENTION_SECONDS)
+                    & or_(
+                        and_(
+                            MediaUploadSession.dependent_action_id.is_(None),
+                            MediaUploadSession.completed_at
+                            <= cutoff - COMPLETED_RETENTION_SECONDS,
+                        ),
+                        MediaUploadSession.dependency_terminal_at
+                        <= cutoff - COMPLETED_RETENTION_SECONDS,
+                    )
                 )
             )
         )
     )
+    deleted = []
     for row in rows:
-        with suppress(OSError):
-            (uploads_root() / row.blob_name).unlink()
+        path = uploads_root() / row.blob_name
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            continue
         db.delete(row)
-    if rows:
+        deleted.append(row)
+    if deleted:
         db.commit()
-    return len(rows)
+    return len(deleted)

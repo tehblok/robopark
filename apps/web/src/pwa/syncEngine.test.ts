@@ -21,6 +21,45 @@ function coordinator(db: Awaited<ReturnType<typeof openOfflineDb>>) {
 }
 
 describe('SyncEngine', () => {
+  it('recovers interrupted action and media transfers on restart with the same identities', async () => {
+    const db = await openOfflineDb(scope)
+    await db.putMedia({
+      id: 'media-restart', actionId: 'review-restart', issueKey: 'TASK-1', name: 'robot.jpg',
+      blob: new Blob(['photo']), mimeType: 'image/jpeg', sha256: 'same-sha', sizeBytes: 5,
+      state: 'uploading', attempts: 0, createdAt: 10, updatedAt: 20,
+    })
+    await db.putAction({
+      ...input('review-restart'), action: 'submit_review', idempotencyKey: 'stable-review-key',
+      payload: { media_id: 'media-restart' }, state: 'sending', attempts: 0, createdAt: 10, updatedAt: 20,
+    })
+    const uploaded: string[] = []
+    const sent: SyncBatchRequest['actions'] = []
+    const engine = new SyncEngine({
+      db, coordinator: coordinator(db), deviceId: 'phone',
+      uploadMedia: async media => { uploaded.push(media.id) },
+      sendBatch: async batch => {
+        sent.push(...batch.actions)
+        return {
+          results: batch.actions.map(item => ({ client_action_id: item.client_action_id, state: 'confirmed' as const, code: null, result: {} })),
+          deltas: {}, revisions: {}, revoked_scopes: [],
+        }
+      },
+    })
+
+    await engine.syncNow('restart')
+
+    expect(uploaded).toEqual(['media-restart'])
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({
+      client_action_id: 'review-restart', idempotency_key: 'stable-review-key',
+      payload: { media_id: 'media-restart' },
+    })
+    expect(await db.getMedia('media-restart')).toMatchObject({ state: 'confirmed', attempts: 1 })
+    expect(await db.getAction('review-restart')).toMatchObject({ state: 'confirmed', attempts: 1 })
+    expect(engine.getState()).toMatchObject({ status: 'idle', pending: 0 })
+    engine.dispose()
+  })
+
   it('waits for server acknowledgement when IndexedDB is unavailable', async () => {
     vi.stubGlobal('indexedDB', undefined)
     const calls: string[][] = []

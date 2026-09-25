@@ -270,6 +270,7 @@ export class SyncEngine {
   }
 
   private async pump(): Promise<boolean> {
+    await this.recoverInterruptedTransfers()
     const pendingMedia = (await this.db.listMedia()).filter(item => item.state === 'local' || item.state === 'ready' || item.state === 'attention')
     if (pendingMedia.length && this.uploadMedia) {
       this.setState({ ...this.durableState, status: 'syncing' })
@@ -354,6 +355,21 @@ export class SyncEngine {
     } finally {
       this.abortController = null
     }
+  }
+
+  private async recoverInterruptedTransfers(): Promise<void> {
+    const interruptedActions = (await this.db.listActions()).filter(item => item.state === 'sending')
+    const interruptedMedia = (await this.db.listMedia()).filter(item => item.state === 'uploading')
+    if (!interruptedActions.length && !interruptedMedia.length) return
+    const now = this.now()
+    await this.db.transaction(writer => {
+      for (const action of interruptedActions) {
+        writer.putAction({ ...action, state: 'ready', attempts: (action.attempts ?? 0) + 1, updatedAt: now })
+      }
+      for (const media of interruptedMedia) {
+        writer.putMedia({ ...media, state: 'ready', attempts: (media.attempts ?? 0) + 1, updatedAt: now })
+      }
+    })
   }
 
   private async refreshState(): Promise<void> {

@@ -1,6 +1,8 @@
 import type { HostOperationKind, HostOperationPayload } from '../../opsApi'
 
-export const OPERATION_KEY = 'robopark:system-operation'
+export const OPERATION_KEY_PREFIX = 'robopark:system-operation:'
+export const LEGACY_OPERATION_KEY = 'robopark:system-operation'
+export type OperationActor = { id: number, username: string }
 export type SafeOperationDraft = {
   operation_id: string
   kind: HostOperationKind
@@ -39,8 +41,12 @@ function readSafeDraft(value: unknown, id: string, kind: string): SafeOperationD
   return draft as SafeOperationDraft
 }
 
-export function readOperationReservation(): OperationReservation | null {
-  const raw = localStorage.getItem(OPERATION_KEY)
+export function operationReservationKey(actor: OperationActor): string {
+  return `${OPERATION_KEY_PREFIX}${actor.id}`
+}
+
+export function readOperationReservation(actor: OperationActor): OperationReservation | null {
+  const raw = localStorage.getItem(operationReservationKey(actor))
   if (!raw) return null
   try {
     const value = JSON.parse(raw) as Partial<OperationReservation>
@@ -58,10 +64,10 @@ export function readOperationReservation(): OperationReservation | null {
   }
 }
 
-export function writeOperationReservation(value: OperationReservation) {
-  localStorage.setItem(OPERATION_KEY, JSON.stringify(value))
+export function writeOperationReservation(actor: OperationActor, value: OperationReservation) {
+  localStorage.setItem(operationReservationKey(actor), JSON.stringify(value))
 }
 
-export function clearOperationReservation() {
-  localStorage.removeItem(OPERATION_KEY)
+export function clearOperationReservation(actor: OperationActor) {
+  localStorage.removeItem(operationReservationKey(actor))
 }

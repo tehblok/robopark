@@ -22,7 +22,7 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
   const [history, setHistory] = useState<SystemHistory | null>(null)
   const [capabilities, setCapabilities] = useState<HostCapabilities | null>(null)
   const [job, setJob] = useState<SystemJob | null>(() => {
-    const stored = readOperationReservation()
+    const stored = user ? readOperationReservation(user) : null
     return stored ? reconcilingJob(stored.id) : null
   })
   const [failed, setFailed] = useState(false)
@@ -45,7 +45,7 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
     if (pending.current) return pending.current
     const work = (async () => {
       try {
-        const stored = royal ? readOperationReservation() : null
+        const stored = royal && user ? readOperationReservation(user) : null
         const royalReads = royal
           ? Promise.all([
               client.getCapabilities(),
@@ -68,7 +68,7 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
           setCapabilities(nextCapabilities ?? null)
           if (stored && operation.state === 'found') {
             setJob(operation.value)
-            if (operation.value.receipt_state === 'terminal' || operation.value.state === 'succeeded' || operation.value.state === 'failed') clearOperationReservation()
+            if (operation.value.receipt_state === 'terminal' || operation.value.state === 'succeeded' || operation.value.state === 'failed') clearOperationReservation(user)
           } else if (stored && operation.state === 'absent') {
             setJob({ id: stored.id, kind: stored.kind, state: 'queued', phase: 'Запрос не подтверждён — повторите тот же запрос', progress_percent: 0, error: null })
           }
@@ -81,7 +81,7 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
     })().finally(() => { if (pending.current === work) pending.current = null })
     pending.current = work
     return work
-  }, [allowed, clearProtected, client, royal])
+  }, [allowed, clearProtected, client, royal, user])
 
   useEffect(() => {
     mounted.current = true
@@ -109,6 +109,6 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
   return <PageShell title="Система" subtitle="Состояние Robopark и управляемые операции без доступа к командной строке.">
     {failed && <Alert tone="warning">Не удалось получить свежие данные. Повторная проверка продолжится после восстановления связи.</Alert>}
     {!summary || !history ? <LoadingState label="Загружаем состояние системы" variant="page" /> : <SystemMetrics history={history} summary={summary} />}
-    {royal && capabilities && <SystemOperations key={capabilities.revision ?? capabilities.generated_at} capabilities={capabilities} client={client} job={job} onAccepted={setJob} onPostingChange={id => { postingOperation.current = id }} onRefreshCapabilities={refreshCapabilities} />}
+    {royal && user && capabilities && <SystemOperations actor={user} key={`${user.id}:${user.username}:${capabilities.revision ?? capabilities.generated_at}`} capabilities={capabilities} client={client} job={job} onAccepted={setJob} onPostingChange={id => { postingOperation.current = id }} onRefreshCapabilities={refreshCapabilities} />}
   </PageShell>
 }

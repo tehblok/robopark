@@ -96,6 +96,10 @@ class MediaUploadSession(Base):
             name="ck_media_upload_offsets",
         ),
         Index("ix_media_upload_expiry", "completed", "expires_at", "id"),
+        Index(
+            "ix_media_upload_dependency_cleanup",
+            "completed", "dependency_terminal_at", "completed_at", "id",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
@@ -113,6 +117,10 @@ class MediaUploadSession(Base):
     updated_at: Mapped[float] = mapped_column(Float, default=time.time)
     expires_at: Mapped[float] = mapped_column(Float)
     completed_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dependent_device_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    dependent_action_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dependency_bound_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dependency_terminal_at: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class TaskMessage(Base):

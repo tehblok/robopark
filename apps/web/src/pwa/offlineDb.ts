@@ -282,7 +282,17 @@ export class OfflineDb {
     const media = await this.scopedRecords<MediaRecord>('media')
     const expiredEntities = entities.filter(item => now - item.updatedAt >= entityTtl)
     const expiredActions = actions.filter(item => item.state === 'confirmed' && now - item.updatedAt >= confirmedTtl)
-    const expiredMedia = media.filter(item => item.state === 'confirmed' && now - item.updatedAt >= confirmedTtl)
+    const actionsById = new Map(actions.map(item => [item.id, item]))
+    const dependentActionIsTerminal = (item: MediaRecord) => {
+      const action = actionsById.get(item.actionId)
+      return !action || action.state === 'confirmed' || action.state === 'cancelled'
+    }
+    const mediaRetentionAnchor = (item: MediaRecord) => Math.max(
+      item.updatedAt,
+      actionsById.get(item.actionId)?.updatedAt ?? item.updatedAt,
+    )
+    const expiredMedia = media.filter(item => item.state === 'confirmed'
+      && dependentActionIsTerminal(item) && now - mediaRetentionAnchor(item) >= confirmedTtl)
     await this.deleteRecords('entities', expiredEntities)
     await this.deleteRecords('actions', expiredActions)
     await this.deleteRecords('media', expiredMedia)
@@ -294,7 +304,8 @@ export class OfflineDb {
     const evictable = [
       ...remainingEntities.map(item => ({ store: 'entities' as const, item })),
       ...remainingActions.filter(item => item.state === 'confirmed' || item.state === 'cancelled').map(item => ({ store: 'actions' as const, item })),
-      ...remainingMedia.filter(item => item.state === 'confirmed').map(item => ({ store: 'media' as const, item })),
+      ...remainingMedia.filter(item => item.state === 'confirmed' && dependentActionIsTerminal(item)
+        && now - mediaRetentionAnchor(item) >= confirmedTtl).map(item => ({ store: 'media' as const, item })),
     ]
     for (const candidate of evictable) {
       if (bytes <= options.maxBytes) break

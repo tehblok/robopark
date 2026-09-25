@@ -136,7 +136,7 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
 def test_alembic_head_includes_host_operation_status():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0049_operation_request_digest"]
+    assert script.get_heads() == ["0050_media_action_dependency"]
 
 
 def test_privileged_audit_is_immutable_after_sqlite_migration(
@@ -290,7 +290,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
         "idempotency_key", "lease_owner", "lease_until",
     }
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0049_operation_request_digest"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0050_media_action_dependency"
 
 
 def test_schedule_series_lookup_index_is_used(sqlite_database_url, monkeypatch):

@@ -26,7 +26,7 @@ def test_actual_alembic_head_matches_release_declarations():
     assert module.check_release_migrations(ROOT) == []
     metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
     policy = json.loads((ROOT / "deploy/migration-policy.json").read_text())
-    assert metadata["migration_head"] == policy["target_head"] == "0049_operation_request_digest"
+    assert metadata["migration_head"] == policy["target_head"] == "0050_media_action_dependency"
     assert metadata["migration_compatibility"]["from_heads"] == [
         "0036_audit_remediation_state",
         "0037_claim_workflow_visibility",

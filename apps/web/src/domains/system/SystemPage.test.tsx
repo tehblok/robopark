@@ -5,7 +5,7 @@ import { AuthContext } from '../../auth-context'
 import { ApiError, type User } from '../../api'
 import { SystemPage } from './SystemPage'
 import type { HostCapabilities, SystemClient, SystemJob, SystemSummary } from '../../opsApi'
-import { readOperationReservation, writeOperationReservation } from './operationReservation'
+import { operationReservationKey, readOperationReservation as readScopedOperationReservation, writeOperationReservation as writeScopedOperationReservation } from './operationReservation'
 
 const revision = 'a'.repeat(64)
 const kinds = [
@@ -55,6 +55,9 @@ function client(overrides: Partial<SystemClient> = {}): SystemClient {
 const user = (role: 'admin' | 'royal'): User => ({
   id: 1, username: role, role, access_status: 'approved', permissions: ['nav.admin'], parks: [],
 })
+const reservationActor = user('royal')
+const readOperationReservation = () => readScopedOperationReservation(reservationActor)
+const writeOperationReservation = (value: Parameters<typeof writeScopedOperationReservation>[1]) => writeScopedOperationReservation(reservationActor, value)
 function tree(role: 'admin' | 'royal', api = client()) {
   return <MemoryRouter><AuthContext.Provider value={{ user: user(role), loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><SystemPage client={api} /></AuthContext.Provider></MemoryRouter>
 }
@@ -266,8 +269,8 @@ describe('SystemPage', () => {
     expect(readOperationReservation()?.draft).toEqual({
       operation_id: submittedId, kind: 'diagnostics', capability_revision: revision,
     })
-    expect(localStorage.getItem('robopark:system-operation')).not.toContain('secret')
-    expect(localStorage.getItem('robopark:system-operation')).not.toContain('123456')
+    expect(localStorage.getItem(operationReservationKey(reservationActor))).not.toContain('secret')
+    expect(localStorage.getItem(operationReservationKey(reservationActor))).not.toContain('123456')
     expect(screen.getByRole('button', { name: 'Собрать диагностику' })).toBeDisabled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Повторить тот же запрос' }))
@@ -370,12 +373,12 @@ describe('SystemPage', () => {
     render(tree('royal', api))
     await screen.findByRole('region', { name: 'Управляемые операции' })
     expect(screen.queryByRole('progressbar', { name: 'Прогресс операции' })).not.toBeInTheDocument()
-    expect(localStorage.getItem('robopark:system-operation')).toBeNull()
+    expect(localStorage.getItem(operationReservationKey(reservationActor))).toBeNull()
     expect(api.getOperation).not.toHaveBeenCalled()
   })
 
   it('requires an exact sanitized discovered USB UUID before enabling selection', async () => {
-    localStorage.setItem('robopark:system-operation', '33333333-3333-4333-8333-333333333333')
+    writeOperationReservation({ id: '33333333-3333-4333-8333-333333333333', kind: 'usb-discover', created_at: 0, phase: 'reconciling' })
     const api = client({ getOperation: vi.fn().mockResolvedValue({
       id: '33333333-3333-4333-8333-333333333333', kind: 'usb-discover', state: 'succeeded', phase: 'completed', progress_percent: 100, error: null,
       host_result: { devices: [{ device_uuid: '44444444-4444-4444-8444-444444444444', removable: true, mounted: false }] },

@@ -26,6 +26,7 @@ const namespaces: readonly StorageNamespace[] = [
   { name: 'robopark.recentRobots.v2.', kind: 'localStorage', owner: 'robots', schema: 2, retention: 'until logout', scope: 'account' },
   { name: 'robopark.recentRobots', kind: 'localStorage', owner: 'robots', schema: 1, retention: 'legacy; purge on auth transition', scope: 'ephemeral-global' },
   { name: 'robopark:interface:', kind: 'localStorage', owner: 'interface', schema: 1, retention: 'legacy', scope: 'account' },
+  { name: 'robopark:system-operation:', kind: 'localStorage', owner: 'system', schema: 1, retention: 'until terminal acknowledgement or logout', scope: 'account' },
   { name: 'robopark:panel:', kind: 'localStorage', owner: 'layout', schema: 1, retention: 'until reset', scope: 'device' },
   { name: 'robopark-theme', kind: 'localStorage', owner: 'theme', schema: 1, retention: 'until reset', scope: 'device' },
   { name: 'robopark-density', kind: 'localStorage', owner: 'theme', schema: 1, retention: 'until reset', scope: 'device' },

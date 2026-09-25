@@ -281,6 +281,31 @@ describe('offline database', () => {
     expect(await db.getMedia('waiting-photo')).toMatchObject({ state: 'local' })
   })
 
+  it('retains acknowledged media until its dependent durable action is terminal', async () => {
+    const db = await openOfflineDb(scope())
+    const pendingReview = {
+      ...action('review', 'ready', 1), action: 'submit_review', payload: { media_id: 'review-photo' },
+    }
+    await db.transaction(writer => {
+      writer.putAction(pendingReview)
+      writer.putMedia({
+        id: 'review-photo', actionId: pendingReview.id, issueKey: 'SDCFLEETOPS-1', name: 'robot.jpg',
+        blob: new Blob(['photo']), mimeType: 'image/jpeg', sha256: 'hash', sizeBytes: 5,
+        state: 'confirmed', createdAt: 1, updatedAt: 1,
+      })
+    })
+
+    await db.cleanup({ maxBytes: 1_000_000, now: 10_000, confirmedTtlMs: 100, entityTtlMs: 100 })
+    expect(await db.getMedia('review-photo')).toMatchObject({ actionId: 'review', state: 'confirmed' })
+
+    await db.putAction({ ...pendingReview, state: 'confirmed', updatedAt: 9_950 })
+    await db.cleanup({ maxBytes: 1_000_000, now: 10_000, confirmedTtlMs: 100, entityTtlMs: 100 })
+    expect(await db.getMedia('review-photo')).toMatchObject({ state: 'confirmed' })
+
+    await db.cleanup({ maxBytes: 1_000_000, now: 10_050, confirmedTtlMs: 100, entityTtlMs: 100 })
+    expect(await db.getMedia('review-photo')).toBeUndefined()
+  })
+
   it('stores and replaces section revisions inside the active scope', async () => {
     const db = await openOfflineDb(scope())
     await db.setRevision('tasks', 'r1')

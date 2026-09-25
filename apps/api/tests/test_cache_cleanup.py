@@ -550,6 +550,58 @@ def test_cleanup_bounds_successful_actions_and_uploaded_blob_retention(
     assert retained_blob.exists()
 
 
+def test_uploaded_attachment_metadata_survives_transient_unlink_failure(
+    db_engine, db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    cutoff = datetime(2026, 9, 15, tzinfo=UTC).timestamp()
+    old = cutoff - 31 * 86400
+    message = TaskMessage(
+        id="retry-message", issue_key="ROBOPARK-1", kind="system", author_name="system",
+        text="audit", sync_state="synced", created_at=old, updated_at=old,
+    )
+    action = ReliableAction(
+        id="retry-attachment", actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue", resource_id="ROBOPARK-1", action="attach",
+        idempotency_key="retry-attachment-0001", payload_hash="0" * 64, payload_json="{}",
+        state="succeeded", result_json='{"attachment_id":"remote","external_id":"comment"}',
+        next_attempt_at=0, created_at=old, updated_at=old,
+    )
+    db_session.add_all([message, action])
+    db_session.flush()
+    message.action_id = action.id
+    blob = tmp_path / "retry-blob"
+    blob.write_bytes(b"old")
+    db_session.add(TaskAttachment(
+        id=action.id, message_id=message.id, blob_name=blob.name, original_name="old.png",
+        mime_type="image/png", size_bytes=3, sha256="0" * 64, created_at=old,
+        uploaded_at=cutoff - 8 * 86400,
+    ))
+    db_session.commit()
+    monkeypatch.setattr(cache_cleanup, "staged_attachments_root", lambda: tmp_path)
+    real_unlink = cache_cleanup.unlink_unchanged
+    attempts = 0
+
+    def flaky_unlink(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary filesystem error")
+        return real_unlink(*args, **kwargs)
+
+    monkeypatch.setattr(cache_cleanup, "unlink_unchanged", flaky_unlink)
+    with Session(db_engine) as db:
+        assert cache_cleanup.prune_tracker_outbox(db, now=cutoff) == (0, 0)
+    with Session(db_engine) as db:
+        assert db.get(TaskAttachment, action.id) is not None
+    assert blob.exists()
+
+    with Session(db_engine) as db:
+        assert cache_cleanup.prune_tracker_outbox(db, now=cutoff) == (1, 1)
+    with Session(db_engine) as db:
+        assert db.get(TaskAttachment, action.id) is None
+    assert not blob.exists()
+
+
 def test_worker_awaits_blocking_outbox_before_releasing_job_lease(
     db_engine, test_settings, monkeypatch
 ):

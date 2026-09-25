@@ -10,6 +10,7 @@ describe('clearProtectedBrowserStorage', () => {
       ['robopark.recentRobots.v2.41', 'other-recents'],
       ['robopark:res:old', 'cached'],
       ['robopark.recentRobots', '["447"]'],
+      ['robopark:system-operation:%5B1%2C%22alice%22%5D', '{"id":"private"}'],
     ] as const
     const protectedEntries = [
       ['robopark:report-draft:v1:3:daily', 'old-draft'],

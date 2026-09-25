@@ -297,7 +297,21 @@ def synchronize(
                     if item.park_id is not None:
                         revoked.add(f"work:park:{item.park_id}")
                 else:
+                    dependent_media_id = (
+                        str(item.payload.get("media_id") or "")
+                        if item.action == "submit_review"
+                        else ""
+                    )
                     try:
+                        if dependent_media_id:
+                            media_uploads.bind_action_dependency(
+                                db,
+                                user,
+                                media_id=dependent_media_id,
+                                issue_key=item.resource_id,
+                                device_id=batch.device_id,
+                                action_id=item.client_action_id,
+                            )
                         value = dispatch_action(db, user, item)
                         result = SyncActionResultOut(
                             client_action_id=item.client_action_id,
@@ -316,6 +330,14 @@ def synchronize(
                             client_action_id=item.client_action_id,
                             state=state,
                             code=code,
+                        )
+                    if dependent_media_id and result.state != "attention":
+                        media_uploads.acknowledge_action_dependency(
+                            db,
+                            actor_user_id=user.id,
+                            media_id=dependent_media_id,
+                            device_id=batch.device_id,
+                            action_id=item.client_action_id,
                         )
                 # Temporary upstream failures must remain replayable. Persist only
                 # terminal outcomes; otherwise one 503 becomes permanent.

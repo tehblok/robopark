@@ -10,6 +10,7 @@ import { openOfflineDb, purgeOfflineScope } from './pwa/offlineDb'
 import { offlineScopeForUser } from './lib/deviceResourceCache'
 import { openShareTargetInbox } from './pwa/ShareTargetInbox'
 import { registerServiceWorker } from './pwa/registerServiceWorker'
+import { operationReservationKey } from './domains/system/operationReservation'
 
 const oldAccount: User = {
   id: 3,
@@ -35,6 +36,7 @@ const reportKey = 'robopark:report-draft:v1:3:daily'
 const otherReportKey = 'robopark:report-draft:v2:41:blocker'
 const legacyRecentKey = 'robopark.recentRobots'
 const resourceKey = 'protected:test'
+const operationKey = operationReservationKey(oldAccount)
 
 let currentAuth: AuthContextValue | null = null
 
@@ -63,6 +65,7 @@ function seedProtectedState(): void {
   localStorage.setItem(reportKey, 'old-draft')
   localStorage.setItem(otherReportKey, 'other-draft')
   localStorage.setItem(legacyRecentKey, '["447"]')
+  localStorage.setItem(operationKey, '{"id":"private-operation"}')
   localStorage.setItem('robopark-theme', 'dark')
   localStorage.setItem('robopark-density', 'compact')
   localStorage.setItem('unrelated-key', 'keep-me')
@@ -75,6 +78,7 @@ function expectProtectedStateCleared(): void {
   expect(localStorage.getItem(reportKey)).toBe('old-draft')
   expect(localStorage.getItem(otherReportKey)).toBe('other-draft')
   expect(localStorage.getItem(legacyRecentKey)).toBeNull()
+  expect(localStorage.getItem(operationKey)).toBeNull()
   expect(localStorage.getItem('robopark-theme')).toBe('dark')
   expect(localStorage.getItem('robopark-density')).toBe('compact')
   expect(localStorage.getItem('unrelated-key')).toBe('keep-me')
@@ -86,6 +90,7 @@ function expectProtectedStateRetained(): void {
   expect(localStorage.getItem(otherRecentKey)).toBe('other-recents')
   expect(localStorage.getItem(reportKey)).toBe('old-draft')
   expect(localStorage.getItem(otherReportKey)).toBe('other-draft')
+  expect(localStorage.getItem(operationKey)).toBe('{"id":"private-operation"}')
 }
 
 async function activationSafetyProbe(): Promise<() => boolean> {
