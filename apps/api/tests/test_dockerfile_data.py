@@ -223,7 +223,7 @@ def test_verification_script_api_target_runs_only_frozen_api_commands(tmp_path: 
         "uv\tsync\t--frozen\t--extra\tdev",
         "uv\trun\t--frozen\t--extra\tdev\truff\tcheck\t.",
         "uv\trun\t--frozen\t--extra\tdev\truff\tformat\t--check\t.",
-        "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q",
+        "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q\t-m\tnot load",
     ]
 
 
@@ -249,7 +249,7 @@ def test_verification_script_default_runs_all_targets_in_order(tmp_path: Path):
             "uv\tsync\t--frozen\t--extra\tdev",
             "uv\trun\t--frozen\t--extra\tdev\truff\tcheck\t.",
             "uv\trun\t--frozen\t--extra\tdev\truff\tformat\t--check\t.",
-            "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q",
+            "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q\t-m\tnot load",
             "uv\tsync\t--frozen\t--extra\tdev",
             "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q\ttests/postgres",
             "npm\tci",
