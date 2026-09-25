@@ -14,12 +14,12 @@ class ScheduleCreate(BaseModel):
     start_at: datetime
     end_at: datetime
     owner_user_id: int | None = None
-    timezone: str = "Europe/Moscow"
+    timezone: str | None = None
 
     @field_validator("timezone")
     @classmethod
-    def valid_timezone(cls, value: str) -> str:
-        return _valid_timezone(value)
+    def valid_timezone(cls, value: str | None) -> str | None:
+        return _valid_timezone(value) if value is not None else None
 
     @model_validator(mode="after")
     def valid_range(self):
@@ -47,16 +47,12 @@ class SchedulePatternCreate(BaseModel):
     start_time: time
     end_time: time
     pattern: SchedulePattern
-    timezone: str = "Europe/Moscow"
+    timezone: str | None = None
 
     @field_validator("timezone")
     @classmethod
-    def valid_timezone(cls, value: str) -> str:
-        try:
-            ZoneInfo(value)
-        except (ValueError, ZoneInfoNotFoundError) as exc:
-            raise ValueError("invalid_timezone") from exc
-        return value
+    def valid_timezone(cls, value: str | None) -> str | None:
+        return _valid_timezone(value) if value is not None else None
 
     @model_validator(mode="after")
     def valid_pattern_range(self):
@@ -100,7 +96,12 @@ class ScheduleCopy(BaseModel):
     source_end: datetime
     target_start: datetime
     owner_user_ids: list[int] = Field(default_factory=list, max_length=100)
-    timezone: str = "Europe/Moscow"
+    timezone: str | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def valid_timezone(cls, value: str | None) -> str | None:
+        return _valid_timezone(value) if value is not None else None
 
     @model_validator(mode="after")
     def valid_copy_range(self):

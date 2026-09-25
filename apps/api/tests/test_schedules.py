@@ -175,6 +175,32 @@ def test_notification_schedule_state_is_one_atomic_select(
     assert len(statements) == 1
 
 
+def test_untargeted_audience_batches_more_than_one_thousand_users(
+    db_engine, db_session, seed_mechanic
+):
+    role_id = seed_mechanic.role_id
+    users = [User(username=f"batch-user-{index}", password_hash=seed_mechanic.password_hash,
+                  role_id=role_id, access_status=AccessStatus.approved.value, is_active=True)
+             for index in range(1001)]
+    db_session.add_all(users)
+    db_session.commit()
+    schedule_selects = []
+    def capture(_conn, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT") and "schedule_entries" in statement:
+            schedule_selects.append(statement)
+    event.listen(db_engine, "before_cursor_execute", capture)
+    try:
+        audience = schedules.eligible_recipients(
+            schedules.RoutingEvent(db_session, "new_task", None),
+            datetime(2026, 9, 21, 10, tzinfo=ZoneInfo("Europe/Moscow")),
+        )
+    finally:
+        event.remove(db_engine, "before_cursor_execute", capture)
+    assert {user.id for user in users} <= {user.id for user in audience}
+    assert 5 <= len(schedule_selects) <= 6
+    assert all(len(statement) < 20_000 for statement in schedule_selects)
+
+
 def test_pattern_rejects_nonexistent_time_and_chooses_first_ambiguous_fold(
     client, db_session, seed_mechanic, seed_park_with_tracker
 ):
@@ -193,6 +219,35 @@ def test_pattern_rejects_nonexistent_time_and_chooses_first_ambiguous_fold(
     ))
     assert ambiguous.status_code == 201
     assert datetime.fromisoformat(ambiguous.json()[0]["start_at"]).astimezone(UTC) == datetime(2026, 11, 1, 5, 30, tzinfo=UTC)
+
+
+def test_royal_pattern_uses_target_timezone_without_overwriting_profile(
+    client, db_session, seed_royal, seed_park_with_tracker
+):
+    target = _add_user(db_session, username="la-target", role=RoleSlug.MECHANIC, park_id=seed_park_with_tracker.id)
+    target.timezone = "America/Los_Angeles"
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+    response = client.post("/schedules/pattern", json=_pattern_payload(
+        seed_park_with_tracker.id, [target.id], start_date="2026-09-03", end_date="2026-09-03",
+        pattern="none", idempotency_key="royal-la-target", timezone=None,
+    ))
+    assert response.status_code == 201
+    assert datetime.fromisoformat(response.json()[0]["start_at"]).astimezone(UTC).hour == 16
+    db_session.refresh(target)
+    assert target.timezone == "America/Los_Angeles"
+
+
+def test_invalid_copy_timezone_changes_nothing(client, db_session, seed_mechanic, seed_park_with_tracker):
+    login_as(client, seed_mechanic.username, "secret")
+    response = client.post("/schedules/copy", json={
+        "park_id": seed_park_with_tracker.id, "owner_user_ids": [seed_mechanic.id],
+        "source_start": "2026-09-01T00:00:00Z", "source_end": "2026-09-02T00:00:00Z",
+        "target_start": "2026-10-01T00:00:00Z", "timezone": "bad/zone",
+    })
+    assert response.status_code == 422
+    db_session.refresh(seed_mechanic)
+    assert seed_mechanic.timezone is None
 
 
 def test_four_on_four_off_pattern_dates(

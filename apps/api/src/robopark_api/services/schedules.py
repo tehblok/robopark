@@ -38,6 +38,7 @@ NOTIFICATION_ROLES = {
     "server_problem": ({"royal"}, False),
 }
 CRITICAL_ROYAL_EVENTS = {"integration_down", "disk_low", "update_failure", "server_problem"}
+ROUTING_BATCH_SIZE = 200
 
 
 @dataclass(frozen=True)
@@ -55,22 +56,29 @@ def eligible_recipients(event: RoutingEvent, at: datetime) -> list[User]:
         raise ValueError("unknown_event_type")
     roles, requires_shift = role_rule
     db = event.db
-    users = list(
-        db.scalars(
-            select(User)
-            .join(Role)
-            .where(
-                Role.slug.in_(roles),
-                User.access_status == AccessStatus.approved.value,
-                User.is_active.is_(True),
-            )
-            .order_by(User.id)
+    result: list[User] = []
+    after_id = 0
+    while True:
+        query = select(User).join(Role).where(
+            Role.slug.in_(roles), User.access_status == AccessStatus.approved.value,
+            User.is_active.is_(True), User.id > after_id,
         )
-    )
-    if event.target_user_ids is not None:
-        users = [user for user in users if user.id in event.target_user_ids]
-    if not users:
-        return []
+        if event.target_user_ids is not None:
+            query = query.where(User.id.in_(event.target_user_ids))
+        users = list(db.scalars(query.order_by(User.id).limit(ROUTING_BATCH_SIZE)))
+        if not users:
+            break
+        result.extend(_eligible_recipient_batch(event, at, users, requires_shift))
+        after_id = users[-1].id
+        if len(users) < ROUTING_BATCH_SIZE:
+            break
+    return result
+
+
+def _eligible_recipient_batch(
+    event: RoutingEvent, at: datetime, users: list[User], requires_shift: bool
+) -> list[User]:
+    db = event.db
     user_ids = [user.id for user in users]
     park_users = (
         set(
@@ -83,40 +91,42 @@ def eligible_recipients(event: RoutingEvent, at: datetime) -> list[User]:
         if event.park_id is not None
         else set()
     )
-    zones = {}
-    day_predicates = []
+    day_groups: dict[tuple[datetime, datetime], list[int]] = {}
     fallback_open = set()
     for user in users:
         try:
             zone = ZoneInfo(user.timezone or "Europe/Moscow")
         except (ValueError, ZoneInfoNotFoundError):
             zone = MOSCOW
-        zones[user.id] = zone
         local_at = at.astimezone(zone)
         if 9 <= local_at.hour < 21:
             fallback_open.add(user.id)
         day_start = datetime.combine(local_at.date(), datetime.min.time(), tzinfo=zone)
-        series_tail = aliased(ScheduleEntry)
+        day_groups.setdefault((day_start, day_start + timedelta(days=1)), []).append(user.id)
+    day_predicates = []
+    series_tail = aliased(ScheduleEntry)
+    for (day_start, day_end), owner_ids in day_groups.items():
         pattern_span = and_(
-            ScheduleEntry.series_id.is_not(None), ScheduleEntry.start_at < day_start + timedelta(days=1),
+            ScheduleEntry.series_id.is_not(None), ScheduleEntry.start_at < day_end,
             select(series_tail.id).where(
                 series_tail.series_id == ScheduleEntry.series_id,
-                series_tail.owner_user_id == user.id,
+                series_tail.owner_user_id == ScheduleEntry.owner_user_id,
                 series_tail.end_at > day_start,
             ).limit(1).exists(),
         )
-        day_predicates.append(and_(ScheduleEntry.owner_user_id == user.id, or_(
-            and_(ScheduleEntry.start_at < day_start + timedelta(days=1), ScheduleEntry.end_at > day_start),
+        day_predicates.append(and_(ScheduleEntry.owner_user_id.in_(owner_ids), or_(
+            and_(ScheduleEntry.start_at < day_end, ScheduleEntry.end_at > day_start),
             pattern_span,
         )))
+    park_filter = ScheduleEntry.park_id == event.park_id if event.park_id is not None else True
     state_rows = db.execute(
         select(
             ScheduleEntry.owner_user_id,
             func.max(case((and_(ScheduleEntry.kind == "shift", ScheduleEntry.start_at <= at, ScheduleEntry.end_at > at), 1), else_=0)),
             func.max(case((and_(ScheduleEntry.kind.in_(("vacation", "sick")), ScheduleEntry.start_at <= at, ScheduleEntry.end_at > at), 1), else_=0)),
             func.count(ScheduleEntry.id),
-        ).where(ScheduleEntry.park_id == event.park_id, or_(*day_predicates)).group_by(ScheduleEntry.owner_user_id)
-    ).all() if event.park_id is not None else []
+        ).where(park_filter, or_(*day_predicates)).group_by(ScheduleEntry.owner_user_id)
+    ).all()
     states = {owner: (bool(shift), bool(leave), bool(covered)) for owner, shift, leave, covered in state_rows}
     return [
         user
@@ -387,7 +397,8 @@ def create_entry(db: Session, actor: User, payload: ScheduleCreate) -> dict:
         raise PermissionError
     if not _park_access(db, actor if owner_id == actor.id else owner, payload.park_id):
         raise PermissionError
-    owner.timezone = payload.timezone
+    if owner_id == actor.id and payload.timezone is not None:
+        owner.timezone = payload.timezone
     row = ScheduleEntry(
         owner_user_id=owner_id,
         park_id=payload.park_id,
@@ -411,7 +422,9 @@ def create_bulk(db: Session, actor: User, payload: ScheduleBulkCreate) -> list[d
     if db.get(Park, payload.park_id) is None:
         raise LookupError("park_not_found")
     for owner_id in owner_ids:
-        _owner_in_park(db, owner_id, payload.park_id).timezone = payload.timezone
+        owner = _owner_in_park(db, owner_id, payload.park_id)
+        if owner_id == actor.id and payload.timezone is not None:
+            owner.timezone = payload.timezone
     series_id = str(uuid4())
     rows = []
     for owner_id in owner_ids:
@@ -494,11 +507,16 @@ def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> 
                 raise PermissionError
 
             series_id = str(uuid4())
-            local_timezone = ZoneInfo(payload.timezone)
-            for owner_id in payload.owner_user_ids:
-                db.get(User, owner_id).timezone = payload.timezone
             rows: list[ScheduleEntry] = []
             for owner_id in payload.owner_user_ids:
+                owner = db.get(User, owner_id)
+                timezone_name = payload.timezone or owner.timezone or "Europe/Moscow"
+                try:
+                    local_timezone = ZoneInfo(timezone_name)
+                except (ValueError, ZoneInfoNotFoundError):
+                    local_timezone = MOSCOW
+                if owner_id == actor.id and payload.timezone is not None:
+                    owner.timezone = payload.timezone
                 for work_date in active_dates:
                     end_date = work_date + timedelta(days=payload.end_time <= payload.start_time)
                     start_at = _resolve_wall_time(work_date, payload.start_time, local_timezone)
@@ -626,7 +644,9 @@ def _copy_period_once(
     db: Session, actor: User, payload: ScheduleCopy, owners: list[int]
 ) -> list[dict]:
     for owner_id in owners:
-        _owner_in_park(db, owner_id, payload.park_id).timezone = payload.timezone
+        owner = _owner_in_park(db, owner_id, payload.park_id)
+        if owner_id == actor.id and payload.timezone is not None:
+            owner.timezone = payload.timezone
     source = list(
         db.scalars(
             select(ScheduleEntry)
@@ -690,7 +710,7 @@ def update_entry(db: Session, actor: User, entry_id: str, payload: ScheduleUpdat
     if actor.role != "royal" and (actor.role == "admin" or row.owner_user_id != actor.id):
         raise PermissionError
     values = payload.model_dump(exclude_none=True, exclude={"timezone"})
-    if payload.timezone is not None:
+    if payload.timezone is not None and row.owner_user_id == actor.id:
         db.get(User, row.owner_user_id).timezone = payload.timezone
     for key, value in values.items():
         setattr(row, key, value)
