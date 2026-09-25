@@ -55,6 +55,16 @@ const routeDiagnosticRule: DiagnosticRule = {
   is_enabled: true,
   sort_order: 0,
 }
+const routeSystemSummary = {
+  sampled_at: '2026-09-02T09:00:00Z', metrics_stale: false,
+  online: { total: 4, by_role: { mechanic: 3, royal: 1 }, by_park: { '7': 4 } },
+  sync: { cursor_age_seconds: 12, pending_action_count: 0, oldest_pending_action_age_seconds: null, retry_count: 0, needs_attention_count: 0, last_success_at: '2026-09-02T08:59:00Z', last_error: null, worker_lease_state: 'active' },
+  push: { pending: 0, needs_attention: 0 },
+  metrics: { host: { cpu: { state: 'ok', load_1m: .4, cores: 4 }, disk: { total_bytes: 1000, free_bytes: 400 }, memory: { total_bytes: 1000, available_bytes: 500 }, postgresql: { state: 'ok' }, container: { state: 'ok' }, tuna: { state: 'ok' }, internet: { state: 'ok' }, storage: { bytes_to_reclaim: 0, cleanup_failed: false }, backup: { overdue: false } } },
+  release: { version: '0.2.0-rc.6' },
+}
+const routeSystemKinds = ['release-update', 'reinstall', 'rollback', 'package-inspect', 'package-update', 'service-restart', 'reboot', 'backup', 'backup-verify', 'backup-restore', 'cleanup-preview', 'cleanup-execute', 'diagnostics', 'usb-discover', 'usb-format', 'usb-select']
+const routeSystemSafe = new Set(['package-inspect', 'backup-verify', 'cleanup-preview', 'diagnostics', 'usb-discover', 'usb-select'])
 
 export function geometryRouteIdsFor(user: User): AppRouteId[] {
   return ROUTE_MANIFEST
@@ -98,6 +108,9 @@ function routeMockRoutes(): MockRoute[] {
     { method: 'GET', path: '/api/admin/settings/tracker-policy', handler: () => ({ json: { operator_show_untagged: true, operator_show_raw: false, operator_show_firmware_profile: false, mechanic_can_write: true } }) },
     { method: 'GET', path: '/api/admin/settings/screenshot-guard', handler: () => ({ json: { operator: false, mechanic: false, admin: false, royal: false, driver: false } }) },
     { method: 'GET', path: '/api/admin/settings/registration-password', handler: () => ({ json: { configured: true, password_masked: 'set', updated_at: '2026-09-02T09:00:00Z' } }) },
+    { method: 'GET', path: '/api/admin/system/summary', handler: () => ({ json: routeSystemSummary }) },
+    { method: 'GET', path: '/api/admin/system/history', handler: () => ({ json: { active_users: [{ date: '2026-09-02', users: 4 }], metrics: [] } }) },
+    { method: 'GET', path: '/api/admin/ops/capabilities', handler: () => ({ json: { state: 'ready', generated_at: '2026-09-02T09:00:00Z', expires_at: '2099-09-02T09:05:00Z', revision: 'a'.repeat(64), operations: Object.fromEntries(routeSystemKinds.map(kind => [kind, { available: routeSystemSafe.has(kind), unavailable_reason: routeSystemSafe.has(kind) ? null : 'capability_unavailable' }])) } }) },
     { method: 'GET', path: '/api/admin/ops/job', handler: () => ({ json: { id: '', state: 'idle' } }) },
     { method: 'GET', path: '/api/admin/ops/system-health', handler: () => ({ json: { generated_at: '2026-09-02T09:00:00Z', services: [] } }) },
     { method: 'GET', path: '/api/admin/ops/available-update', handler: () => ({ json: { state: 'disabled', checked_at: null, release: null } }) },
@@ -235,6 +248,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'report-detail': return page.getByText(routeReport.body, { exact: true })
     case 'schedule': return page.locator('.rp-page-layout.rp-schedule')
     case 'analytics': return page.locator('.rp-analytics-park .rp-analytics-value').filter({ hasText: '2 задач' }).first()
+    case 'system': return page.getByRole('img', { name: 'Активные пользователи за 7 дней' })
     case 'admin': return page.getByRole('heading', { name: 'Управление', exact: true, level: 1 })
     case 'admin-settings': return page.getByText('Tracker OAuth', { exact: true })
     case 'admin-users': return page.getByRole('button', { name: 'Открыть аккаунт route-admin', exact: true })

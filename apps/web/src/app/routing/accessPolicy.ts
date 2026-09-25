@@ -15,11 +15,11 @@ export type AccessUser = Pick<User,
 const ROLE_LANDING_PREFERENCES: Record<UserRole, readonly AppRouteId[]> = {
   royal: [
     'overview', 'admin', 'work', 'robot-check', 'robots', 'reports', 'analytics',
-    'admin-tracker', 'admin-robot-check',
+    'admin-tracker', 'system', 'admin-robot-check',
   ],
   admin: [
     'admin', 'overview', 'work', 'robot-check', 'robots', 'reports', 'analytics',
-    'admin-tracker', 'admin-robot-check',
+    'admin-tracker', 'system', 'admin-robot-check',
   ],
   operator: [
     'overview', 'operator-parks', 'work', 'robots', 'robot-check', 'reports',
@@ -61,6 +61,9 @@ export function canAccessRoute(user: AccessUser, routeId: AppRouteId): boolean {
     return false
   }
   if (routeId === 'operator-parks' && user.role !== 'operator') {
+    return false
+  }
+  if (routeId === 'system' && user.role !== 'admin' && user.role !== 'royal') {
     return false
   }
   const permissions = user.permissions ?? []

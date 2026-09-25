@@ -317,13 +317,11 @@ def validate_typed_operation(value, *, fresh=True, authorization_fresh=True):
                 raise ReleaseError("confirmation_required")
         elif "authorization" in value:
             required.add("authorization")
-        common = {"job_id", "kind", "actor_user_id", "created_at"}
-        if "capability_revision" in value:
-            common.add("capability_revision")
-            if not isinstance(value["capability_revision"], str) or not re.fullmatch(
-                r"[a-f0-9]{64}", value["capability_revision"]
-            ):
-                raise ValueError()
+        common = {"job_id", "kind", "actor_user_id", "created_at", "capability_revision"}
+        if not isinstance(value.get("capability_revision"), str) or not re.fullmatch(
+            r"[a-f0-9]{64}", value["capability_revision"]
+        ):
+            raise ValueError()
         if set(value) != common | required:
             raise ValueError()
         operation_id = _canonical_uuid(value["job_id"])
@@ -527,10 +525,10 @@ def _execute_typed_operation_locked(paths, operation, effects, devices):
         return result
 
     available = operation_capabilities(effects)[operation.kind.value]["available"]
-    revision = operation.request.get("capability_revision")
+    revision = operation.request["capability_revision"]
     if not available:
         return terminal("failed", {}, "manual_recovery_required" if dispatched else "capability_unavailable")
-    if revision is not None and revision != current_capability_revision(paths, effects):
+    if revision != current_capability_revision(paths, effects):
         return terminal("failed", {}, "manual_recovery_required" if dispatched else "capabilities_changed")
 
     if dispatched:

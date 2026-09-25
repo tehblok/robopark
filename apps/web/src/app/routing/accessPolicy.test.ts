@@ -76,6 +76,11 @@ const accessCases = protectedRoutes.flatMap((route) =>
 )
 
 describe('canAccessRoute', () => {
+  it('limits the system console to built-in admin and royal roles', () => {
+    expect(canAccessRoute(user({ role: 'admin', permissions: ['nav.admin'] }), 'system')).toBe(true)
+    expect(canAccessRoute(user({ role: 'royal', permissions: ['nav.admin'] }), 'system')).toBe(true)
+    expect(canAccessRoute(user({ role: 'field_lead', permissions: ['nav.admin'] }), 'system')).toBe(false)
+  })
   it('keeps a diagnostics-only viewer on the unified card without opening the registry', () => {
     const viewer = user({ permissions: ['nav.emergency'] })
     expect(canAccessRoute(viewer, 'robot-detail')).toBe(true)

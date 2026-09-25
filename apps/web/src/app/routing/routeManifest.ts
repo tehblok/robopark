@@ -17,6 +17,7 @@ export type AppRouteId =
   | 'inventory' | 'schedule'
   | 'analytics' | 'reports' | 'reports-new' | 'report-detail' | 'admin' | 'admin-settings' | 'admin-users' | 'admin-roles' | 'admin-tracker'
   | 'admin-robot-check' | 'not-found'
+  | 'system'
 export type NavGroup = 'operations' | 'collaboration' | 'insights' | 'administration'
 export type NavSurface = 'desktop' | 'mobile'
 export type AccessPrerequisite = 'password-changed' | 'approved' | 'mechanic-has-park'
@@ -289,6 +290,16 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
     permission: 'nav.admin.tracker',
     prerequisites: SHELL_PREREQUISITES,
     surface: 'shell',
+  },
+  {
+    id: 'system',
+    path: '/system',
+    label: 'Система',
+    icon: 'settings',
+    permission: 'nav.admin',
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
+    nav: { group: 'administration', desktopOrder: 90 },
   },
   {
     id: 'admin-robot-check',

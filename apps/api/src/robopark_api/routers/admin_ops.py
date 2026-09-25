@@ -434,7 +434,9 @@ def _host_action(db, actor, action, operation):
         audit.record(db, action=action, actor=actor, outcome=audit.OUTCOME_FAILURE, detail=detail)
         code = (
             409
-            if isinstance(exc, JobConflict) or detail == "capability_unavailable"
+            if isinstance(exc, JobConflict) or detail in {
+                "capability_unavailable", "capabilities_changed",
+            }
             else 503
             if detail in {"host_bridge_unavailable", "capabilities_unavailable"}
             else 400

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.deps import require_royal
 from robopark_api.models import PrivilegedCredential, User
+from robopark_api.ops_schemas import HostOperationKind
 from robopark_api.security import hash_session_token
 from robopark_api.services import privileged_auth
 from robopark_api.services.login_throttle import LoginThrottle, client_ip
@@ -43,6 +44,15 @@ class RecoveryResetConfirmIn(BaseModel):
 class ReauthorizeIn(ConfirmIn):
     operation_kind: str = Field(min_length=1, max_length=64)
     operation_id: str = Field(min_length=1, max_length=128)
+    capability_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def require_typed_capability_revision(self):
+        typed = self.operation_kind in set(HostOperationKind)
+        legacy_diagnostics = self.operation_kind == "diagnostics" and self.operation_id == "diagnostics"
+        if typed and not legacy_diagnostics and self.capability_revision is None:
+            raise ValueError("capability_revision is required for typed operations")
+        return self
 
 
 class TokenOut(BaseModel):
@@ -154,10 +164,16 @@ def reauthorize(
     settings: Settings = Depends(get_settings),
 ) -> TokenOut:
     try:
-        host_bridge.require_typed_reauthorization(settings, payload.operation_kind, payload.operation_id)
+        host_bridge.require_typed_reauthorization(
+            settings, payload.operation_kind, payload.operation_id, payload.capability_revision,
+        )
     except host_bridge.BridgeError as exc:
+        detail = str(exc)
         raise HTTPException(
-            status_code=409 if str(exc) == "capability_unavailable" else 503, detail=str(exc),
+            status_code=422 if detail == "invalid_command" else 409 if detail in {
+                "capability_unavailable", "capabilities_changed",
+            } else 503,
+            detail=detail,
         ) from exc
     ip = client_ip(request)
     throttle = _throttle(settings)

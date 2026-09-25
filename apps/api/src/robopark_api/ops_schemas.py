@@ -204,6 +204,7 @@ class HostCapabilitiesOut(BaseModel):
 class _HostOperationBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operation_id: UUID
+    capability_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class HostReleaseUpdateIn(_HostOperationBase):

@@ -156,6 +156,8 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
     asyncStates('schedule', ['week', 'view'], ['month', 'view'], ['period', 'form'], ['notifications', 'view'])),
   route('analytics', 'AnalyticsWorkspace.Classic', ANALYTICS_ROLES,
     asyncStates('analytics', ['summary', 'tab'], ['flow', 'tab'], ['sla', 'tab'], ['park-comparison', 'form'])),
+  route('system', 'SystemPage.Classic', BUILTIN_MANAGER_ROLES,
+    asyncStates('system', ['metrics', 'view'], ['operations', 'view'], ['confirmation', 'dialog'])),
 
   route('admin', 'ManagementPage.Classic', MANAGER_ROLES,
     asyncStates('admin', ['users', 'tab'], ['roles', 'tab'], ['parks', 'tab'], ['requests', 'tab'])),

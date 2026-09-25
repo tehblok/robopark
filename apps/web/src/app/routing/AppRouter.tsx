@@ -36,6 +36,7 @@ const RobotCheckPage = lazy(() => import('../../domains/robots/RobotCheckPage').
 const Reports = lazy(() => import('../../pages/Reports').then(module => ({ default: module.Reports })))
 const CampaignsPage = lazy(() => import('../../domains/campaigns/CampaignsPage').then(module => ({ default: module.CampaignsPage })))
 const InventoryPage = lazy(() => import('../../domains/inventory/InventoryPage').then(module => ({ default: module.InventoryPage })))
+const SystemPage = lazy(() => import('../../domains/system/SystemPage').then(module => ({ default: module.SystemPage })))
 
 function RouteFallback() {
   return (
@@ -99,6 +100,7 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'admin-roles': <RoleManagementPage />,
   'admin-tracker': <LegacyRedirect to="/work" />,
   'admin-robot-check': <AdminEmergencyConfig />,
+  'system': <SystemPage />,
   'not-found': <RouteFallback />,
 }
 

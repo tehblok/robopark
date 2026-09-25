@@ -1,0 +1,19 @@
+.rp-system-stack { display: grid; gap: var(--space-4); }
+.rp-system-overview { display: grid; grid-template-columns: minmax(12rem, 18rem) minmax(18rem, 1fr); gap: var(--space-3); align-items: stretch; }
+.rp-system-chart { width: 100%; min-height: 5.5rem; color: var(--rp-text-muted); background: var(--rp-surface-raised); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-md); }
+.rp-system-chart rect { fill: var(--rp-accent); }
+.rp-system-chart text { fill: currentColor; font-size: 8px; text-anchor: middle; }
+.rp-system-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: var(--space-3); }
+.rp-system-status-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.rp-system-operations { display: grid; gap: var(--space-4); margin-top: var(--space-4); }
+.rp-system-operation-list { display: grid; gap: var(--space-2); }
+.rp-system-operation { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-md); }
+.rp-system-operation p { margin: .25rem 0 0; color: var(--rp-text-muted); font-size: .85rem; }
+.rp-system-operation-id { overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: .85rem; }
+.rp-system-progress { display: grid; gap: var(--space-2); }
+.rp-system-progress progress { width: 100%; }
+@media (max-width: 640px) {
+  .rp-system-overview { grid-template-columns: 1fr; }
+  .rp-system-operation { align-items: stretch; flex-direction: column; }
+  .rp-system-operation .rp-button { width: 100%; }
+}

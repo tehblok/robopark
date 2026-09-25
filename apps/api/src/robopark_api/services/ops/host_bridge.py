@@ -241,11 +241,17 @@ def require_operation_capability(root, kind):
     return capabilities.revision
 
 
-def require_typed_reauthorization(settings, kind, operation_id):
+def require_typed_reauthorization(settings, kind, operation_id, capability_revision=None):
     """Legacy diagnostics use their existing non-UUID grant binding."""
     if kind not in set(HostOperationKind) or (kind == "diagnostics" and operation_id == "diagnostics"):
         return
-    require_operation_capability(host_root(settings), kind)
+    if not isinstance(capability_revision, str) or not re.fullmatch(
+        r"[a-f0-9]{64}", capability_revision
+    ):
+        raise BridgeError("invalid_command")
+    current = require_operation_capability(host_root(settings), kind)
+    if capability_revision != current:
+        raise BridgeError("capabilities_changed")
 
 
 def _atomic(path, raw):
@@ -588,11 +594,13 @@ def enqueue_typed_operation(
         raise BridgeError("confirm_required")
     with _locked(ops):
         revision = require_operation_capability(root, kind)
+        if operation.capability_revision != revision:
+            raise BridgeError("capabilities_changed")
         current = load_job(ops)
         if current and current.id == identity:
             saved = dict(current.extra.get("host_request", {}))
             saved["operation_id"] = saved.pop("job_id", None)
-            for key in ("actor_user_id", "created_at", "authorization", "capability_revision"):
+            for key in ("actor_user_id", "created_at", "authorization"):
                 saved.pop(key, None)
             if (
                 current.kind != kind.value

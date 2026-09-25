@@ -95,6 +95,11 @@ const EXECUTABLE: Partial<Record<AppRouteId, Record<string, ExecutableState>>> =
     summary: visible('.rp-analytics-park', 'The operator analytics fixture renders the park summary.', { actorRole: 'operator' }),
     'park-comparison': visible('[aria-label="Параметры аналитики"]', 'The analytics route renders deterministic comparison controls.', { actorRole: 'operator' }),
   },
+  system: {
+    metrics: visible('[role="img"][aria-label="Активные пользователи за 7 дней"]', 'The system route renders current and seven-day activity with host health.', { actorRole: 'royal' }),
+    operations: visible('[aria-label="Управляемые операции"]', 'The royal system route renders capability-gated typed operations.', { actorRole: 'royal' }),
+    confirmation: visible('[role="dialog"]:has-text("Подтвердить операцию")', 'An available typed operation opens the exact reauthorization dialog.', { actorRole: 'royal', trigger: { role: 'button', name: 'Собрать диагностику' } }),
+  },
   admin: {
     users: visible('a[href^="/admin/users"]', 'The management landing page renders the users destination.', { actorRole: 'royal' }),
     roles: visible('a[href^="/admin/roles"]', 'The management landing page renders the roles destination.', { actorRole: 'royal' }),
@@ -119,6 +124,7 @@ const OWNER_ACTOR: Partial<Record<AppRouteId, CoverageAudience>> = {
   robots: 'mechanic', 'robot-detail': 'mechanic', 'robot-check': 'mechanic', 'legacy-robot-check': 'mechanic',
   inventory: 'mechanic', reports: 'mechanic', 'reports-new': 'mechanic', 'report-detail': 'operator',
   campaigns: 'royal', 'campaign-detail': 'royal', schedule: 'mechanic', analytics: 'operator',
+  system: 'royal',
   admin: 'royal', 'admin-settings': 'royal', 'admin-users': 'royal', 'admin-roles': 'royal',
   'admin-tracker': 'royal', 'admin-robot-check': 'royal',
 }
@@ -151,6 +157,7 @@ const ROUTE_ASYNC_CONTRACTS: Partial<Record<AppRouteId, RouteAsyncContract>> = {
   'campaign-detail': { method: 'GET', path: '/api/campaigns/4', emptyBody: null, protectedSelector: 'text=ROBOPARK-42' },
   schedule: { method: 'GET', path: '/api/schedules', emptyBody: [], protectedSelector: 'h1:has-text("График")' },
   analytics: { method: 'GET', path: '/api/analytics', emptyBody: [], protectedSelector: '.rp-analytics-park' },
+  system: { method: 'GET', path: '/api/admin/system/summary', emptyBody: { sampled_at: null, metrics_stale: false, online: { total: 0, by_role: {}, by_park: {} }, sync: { cursor_age_seconds: null, pending_action_count: 0, oldest_pending_action_age_seconds: null, retry_count: 0, needs_attention_count: 0, last_success_at: null, last_error: null, worker_lease_state: 'unknown' }, push: { pending: 0, needs_attention: 0 }, metrics: null, release: {} }, protectedSelector: '[role="img"][aria-label="Активные пользователи за 7 дней"]' },
   admin: { method: 'GET', path: '/api/admin/users', emptyBody: [], protectedSelector: 'a[href^="/admin/users"]' },
   'admin-settings': { method: 'GET', path: '/api/admin/settings/integrations', emptyBody: { tracker_token_masked: null, tracker_token_updated_at: null, emergency_cookie_masked: null, emergency_cookie_updated_at: null, emergency_cookie_valid: null, emergency_cookie_status: null, emergency_cookie_checked_at: null, emergency_cookie_checked_robot: null }, protectedSelector: 'dt:text-is("Tracker OAuth")' },
   'admin-users': { method: 'GET', path: '/api/admin/users', emptyBody: [], protectedSelector: 'button[aria-label="\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u0430\u043a\u043a\u0430\u0443\u043d\u0442 route-admin"]' },

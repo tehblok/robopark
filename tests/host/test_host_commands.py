@@ -13,6 +13,16 @@ import pytest
 from robopark_host.checks import CheckResult, CommandResult, DiagnosticReport
 from robopark_host.commands import OperationKind
 
+TEST_BOOT_ID = "00000000-0000-4000-8000-000000000010"
+
+
+@pytest.fixture(autouse=True)
+def typed_test_boot_id(host_paths):
+    """Give this command-consumer module the kernel boot identity production always has."""
+    boot = host_paths.root / "proc/sys/kernel/random/boot_id"
+    boot.parent.mkdir(parents=True, exist_ok=True)
+    boot.write_text(TEST_BOOT_ID + "\n")
+
 
 class FakeHostEffects:
     supported_kinds = frozenset(OperationKind)
@@ -103,12 +113,17 @@ def request(paths, kind="diagnostics", **changes):
 
 
 def typed_request(kind, **changes):
+    from robopark_host.operation_capabilities import capability_revision, operation_capabilities
+
     operation_id = str(uuid4())
     value = {
         "job_id": operation_id,
         "kind": kind,
         "actor_user_id": 7,
         "created_at": datetime.now(UTC).isoformat(),
+        "capability_revision": capability_revision(
+            TEST_BOOT_ID, operation_capabilities(FakeHostEffects())
+        ),
     }
     value.update(changes)
     return value
@@ -122,6 +137,12 @@ def authorization(command):
         "consumed": True,
         "validated_at": command["created_at"],
     }
+
+
+def revision_for(effects):
+    from robopark_host.operation_capabilities import capability_revision, operation_capabilities
+
+    return capability_revision(TEST_BOOT_ID, operation_capabilities(effects))
 
 
 _DEVICE_UUID = "00000000-0000-4000-8000-000000000001"
@@ -181,10 +202,14 @@ def test_api_bridge_to_real_consumer_dispatches_every_typed_kind(
     (host_paths.ops / "public/command-claim.json").write_text(
         json.dumps({"job_id": str(uuid4()), "kind": "diagnostics", "actor_user_id": 1, "active": False})
     )
-    request_payload = {"operation_id": operation_id, **payload}
     system = FakeHostEffects()
     effects = SystemTypedHostEffects(host_paths, system=system)
     publish_test_capabilities(host_paths, effects, monkeypatch)
+    request_payload = {
+        "operation_id": operation_id,
+        "capability_revision": revision_for(effects),
+        **payload,
+    }
     host_bridge.enqueue_typed_operation(
         api_ops,
         host_paths.ops,
@@ -235,7 +260,7 @@ def test_default_cli_consumer_uses_safe_production_adapter(
     host_paths, kind, changes, expected_state, expected_error, monkeypatch
 ):
     from robopark_host import commands
-    from robopark_host.cli import _consume_handler
+    from robopark_host.cli import _consume_handler, _production_typed_effects
 
     monkeypatch.setattr(
         commands,
@@ -260,7 +285,11 @@ def test_default_cli_consumer_uses_safe_production_adapter(
     mountinfo = host_paths.root / "proc/self/mountinfo"
     mountinfo.parent.mkdir(parents=True)
     mountinfo.write_text("")
-    command = typed_request(kind, **changes)
+    command = typed_request(
+        kind,
+        capability_revision=revision_for(_production_typed_effects(host_paths)),
+        **changes,
+    )
     command["authorization"] = authorization(command)
     inbox = host_paths.ops / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
@@ -285,7 +314,7 @@ def test_default_cli_consumer_uses_safe_production_adapter(
 
 
 def test_default_cli_consumer_verifies_backup_with_external_runtime_key(host_paths):
-    from robopark_host.cli import _consume_handler
+    from robopark_host.cli import _consume_handler, _production_typed_effects
     from robopark_host.commands import create_encrypted_backup
 
     key = b"v" * 32
@@ -326,7 +355,11 @@ def test_default_cli_consumer_verifies_backup_with_external_runtime_key(host_pat
         host_paths.state / "selected-usb.json",
         {"schema": 1, "device_uuid": _DEVICE_UUID},
     )
-    command = typed_request("backup-verify", backup_id=_BACKUP_UUID)
+    command = typed_request(
+        "backup-verify",
+        backup_id=_BACKUP_UUID,
+        capability_revision=revision_for(_production_typed_effects(host_paths)),
+    )
     command["authorization"] = authorization(command)
     inbox = host_paths.ops / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
@@ -697,6 +730,7 @@ def test_api_typed_union_and_bridge_revalidate_consumed_authorization(tmp_path, 
         "operation_id": identity,
         "kind": "reboot",
         "confirmation": "REBOOT ROBOPARK",
+        "capability_revision": revision_for(FakeHostEffects()),
     }
     adapter = TypeAdapter(HostOperationIn)
     assert str(adapter.validate_python(payload).operation_id) == identity
@@ -1706,3 +1740,27 @@ def test_deeply_nested_inbox_is_rejected_and_removed(host_paths, monkeypatch):
     )
     assert commands.consume_commands(host_paths, None, None) == 1
     assert not (host_paths.ops / "inbox/approved.json").exists()
+
+
+def test_production_typed_schema_rejects_legacy_request_without_capability_revision():
+    from robopark_host.commands import validate_typed_operation
+    from robopark_host.release import ReleaseError
+
+    command = typed_request("package-inspect", package="openssl")
+    command.pop("capability_revision")
+    command["authorization"] = authorization(command)
+    with pytest.raises(ReleaseError, match="invalid_command"):
+        validate_typed_operation(command)
+
+
+def test_resumed_legacy_typed_request_fails_before_effect(host_paths):
+    from robopark_host import commands
+    from robopark_host.state import atomic_write_json
+
+    command = typed_request("package-inspect", package="openssl")
+    command.pop("capability_revision")
+    command["authorization"] = authorization(command)
+    atomic_write_json(host_paths.state / "command-request.json", command)
+    effects = FakeHostEffects()
+    assert commands.consume_commands(host_paths, None, None, typed_effects=effects) == 1
+    assert effects.calls == []

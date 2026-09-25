@@ -22,7 +22,7 @@ def capability_host(host_paths, monkeypatch):
     from robopark_api.services.ops import host_bridge
 
     boot = host_paths.root / "proc/sys/kernel/random/boot_id"
-    boot.parent.mkdir(parents=True)
+    boot.parent.mkdir(parents=True, exist_ok=True)
     boot.write_text(BOOT_ID + "\n")
     monkeypatch.setattr(host_bridge, "_host_boot_id", lambda: BOOT_ID, raising=False)
     return host_paths
@@ -80,6 +80,7 @@ def test_queued_request_cannot_execute_after_capability_drift(capability_host, d
 
     effects = InspectionOnly()
     consume_commands(capability_host, None, None, typed_effects=effects)
+    revision = host_bridge.operation_capabilities(capability_host.ops).revision
     (capability_host.ops / "inbox").mkdir(exist_ok=True)
     (capability_host.ops / "public").mkdir(exist_ok=True)
     (capability_host.ops / "public/command-claim.json").write_text(json.dumps({
@@ -88,7 +89,10 @@ def test_queued_request_cannot_execute_after_capability_drift(capability_host, d
     identity = str(uuid4())
     host_bridge.enqueue_typed_operation(
         capability_host.var / "api-ops", capability_host.ops,
-        {"operation_id": identity, "kind": "package-inspect", "package": "openssl"},
+        {
+            "operation_id": identity, "kind": "package-inspect", "package": "openssl",
+            "capability_revision": revision,
+        },
         7, "session", authorization_consumed={
             "operation_id": identity, "operation_kind": "package-inspect",
             "actor_user_id": 7, "consumed": True,

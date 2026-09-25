@@ -281,6 +281,16 @@ describe('ROUTE_MANIFEST', () => {
         surface: 'shell',
       },
       {
+        id: 'system',
+        path: '/system',
+        label: 'Система',
+        icon: 'settings',
+        permission: 'nav.admin',
+        prerequisites: ['password-changed', 'approved', 'mechanic-has-park'],
+        surface: 'shell',
+        nav: { group: 'administration', desktopOrder: 90 },
+      },
+      {
         id: 'admin-robot-check',
         path: '/admin/emergency/config',
         label: 'Настройка проверки робота',
@@ -336,8 +346,8 @@ describe('ROUTE_MANIFEST', () => {
 
 describe('navigation ordering', () => {
   const expectedDesktop = {
-    royal: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
-    admin: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
+    royal: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'system', 'admin-robot-check'],
+    admin: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'system', 'admin-robot-check'],
     operator: ['overview', 'operator-parks', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     mechanic: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     driver: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
@@ -345,8 +355,8 @@ describe('navigation ordering', () => {
   } as const
 
   const expectedMobile = {
-    royal: ['overview', 'admin', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin-robot-check'],
-    admin: ['admin', 'overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin-robot-check'],
+    royal: ['overview', 'admin', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'system', 'admin-robot-check'],
+    admin: ['admin', 'overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'system', 'admin-robot-check'],
     operator: ['overview', 'work', 'robots', 'campaigns', 'operator-parks', 'inventory', 'reports', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     mechanic: ['work', 'robots', 'overview', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     driver: ['robots', 'overview', 'reports', 'work', 'inventory', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
