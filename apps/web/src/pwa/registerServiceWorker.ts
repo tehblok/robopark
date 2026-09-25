@@ -17,6 +17,7 @@ type WorkerEnvironment = {
 }
 
 let waitingRegistration: WorkerRegistration | null = null
+let activeRegistration: WorkerRegistration | null = null
 let activationRequested = false
 let authState: { loading: boolean, accountId: number | null } | null = null
 let syncState: { accountId: number, value: Pick<SyncState, 'status' | 'pending' | 'conflicts'> } | null = null
@@ -86,10 +87,16 @@ export function activateServiceWorkerWhenSafe(
   return true
 }
 
+export async function requestServiceWorkerUpdate(): Promise<void> {
+  if (!activeRegistration) return
+  await activeRegistration.update()
+}
+
 export async function registerServiceWorker(environment: WorkerEnvironment): Promise<boolean> {
   if (!environment.production || !environment.secure || !environment.serviceWorker) return false
   try {
     const registration = await environment.serviceWorker.register('/sw.js', { scope: '/' })
+    activeRegistration = registration
     if (registration.waiting) rememberWaitingWorker(registration)
     environment.serviceWorker.addEventListener?.('message', (event) => {
       const type = (event.data as { type?: string } | undefined)?.type

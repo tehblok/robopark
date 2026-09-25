@@ -20,7 +20,7 @@ export type SystemHistory = {
   metrics: Record<string, unknown>[]
 }
 export const HOST_OPERATION_KINDS = [
-  'release-update', 'reinstall', 'rollback', 'package-inspect', 'package-update',
+  'ota-update', 'release-update', 'reinstall', 'rollback', 'package-inspect', 'package-update',
   'service-restart', 'reboot', 'backup', 'backup-verify', 'backup-restore',
   'cleanup-preview', 'cleanup-execute', 'diagnostics', 'usb-discover', 'usb-format',
   'usb-select',
@@ -59,6 +59,29 @@ export type SystemClient = {
   startOperation: (value: HostOperationPayload, token: string) => Promise<SystemJob>
 }
 
+export type OtaUpload = {
+  upload_id: string
+  filename: string
+  size: number
+  sha256: string
+  offset: number
+  expires_at: number
+  state: 'uploading' | 'verified'
+  chunk_size: number
+  version?: string | null
+  changes?: string[]
+  compatible_from?: string[]
+  already_present?: boolean
+}
+
+export type OtaUploadClient = {
+  create: (value: { filename: string; size: number; sha256: string }) => Promise<OtaUpload>
+  offset: (uploadId: string) => Promise<number>
+  append: (uploadId: string, offset: number, chunk: Blob) => Promise<number>
+  finalize: (uploadId: string) => Promise<OtaUpload>
+  remove: (uploadId: string) => Promise<void>
+}
+
 async function json<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
     credentials: 'include',
@@ -86,4 +109,38 @@ export const systemClient: SystemClient = {
     headers: { 'X-Privileged-Authorization': token },
     body: JSON.stringify(value),
   }),
+}
+
+async function uploadRequest(path: string, init: RequestInit): Promise<Response> {
+  const response = await fetch(`/api${path}`, { credentials: 'include', ...init })
+  if (!response.ok) {
+    let detail: unknown = null
+    try { detail = (await response.json()).detail ?? null } catch { /* bounded error */ }
+    throw new ApiError(response.status, detail)
+  }
+  return response
+}
+
+export const otaUploadClient: OtaUploadClient = {
+  create: async value => (await uploadRequest('/admin/ops/ota/uploads', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
+  })).json(),
+  offset: async uploadId => {
+    const response = await uploadRequest(`/admin/ops/ota/uploads/${encodeURIComponent(uploadId)}`, { method: 'HEAD' })
+    const value = Number(response.headers.get('Upload-Offset'))
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error('ota_offset_invalid')
+    return value
+  },
+  append: async (uploadId, offset, chunk) => {
+    const response = await uploadRequest(`/admin/ops/ota/uploads/${encodeURIComponent(uploadId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/offset+octet-stream', 'Upload-Offset': String(offset) },
+      body: chunk,
+    })
+    const value = (await response.json()) as { offset?: unknown }
+    if (!Number.isSafeInteger(value.offset) || Number(value.offset) < 0) throw new Error('ota_offset_invalid')
+    return Number(value.offset)
+  },
+  finalize: async uploadId => (await uploadRequest(`/admin/ops/ota/uploads/${encodeURIComponent(uploadId)}/finalize`, { method: 'POST' })).json(),
+  remove: async uploadId => { await uploadRequest(`/admin/ops/ota/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }) },
 }

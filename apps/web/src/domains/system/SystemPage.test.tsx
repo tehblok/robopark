@@ -9,7 +9,7 @@ import { operationReservationKey, readOperationReservation as readScopedOperatio
 
 const revision = 'a'.repeat(64)
 const kinds = [
-  'release-update', 'reinstall', 'rollback', 'package-inspect', 'package-update',
+  'ota-update', 'release-update', 'reinstall', 'rollback', 'package-inspect', 'package-update',
   'service-restart', 'reboot', 'backup', 'backup-verify', 'backup-restore',
   'cleanup-preview', 'cleanup-execute', 'diagnostics', 'usb-discover', 'usb-format',
   'usb-select',
@@ -86,7 +86,7 @@ describe('SystemPage', () => {
     const operations = await screen.findByRole('region', { name: 'Управляемые операции' })
     expect(within(operations).getByRole('button', { name: 'Предпросмотр очистки' })).toBeEnabled()
     expect(within(operations).getByRole('button', { name: 'Выполнить очистку' })).toBeDisabled()
-    expect(within(operations).getAllByText('Недоступно на этом хосте').length).toBe(10)
+    expect(within(operations).getAllByText('Недоступно на этом хосте').length).toBe(8)
     expect(within(operations).queryByLabelText(/команд|argv/i)).not.toBeInTheDocument()
   })
 

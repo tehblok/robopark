@@ -39,6 +39,7 @@ class OtaUploadRecord:
     version: str | None = None
     changes: tuple[str, ...] = ()
     compatible_from: tuple[str, ...] = ()
+    already_present: bool = False
 
 
 def _safe_member(name: str) -> str:
@@ -213,6 +214,7 @@ class OtaUploadStore:
             chunk_size=self.chunk_bytes, version=value.get("version"),
             changes=tuple(value.get("changes", ())),
             compatible_from=tuple(value.get("compatible_from", ())),
+            already_present=bool(value.get("already_present", False)),
         )
 
     def create(self, *, actor_id: int, filename: str, size: int, sha256: str) -> OtaUploadRecord:
@@ -235,6 +237,18 @@ class OtaUploadStore:
                 continue
             if row["state"] in {"uploading", "verified"}:
                 active.append(row)
+            if (
+                row.get("actor_id") == actor_id
+                and row.get("filename") == filename
+                and row.get("size") == size
+                and row.get("sha256") == sha256
+                and row.get("state") in {"uploading", "verified"}
+            ):
+                if row["state"] == "verified" and not self._host(UUID(row["upload_id"])).is_file():
+                    continue
+                result = dict(row)
+                result["already_present"] = row["state"] == "verified"
+                return self._record(result)
         if len(active) >= self.max_active_global or sum(
             row["actor_id"] == actor_id for row in active
         ) >= self.max_active_per_actor:

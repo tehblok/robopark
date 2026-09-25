@@ -20,7 +20,7 @@ export type OperationReservation = {
 const SAFE_DRAFT_FIELDS = new Set([
   'operation_id', 'kind', 'capability_revision', 'release', 'release_id',
   'package', 'service', 'services', 'categories', 'device_uuid', 'backup_id',
-  'plan_id',
+  'plan_id', 'upload_id', 'sha256', 'version',
 ])
 
 export function safeOperationDraft(payload: HostOperationPayload): SafeOperationDraft {

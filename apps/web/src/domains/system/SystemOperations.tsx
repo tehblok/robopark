@@ -8,6 +8,7 @@ import { HOST_OPERATION_KINDS, type HostCapabilities, type HostOperationKind, ty
 import { clearOperationReservation, readOperationReservation, safeOperationDraft, writeOperationReservation, type OperationActor } from './operationReservation'
 
 const labels: Record<HostOperationKind, string> = {
+  'ota-update': 'Установить OTA-пакет',
   'release-update': 'Обновить Robopark', reinstall: 'Переустановить Robopark', rollback: 'Откатить версию',
   'package-inspect': 'Проверить пакет', 'package-update': 'Обновить пакет', 'service-restart': 'Перезапустить сервис',
   reboot: 'Перезагрузить хост', backup: 'Создать резервную копию', 'backup-verify': 'Проверить резервную копию',
@@ -58,7 +59,7 @@ export function SystemOperations({ actor, client, capabilities, job, onAccepted,
   const needsRetry = job?.receipt_state === 'received' || job?.phase.startsWith('Запрос не подтверждён')
   const active = (Boolean(reservedOperationId) || job?.state === 'queued' || job?.state === 'running') && !retrying
   const devices = job?.host_result?.devices?.filter(device => device.removable) ?? []
-  const rows = HOST_OPERATION_KINDS.map(kind => {
+  const rows = HOST_OPERATION_KINDS.filter(kind => !['ota-update', 'release-update', 'reinstall'].includes(kind)).map(kind => {
     const advertised = fresh && capabilities.operations[kind]?.available === true
     const runnable = advertised && (directlyRunnable.has(kind)
       || kind === 'usb-select' && devices.some(device => device.device_uuid === deviceUuid)
@@ -162,7 +163,7 @@ export function SystemOperations({ actor, client, capabilities, job, onAccepted,
         <Button disabled={!runnable || active} onClick={() => open(kind)} size="compact" type="button">{labels[kind]}</Button>
       </div>)}</div>
     </Panel>
-    {job?.id && <Panel title="Текущая операция">
+    {job?.id && job.kind !== 'ota-update' && <Panel title="Текущая операция">
       <p className="rp-system-operation-id">{job.id}</p>
       <div className="rp-system-progress"><StatusBadge tone={job.state === 'failed' ? 'critical' : job.state === 'succeeded' ? 'success' : 'info'}>{job.phase || job.state}</StatusBadge><progress aria-label="Прогресс операции" max="100" value={job.progress_percent ?? (job.state === 'succeeded' || job.state === 'failed' ? 100 : 0)} /></div>
       {job.error && <Alert tone="error">Операция завершилась ошибкой: {job.error}</Alert>}

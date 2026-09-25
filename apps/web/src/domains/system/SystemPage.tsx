@@ -6,6 +6,7 @@ import { LoadingState } from '../../design-system/feedback/AsyncState'
 import { systemClient, type HostCapabilities, type SystemClient, type SystemHistory, type SystemJob, type SystemSummary } from '../../opsApi'
 import { SystemMetrics } from './SystemMetrics'
 import { SystemOperations } from './SystemOperations'
+import { OtaUpdatePanel } from './ota/OtaUpdatePanel'
 import { clearOperationReservation, readOperationReservation } from './operationReservation'
 import './system.css'
 
@@ -109,6 +110,10 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
   return <PageShell title="Система" subtitle="Состояние Robopark и управляемые операции без доступа к командной строке.">
     {failed && <Alert tone="warning">Не удалось получить свежие данные. Повторная проверка продолжится после восстановления связи.</Alert>}
     {!summary || !history ? <LoadingState label="Загружаем состояние системы" variant="page" /> : <SystemMetrics history={history} summary={summary} />}
+    {royal && user && capabilities && <OtaUpdatePanel
+      actor={user} capabilities={capabilities} currentBuildId={typeof summary?.release?.build_id === 'string' ? summary.release.build_id : null}
+      job={job} onAccepted={setJob} onPostingChange={id => { postingOperation.current = id }} onRefreshCapabilities={refreshCapabilities} system={client}
+    />}
     {royal && user && capabilities && <SystemOperations actor={user} key={`${user.id}:${user.username}:${capabilities.revision ?? capabilities.generated_at}`} capabilities={capabilities} client={client} job={job} onAccepted={setJob} onPostingChange={id => { postingOperation.current = id }} onRefreshCapabilities={refreshCapabilities} />}
   </PageShell>
 }

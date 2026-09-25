@@ -61,6 +61,9 @@ def test_store_resumes_exact_offsets_deduplicates_chunks_and_finalizes(tmp_path)
     assert result.version == "0.2.0-rc.7"
     assert (tmp_path / "host" / f"{created.upload_id}.ota").read_bytes() == content
     assert store.finalize(created.upload_id, actor_id=7) == result
+    reused = store.create(actor_id=7, filename="release.ota", size=len(content), sha256=digest)
+    assert reused.upload_id == created.upload_id
+    assert reused.already_present is True
 
 
 def test_store_enforces_owner_limits_expiry_and_hash(tmp_path):
