@@ -59,6 +59,11 @@ it('keeps shared shell geometry in one primitive stylesheet', () => {
   for (const css of modeShellCss) expect(css).toContain("@import './ShellPrimitives.css'")
 })
 
+it('uses the exact control radius token for task switches and park options', () => {
+  expect(workCss).toMatch(/\.rp-work-view-switch button\s*\{[^}]*border-radius:\s*var\(--rp-radius-control\)/s)
+  expect(sharedShellCss).toMatch(/\.rp-shell__park-selector button\s*\{[^}]*border-radius:\s*var\(--rp-radius-control\)/s)
+})
+
 function HistoryControls() {
   const navigate = useNavigate()
   return (

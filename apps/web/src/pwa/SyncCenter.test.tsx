@@ -14,10 +14,22 @@ function syncValue(overrides: Partial<SyncContextValue> = {}): SyncContextValue 
 }
 
 describe('SyncCenter', () => {
+  it.each([
+    ['idle', { status: 'idle' as const, pending: 0, conflicts: 0 }, 'Синхронизация выполняется автоматически', 'is-idle'],
+    ['syncing', { status: 'syncing' as const, pending: 0, conflicts: 0 }, 'Автосинхронизация: отправляем', 'is-syncing'],
+    ['offline', { status: 'offline' as const, pending: 0, conflicts: 0 }, 'Автосинхронизация: без сети', 'is-offline'],
+    ['pending', { status: 'idle' as const, pending: 2, conflicts: 0 }, 'Автосинхронизация: ожидает отправки', 'is-pending'],
+    ['attention', { status: 'attention' as const, pending: 0, conflicts: 0 }, 'Автосинхронизация: нужно внимание', 'is-attention'],
+  ])('keeps the compact %s state visible and exposes it in the trigger name', (_name, state, label, stateClass) => {
+    const { container } = render(<SyncContextProvider value={syncValue({ state })}><SyncCenter /></SyncContextProvider>)
+    expect(screen.getByRole('button', { name: new RegExp(label) })).toBeInTheDocument()
+    expect(container.querySelector('.rp-sync-center__dot')).toHaveClass(stateClass)
+  })
+
   it('does not display a permanent success badge when the queue is empty', () => {
     render(<SyncContextProvider value={syncValue({ state: { status: 'idle', pending: 0, conflicts: 0 } })}><SyncCenter /></SyncContextProvider>)
     expect(screen.queryByText('Всё отправлено')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Открыть центр синхронизации' })).toHaveTextContent('Синхронизация выполняется автоматически')
+    expect(screen.getByRole('button', { name: /Открыть центр синхронизации/ })).toHaveTextContent('Синхронизация выполняется автоматически')
   })
   it('summarizes queue, conflicts and local storage without technical language', async () => {
     const value = syncValue()
@@ -26,8 +38,8 @@ describe('SyncCenter', () => {
       queue={[{ id: 'comment-1', label: 'Комментарий к SDCFLEETOPS-1', state: 'pending' }]}
     /></SyncContextProvider>)
 
-    expect(screen.getByRole('button', { name: 'Открыть центр синхронизации' })).toHaveTextContent('2')
-    fireEvent.click(screen.getByRole('button', { name: 'Открыть центр синхронизации' }))
+    expect(screen.getByRole('button', { name: /Открыть центр синхронизации/ })).toHaveTextContent('2')
+    fireEvent.click(screen.getByRole('button', { name: /Открыть центр синхронизации/ }))
     expect(screen.getByText('В очереди: 2')).toBeInTheDocument()
     expect(screen.getByText('Требуют решения: 1')).toBeInTheDocument()
     expect(screen.getByText('Комментарий к SDCFLEETOPS-1')).toBeInTheDocument()
@@ -42,14 +54,14 @@ describe('SyncCenter', () => {
   it('does not offer an update while an action is pending', () => {
     const activateUpdate = vi.fn(() => false)
     render(<SyncContextProvider value={syncValue()}><SyncCenter updateReady activateUpdate={activateUpdate} /></SyncContextProvider>)
-    fireEvent.click(screen.getByRole('button', { name: 'Открыть центр синхронизации' }))
+    fireEvent.click(screen.getByRole('button', { name: /Открыть центр синхронизации/ }))
     expect(screen.getByText('Обновление будет доступно после отправки очереди.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Установить обновление' })).not.toBeInTheDocument()
   })
 
   it('does not offer an update while a failed fallback action needs attention', () => {
     render(<SyncContextProvider value={syncValue({ state: { status: 'attention', pending: 0, conflicts: 1 } })}><SyncCenter updateReady /></SyncContextProvider>)
-    fireEvent.click(screen.getByRole('button', { name: 'Открыть центр синхронизации' }))
+    fireEvent.click(screen.getByRole('button', { name: /Открыть центр синхронизации/ }))
     expect(screen.queryByRole('button', { name: 'Установить обновление' })).not.toBeInTheDocument()
   })
 })

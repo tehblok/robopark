@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test'
-import type { AdminRole, AdminUser, Campaign, CampaignDetail, ParkRequest, PermissionCatalogItem, Report, ScheduleEntry, ScheduleParticipant, User } from '../../src/api'
+import type { AdminRole, AdminUser, Campaign, CampaignDetail, DiagnosticRule, ParkRequest, PermissionCatalogItem, Report, ScheduleEntry, ScheduleParticipant, User } from '../../src/api'
 import { canAccessRoute } from '../../src/app/routing/accessPolicy'
 import { ROUTE_MANIFEST, type AppRouteId, type RouteManifestItem } from '../../src/app/routing/routeManifest'
 import { analyticsFixture } from '../../src/domains/analytics/analytics.test-support'
@@ -38,6 +38,23 @@ const routeScheduleParticipants: ScheduleParticipant[] = [
   { id: 100, display_name: 'Анна Механик', role: 'mechanic' },
   { id: 101, display_name: 'Олег Оператор', role: 'operator' },
 ]
+const routeDiagnosticRule: DiagnosticRule = {
+  id: 1,
+  source_path: 'errors.front_lidar',
+  match_kind: 'exact',
+  pattern: 'LIDAR_OFFLINE',
+  example: 'LIDAR_OFFLINE',
+  title: 'Неисправность переднего лидара',
+  description: 'Проверьте питание и подключение переднего лидара.',
+  severity: 'critical',
+  part: 'Передний лидар',
+  preferred_view: 'front',
+  x: .5,
+  y: .3,
+  indicator: 'point',
+  is_enabled: true,
+  sort_order: 0,
+}
 
 export function geometryRouteIdsFor(user: User): AppRouteId[] {
   return ROUTE_MANIFEST
@@ -74,7 +91,7 @@ function routeMockRoutes(): MockRoute[] {
       roles: ['mechanic', 'operator', 'admin', 'royal', 'driver'],
       fields: [],
     }] }) },
-    { method: 'GET', path: '/api/admin/diagnostic-rules', handler: () => ({ json: [] }) },
+    { method: 'GET', path: '/api/admin/diagnostic-rules', handler: () => ({ json: [routeDiagnosticRule], headers: { etag: '"route-diagnostic-catalog"' } }) },
     { method: 'GET', path: '/api/admin/emergency-readings', handler: () => ({ json: [] }) },
     { method: 'GET', path: '/api/admin/park-requests', handler: () => ({ json: routeRequests }) },
     { method: 'GET', path: '/api/admin/settings/integrations', handler: () => ({ json: { tracker_token_masked: 'set', tracker_token_updated_at: '2026-09-02T09:00:00Z', emergency_cookie_masked: 'set', emergency_cookie_updated_at: '2026-09-02T09:00:00Z', emergency_cookie_valid: true, emergency_cookie_status: 'valid', emergency_cookie_checked_at: '2026-09-02T09:00:00Z', emergency_cookie_checked_robot: '447' } }) },
@@ -93,6 +110,7 @@ export function fixturePath(route: RouteManifestItem): string {
   if (route.id === 'robot-check') return '/robots/YASADR00000000447/check?park=7&tab=state'
   if (route.id === 'campaign-detail') return '/campaigns/4?park=7'
   if (route.id === 'report-detail') return '/reports/1?park=7'
+  if (route.id === 'admin-robot-check') return '/admin/emergency/config?park=7&tab=errors'
   return `${route.path}${route.surface === 'shell' ? '?park=7' : ''}`
 }
 
@@ -205,7 +223,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'admin-users': return page.getByRole('button', { name: 'Открыть аккаунт route-admin', exact: true })
     case 'admin-roles': return page.getByText('Механик', { exact: true })
     case 'admin-tracker': return page.locator('.rp-work-entities').first()
-    case 'admin-robot-check': return page.getByRole('button', { name: 'Открыть раздел Колёса', exact: true })
+    case 'admin-robot-check': return page.getByRole('button', { name: 'Открыть правило Неисправность переднего лидара', exact: true })
     default: return page.locator('main')
   }
 }
@@ -286,7 +304,7 @@ export async function assertResponsiveContracts(page: Page, _width: number): Pro
       const radius = parseFloat(getComputedStyle(panel).borderTopLeftRadius)
       if (Math.abs(radius - 16) > .1) failures.push(`panel radius ${radius}: ${name(panel)}`)
     }
-    for (const control of document.querySelectorAll<HTMLElement>('.rp-button, .rp-tabs__tab, .rp-shell__park-brand')) {
+    for (const control of document.querySelectorAll<HTMLElement>('.rp-button, .rp-tabs__tab, .rp-work-view-switch button, .rp-shell__park-brand, .rp-shell__park-selector button')) {
       if (!visible(control)) continue
       const radius = parseFloat(getComputedStyle(control).borderTopLeftRadius)
       if (Math.abs(radius - 12) > .1) failures.push(`control radius ${radius}: ${name(control)}`)

@@ -121,7 +121,7 @@ test('route fixtures prove loaded operator, campaign, report-detail and administ
           ? page.getByText('Механик', { exact: true })
           : routeId === 'admin-tracker'
             ? page.getByRole('heading', { name: 'Очередь задач', exact: true })
-          : page.getByRole('button', { name: 'Открыть раздел Колёса', exact: true })
+          : page.getByRole('button', { name: 'Открыть правило Неисправность переднего лидара', exact: true })
     await expect(marker).toBeVisible()
   }
 })

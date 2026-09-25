@@ -46,20 +46,24 @@ export function SyncCenter({
   const { state } = sync
   const label = state.status === 'offline' ? 'Автосинхронизация: без сети'
     : state.status === 'syncing' ? 'Автосинхронизация: отправляем'
-      : state.conflicts > 0 ? 'Автосинхронизация: нужно внимание'
+      : state.status === 'attention' || state.conflicts > 0 ? 'Автосинхронизация: нужно внимание'
         : state.pending > 0 ? 'Автосинхронизация: ожидает отправки' : 'Синхронизация выполняется автоматически'
+  const visualState = state.status === 'offline' ? 'offline'
+    : state.status === 'syncing' ? 'syncing'
+      : state.status === 'attention' || state.conflicts > 0 ? 'attention'
+        : state.pending > 0 ? 'pending' : 'idle'
   const safeToUpdate = state.status === 'idle' && state.pending === 0 && state.conflicts === 0
 
   return (
     <div className="rp-sync-center">
       <button
         aria-expanded={open}
-        aria-label="Открыть центр синхронизации"
+        aria-label={`Открыть центр синхронизации. ${label}`}
         className="rp-sync-center__trigger"
         onClick={() => setOpen(value => !value)}
         type="button"
       >
-        {(state.pending > 0 || state.status === 'attention') ? <span aria-hidden="true" className={`rp-sync-center__dot is-${state.status}`} /> : null}
+        <span aria-hidden="true" className={`rp-sync-center__dot is-${visualState}`} />
         <span>{label}</span>
         {state.pending > 0 ? <strong>{state.pending}</strong> : null}
       </button>

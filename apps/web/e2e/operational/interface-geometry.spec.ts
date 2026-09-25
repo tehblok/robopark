@@ -109,6 +109,34 @@ for (const mode of ['Классический'] as const) test(`${mode} keeps pa
   expect(dot).not.toBeNull()
   expect(park!.width).toBeLessThan(220)
   expect(Math.abs(dot!.x + dot!.width / 2 - (indicator!.x + indicator!.width / 2))).toBeLessThanOrEqual(2)
+  await page.locator('.rp-shell__park-brand').click()
+  await expect(page.locator('.rp-shell__park-selector button').first()).toHaveCSS('border-radius', '12px')
+})
+
+test('compact sync states stay visible and centered at 390px', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  await page.setContent(`
+    <link rel="stylesheet" href="/src/design-system/styles/tokens.css">
+    <link rel="stylesheet" href="/src/pwa/SyncCenter.css">
+    ${['idle', 'syncing', 'offline', 'pending', 'attention'].map(state => `
+      <div class="rp-sync-center">
+        <button aria-label="Состояние: ${state}" class="rp-sync-center__trigger" type="button">
+          <span aria-hidden="true" class="rp-sync-center__dot is-${state}"></span>
+          <span>Автосинхронизация: ${state}</span><strong>2</strong>
+        </button>
+      </div>`).join('')}
+  `)
+  for (const state of ['idle', 'syncing', 'offline', 'pending', 'attention']) {
+    const trigger = await page.getByRole('button', { name: `Состояние: ${state}` }).boundingBox()
+    const dot = await page.locator(`.rp-sync-center__dot.is-${state}`).boundingBox()
+    expect(trigger).not.toBeNull()
+    expect(dot).not.toBeNull()
+    expect(trigger!.width).toBeGreaterThanOrEqual(44)
+    expect(trigger!.height).toBeGreaterThanOrEqual(44)
+    expect(Math.abs(dot!.x + dot!.width / 2 - (trigger!.x + trigger!.width / 2))).toBeLessThanOrEqual(1)
+    expect(Math.abs(dot!.y + dot!.height / 2 - (trigger!.y + trigger!.height / 2))).toBeLessThanOrEqual(1)
+  }
 })
 
 for (const mode of ['Классический'] as const) test(`${mode} separates task and related-work navigation on narrow screens`, async ({ page }) => {
@@ -184,6 +212,7 @@ for (const mode of ['Классический'] as const) test(`${mode} separate
   await page.setViewportSize({ width: 1440, height: 900 })
   await openRouteFixture(page, 'admin-robot-check', userForRole('royal'))
   await settlePage(page)
+  await page.getByRole('tab', { name: 'Разделы и поля', exact: true }).click()
   const search = await page.getByRole('searchbox', { name: 'Поиск разделов' }).boundingBox()
   const list = await page.locator('.card-list').first().boundingBox()
   expect(search).not.toBeNull()
