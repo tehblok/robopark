@@ -158,6 +158,64 @@ class AuthThrottleState(Base):
     )
 
 
+class PrivilegedCredential(Base):
+    __tablename__ = "privileged_credentials"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    totp_secret_encrypted: Mapped[str] = mapped_column(Text)
+    last_totp_counter: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PrivilegedRecoveryCode(Base):
+    __tablename__ = "privileged_recovery_codes"
+    __table_args__ = (UniqueConstraint("user_id", "code_hash", name="uq_recovery_user_code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PrivilegedReauthorization(Base):
+    __tablename__ = "privileged_reauthorizations"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    session_token_hash: Mapped[str] = mapped_column(String(64))
+    operation_kind: Mapped[str] = mapped_column(String(64))
+    operation_id: Mapped[str] = mapped_column(String(128))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PrivilegedAuthAudit(Base):
+    """Append-only actor snapshot for privileged-auth decisions."""
+
+    __tablename__ = "privileged_auth_audit"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    outcome: Mapped[str] = mapped_column(String(16))
+    actor_user_id: Mapped[int | None] = mapped_column(nullable=True)
+    actor_username: Mapped[str] = mapped_column(String(64))
+    actor_role: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    device: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    operation_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    operation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class IpGeoCache(Base):
     __tablename__ = "ip_geo_cache"
 

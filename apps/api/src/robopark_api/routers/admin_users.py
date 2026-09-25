@@ -15,7 +15,7 @@ from robopark_api.models import AccessStatus, AuthSession, Park, Report, Role, U
 from robopark_api.schedule_models import ScheduleEntry
 from robopark_api.schemas import ParkOut
 from robopark_api.security import PasswordPolicyError, hash_password, validate_password
-from robopark_api.services import audit, rbac
+from robopark_api.services import audit, privileged_auth, rbac
 from robopark_api.services.database_locks import database_idempotency_lock
 from robopark_api.services.user_activity import public_ip
 from robopark_api.task_workflow_models import TaskReview
@@ -266,7 +266,10 @@ def _update_user_locked(
         if (
             user.role == rbac.RoleSlug.ROYAL
             and slug != rbac.RoleSlug.ROYAL
-            and rbac.is_last_active_royal(db, user)
+            and (
+                rbac.is_last_active_royal(db, user)
+                or privileged_auth.is_last_active_recovery_royal(db, user)
+            )
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -284,9 +287,15 @@ def _update_user_locked(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="royal_only")
         if access not in {item.value for item in AccessStatus}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
-        if access != AccessStatus.approved.value and rbac.is_last_active_royal(db, user):
+        if access != AccessStatus.approved.value and (
+            rbac.is_last_active_royal(db, user)
+            or privileged_auth.is_last_active_recovery_royal(db, user)
+        ):
             raise HTTPException(status_code=400, detail="cannot_disable_last_royal")
-    if changes.get("is_active") is False and rbac.is_last_active_royal(db, user):
+    if changes.get("is_active") is False and (
+        rbac.is_last_active_royal(db, user)
+        or privileged_auth.is_last_active_recovery_royal(db, user)
+    ):
         raise HTTPException(status_code=400, detail="cannot_disable_last_royal")
     if password := changes.get("password"):
         _check_password(password, settings, user.username)
@@ -367,7 +376,9 @@ def _reject_user_locked(user_id: int, db: Session) -> None:
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    if rbac.is_last_active_royal(db, user):
+    if rbac.is_last_active_royal(db, user) or privileged_auth.is_last_active_recovery_royal(
+        db, user
+    ):
         raise HTTPException(status_code=400, detail="cannot_disable_last_royal")
     user.access_status = AccessStatus.rejected.value
     db.commit()
@@ -395,7 +406,9 @@ def _delete_user_locked(user_id: int, db: Session, actor: User) -> None:
     if user.role == rbac.RoleSlug.ROYAL:
         if not rbac.is_royal(actor):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-        if rbac.is_last_active_royal(db, user):
+        if rbac.is_last_active_royal(db, user) or privileged_auth.is_last_active_recovery_royal(
+            db, user
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="cannot_delete_last_royal",

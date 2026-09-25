@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "target_head": "0043_schedule_series_lookup",
+  "target_head": "0044_privileged_auth",
   "known_heads": [
     "0036_audit_remediation_state",
     "0037_claim_workflow_visibility",

@@ -88,6 +88,10 @@ def test_metadata_has_required_tables():
         "tracker_notification_cursors",
         "system_incident_occurrences",
         "auth_throttle_states",
+        "privileged_credentials",
+        "privileged_recovery_codes",
+        "privileged_reauthorizations",
+        "privileged_auth_audit",
         "ip_geo_cache",
         "ip_geo_quota",
     }
@@ -120,10 +124,10 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_schedule_series_lookup():
+def test_alembic_head_is_privileged_auth():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0043_schedule_series_lookup"]
+    assert script.get_heads() == ["0044_privileged_auth"]
 
 
 def test_sync_closure_scan_migration_adds_review_index(sqlite_database_url, monkeypatch):
@@ -149,7 +153,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
         "idempotency_key", "lease_owner", "lease_until",
     }
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0043_schedule_series_lookup"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0044_privileged_auth"
 
 
 def test_schedule_series_lookup_index_is_used(sqlite_database_url, monkeypatch):

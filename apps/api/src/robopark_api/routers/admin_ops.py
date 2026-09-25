@@ -35,7 +35,8 @@ from robopark_api.ops_schemas import (
     public_result,
 )
 from robopark_api.security import hash_session_token
-from robopark_api.services import audit
+from robopark_api.services import audit, privileged_auth
+from robopark_api.services.login_throttle import client_ip
 from robopark_api.services.ops import host_bridge
 from robopark_api.services.ops.archives import ArchiveError
 from robopark_api.services.ops.context import build_ops_context, resolved_ops_dir
@@ -95,6 +96,44 @@ def _token_hash(request: Request, settings: Settings) -> str:
     if not raw:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     return hash_session_token(raw)
+
+
+def _require_privileged(
+    request: Request,
+    actor: User,
+    db: Session,
+    settings: Settings,
+    operation_kind: str,
+    operation_id: str,
+) -> None:
+    token = request.headers.get("X-Privileged-Authorization", "")
+    enrolled = privileged_auth.enrolled(db, actor.id)
+    valid = bool(token) and enrolled and privileged_auth.consume_reauthorization(
+        db,
+        actor,
+        raw_token=token,
+        session_token_hash=_token_hash(request, settings),
+        operation_kind=operation_kind,
+        operation_id=operation_id,
+    )
+    privileged_auth.audit_decision(
+        db,
+        actor=actor,
+        action="privileged.operation",
+        outcome="success" if valid else "denied",
+        reason="authorized" if valid else ("token_invalid" if enrolled else "not_enrolled"),
+        ip=client_ip(request),
+        device=request.headers.get("user-agent"),
+        operation_kind=operation_kind,
+        operation_id=operation_id,
+    )
+    if not valid:
+        raise HTTPException(
+            status_code=401 if enrolled else 409,
+            detail="privileged_authorization_required"
+            if enrolled
+            else "privileged_enrollment_required",
+        )
 
 
 def _reconcile_if_needed(settings: Settings) -> None:
@@ -214,11 +253,13 @@ def download_artifact(
 
 @router.post("/admin/ops/abort", response_model=OpsJobOut)
 def post_abort(
+    request: Request,
     _royal: User = Depends(require_royal),
     settings: Settings = Depends(get_settings),
     db: Session = Depends(get_db),
 ) -> OpsJobOut:
     """Force-clear a stuck running ops job and lift maintenance."""
+    _require_privileged(request, _royal, db, settings, "abort", "abort")
     ops_dir = resolved_ops_dir(settings)
     try:
         job = abort_job(ops_dir)
@@ -281,6 +322,7 @@ def post_snapshot(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> OpsJobOut:
+    _require_privileged(request, royal, db, settings, "snapshot", "snapshot")
     exempt = _token_hash(request, settings)
     try:
         job = _launch(
@@ -309,6 +351,7 @@ async def post_restore(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> OpsJobOut:
+    _require_privileged(request, royal, db, settings, "restore", "restore")
     exempt = _token_hash(request, settings)
     blob = await _read_upload(archive, settings.ops_max_upload_bytes)
     try:
@@ -352,6 +395,7 @@ async def post_update(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> OpsJobOut:
+    _require_privileged(request, royal, db, settings, "update", "update")
     exempt = _token_hash(request, settings)
     blob = await _read_upload(archive, settings.ops_max_upload_bytes)
     try:
@@ -423,11 +467,13 @@ def get_release_status(
 
 @router.post("/admin/ops/update/inspect", response_model=UpdateInspectionOut)
 async def inspect_host_update(
+    request: Request,
     archive: UploadFile = File(...),
     royal: User = Depends(require_royal),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
+    _require_privileged(request, royal, db, settings, "update.inspect", "inspect")
     root = _bridge_root(settings)
     blob = await _read_upload(archive, settings.ops_max_upload_bytes)
     return _host_action(
@@ -448,6 +494,9 @@ def approve_host_update(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
+    _require_privileged(
+        request, royal, db, settings, "update.approve", payload.inspection_id
+    )
     root = _bridge_root(settings)
 
     def approve():
@@ -467,6 +516,7 @@ def approve_host_update(
 
 
 def _start_host_operation(kind, request, royal, db, settings):
+    _require_privileged(request, royal, db, settings, kind, kind)
     root = _bridge_root(settings)
     host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
     return _job_out(
@@ -537,6 +587,9 @@ def approve_github_update(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
+    _require_privileged(
+        request, royal, db, settings, "github-update.approve", payload.release_id
+    )
     root = _bridge_root(settings)
 
     def approve():

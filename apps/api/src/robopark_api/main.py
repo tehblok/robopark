@@ -46,6 +46,7 @@ from robopark_api.routers import (
     operator_report,
     operator_robots,
     parks,
+    privileged_auth,
     push,
     reports,
     robot_registry,
@@ -178,6 +179,7 @@ def create_app() -> FastAPI:
             "If-Match",
             "Idempotency-Key",
             "X-Tracker-State",
+            "X-Privileged-Authorization",
         ],
         expose_headers=["ETag"],
     )
@@ -197,6 +199,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_emergency_readings.router)
     app.include_router(admin_settings.router)
     app.include_router(admin_ops.router)
+    app.include_router(privileged_auth.router)
     app.include_router(admin_health.router)
     app.include_router(admin_system.router)
     app.include_router(operator_parks.router)
