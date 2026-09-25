@@ -393,27 +393,11 @@ def test_pack_release_wrapper_propagates_reviewed_migration_metadata(
 
     assert packed.returncode == 0, packed.stderr
     meta = inspect_archive(output.read_bytes(), expected_kind=KIND_RELEASE, public_key=public)
-    assert meta.migration_head == "0036_audit_remediation_state"
+    expected = json.loads((root / "deploy" / "release-metadata.json").read_text())
+    assert meta.migration_head == expected["migration_head"]
     with zipfile.ZipFile(output) as archive:
         manifest = json.loads(archive.read("manifest.json"))
-    assert manifest["migration_compatibility"] == {
-        "from_heads": [
-            "0022_tracker_collaboration",
-            "0024_inventory",
-            "0025_local_task_claims",
-            "0026_global_inventory_workflows",
-            "0027_emergency_readings",
-            "0028_reliable_task_workflow",
-            "0029_campaign_snapshot",
-            "0030_user_activity",
-            "0031_postgresql_runtime",
-            "0032_operator_inv_readonly",
-            "0033_offline_sync_receipts",
-            "0034_resumable_media_uploads",
-            "0035_schedules_and_push",
-        ],
-        "reversible": True,
-    }
+    assert manifest["migration_compatibility"] == expected["migration_compatibility"]
 
 
 def test_pack_release_keeps_api_ops_code_and_excludes_runtime_state(

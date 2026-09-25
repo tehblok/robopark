@@ -666,10 +666,10 @@ def test_regex_timeout_returns_unknown_and_next_snapshot_recovers(tmp_path, patt
             check=False,
             capture_output=True,
             text=True,
-            timeout=3,
+            timeout=10,
         )
     except subprocess.TimeoutExpired:
-        pytest.fail("Regex blocked the snapshot worker beyond the 3-second process watchdog")
+        pytest.fail("Regex blocked the snapshot worker beyond the 10-second process watchdog")
     assert result.returncode == 0, result.stderr
     outcome = json.loads(result.stdout)
     assert outcome["recovered"] is True

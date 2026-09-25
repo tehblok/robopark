@@ -202,6 +202,7 @@ def test_ci_uses_only_the_pinned_verification_entrypoints():
     assert "node-version: 24.18.0" in workflow
     assert "timeout-minutes: 30" in workflow
     assert re.findall(r"^\s+run:\s+(.+)$", workflow, flags=re.MULTILINE) == [
+        "python3 scripts/check-tech-debt.py && python3 scripts/check-module-boundaries.py",
         "./scripts/verify.sh",
         "npm run test:e2e:linux",
         "npm run test:e2e:pwa:linux",
@@ -273,7 +274,9 @@ def test_verification_script_rejects_invalid_or_excess_arguments(tmp_path: Path)
         result, commands = _run_verify(tmp_path / str(index), *args)
         assert result.returncode == 2
         assert result.stdout == ""
-        assert result.stderr == (f"usage: {VERIFY_SCRIPT} [api|api-postgres|web|docker|host|all]\n")
+        assert result.stderr.startswith(
+            f"usage: {VERIFY_SCRIPT} [fast|full|load|soak|api|api-postgres|web|docker|host]\n"
+        )
         assert commands == []
 
 

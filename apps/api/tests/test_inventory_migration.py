@@ -24,6 +24,7 @@ LEGACY_USER_COLUMNS = (
     defer(User.last_ip),
     defer(User.last_device),
     defer(User.last_location),
+    defer(User.timezone),
 )
 
 

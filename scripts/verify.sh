@@ -12,7 +12,7 @@ run_api() {
     uv run --frozen --extra dev ruff check .
     uv run --frozen --extra dev ruff format --check .
     PYTHONDONTWRITEBYTECODE=1 uv run --frozen --extra dev \
-      python -m pytest -p no:cacheprovider -q
+      python -m pytest -p no:cacheprovider -q -m "not load"
   )
 }
 
@@ -116,14 +116,13 @@ run_soak() {
 }
 
 usage() {
-  cat >&2 <<EOF
-usage: $0 [fast|full|load|soak|api|api-postgres|web|docker|host]
-
-fast  Short static and focused regression checks (typically under 2 minutes).
-full  Full API, PostgreSQL, web, Docker and host verification; may take many minutes.
-load  Explicit capacity benchmark; starts disposable PostgreSQL and production workers.
-soak  Explicit browser soak; requires ROBOPARK_SOAK_DURATION_SECONDS and ROBOPARK_SOAK_OUTPUT.
-EOF
+  printf '%s\n' \
+    "usage: $0 [fast|full|load|soak|api|api-postgres|web|docker|host]" \
+    "" \
+    "fast  Short static and focused regression checks (typically under 2 minutes)." \
+    "full  Full API, PostgreSQL, web, Docker and host verification; may take many minutes." \
+    "load  Explicit capacity benchmark; starts disposable PostgreSQL and production workers." \
+    "soak  Explicit browser soak; requires ROBOPARK_SOAK_DURATION_SECONDS and ROBOPARK_SOAK_OUTPUT." >&2
 }
 
 if [ "$#" -gt 1 ]; then

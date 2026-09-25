@@ -6,6 +6,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -28,6 +29,8 @@ from robopark_api.task_workflow_models import ReliableAction
 
 SESSION_COUNT = 200
 LOCAL_P95_LIMIT_MS = 1_000
+
+pytestmark = pytest.mark.load
 
 
 def _issue(index: int) -> dict:

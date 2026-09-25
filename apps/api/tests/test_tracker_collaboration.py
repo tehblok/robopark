@@ -439,7 +439,7 @@ def test_tracker_write_timeout_not_retried_by_transport(monkeypatch):
     assert len(written) == 1
 
 
-def test_assignments_are_local_and_staff_can_take_over(
+def test_claim_without_park_operator_fails_before_local_assignment(
     client, db_session, seed_mechanic, seed_royal, seed_park_with_tracker, monkeypatch
 ):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
@@ -460,25 +460,16 @@ def test_assignments_are_local_and_staff_can_take_over(
     )
 
     login_as(client, seed_mechanic.username, "secret")
-    assert (
-        client.post(
-            "/tracker/issues/ROBOPARK-1/claim",
-            headers={"Idempotency-Key": "claim-local-0001"},
-        ).status_code
-        == 200
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/claim",
+        headers={"Idempotency-Key": "claim-local-0001"},
     )
-    login_as(client, seed_royal.username, "secret")
-    assert (
-        client.post(
-            "/tracker/issues/ROBOPARK-1/assign",
-            json={"assignee": seed_royal.username},
-        ).status_code
-        == 409
-    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "task_claim_operator_unavailable"
 
     from robopark_api.services.tracker_claims import local_assignee
 
-    assert local_assignee(db_session, issue)["login"] == seed_mechanic.username
+    assert local_assignee(db_session, issue) is None
 
 
 def test_sdk_retries_disabled_for_durable_mutations(monkeypatch):

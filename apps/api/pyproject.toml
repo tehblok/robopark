@@ -43,6 +43,7 @@ packages = ["src/robopark_api"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
+  "load: explicit capacity and concurrency tests; excluded from the normal verification gate",
   "postgres: integration tests that require a disposable PostgreSQL 17 server",
 ]
 

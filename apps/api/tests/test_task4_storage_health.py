@@ -1,6 +1,11 @@
 def test_process_observations_include_leak_and_cache_pool_signals(tmp_path, monkeypatch):
     from robopark_api.services import operational_health
 
+    monkeypatch.setattr(
+        operational_health,
+        "_rss_samples",
+        type(operational_health._rss_samples)(maxlen=operational_health._rss_samples.maxlen),
+    )
     cache = tmp_path / "cache"
     cache.mkdir()
     (cache / "entry").write_bytes(b"1234")
