@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import stat
 import struct
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -1180,10 +1182,8 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
             elif operation.kind is OperationKind.USB_DISCOVER:
                 detail = self.usb_discover(operation.operation_id)
             elif operation.kind is OperationKind.BACKUP_VERIFY:
-                receipt = _read(
-                    self.paths.state
-                    / "backup-receipts"
-                    / f"{operation.payload['backup_id']}.json"
+                receipt = self._read_private_json(
+                    "backup-receipts", f"{operation.payload['backup_id']}.json"
                 )
                 if receipt.get("verified") is not True:
                     raise ReleaseError("backup_not_verified")
@@ -1194,7 +1194,7 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
             elif operation.kind is OperationKind.DIAGNOSTICS:
                 detail = self.diagnostics(operation.operation_id)
             elif operation.kind is OperationKind.USB_SELECT:
-                selected = _read(self.paths.state / "selected-usb.json")
+                selected = self._read_private_json(None, "selected-usb.json")
                 if selected != {
                     "schema": 1,
                     "device_uuid": operation.payload["device_uuid"],
@@ -1210,9 +1210,6 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
                 "detail": {},
                 "error": "manual_recovery_required",
             }
-
-    def _host_path(self, logical):
-        return self.paths.root / logical.lstrip("/")
 
     def _external_key(self):
         target = self.paths.root / "run/robopark/recovery.key"
@@ -1232,38 +1229,275 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
         except (OSError, ValueError) as exc:
             raise ReleaseError("recovery_key_required") from exc
 
-    def _mounted_device(self, identity):
-        device = select_removable_device(self.device_provider(), identity)
-        if not device.mounted or device.mount_point is None:
-            raise ReleaseError("backup_device_not_mounted")
-        target = self._host_path(device.mount_point).resolve(strict=True)
-        allowed = tuple(
-            (self.paths.root / name).resolve(strict=False)
-            for name in ("media", "mnt", "run/media")
-        )
-        if not any(target.is_relative_to(root) for root in allowed):
-            raise ReleaseError("unsafe_usb_device")
-        return target
+    @staticmethod
+    def _same_inode(left, right):
+        return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
 
+    def _validate_bindings(self, bindings):
+        try:
+            for parent, name, child, directory in bindings:
+                current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                opened = os.fstat(child)
+                if (
+                    not self._same_inode(current, opened)
+                    or directory
+                    and not stat.S_ISDIR(current.st_mode)
+                    or not directory
+                    and not stat.S_ISREG(current.st_mode)
+                    or not directory
+                    and (
+                        opened.st_nlink != 1
+                        or opened.st_uid not in {0, os.geteuid()}
+                        or stat.S_IMODE(opened.st_mode) & 0o077
+                    )
+                ):
+                    raise ReleaseError("unsafe_backup_path")
+        except ReleaseError:
+            raise
+        except OSError as exc:
+            raise ReleaseError("unsafe_backup_path") from exc
+
+    def _open_backup_candidate(self, device, backup_id):
+        if (
+            not device.removable
+            or not device.mounted
+            or device.mount_point is None
+            or device.system_device
+            or device.root_device
+            or device.data_device
+        ):
+            return None
+        point = Path(device.mount_point)
+        parts = point.parts[1:]
+        if (
+            not point.is_absolute()
+            or not parts
+            or parts[0] not in {"media", "mnt", "run"}
+            or parts[0] == "run" and (len(parts) < 2 or parts[1] != "media")
+            or any(not re.fullmatch(r"[A-Za-z0-9._+-]+", part) for part in parts)
+        ):
+            raise ReleaseError("unsafe_backup_path")
+        descriptors = []
+        bindings = []
+        try:
+            current = os.open(
+                self.paths.root,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            descriptors.append(current)
+            for part in parts:
+                child = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=current,
+                )
+                descriptors.append(child)
+                bindings.append((current, part, child, True))
+                current = child
+            if self.paths.root == Path("/"):
+                device_fd = os.open(
+                    device.path,
+                    os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                )
+                try:
+                    device_info = os.fstat(device_fd)
+                    mount_info = os.fstat(current)
+                    if (
+                        not stat.S_ISBLK(device_info.st_mode)
+                        or mount_info.st_dev != device_info.st_rdev
+                    ):
+                        raise ReleaseError("unsafe_backup_path")
+                finally:
+                    os.close(device_fd)
+            backups = os.open(
+                "robopark-backups",
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=current,
+            )
+            descriptors.append(backups)
+            bindings.append((current, "robopark-backups", backups, True))
+            name = f"backup-{backup_id}.rpb"
+            artifact = os.open(
+                name,
+                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                dir_fd=backups,
+            )
+            descriptors.append(artifact)
+            bindings.append((backups, name, artifact, False))
+            info = os.fstat(artifact)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_uid not in {0, os.geteuid()}
+                or stat.S_IMODE(info.st_mode) & 0o077
+                or not 0 < info.st_size
+                <= DEFAULT_BACKUP_ARCHIVE_LIMITS.max_archive_bytes + 8192
+            ):
+                raise ReleaseError("unsafe_backup_path")
+            self._validate_bindings(bindings)
+            return descriptors, bindings, artifact
+        except FileNotFoundError:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+            return None
+        except ReleaseError:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+            raise
+        except OSError as exc:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+            raise ReleaseError("unsafe_backup_path") from exc
+
+    @contextmanager
     def _backup_artifact(self, backup_id):
         identity = _canonical_uuid(backup_id)
         matches = []
-        for device in self.device_provider():
-            if not device.removable or not device.mounted or device.mount_point is None:
-                continue
-            try:
-                candidate = (
-                    self._mounted_device(device.uuid)
-                    / "robopark-backups"
-                    / f"backup-{identity}.rpb"
-                )
-                if candidate.is_file() and not candidate.is_symlink():
+        try:
+            for device in tuple(self.device_provider()):
+                candidate = self._open_backup_candidate(device, identity)
+                if candidate is not None:
                     matches.append(candidate)
-            except ReleaseError:
-                continue
+        except Exception:
+            for descriptors, _, _ in matches:
+                for descriptor in reversed(descriptors):
+                    os.close(descriptor)
+            raise
         if len(matches) != 1:
+            for descriptors, _, _ in matches:
+                for descriptor in reversed(descriptors):
+                    os.close(descriptor)
             raise ReleaseError("backup_not_found")
-        return matches[0]
+        descriptors, bindings, artifact = matches[0]
+        try:
+            self._validate_bindings(bindings)
+            yield artifact
+            self._validate_bindings(bindings)
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+
+    def _state_directory(self, child=None, *, create=False):
+        state = None
+        directory = None
+        try:
+            state = os.open(
+                self.paths.state,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            if child is None:
+                return state, None
+            if create:
+                try:
+                    os.mkdir(child, 0o700, dir_fd=state)
+                except FileExistsError:
+                    pass
+            directory = os.open(
+                child,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=state,
+            )
+            info = os.stat(child, dir_fd=state, follow_symlinks=False)
+            if not self._same_inode(info, os.fstat(directory)):
+                raise ReleaseError("unsafe_backup_receipt")
+            return directory, (state, child)
+        except ReleaseError:
+            if directory is not None:
+                os.close(directory)
+            if state is not None:
+                os.close(state)
+            raise
+        except OSError as exc:
+            if directory is not None:
+                os.close(directory)
+            if state is not None:
+                os.close(state)
+            raise ReleaseError("unsafe_backup_receipt") from exc
+
+    def _close_state_directory(self, directory, binding):
+        try:
+            if binding is not None:
+                state, child = binding
+                try:
+                    current = os.stat(child, dir_fd=state, follow_symlinks=False)
+                    if not self._same_inode(current, os.fstat(directory)):
+                        raise ReleaseError("unsafe_backup_receipt")
+                except OSError as exc:
+                    raise ReleaseError("unsafe_backup_receipt") from exc
+        finally:
+            os.close(directory)
+            if binding is not None:
+                os.close(binding[0])
+
+    def _read_private_json(self, child, name):
+        directory, binding = self._state_directory(child)
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                dir_fd=directory,
+            )
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_nlink != 1
+                    or info.st_uid not in {0, os.geteuid()}
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_size > 65536
+                ):
+                    raise ReleaseError("unsafe_backup_receipt")
+                value = json.loads(stream.read(65537), object_pairs_hook=unique_object)
+            current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if not self._same_inode(info, current):
+                raise ReleaseError("unsafe_backup_receipt")
+            if not isinstance(value, dict):
+                raise ReleaseError("unsafe_backup_receipt")
+            return value
+        except ReleaseError:
+            raise
+        except (OSError, ValueError, UnicodeError) as exc:
+            raise ReleaseError("unsafe_backup_receipt") from exc
+        finally:
+            self._close_state_directory(directory, binding)
+
+    def _write_private_json(self, child, name, value):
+        directory, binding = self._state_directory(child, create=child is not None)
+        temporary = f".{name}.{os.urandom(8).hex()}"
+        descriptor = None
+        try:
+            encoded = (
+                json.dumps(value, allow_nan=False, sort_keys=True, separators=(",", ":"))
+                + "\n"
+            ).encode()
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory,
+            )
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = None
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(
+                temporary,
+                name,
+                src_dir_fd=directory,
+                dst_dir_fd=directory,
+            )
+            os.fsync(directory)
+        except (OSError, ValueError) as exc:
+            raise ReleaseError("unsafe_backup_receipt") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except OSError:
+                pass
+            self._close_state_directory(directory, binding)
 
     def package_inspect(self, operation_id, package):
         del operation_id
@@ -1302,10 +1536,38 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
 
     def backup_verify(self, operation_id, backup_id):
         del operation_id
-        artifact = self._backup_artifact(backup_id)
-        detail = verify_encrypted_backup(artifact, recovery_key=self._external_key())
-        atomic_write_json(
-            self.paths.state / "backup-receipts" / f"{backup_id}.json",
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=self.paths.state, prefix=".backup-verify-"
+        )
+        temporary = Path(temporary_name)
+        digest = hashlib.sha256()
+        total = 0
+        try:
+            with self._backup_artifact(backup_id) as artifact, os.fdopen(
+                descriptor, "wb"
+            ) as output:
+                descriptor = None
+                os.lseek(artifact, 0, os.SEEK_SET)
+                while chunk := os.read(artifact, 1024 * 1024):
+                    total += len(chunk)
+                    if total > DEFAULT_BACKUP_ARCHIVE_LIMITS.max_archive_bytes + 8192:
+                        raise ReleaseError("backup_archive_limit")
+                    digest.update(chunk)
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            detail = verify_encrypted_backup(
+                temporary, recovery_key=self._external_key()
+            )
+            if detail["sha256"] != digest.hexdigest():
+                raise ReleaseError("backup_integrity_failed")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            temporary.unlink(missing_ok=True)
+        self._write_private_json(
+            "backup-receipts",
+            f"{backup_id}.json",
             {
                 "schema": 1,
                 "backup_id": backup_id,
@@ -1358,7 +1620,7 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
         if selected.path != device.path:
             raise ReleaseError("unsafe_usb_device")
         value = {"schema": 1, "device_uuid": selected.uuid}
-        atomic_write_json(self.paths.state / "selected-usb.json", value)
+        self._write_private_json(None, "selected-usb.json", value)
         return value
 
 

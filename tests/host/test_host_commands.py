@@ -319,6 +319,184 @@ def test_default_cli_consumer_verifies_backup_with_external_runtime_key(host_pat
     assert receipt["verified"] is True
 
 
+def _production_backup_verify_fixture(host_paths):
+    from robopark_host.commands import (
+        BlockDevice,
+        SafeProductionTypedHostEffects,
+        create_encrypted_backup,
+    )
+
+    key = b"c" * 32
+    host_paths.state.mkdir(parents=True, exist_ok=True)
+    key_path = host_paths.root / "run/robopark/recovery.key"
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_bytes(key)
+    key_path.chmod(0o600)
+    source = host_paths.root / "confinement-source"
+    source.mkdir()
+    (source / "data").write_bytes(b"confined")
+    mount = host_paths.root / "mnt/usb"
+    mount.mkdir(parents=True)
+    device = BlockDevice(
+        _DEVICE_UUID,
+        "/dev/fake-usb",
+        removable=True,
+        mounted=True,
+        mount_point="/mnt/usb",
+    )
+    adapter = SafeProductionTypedHostEffects(
+        host_paths, device_provider=lambda: (device,)
+    )
+
+    def create(directory):
+        directory.mkdir(parents=True, exist_ok=True)
+        artifact = directory / f"backup-{_BACKUP_UUID}.rpb"
+        create_encrypted_backup(
+            source,
+            artifact,
+            recovery_key=key,
+            app_version="0.2.0-rc.6",
+            schema_version="0046_privileged_generation",
+        )
+        artifact.chmod(0o600)
+        return artifact
+
+    return adapter, mount, create
+
+
+@pytest.mark.parametrize("alias", ["backups", "mount", "ancestor", "artifact"])
+def test_backup_verify_rejects_symlinked_usb_path_components(host_paths, alias):
+    from robopark_host.commands import BlockDevice
+    from robopark_host.release import ReleaseError
+
+    adapter, mount, create = _production_backup_verify_fixture(host_paths)
+    outside = host_paths.root / "host-local-backups"
+    artifact = create(outside)
+    if alias == "backups":
+        (mount / "robopark-backups").symlink_to(outside, target_is_directory=True)
+    elif alias == "mount":
+        original = host_paths.root / "mnt/real-usb"
+        original.mkdir(parents=True)
+        (original / "robopark-backups").mkdir()
+        artifact.replace(original / "robopark-backups" / artifact.name)
+        mount.rmdir()
+        mount.symlink_to(original, target_is_directory=True)
+    elif alias == "ancestor":
+        original = host_paths.root / "mnt/real-parent/usb"
+        (original / "robopark-backups").mkdir(parents=True)
+        artifact.replace(original / "robopark-backups" / artifact.name)
+        (host_paths.root / "mnt/alias").symlink_to(
+            original.parent, target_is_directory=True
+        )
+        device = BlockDevice(
+            _DEVICE_UUID,
+            "/dev/fake-usb",
+            removable=True,
+            mounted=True,
+            mount_point="/mnt/alias/usb",
+        )
+        adapter.device_provider = lambda: (device,)
+    else:
+        backups = mount / "robopark-backups"
+        backups.mkdir()
+        (backups / artifact.name).symlink_to(artifact)
+
+    with pytest.raises(ReleaseError, match="unsafe_backup_path"):
+        adapter.backup_verify(str(uuid4()), _BACKUP_UUID)
+
+
+def test_backup_verify_directory_swap_race_fails_closed(host_paths, monkeypatch):
+    from robopark_host import commands
+    from robopark_host.release import ReleaseError
+
+    adapter, mount, create = _production_backup_verify_fixture(host_paths)
+    backups = mount / "robopark-backups"
+    create(backups)
+    outside = host_paths.root / "race-outside"
+    create(outside)
+    moved = mount / "moved-backups"
+    real_open = commands.os.open
+    raced = False
+
+    def swap_then_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal raced
+        if path == f"backup-{_BACKUP_UUID}.rpb" and dir_fd is not None and not raced:
+            backups.rename(moved)
+            backups.symlink_to(outside, target_is_directory=True)
+            raced = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(commands.os, "open", swap_then_open)
+    with pytest.raises(ReleaseError, match="unsafe_backup_path"):
+        adapter.backup_verify(str(uuid4()), _BACKUP_UUID)
+
+
+def test_backup_verify_accepts_regular_single_link_direct_child(host_paths):
+    adapter, mount, create = _production_backup_verify_fixture(host_paths)
+    create(mount / "robopark-backups")
+
+    assert adapter.backup_verify(str(uuid4()), _BACKUP_UUID) == {
+        "backup_id": _BACKUP_UUID,
+        "verified": True,
+    }
+
+
+@pytest.mark.parametrize("unsafe", ["hardlink", "mode"])
+def test_backup_verify_rejects_non_private_or_multi_link_artifact(host_paths, unsafe):
+    from robopark_host.release import ReleaseError
+
+    adapter, mount, create = _production_backup_verify_fixture(host_paths)
+    artifact = create(mount / "robopark-backups")
+    if unsafe == "hardlink":
+        os.link(artifact, artifact.with_suffix(".alias"))
+    else:
+        artifact.chmod(0o644)
+
+    with pytest.raises(ReleaseError, match="unsafe_backup_path"):
+        adapter.backup_verify(str(uuid4()), _BACKUP_UUID)
+
+
+@pytest.mark.parametrize("kind", ["backup-receipt", "selected-usb"])
+def test_safe_adapter_reconcile_rejects_symlinked_private_lookup(host_paths, kind):
+    from robopark_host.commands import validate_typed_operation
+
+    adapter, _, _ = _production_backup_verify_fixture(host_paths)
+    outside = host_paths.root / "outside-private"
+    outside.mkdir()
+    if kind == "backup-receipt":
+        receipt = outside / f"{_BACKUP_UUID}.json"
+        receipt.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "backup_id": _BACKUP_UUID,
+                    "verified": True,
+                    "sha256": "a" * 64,
+                    "verified_at": 1,
+                    "recovery_required": False,
+                }
+            )
+        )
+        receipt.chmod(0o600)
+        (host_paths.state / "backup-receipts").symlink_to(
+            outside, target_is_directory=True
+        )
+        command = typed_request("backup-verify", backup_id=_BACKUP_UUID)
+    else:
+        selected = outside / "selected-usb.json"
+        selected.write_text(json.dumps({"schema": 1, "device_uuid": _DEVICE_UUID}))
+        selected.chmod(0o600)
+        (host_paths.state / "selected-usb.json").symlink_to(selected)
+        command = typed_request("usb-select", device_uuid=_DEVICE_UUID)
+    command["authorization"] = authorization(command)
+
+    assert adapter.reconcile(validate_typed_operation(command)) == {
+        "state": "failed",
+        "detail": {},
+        "error": "manual_recovery_required",
+    }
+
+
 def test_safe_production_adapter_declares_exact_fail_closed_kinds():
     from robopark_host.commands import OperationKind, SafeProductionTypedHostEffects
 
