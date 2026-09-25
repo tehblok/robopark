@@ -592,12 +592,14 @@ def test_four_on_four_off_shift_entries_route_only_work_days(
     db_session.add(UserPark(user_id=mechanic.id, park_id=seed_park_with_tracker.id))
     moscow = ZoneInfo("Europe/Moscow")
     start = datetime(2026, 9, 1, 9, tzinfo=moscow)
+    series_id = "four-four-series"
     for day in (0, 1, 2, 3, 8):
         db_session.add(
             ScheduleEntry(
                 owner_user_id=mechanic.id,
                 park_id=seed_park_with_tracker.id,
                 kind="shift",
+                series_id=series_id,
                 start_at=start + timedelta(days=day),
                 end_at=start + timedelta(days=day, hours=8),
                 created_by_user_id=seed_royal.id,

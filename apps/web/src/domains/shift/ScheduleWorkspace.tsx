@@ -94,7 +94,7 @@ export function ScheduleWorkspace({ apiClient = api, initialAnchor, user, select
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!parkId || !startAt || !endAt) return
-    const base = { park_id: parkId, kind, start_at: localIso(startAt), end_at: localIso(endAt), owner_user_id: undefined }
+    const base = { park_id: parkId, kind, start_at: localIso(startAt), end_at: localIso(endAt), owner_user_id: undefined, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }
     if (editing) {
       const updated = await apiClient.scheduleUpdate(editing.id, base)
       setScheduleState(current => current?.key === requestKey ? { ...current, items: current.items.map(item => item.id === updated.id ? updated : item) } : current)

@@ -100,7 +100,7 @@ export type ScheduleEntry = {
   created_by_user_id: number; updated_by_user_id: number; created_at: string; updated_at: string
   warnings: string[]
 }
-export type ScheduleCreate = { park_id: number; kind: ScheduleEntry['kind']; start_at: string; end_at: string; owner_user_id?: number }
+export type ScheduleCreate = { park_id: number; kind: ScheduleEntry['kind']; start_at: string; end_at: string; owner_user_id?: number; timezone: string }
 export type ScheduleListParams = { parkId: number; ownerUserId?: number; startAt: string; endAt: string; signal?: AbortSignal }
 export type ScheduleParticipant = { id: number; display_name: string; role: 'mechanic' | 'operator' }
 export type SchedulePattern = 'none' | '5/2' | '2/2' | '4/4'
@@ -109,7 +109,7 @@ export type SchedulePatternCreate = {
   start_date: string; end_date: string; start_time: string; end_time: string; timezone: string
 }
 export type ScheduleCopyCreate = {
-  idempotency_key?: string; park_id: number; owner_user_ids: number[]; source_start: string; source_end: string; target_start: string
+  idempotency_key?: string; park_id: number; owner_user_ids: number[]; source_start: string; source_end: string; target_start: string; timezone: string
 }
 export type NotificationEvent = { id: string; event_type: string; park_id: number | null; protected_text: string; read_at: string | null; created_at: string }
 

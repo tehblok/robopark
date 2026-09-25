@@ -20,10 +20,16 @@ const entry = (overrides: Partial<ScheduleEntry> = {}): ScheduleEntry => ({
 })
 
 describe('scheduleCalendar', () => {
+  it('uses the supplied device timezone for grouping and ranges', () => {
+    const zone = 'America/Los_Angeles'
+    const range = visibleRange(new Date('2027-01-01T02:00:00Z'), 'week', zone)
+    expect(formatDayKey(new Date('2027-01-01T02:00:00Z'), zone)).toBe('2026-12-31')
+    expect(range.days.map(day => formatDayKey(day, zone))[0]).toBe('2026-12-28')
+  })
   it('projects a year-crossing Moscow week', () => {
     const range = visibleRange(new Date('2026-12-31T12:00:00+03:00'), 'week')
 
-    expect(range.days.map(formatDayKey)).toEqual([
+    expect(range.days.map(day => formatDayKey(day))).toEqual([
       '2026-12-28',
       '2026-12-29',
       '2026-12-30',
@@ -40,7 +46,7 @@ describe('scheduleCalendar', () => {
     const range = visibleRange(new Date('2027-01-15T22:00:00Z'), 'month')
 
     expect(range.days).toHaveLength(31)
-    expect(range.days.map(formatDayKey)).toEqual(expect.arrayContaining(['2027-01-01', '2027-01-31']))
+    expect(range.days.map(day => formatDayKey(day))).toEqual(expect.arrayContaining(['2027-01-01', '2027-01-31']))
     expect(formatDayKey(range.start)).toBe('2027-01-01')
     expect(formatDayKey(range.end)).toBe('2027-02-01')
     expect(formatDayKey(new Date('2026-12-31T21:30:00Z'))).toBe('2027-01-01')

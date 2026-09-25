@@ -24,7 +24,7 @@ def check_release_migrations(root: Path) -> list[str]:
         ]
     except (CommandError, KeyError, OSError, TypeError, ValueError) as error:
         return [f"release_migration_check_failed: {error}"]
-    if actual == declared == policy == "0041_system_metrics_presence":
+    if actual == declared == policy == "0042_user_timezone":
         return []
     return [f"actual={actual} metadata={declared} policy={policy}"]
 

@@ -1,16 +1,15 @@
 import type { ScheduleEntry } from '../../api'
 
-const MOSCOW_TIME_ZONE = 'Europe/Moscow'
-
-const dayFormatter = new Intl.DateTimeFormat('en-CA', {
-  timeZone: MOSCOW_TIME_ZONE,
+const deviceTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+const dayFormatter = (timeZone: string) => new Intl.DateTimeFormat('en-CA', {
+  timeZone,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
 })
 
-const dateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
-  timeZone: MOSCOW_TIME_ZONE,
+const dateTimeFormatter = (timeZone: string) => new Intl.DateTimeFormat('en-CA', {
+  timeZone,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
@@ -31,17 +30,17 @@ function parts(date: Date, formatter: Intl.DateTimeFormat): Record<string, numbe
   )
 }
 
-function calendarDate(date: Date): CalendarDate {
-  const value = parts(date, dayFormatter)
+function calendarDate(date: Date, timeZone: string): CalendarDate {
+  const value = parts(date, dayFormatter(timeZone))
   return { year: value.year, month: value.month, day: value.day }
 }
 
-function moscowMidnight({ year, month, day }: CalendarDate): Date {
+function zonedMidnight({ year, month, day }: CalendarDate, timeZone: string): Date {
   const target = Date.UTC(year, month - 1, day)
   let instant = target
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const value = parts(new Date(instant), dateTimeFormatter) as CalendarDateTime
+    const value = parts(new Date(instant), dateTimeFormatter(timeZone)) as CalendarDateTime
     const represented = Date.UTC(value.year, value.month - 1, value.day, value.hour, value.minute, value.second)
     instant += target - represented
   }
@@ -53,18 +52,18 @@ function calendarCoordinate({ year, month, day }: CalendarDate): Date {
   return new Date(Date.UTC(year, month - 1, day))
 }
 
-function dateFromCoordinate(date: Date): Date {
-  return moscowMidnight({
+function dateFromCoordinate(date: Date, timeZone: string): Date {
+  return zonedMidnight({
     year: date.getUTCFullYear(),
     month: date.getUTCMonth() + 1,
     day: date.getUTCDate(),
-  })
+  }, timeZone)
 }
 
-function nextDay(date: Date): Date {
-  const coordinate = calendarCoordinate(calendarDate(date))
+function nextDay(date: Date, timeZone: string): Date {
+  const coordinate = calendarCoordinate(calendarDate(date, timeZone))
   coordinate.setUTCDate(coordinate.getUTCDate() + 1)
-  return dateFromCoordinate(coordinate)
+  return dateFromCoordinate(coordinate, timeZone)
 }
 
 function compareScheduleEntries(left: ScheduleEntry, right: ScheduleEntry): number {
@@ -73,13 +72,14 @@ function compareScheduleEntries(left: ScheduleEntry, right: ScheduleEntry): numb
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0
 }
 
-export function formatDayKey(date: Date): string {
-  const { year, month, day } = calendarDate(date)
+export function formatDayKey(date: Date, timeZone = deviceTimeZone()): string {
+  timeZone = typeof timeZone === 'string' ? timeZone : deviceTimeZone()
+  const { year, month, day } = calendarDate(date, timeZone)
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
-export function visibleRange(anchor: Date, view: 'week' | 'month'): { start: Date; end: Date; days: Date[] } {
-  const anchorCoordinate = calendarCoordinate(calendarDate(anchor))
+export function visibleRange(anchor: Date, view: 'week' | 'month', timeZone = deviceTimeZone()): { start: Date; end: Date; days: Date[] } {
+  const anchorCoordinate = calendarCoordinate(calendarDate(anchor, timeZone))
   const startCoordinate = new Date(anchorCoordinate)
 
   if (view === 'week') {
@@ -97,17 +97,17 @@ export function visibleRange(anchor: Date, view: 'week' | 'month'): { start: Dat
 
   const days: Date[] = []
   for (const cursor = new Date(startCoordinate); cursor < endCoordinate; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
-    days.push(dateFromCoordinate(cursor))
+    days.push(dateFromCoordinate(cursor, timeZone))
   }
 
   return {
-    start: dateFromCoordinate(startCoordinate),
-    end: dateFromCoordinate(endCoordinate),
+    start: dateFromCoordinate(startCoordinate, timeZone),
+    end: dateFromCoordinate(endCoordinate, timeZone),
     days,
   }
 }
 
-export function projectSchedule(items: ScheduleEntry[], days: Date[]): Map<number, Map<string, ScheduleEntry[]>> {
+export function projectSchedule(items: ScheduleEntry[], days: Date[], timeZone = deviceTimeZone()): Map<number, Map<string, ScheduleEntry[]>> {
   const result = new Map<number, Map<string, ScheduleEntry[]>>()
 
   for (const item of items) {
@@ -115,12 +115,12 @@ export function projectSchedule(items: ScheduleEntry[], days: Date[]): Map<numbe
     const entryEnd = new Date(item.end_at)
 
     for (const day of days) {
-      const dayStart = moscowMidnight(calendarDate(day))
-      const dayEnd = nextDay(dayStart)
+      const dayStart = zonedMidnight(calendarDate(day, timeZone), timeZone)
+      const dayEnd = nextDay(dayStart, timeZone)
       if (entryStart >= dayEnd || entryEnd <= dayStart) continue
 
       const ownerDays = result.get(item.owner_user_id) ?? new Map<string, ScheduleEntry[]>()
-      const key = formatDayKey(dayStart)
+      const key = formatDayKey(dayStart, timeZone)
       ownerDays.set(key, [...(ownerDays.get(key) ?? []), item])
       result.set(item.owner_user_id, ownerDays)
     }

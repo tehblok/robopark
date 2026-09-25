@@ -157,6 +157,44 @@ def test_notification_fallback_uses_local_hours_only_without_explicit_state(
     assert seed_mechanic.id not in {user.id for user in schedules.eligible_recipients(event, at_ten)}
 
 
+def test_notification_schedule_state_is_one_atomic_select(
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker
+):
+    statements = []
+    def capture(_conn, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT") and "schedule_entries" in statement:
+            statements.append(statement)
+    event.listen(db_engine, "before_cursor_execute", capture)
+    try:
+        schedules.eligible_recipients(
+            schedules.RoutingEvent(db_session, "new_task", seed_park_with_tracker.id),
+            datetime(2026, 9, 21, 10, tzinfo=ZoneInfo("Europe/Moscow")),
+        )
+    finally:
+        event.remove(db_engine, "before_cursor_execute", capture)
+    assert len(statements) == 1
+
+
+def test_pattern_rejects_nonexistent_time_and_chooses_first_ambiguous_fold(
+    client, db_session, seed_mechanic, seed_park_with_tracker
+):
+    login_as(client, seed_mechanic.username, "secret")
+    missing = client.post("/schedules/pattern", json=_pattern_payload(
+        seed_park_with_tracker.id, [seed_mechanic.id], timezone="America/New_York",
+        start_date="2026-03-08", end_date="2026-03-08", start_time="02:30:00",
+        end_time="03:30:00", pattern="none", idempotency_key="missing-wall-time",
+    ))
+    assert missing.status_code == 400
+    assert missing.json()["detail"] == "nonexistent_local_time"
+    ambiguous = client.post("/schedules/pattern", json=_pattern_payload(
+        seed_park_with_tracker.id, [seed_mechanic.id], timezone="America/New_York",
+        start_date="2026-11-01", end_date="2026-11-01", start_time="01:30:00",
+        end_time="02:30:00", pattern="none", idempotency_key="ambiguous-wall-time",
+    ))
+    assert ambiguous.status_code == 201
+    assert datetime.fromisoformat(ambiguous.json()[0]["start_at"]).astimezone(UTC) == datetime(2026, 11, 1, 5, 30, tzinfo=UTC)
+
+
 def test_four_on_four_off_pattern_dates(
     client, db_session, seed_royal, seed_park_with_tracker
 ):

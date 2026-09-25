@@ -14,6 +14,8 @@ def test_presence_is_database_backed_and_expires_after_two_minutes(
 ):
     login_as(client, "mech1", "secret")
     assert client.post("/presence/heartbeat", json={"timezone": "Europe/Moscow"}).status_code == 204
+    db_session.refresh(seed_mechanic)
+    assert seed_mechanic.timezone == "Europe/Moscow"
     assert client.post("/presence/heartbeat", json={"timezone": "not/a-zone"}).status_code == 422
     login_as(client, "royal", "secret")
     summary = client.get("/admin/system/summary")

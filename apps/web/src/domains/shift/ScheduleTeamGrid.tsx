@@ -5,9 +5,9 @@ import { formatDayKey, projectSchedule } from './scheduleCalendar'
 
 const kindLabel = { shift: 'Смена', vacation: 'Отпуск', sick: 'Болезнь' } as const
 const roleLabel: Record<string, string> = { mechanic: 'Механик', operator: 'Оператор' }
-const dayLabel = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long' })
-const compactDayLabel = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', weekday: 'short', day: '2-digit', month: '2-digit' })
-const timeLabel = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit' })
+const dayLabel = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' })
+const compactDayLabel = new Intl.DateTimeFormat('ru-RU', { weekday: 'short', day: '2-digit', month: '2-digit' })
+const timeLabel = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' })
 
 function Entry({ item, onEdit, onDelete }: { item: ScheduleEntry; onEdit?: (item: ScheduleEntry) => void; onDelete?: (item: ScheduleEntry) => void }) {
   return <article className={`rp-schedule-entry${item.warnings.includes('overlap') ? ' is-warning' : ''}`}>

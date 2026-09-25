@@ -13,7 +13,7 @@ def test_old_release_requires_declared_bridge():
     policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
     target = {
         "app_version": "0.2.0-rc.6",
-        "migration_head": "0041_system_metrics_presence",
+        "migration_head": "0042_user_timezone",
     }
     plan = plan_upgrade("0.1.18", "0036_audit_remediation_state", target, policy)
     assert plan.releases == ("0.1.45", "0.2.0-rc.6")
@@ -24,7 +24,7 @@ def test_recent_release_can_update_directly():
     policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
     target = {
         "app_version": "0.2.0-rc.6",
-        "migration_head": "0041_system_metrics_presence",
+        "migration_head": "0042_user_timezone",
     }
     plan = plan_upgrade("0.2.0-rc.5", "0036_audit_remediation_state", target, policy)
     assert plan.releases == ("0.2.0-rc.6",)
@@ -37,7 +37,7 @@ def test_rc6_accepts_only_three_source_heads():
         "0037_claim_workflow_visibility",
         "0038_inventory_photo_cleanup",
     }
-    target = {"app_version": "0.2.0-rc.6", "migration_head": "0041_system_metrics_presence"}
+    target = {"app_version": "0.2.0-rc.6", "migration_head": "0042_user_timezone"}
     for head in policy.known_heads:
         assert plan_upgrade("0.2.0-rc.5", head, target, policy).releases == ("0.2.0-rc.6",)
     with pytest.raises(ValueError, match="migration_incompatible"):
@@ -52,7 +52,7 @@ def test_unknown_schema_is_rejected_before_mutation():
             "unknown",
             {
                 "app_version": "0.2.0-rc.6",
-                "migration_head": "0041_system_metrics_presence",
+                "migration_head": "0042_user_timezone",
             },
             policy,
         )

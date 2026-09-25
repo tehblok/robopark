@@ -89,6 +89,7 @@ export function SchedulePlanner({
       source_start: localIso(sourceStart),
       source_end: localIso(sourceEnd),
       target_start: localIso(targetStart),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     }
     const fingerprint = JSON.stringify(body)
     const key = copyAttempt.current?.fingerprint === fingerprint

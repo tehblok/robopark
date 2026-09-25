@@ -109,6 +109,7 @@ class User(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_device: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_location: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     role_ref: Mapped[Role] = relationship(lazy="joined")

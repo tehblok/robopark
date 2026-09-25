@@ -4,10 +4,9 @@ import { Button } from '../../design-system/actions/Button'
 import { formatDayKey, projectSchedule } from './scheduleCalendar'
 
 const personalKindLabel = { shift: 'Моя смена', vacation: 'Мой отпуск', sick: 'Моя болезнь' } as const
-const dayLabel = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long' })
-const weekdayLabel = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', weekday: 'short' })
+const dayLabel = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' })
+const weekdayLabel = new Intl.DateTimeFormat('ru-RU', { weekday: 'short' })
 const periodLabel = new Intl.DateTimeFormat('ru-RU', {
-  timeZone: 'Europe/Moscow',
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',

@@ -46,7 +46,7 @@ def presence_heartbeat(
     db: Session = Depends(get_db),
     user: User = Depends(require_user),
 ) -> None:
-    heartbeat(db, user)
+    heartbeat(db, user, timezone=payload.timezone if payload else None)
 
 
 @router.get("/admin/system/summary")

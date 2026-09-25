@@ -120,10 +120,10 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_is_notification_delivery():
+def test_alembic_head_is_user_timezone():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0040_notification_delivery"]
+    assert script.get_heads() == ["0042_user_timezone"]
 
 
 def test_sync_closure_scan_migration_adds_review_index(sqlite_database_url, monkeypatch):
@@ -149,7 +149,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
         "idempotency_key", "lease_owner", "lease_until",
     }
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0040_notification_delivery"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0042_user_timezone"
 
 
 def test_inventory_photo_cleanup_migration_is_additive(sqlite_database_url, monkeypatch):

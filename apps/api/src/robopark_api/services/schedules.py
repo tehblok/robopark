@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from robopark_api.models import AccessStatus, Park, Role, User, UserPark
@@ -83,30 +83,41 @@ def eligible_recipients(event: RoutingEvent, at: datetime) -> list[User]:
         if event.park_id is not None
         else set()
     )
-    schedule_rows = list(
-        db.scalars(
-            select(ScheduleEntry).where(
-                ScheduleEntry.owner_user_id.in_(user_ids),
-                ScheduleEntry.start_at <= at,
-                ScheduleEntry.end_at > at,
-            )
+    zones = {}
+    day_predicates = []
+    fallback_open = set()
+    for user in users:
+        try:
+            zone = ZoneInfo(user.timezone or "Europe/Moscow")
+        except (ValueError, ZoneInfoNotFoundError):
+            zone = MOSCOW
+        zones[user.id] = zone
+        local_at = at.astimezone(zone)
+        if 9 <= local_at.hour < 21:
+            fallback_open.add(user.id)
+        day_start = datetime.combine(local_at.date(), datetime.min.time(), tzinfo=zone)
+        series_tail = aliased(ScheduleEntry)
+        pattern_span = and_(
+            ScheduleEntry.series_id.is_not(None), ScheduleEntry.start_at < day_start + timedelta(days=1),
+            select(series_tail.id).where(
+                series_tail.series_id == ScheduleEntry.series_id,
+                series_tail.owner_user_id == user.id,
+                series_tail.end_at > day_start,
+            ).limit(1).exists(),
         )
-    )
-    shifts = {
-        row.owner_user_id
-        for row in schedule_rows
-        if row.kind == "shift" and (event.park_id is None or row.park_id == event.park_id)
-    }
-    absent = {row.owner_user_id for row in schedule_rows if row.kind in {"vacation", "sick"}}
-    local_at = at.astimezone(MOSCOW)
-    explicitly_scheduled = set(
-        db.scalars(
-            select(ScheduleEntry.owner_user_id).distinct().where(
-                ScheduleEntry.owner_user_id.in_(user_ids),
-            )
-        )
-    )
-    fallback_open = 9 <= local_at.hour < 21
+        day_predicates.append(and_(ScheduleEntry.owner_user_id == user.id, or_(
+            and_(ScheduleEntry.start_at < day_start + timedelta(days=1), ScheduleEntry.end_at > day_start),
+            pattern_span,
+        )))
+    state_rows = db.execute(
+        select(
+            ScheduleEntry.owner_user_id,
+            func.max(case((and_(ScheduleEntry.kind == "shift", ScheduleEntry.start_at <= at, ScheduleEntry.end_at > at), 1), else_=0)),
+            func.max(case((and_(ScheduleEntry.kind.in_(("vacation", "sick")), ScheduleEntry.start_at <= at, ScheduleEntry.end_at > at), 1), else_=0)),
+            func.count(ScheduleEntry.id),
+        ).where(ScheduleEntry.park_id == event.park_id, or_(*day_predicates)).group_by(ScheduleEntry.owner_user_id)
+    ).all() if event.park_id is not None else []
+    states = {owner: (bool(shift), bool(leave), bool(covered)) for owner, shift, leave, covered in state_rows}
     return [
         user
         for user in users
@@ -114,12 +125,12 @@ def eligible_recipients(event: RoutingEvent, at: datetime) -> list[User]:
         and (
             user.role == "royal"
             and event.event_type in CRITICAL_ROYAL_EVENTS
-            or user.id not in absent
+            or not states.get(user.id, (False, False, False))[1]
             and (
                 not requires_shift
-                or user.id in shifts
-                or user.id not in explicitly_scheduled
-                and fallback_open
+                or states.get(user.id, (False, False, False))[0]
+                or not states.get(user.id, (False, False, False))[2]
+                and user.id in fallback_open
             )
         )
     ]
@@ -376,6 +387,7 @@ def create_entry(db: Session, actor: User, payload: ScheduleCreate) -> dict:
         raise PermissionError
     if not _park_access(db, actor if owner_id == actor.id else owner, payload.park_id):
         raise PermissionError
+    owner.timezone = payload.timezone
     row = ScheduleEntry(
         owner_user_id=owner_id,
         park_id=payload.park_id,
@@ -399,7 +411,7 @@ def create_bulk(db: Session, actor: User, payload: ScheduleBulkCreate) -> list[d
     if db.get(Park, payload.park_id) is None:
         raise LookupError("park_not_found")
     for owner_id in owner_ids:
-        _owner_in_park(db, owner_id, payload.park_id)
+        _owner_in_park(db, owner_id, payload.park_id).timezone = payload.timezone
     series_id = str(uuid4())
     rows = []
     for owner_id in owner_ids:
@@ -483,13 +495,14 @@ def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> 
 
             series_id = str(uuid4())
             local_timezone = ZoneInfo(payload.timezone)
+            for owner_id in payload.owner_user_ids:
+                db.get(User, owner_id).timezone = payload.timezone
             rows: list[ScheduleEntry] = []
             for owner_id in payload.owner_user_ids:
                 for work_date in active_dates:
-                    start_at = datetime.combine(work_date, payload.start_time, tzinfo=local_timezone)
-                    end_at = datetime.combine(work_date, payload.end_time, tzinfo=local_timezone)
-                    if end_at <= start_at:
-                        end_at += timedelta(days=1)
+                    end_date = work_date + timedelta(days=payload.end_time <= payload.start_time)
+                    start_at = _resolve_wall_time(work_date, payload.start_time, local_timezone)
+                    end_at = _resolve_wall_time(end_date, payload.end_time, local_timezone)
                     row = ScheduleEntry(
                         owner_user_id=owner_id,
                         park_id=payload.park_id,
@@ -519,6 +532,18 @@ def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> 
             db.rollback()
             raise
         return result
+
+
+def _resolve_wall_time(work_date, wall_time, timezone: ZoneInfo) -> datetime:
+    naive = datetime.combine(work_date, wall_time)
+    candidates = []
+    for fold in (0, 1):
+        candidate = naive.replace(tzinfo=timezone, fold=fold)
+        if candidate.astimezone(UTC).astimezone(timezone).replace(tzinfo=None) == naive:
+            candidates.append(candidate)
+    if not candidates:
+        raise ValueError("nonexistent_local_time")
+    return min(candidates, key=lambda value: value.astimezone(UTC))
 
 
 def _pattern_results(db: Session, result_ids: list[str]) -> list[dict]:
@@ -601,7 +626,7 @@ def _copy_period_once(
     db: Session, actor: User, payload: ScheduleCopy, owners: list[int]
 ) -> list[dict]:
     for owner_id in owners:
-        _owner_in_park(db, owner_id, payload.park_id)
+        _owner_in_park(db, owner_id, payload.park_id).timezone = payload.timezone
     source = list(
         db.scalars(
             select(ScheduleEntry)
@@ -664,7 +689,9 @@ def update_entry(db: Session, actor: User, entry_id: str, payload: ScheduleUpdat
         raise LookupError("schedule_not_found")
     if actor.role != "royal" and (actor.role == "admin" or row.owner_user_id != actor.id):
         raise PermissionError
-    values = payload.model_dump(exclude_none=True)
+    values = payload.model_dump(exclude_none=True, exclude={"timezone"})
+    if payload.timezone is not None:
+        db.get(User, row.owner_user_id).timezone = payload.timezone
     for key, value in values.items():
         setattr(row, key, value)
     if row.end_at <= row.start_at:

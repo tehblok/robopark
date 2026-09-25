@@ -83,8 +83,10 @@ def _bucket(now: datetime) -> datetime:
     return datetime.fromtimestamp(int(now.timestamp() // BUCKET_SECONDS) * BUCKET_SECONDS, UTC)
 
 
-def heartbeat(db: Session, user: User, *, now: datetime | None = None) -> None:
+def heartbeat(db: Session, user: User, *, now: datetime | None = None, timezone: str | None = None) -> None:
     current = now or datetime.now(UTC)
+    if timezone is not None:
+        user.timezone = timezone
     dialect = db.get_bind().dialect.name
     insert = pg_insert if dialect == "postgresql" else sqlite_insert
     presence = insert(UserPresence).values(user_id=user.id, last_seen_at=current)
