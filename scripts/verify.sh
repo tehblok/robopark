@@ -96,6 +96,15 @@ run_host() {
       python tests/host/installer_scenarios.py
 }
 
+run_ota() {
+  PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH="$repo_root/deploy/ota:$repo_root/deploy/host" \
+    uv run --project "$repo_root/apps/api" --frozen --extra dev \
+      python -m pytest -p no:cacheprovider -q \
+      tests/host/test_ota_verifier.py \
+      tests/host/test_ota_builder.py
+}
+
 run_load() {
   command -v docker >/dev/null 2>&1 || {
     echo "docker is required for the load verification target" >&2
@@ -117,7 +126,7 @@ run_soak() {
 
 usage() {
   printf '%s\n' \
-    "usage: $0 [fast|full|load|soak|api|api-postgres|web|docker|host]" \
+    "usage: $0 [fast|full|load|soak|api|api-postgres|web|docker|host|ota]" \
     "" \
     "fast  Short static and focused regression checks (typically under 2 minutes)." \
     "full  Full API, PostgreSQL, web, Docker and host verification; may take many minutes." \
@@ -154,6 +163,9 @@ case "${1:-all}" in
     ;;
   host)
     run_host
+    ;;
+  ota)
+    run_ota
     ;;
   full|all)
     run_api

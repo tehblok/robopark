@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
-from .model import OtaError, OtaFile, OtaManifest, VerifiedOta
+from .model import OtaError, OtaFile, OtaManifest, OtaRequirements, VerifiedOta
 
 DEFAULT_MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_MAX_FILE_BYTES = 768 * 1024 * 1024
@@ -31,9 +31,11 @@ _MANIFEST_KEYS = {
     "required_free_bytes",
     "max_expanded_bytes",
     "changes",
+    "requirements",
     "files",
 }
 _FILE_KEYS = {"path", "size", "sha256"}
+_REQUIREMENT_KEYS = {"python", "systems", "architectures", "memory_profiles_mb"}
 
 
 def _fail(code: str) -> None:
@@ -91,6 +93,7 @@ def _parse_manifest(raw: bytes) -> OtaManifest:
 
     compatible = document["compatible_from"]
     changes = document["changes"]
+    requirements = document["requirements"]
     file_rows = document["files"]
     if (
         not isinstance(compatible, list)
@@ -100,6 +103,8 @@ def _parse_manifest(raw: bytes) -> OtaManifest:
         or not isinstance(changes, list)
         or not 0 < len(changes) <= 100
         or any(not isinstance(item, str) or not item.strip() or len(item) > 500 for item in changes)
+        or not isinstance(requirements, dict)
+        or set(requirements) != _REQUIREMENT_KEYS
         or not isinstance(file_rows, list)
         or not file_rows
     ):
@@ -128,6 +133,20 @@ def _parse_manifest(raw: bytes) -> OtaManifest:
     if "__main__.py" not in seen or tuple(sorted(seen)) != tuple(item.path for item in files):
         _fail("ota_manifest_invalid")
 
+    systems = requirements["systems"]
+    architectures = requirements["architectures"]
+    memory_profiles = requirements["memory_profiles_mb"]
+    if (
+        requirements["python"] != ">=3.10"
+        or systems != ["armbian", "ubuntu"]
+        or architectures != ["aarch64", "x86_64"]
+        or not isinstance(memory_profiles, list)
+        or not memory_profiles
+        or any(not _is_int(item) or item < 1024 for item in memory_profiles)
+        or memory_profiles != sorted(set(memory_profiles))
+    ):
+        _fail("ota_manifest_invalid")
+
     return OtaManifest(
         format_version=1,
         app_version=_text(document["app_version"], _VERSION),
@@ -139,6 +158,12 @@ def _parse_manifest(raw: bytes) -> OtaManifest:
             document["max_expanded_bytes"], maximum=DEFAULT_MAX_EXPANDED_BYTES
         ),
         changes=tuple(item.strip() for item in changes),
+        requirements=OtaRequirements(
+            python=">=3.10",
+            systems=tuple(systems),
+            architectures=tuple(architectures),
+            memory_profiles_mb=tuple(memory_profiles),
+        ),
         files=tuple(files),
     )
 

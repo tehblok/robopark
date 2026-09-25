@@ -30,6 +30,12 @@ def _manifest(
         "required_free_bytes": 64 * 1024 * 1024,
         "max_expanded_bytes": max_expanded_bytes,
         "changes": ["Единый OTA"],
+        "requirements": {
+            "python": ">=3.10",
+            "systems": ["armbian", "ubuntu"],
+            "architectures": ["aarch64", "x86_64"],
+            "memory_profiles_mb": [8192, 32768, 65536],
+        },
         "files": entries
         if entries is not None
         else [

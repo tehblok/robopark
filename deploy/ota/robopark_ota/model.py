@@ -16,6 +16,14 @@ class OtaFile:
 
 
 @dataclass(frozen=True)
+class OtaRequirements:
+    python: str
+    systems: tuple[str, ...]
+    architectures: tuple[str, ...]
+    memory_profiles_mb: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class OtaManifest:
     format_version: int
     app_version: str
@@ -25,6 +33,7 @@ class OtaManifest:
     required_free_bytes: int
     max_expanded_bytes: int
     changes: tuple[str, ...]
+    requirements: OtaRequirements
     files: tuple[OtaFile, ...]
 
 
