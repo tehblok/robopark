@@ -148,6 +148,20 @@ class OtaUpdateEngine:
             "error": extra.get("error"),
         }
         atomic_write_json(self.journal_path, value)
+        public = self.paths.ops / "public"
+        public.mkdir(parents=True, exist_ok=True, mode=0o755)
+        atomic_write_json(
+            public / "ota-status.json",
+            {
+                "schema": 1,
+                "operation_id": str(request.operation_id),
+                "version": request.version,
+                "sha256": request.sha256,
+                "phase": phase,
+                "error": value["error"],
+            },
+            mode=0o644,
+        )
         return value
 
     def _receipt_path(self, request: OtaUpdateRequest) -> Path:

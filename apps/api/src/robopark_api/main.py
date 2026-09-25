@@ -22,6 +22,7 @@ from robopark_api.routers import (
     admin_emergency_readings,
     admin_health,
     admin_ops,
+    admin_ota,
     admin_park_requests,
     admin_roles,
     admin_settings,
@@ -180,8 +181,9 @@ def create_app() -> FastAPI:
             "Idempotency-Key",
             "X-Tracker-State",
             "X-Privileged-Authorization",
+            "Upload-Offset",
         ],
-        expose_headers=["ETag"],
+        expose_headers=["ETag", "Upload-Offset", "Upload-Length", "Upload-Expires"],
     )
     app.include_router(auth.router)
     app.include_router(campaigns.router)
@@ -199,6 +201,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_emergency_readings.router)
     app.include_router(admin_settings.router)
     app.include_router(admin_ops.router)
+    app.include_router(admin_ota.router)
     app.include_router(privileged_auth.router)
     app.include_router(admin_health.router)
     app.include_router(admin_system.router)

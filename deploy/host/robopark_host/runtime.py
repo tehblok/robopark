@@ -322,7 +322,7 @@ def production_config(document, paths, release, image_tag):
                 "target": "/host-ops/" + name,
                 "read_only": name == "public",
             }
-            for name in ("inbox", "artifacts", "public")
+            for name in ("inbox", "artifacts", "public", "ota-uploads")
         ],
     ]
     if "worker" in document["services"]:

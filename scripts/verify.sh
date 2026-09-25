@@ -106,6 +106,9 @@ run_ota() {
       tests/host/test_ota_menu.py \
       tests/host/test_ota_clean_install.py \
       tests/host/test_ota_credentials.py \
+      tests/host/test_ota_store.py \
+      tests/host/test_ota_update.py \
+      apps/api/tests/test_admin_ota.py \
       apps/api/tests/test_seed_from_file.py
 }
 

@@ -124,21 +124,46 @@ UPDATE_PROGRESS_PERCENT = {
     "manual_recovery_required": 100,
 }
 
+OTA_PROGRESS_PERCENT = {
+    "accepted": 2,
+    "verified": 5,
+    "snapshot_done": 20,
+    "staged": 45,
+    "migration_started": 55,
+    "migration_done": 70,
+    "cutover_started": 80,
+    "health_checked": 95,
+    "published": 100,
+    "rolled_back": 100,
+    "failed": 100,
+}
+
 
 def update_progress(root: Path, job) -> tuple[str | None, int | None]:
     """Project only the matching update job's allow-listed public host phase."""
-    if job.kind != "update" or job.state not in ACTIVE_STATES:
+    if job.kind not in {"update", "ota-update"} or job.state not in ACTIVE_STATES:
         return None, None
-    value = read_json(root / "public/host-status.json")
+    value = read_json(
+        root
+        / (
+            "public/ota-status.json"
+            if job.kind == "ota-update"
+            else "public/host-status.json"
+        )
+    )
     phase = value.get("phase")
+    progress = OTA_PROGRESS_PERCENT if job.kind == "ota-update" else UPDATE_PROGRESS_PERCENT
     if (
-        value.get("state") != "updating"
-        or value.get("job_id") != job.id
+        (
+            value.get("operation_id") != job.id
+            if job.kind == "ota-update"
+            else value.get("state") != "updating" or value.get("job_id") != job.id
+        )
         or type(phase) is not str
-        or phase not in UPDATE_PROGRESS_PERCENT
+        or phase not in progress
     ):
         return None, None
-    return phase, UPDATE_PROGRESS_PERCENT[phase]
+    return phase, progress[phase]
 
 
 def host_root(settings) -> Path:

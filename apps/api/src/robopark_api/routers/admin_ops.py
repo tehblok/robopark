@@ -26,6 +26,7 @@ from robopark_api.ops_schemas import (
     AvailableUpdateOut,
     HostCapabilitiesOut,
     HostOperationIn,
+    HostOperationKind,
     HostResultOut,
     ReleaseStatusOut,
     SystemHealthOut,
@@ -43,6 +44,7 @@ from robopark_api.services.ops.jobs import (
     is_maintenance_active,
     load_job,
 )
+from robopark_api.services.ops.ota_uploads import OtaUploadError, OtaUploadStore
 from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
 from robopark_api.services.ops.runner import (
     RESTORE_PHRASE,
@@ -390,6 +392,21 @@ def post_host_operation(
     settings: Settings = Depends(get_settings),
 ):
     identity = str(payload.operation_id)
+    if payload.kind is HostOperationKind.OTA_UPDATE:
+        try:
+            bridge = _bridge_root(settings)
+            upload = OtaUploadStore(
+                resolved_ops_dir(settings) / "ota-uploads", bridge / "ota-uploads",
+                max_bytes=settings.ops_max_upload_bytes,
+            ).status(payload.upload_id, actor_id=royal.id)
+            if (
+                upload.state != "verified"
+                or upload.sha256 != payload.sha256
+                or upload.version != payload.version
+            ):
+                raise OtaUploadError("ota_upload_not_verified")
+        except OtaUploadError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     try:
         receipt = operation_registry.reserve(
             db,
