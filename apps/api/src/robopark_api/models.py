@@ -179,6 +179,9 @@ class PrivilegedRecoveryCode(Base):
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
     code_hash: Mapped[str] = mapped_column(String(64))
+    hash_version: Mapped[str] = mapped_column(
+        String(32), default="scrypt-v1", server_default="legacy-hmac-v1"
+    )
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

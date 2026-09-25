@@ -16,6 +16,8 @@ from robopark_api.services.ops.archives import KIND_RELEASE, build_archive
 from robopark_api.services.ops.context import build_ops_context
 from robopark_api.services.ops.jobs import load_job, new_job, save_job
 
+pytestmark = pytest.mark.usefixtures("authorize_privileged_ops")
+
 
 @pytest.fixture
 def installed(test_settings, tmp_path):

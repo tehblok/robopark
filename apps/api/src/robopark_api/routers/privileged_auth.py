@@ -28,6 +28,10 @@ class RecoveryOut(BaseModel):
     recovery_codes: list[str]
 
 
+class RecoveryResetOut(RecoveryOut):
+    secret: str
+
+
 class ReauthorizeIn(ConfirmIn):
     operation_kind: str = Field(min_length=1, max_length=64)
     operation_id: str = Field(min_length=1, max_length=128)
@@ -57,6 +61,31 @@ def _throttle(settings: Settings) -> LoginThrottle:
     )
 
 
+def _context(
+    request: Request,
+    settings: Settings | None = None,
+    *,
+    operation_kind: str | None = None,
+    operation_id: str | None = None,
+) -> privileged_auth.AuditContext:
+    return privileged_auth.AuditContext(
+        ip=client_ip(request),
+        device=_device(request),
+        session_token_hash=_session_hash(request, settings) if settings else None,
+        operation_kind=operation_kind,
+        operation_id=operation_id,
+    )
+
+
+def _raise(error: privileged_auth.PrivilegedAuthError) -> None:
+    headers = {"Retry-After": str(error.retry_after)} if error.retry_after else None
+    raise HTTPException(
+        status_code=error.status_code,
+        detail=error.reason,
+        headers=headers,
+    ) from error
+
+
 @router.get("/status")
 def enrollment_status(
     royal: User = Depends(require_royal), db: Session = Depends(get_db)
@@ -73,13 +102,11 @@ def begin_enrollment(
     settings: Settings = Depends(get_settings),
 ) -> EnrollmentOut:
     try:
-        secret = privileged_auth.begin_enrollment(db, royal, settings)
+        secret = privileged_auth.begin_enrollment(
+            db, royal, settings, context=_context(request)
+        )
     except privileged_auth.PrivilegedAuthError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    privileged_auth.audit_decision(
-        db, actor=royal, action="privileged.enrollment.begin", outcome="success",
-        reason="pending", ip=client_ip(request), device=_device(request)
-    )
+        _raise(exc)
     return EnrollmentOut(secret=secret)
 
 
@@ -94,29 +121,19 @@ def confirm_enrollment(
     ip = client_ip(request)
     throttle = _throttle(settings)
     throttle_key = f"privileged-enrollment|{royal.id}|{ip}"
-    retry = throttle.retry_after(throttle_key, db=db)
-    if retry:
-        privileged_auth.audit_decision(
-            db, actor=royal, action="privileged.enrollment.confirm", outcome="denied",
-            reason="locked", ip=ip, device=_device(request)
-        )
-        raise HTTPException(status_code=429, detail="locked", headers={"Retry-After": str(retry)})
     try:
         codes = privileged_auth.confirm_enrollment(
-            db, royal, settings, password=payload.password, code=payload.code
+            db,
+            royal,
+            settings,
+            password=payload.password,
+            code=payload.code,
+            context=_context(request),
+            throttle=throttle,
+            throttle_key=throttle_key,
         )
     except privileged_auth.PrivilegedAuthError as exc:
-        throttle.register_failure(throttle_key, db=db)
-        privileged_auth.audit_decision(
-            db, actor=royal, action="privileged.enrollment.confirm", outcome="denied",
-            reason=str(exc), ip=client_ip(request), device=_device(request)
-        )
-        raise HTTPException(status_code=401, detail="invalid_credentials") from exc
-    throttle.reset(throttle_key, db=db)
-    privileged_auth.audit_decision(
-        db, actor=royal, action="privileged.enrollment.confirm", outcome="success",
-        reason="enrolled", ip=client_ip(request), device=_device(request)
-    )
+        _raise(exc)
     return RecoveryOut(recovery_codes=codes)
 
 
@@ -131,33 +148,74 @@ def reauthorize(
     ip = client_ip(request)
     throttle = _throttle(settings)
     throttle_key = f"privileged|{royal.id}|{ip}"
-    retry = throttle.retry_after(throttle_key, db=db)
-    if retry:
-        privileged_auth.audit_decision(
-            db, actor=royal, action="privileged.reauthorize", outcome="denied",
-            reason="locked", ip=ip, device=_device(request),
-            operation_kind=payload.operation_kind, operation_id=payload.operation_id
-        )
-        raise HTTPException(status_code=429, detail="locked", headers={"Retry-After": str(retry)})
     try:
         token = privileged_auth.issue_reauthorization(
-            db, royal, settings, session_token_hash=_session_hash(request, settings),
-            password=payload.password, code=payload.code,
-            operation_kind=payload.operation_kind, operation_id=payload.operation_id
+            db,
+            royal,
+            settings,
+            password=payload.password,
+            code=payload.code,
+            context=_context(
+                request,
+                settings,
+                operation_kind=payload.operation_kind,
+                operation_id=payload.operation_id,
+            ),
+            throttle=throttle,
+            throttle_key=throttle_key,
         )
     except privileged_auth.PrivilegedAuthError as exc:
-        throttle.register_failure(throttle_key, db=db)
-        privileged_auth.audit_decision(
-            db, actor=royal, action="privileged.reauthorize", outcome="denied",
-            reason=str(exc), ip=ip, device=_device(request),
-            operation_kind=payload.operation_kind, operation_id=payload.operation_id
-        )
-        detail = "privileged_enrollment_required" if str(exc) == "privileged_enrollment_required" else "invalid_credentials"
-        raise HTTPException(status_code=409 if detail.endswith("required") else 401, detail=detail) from exc
-    throttle.reset(throttle_key, db=db)
-    privileged_auth.audit_decision(
-        db, actor=royal, action="privileged.reauthorize", outcome="success",
-        reason="issued", ip=ip, device=_device(request),
-        operation_kind=payload.operation_kind, operation_id=payload.operation_id
-    )
+        _raise(exc)
     return TokenOut(token=token, expires_in=privileged_auth.REAUTH_TTL_SECONDS)
+
+
+@router.post("/recovery/reset", response_model=RecoveryResetOut)
+def reset_recovery(
+    payload: ConfirmIn,
+    request: Request,
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> RecoveryResetOut:
+    throttle = _throttle(settings)
+    throttle_key = f"privileged-recovery|{royal.id}|{client_ip(request)}"
+    try:
+        secret, codes = privileged_auth.reset_with_recovery(
+            db,
+            royal,
+            settings,
+            password=payload.password,
+            code=payload.code,
+            context=_context(request),
+            throttle=throttle,
+            throttle_key=throttle_key,
+        )
+    except privileged_auth.PrivilegedAuthError as exc:
+        _raise(exc)
+    return RecoveryResetOut(secret=secret, recovery_codes=codes)
+
+
+@router.post("/recovery/rotate", response_model=RecoveryOut)
+def rotate_recovery(
+    payload: ConfirmIn,
+    request: Request,
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> RecoveryOut:
+    throttle = _throttle(settings)
+    throttle_key = f"privileged-recovery|{royal.id}|{client_ip(request)}"
+    try:
+        codes = privileged_auth.rotate_recovery_codes(
+            db,
+            royal,
+            settings,
+            password=payload.password,
+            code=payload.code,
+            context=_context(request),
+            throttle=throttle,
+            throttle_key=throttle_key,
+        )
+    except privileged_auth.PrivilegedAuthError as exc:
+        _raise(exc)
+    return RecoveryOut(recovery_codes=codes)

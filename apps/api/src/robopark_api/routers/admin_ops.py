@@ -108,24 +108,18 @@ def _require_privileged(
 ) -> None:
     token = request.headers.get("X-Privileged-Authorization", "")
     enrolled = privileged_auth.enrolled(db, actor.id)
-    valid = bool(token) and enrolled and privileged_auth.consume_reauthorization(
+    context = privileged_auth.AuditContext(
+        ip=client_ip(request),
+        device=request.headers.get("user-agent"),
+        session_token_hash=_token_hash(request, settings),
+        operation_kind=str(operation_kind),
+        operation_id=str(operation_id),
+    )
+    valid = privileged_auth.consume_reauthorization(
         db,
         actor,
         raw_token=token,
-        session_token_hash=_token_hash(request, settings),
-        operation_kind=operation_kind,
-        operation_id=operation_id,
-    )
-    privileged_auth.audit_decision(
-        db,
-        actor=actor,
-        action="privileged.operation",
-        outcome="success" if valid else "denied",
-        reason="authorized" if valid else ("token_invalid" if enrolled else "not_enrolled"),
-        ip=client_ip(request),
-        device=request.headers.get("user-agent"),
-        operation_kind=operation_kind,
-        operation_id=operation_id,
+        context=context,
     )
     if not valid:
         raise HTTPException(

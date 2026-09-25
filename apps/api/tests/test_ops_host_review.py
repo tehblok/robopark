@@ -22,6 +22,8 @@ from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.ops import host_bridge
 from robopark_api.services.ops.jobs import load_job, new_job, save_job
 
+pytestmark = pytest.mark.usefixtures("authorize_privileged_ops")
+
 
 @pytest.fixture
 def installed(test_settings, tmp_path, monkeypatch):

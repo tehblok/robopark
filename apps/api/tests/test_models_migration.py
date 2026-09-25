@@ -3,6 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
@@ -10,6 +11,7 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import BigInteger, LargeBinary, create_engine, inspect, select, text
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from robopark_api import models, notification_delivery_models, schedule_models  # noqa: F401
@@ -127,7 +129,82 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
 def test_alembic_head_is_privileged_auth():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0044_privileged_auth"]
+    assert script.get_heads() == ["0045_privileged_recovery_hashes"]
+
+
+def test_privileged_audit_is_immutable_after_sqlite_migration(
+    sqlite_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "head")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO privileged_auth_audit "
+                "(action, outcome, actor_username, actor_role) "
+                "VALUES ('test', 'denied', 'royal', 'royal')"
+            )
+        )
+    with (
+        pytest.raises(DBAPIError, match="privileged_auth_audit_immutable"),
+        engine.begin() as connection,
+    ):
+        connection.execute(text("UPDATE privileged_auth_audit SET outcome = 'success'"))
+    with (
+        pytest.raises(DBAPIError, match="privileged_auth_audit_immutable"),
+        engine.begin() as connection,
+    ):
+        connection.execute(text("DELETE FROM privileged_auth_audit"))
+
+
+def test_privileged_audit_postgresql_migration_emits_update_delete_trigger():
+    api_dir = Path(__file__).parents[1]
+    script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
+    module = script.get_revision("0044_privileged_auth").module
+    statements = []
+
+    class FakeBind:
+        class dialect:
+            name = "postgresql"
+
+    class FakeOp:
+        get_bind = staticmethod(lambda: FakeBind())
+        create_table = staticmethod(lambda *args, **kwargs: None)
+        create_index = staticmethod(lambda *args, **kwargs: None)
+        execute = staticmethod(statements.append)
+
+    original = module.op
+    module.op = FakeOp()
+    try:
+        module.upgrade()
+    finally:
+        module.op = original
+    ddl = " ".join(statements)
+    assert "BEFORE UPDATE OR DELETE" in ddl
+    assert "RAISE EXCEPTION 'privileged_auth_audit_immutable'" in ddl
+
+
+def test_privileged_recovery_hash_migration_labels_legacy_rows(
+    sqlite_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0044_privileged_auth")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO privileged_recovery_codes (id, user_id, code_hash) "
+                "VALUES (1, 999, 'legacy-keyed-digest')"
+            )
+        )
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.scalar(
+            text("SELECT hash_version FROM privileged_recovery_codes WHERE id = 1")
+        ) == "legacy-hmac-v1"
 
 
 def test_sync_closure_scan_migration_adds_review_index(sqlite_database_url, monkeypatch):
@@ -153,7 +230,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
         "idempotency_key", "lease_owner", "lease_until",
     }
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0044_privileged_auth"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0045_privileged_recovery_hashes"
 
 
 def test_schedule_series_lookup_index_is_used(sqlite_database_url, monkeypatch):

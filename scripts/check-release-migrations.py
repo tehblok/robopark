@@ -24,7 +24,7 @@ def check_release_migrations(root: Path) -> list[str]:
         ]
     except (CommandError, KeyError, OSError, TypeError, ValueError) as error:
         return [f"release_migration_check_failed: {error}"]
-    if actual == declared == policy == "0044_privileged_auth":
+    if actual == declared == policy == "0045_privileged_recovery_hashes":
         return []
     return [f"actual={actual} metadata={declared} policy={policy}"]
 

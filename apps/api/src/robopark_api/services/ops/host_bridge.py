@@ -57,6 +57,8 @@ UPDATE_PROGRESS_PERCENT = {
     "stopping": 58,
     "snapshotting": 60,
     "snapshotted": 65,
+    "snapshotting_final": 65,
+    "snapshotted_final": 65,
     "tools_staging": 66,
     "tools_staged": 68,
     "publishing": 70,

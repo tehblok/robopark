@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from conftest import login_as, role_id_for
 from robopark_api.models import User
 from robopark_api.security import hash_password
@@ -7,6 +9,8 @@ from robopark_api.services import rbac
 from robopark_api.services.ops.archives import KIND_RELEASE, build_archive
 from robopark_api.services.ops.jobs import STATE_RUNNING, new_job, save_job
 from robopark_api.services.ops.runner import UPDATE_PHRASE
+
+pytestmark = pytest.mark.usefixtures("authorize_privileged_ops")
 
 
 def test_ops_upload_keeps_only_one_archive_copy_in_python_memory():
@@ -141,13 +145,14 @@ def test_host_dispatch_abort_is_409_and_preserves_maintenance(client, seed_royal
     from robopark_api.services.ops.jobs import is_maintenance_active, load_job
 
     login_as(client, "royal", "secret")
+    headers = client.privileged_headers("abort", "abort")
     ops = Path(test_settings.ops_dir)
     job = new_job("update", exempt_token_hash="not-this-session")
     job.state = STATE_RUNNING
     job.phase = "awaiting_rebuild"
     job.extra = {"host_updater": True, "host_dispatch": "dispatched"}
     save_job(ops, job)
-    response = client.post("/admin/ops/abort")
+    response = client.post("/admin/ops/abort", headers=headers)
     assert response.status_code == 409
     assert response.json()["detail"] == "host_update_dispatched"
     assert load_job(ops).state == STATE_RUNNING

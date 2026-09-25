@@ -71,7 +71,12 @@ class LoginThrottle:
         return max(1, math.ceil(remaining)) if remaining > 0 else 0
 
     def register_failure(
-        self, key: str, *, db: Session | None = None, now: datetime | None = None
+        self,
+        key: str,
+        *,
+        db: Session | None = None,
+        now: datetime | None = None,
+        commit: bool = True,
     ) -> None:
         """Atomically add a failure so every API worker sees the same count."""
         moment = self._now(now)
@@ -133,9 +138,10 @@ class LoginThrottle:
                     updated_at=moment,
                 )
             )
-            session.commit()
+            if commit:
+                session.commit()
 
-    def reset(self, key: str, *, db: Session | None = None) -> None:
+    def reset(self, key: str, *, db: Session | None = None, commit: bool = True) -> None:
         """Clear state after a successful attempt."""
         with self._session(db) as session:
             session.execute(
@@ -143,7 +149,8 @@ class LoginThrottle:
                     AuthThrottleState.key_hash == self._key_hash(key)
                 )
             )
-            session.commit()
+            if commit:
+                session.commit()
 
 
 _login_throttle: LoginThrottle | None = None
