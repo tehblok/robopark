@@ -177,6 +177,42 @@ No full suite, Docker run, soak or load test was run. The existing Python files 
 not globally Ruff-format-clean; the bounded lint check for the touched files has no
 errors, and `git diff --check` is the whitespace gate for this remediation.
 
+## Independent media reliability remediation — close the bind gap
+
+Commit: `941ae79a` (`fix(sync): bind review media before upload`).
+
+### Fixed invariants
+
+- The review UUID is allocated before upload. IndexedDB writes the review action and
+  media record atomically, so a close/reload cannot leave an acknowledged upload
+  without its durable action identity.
+- Upload creation carries the exact action UUID and sync device id. The authenticated
+  actor remains server-derived; the server validates both client identifiers and
+  persists the dependency before the first chunk. Exact retry is idempotent and a
+  different dependency is rejected.
+- A legacy confirmed upload that cleanup already removed no longer strands the
+  review. `media_dependency_pending`/missing resets the retained local blob and the
+  same action to retryable state, recreates the same media identity, and retries the
+  same action UUID/idempotency key without a duplicate Tracker effect.
+- `conflict` and `attention` are nonterminal on client and server. Neither produces a
+  terminal media acknowledgement or durable conflict receipt. Bound media survives
+  beyond seven days until conflict resolution; only a confirmed action starts the
+  terminal seven-day retention clock.
+- No schema change was necessary; release migration head remains
+  `0050_media_action_dependency`.
+
+### Bounded PASS evidence
+
+- Web atomic/reupload/retention/workbench tests: four files, 165 passed.
+- Web production build: passed. Web lint: exit 0 with the same 16 unrelated warnings.
+- API media/offline/migration selection: 28 passed, 28 deselected; one upstream
+  Starlette deprecation warning.
+- Model/migration selection: 3 passed, 31 deselected.
+- Release migration checker: `Release migration heads agree.`
+- Targeted Ruff check and format check: passed. `git diff --check`: passed.
+
+No full suite, browser matrix, Docker, soak or load test was run.
+
 ## Pre-merge state
 
 - Base reviewed HEAD: `b42775597d9ba95eb1c8b1f69edd1584aa0562ee`.
