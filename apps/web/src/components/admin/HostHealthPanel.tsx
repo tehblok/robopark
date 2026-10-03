@@ -60,15 +60,16 @@ export function HostHealthPanel() {
       {data.storage.space_pressure && data.storage.cleanup_failed == null && !cleanupBusy && <Alert tone="error">Свободного места недостаточно; результат автоочистки неизвестен.</Alert>}
       {data.process.memory_pressure?.failed && <Alert tone="error">Давление памяти сохраняется после очистки кэша. Перезапуск не выполнялся.</Alert>}
     </Panel>}
-    {data.capabilities && <Panel density="dense" title="Аппаратные возможности" hint="Ускорение выбирается только после проверки; при отказе остаётся software JPEG.">
+    {data.capabilities && <Panel density="dense" title="Аппаратные возможности" hint="Здесь показаны обнаруженные признаки платформы и драйверов. Это не проверка работы ускорителей.">
       {data.capabilities.source_state === 'invalid'
         ? <Alert tone="error">Повреждены сведения о возможностях хоста. Проверьте host bridge и его журнал; аппаратное ускорение не подтверждено.</Alert>
         : data.capabilities.source_state === 'stale'
         ? <Alert tone="warning">Проверка аппаратных возможностей хоста устарела. Проверьте запуск host doctor; прежний профиль не подтверждён.</Alert>
         : data.capabilities.source_state === 'missing'
         ? <Alert tone="warning">Проверка аппаратных возможностей хоста ещё не получена.</Alert>
-        : <><p>Профиль: {data.capabilities.profile} · JPEG: {data.capabilities.jpeg_backend}</p>
-          <p>NPU: {data.capabilities.npu_available ? 'доступен' : 'нет'} · CUDA: {data.capabilities.cuda_available ? 'доступна' : 'нет'}</p></>}
+        : <><p>Профиль: {data.capabilities.profile} · JPEG: {data.capabilities.jpeg_backend === 'software' ? 'программная обработка' : data.capabilities.jpeg_backend}</p>
+          {data.capabilities.jpeg_backend === 'software' && <p>Аппаратный обработчик JPEG в Robopark пока не подключён.</p>}
+          <p>Драйвер NPU: {data.capabilities.npu_available ? 'обнаружен' : 'не обнаружен'} · Компоненты CUDA: {data.capabilities.cuda_available ? 'обнаружены' : 'не обнаружены'}</p></>}
     </Panel>}
     <Panel density="dense" title="Резервная копия" hint="Подтверждение появляется после проверки снимка и сохранения копии на хосте командой backup. Ручные снимки показаны в разделе обслуживания.">
       <p>{data.backup.verified_at == null ? 'Проверенная копия ещё не отмечена.' : `Последняя проверенная копия: ${stamp(data.backup.verified_at)}`}</p>
