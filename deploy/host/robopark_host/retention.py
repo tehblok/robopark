@@ -787,7 +787,7 @@ def retain_storage(
     try:
         paths.state.mkdir(parents=True, exist_ok=True)
         paths.lock_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-        with host_operation(paths):
+        with host_operation(paths, check_space=False):
             report = cleanup_storage_roots(
                 roots,
                 StorageBudget.for_path(paths.var),

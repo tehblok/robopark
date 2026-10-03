@@ -196,6 +196,9 @@ def check_app_start(paths):
 
 
 def _phase(paths, journal, phase, **changes):
+    from .storage_compatibility import require_storage_for_release_operation
+
+    require_storage_for_release_operation(paths, check_space=False)
     journal.update(changes, phase=phase)
     from .restore_retention import record
 
@@ -571,14 +574,17 @@ def _recover(paths, journal, runner):
 
 def run_restore(paths, request, runner):
     """Run/recover one authenticated root claim under its caller's host.lock."""
-    from .updater import _maintenance
+    from .storage_compatibility import require_storage_operations
 
     journal = _load(paths)
+    resumed = bool(journal and journal["request"] == request)
+    require_storage_operations(paths, check_space=not resumed)
+    from .updater import _maintenance
+
     if journal and journal["request"] == request and journal["phase"] in TERMINAL:
         return _result(journal)
     if journal and journal["request"] != request and journal["phase"] not in TERMINAL:
         raise ReleaseError("manual_recovery_required")
-    resumed = bool(journal and journal["request"] == request)
     if not resumed:
         journal = {
             "schema": 2,
@@ -778,6 +784,9 @@ def _recover_owned(paths, runner, *, automatic):
 
 def recover_restore(paths, runner, *, automatic=False):
     """Recover a private claim; boot retries are bounded, explicit root retry is not."""
+    from .storage_compatibility import require_storage_operations
+
+    require_storage_operations(paths, check_space=False)
     from .state import exclusive_lock
     from .updater import _maintenance
 

@@ -141,6 +141,13 @@ def _payload(repository: Path) -> dict[str, bytes]:
     runtime = repository / "deploy/ota/robopark_ota"
     for source in sorted(runtime.glob("*.py")):
         payload[f"robopark_ota/{source.name}"] = source.read_bytes()
+    # Shared bootstrap code must work before /opt/robopark exists. Keep it in
+    # its own package so imports cannot shadow an installed robopark_host.
+    payload["robopark_storage/__init__.py"] = b""
+    for name in ("storage_layout.py", "storage_setup.py", "storage_watchdog.py"):
+        payload[f"robopark_storage/{name}"] = (
+            repository / "deploy/host/robopark_host" / name
+        ).read_bytes()
     for relative in _tracked_files(repository):
         payload[f"release/{relative.as_posix()}"] = (repository / relative).read_bytes()
     return payload

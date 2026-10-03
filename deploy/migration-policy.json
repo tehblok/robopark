@@ -2,7 +2,8 @@
   "schema": 1,
   "target_head": "0056_host_terminal",
   "known_heads": [
-    "0055_media_upload_park"
+    "0055_media_upload_park",
+    "0056_host_terminal"
   ],
   "bridge_before": "0.2.0-rc.8",
   "bridge_version": "0.2.0-rc.8",

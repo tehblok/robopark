@@ -70,9 +70,11 @@ TMPFILES_SOURCE = Path("deploy/tmpfiles.d/robopark.conf")
 TMPFILES_TARGET = Path("etc/tmpfiles.d/robopark.conf")
 
 
-def _activate_system_files(paths, candidate):
+def _activate_system_files(paths, candidate, *, check_space=True):
+    from .storage_compatibility import refresh_storage_release_guard
     from .terminal_install import TERMINAL_UNITS, terminal_payload_present
 
+    refresh_storage_release_guard(paths, candidate, check_space=check_space)
     terminal_payload_present(candidate)
     for unit in (*UNITS, *TERMINAL_UNITS):
         source = candidate / "deploy/systemd" / unit
@@ -389,6 +391,9 @@ def _journal_path(paths):
 
 
 def _phase(paths, journal, phase, **changes):
+    from .storage_compatibility import require_storage_for_release_operation
+
+    require_storage_for_release_operation(paths, check_space=False)
     journal.update(changes)
     journal["phase"] = phase
     atomic_write_json(_journal_path(paths), journal)
@@ -405,6 +410,9 @@ def _public_directory(paths):
 
 
 def _publish_status(paths, payload):
+    from .storage_compatibility import require_storage_for_release_operation
+
+    require_storage_for_release_operation(paths, check_space=False)
     _public_directory(paths)
     atomic_write_json(paths.state / "host-status.json", payload)
     atomic_write_json(paths.ops / "public/host-status.json", payload, mode=0o644)
@@ -477,6 +485,9 @@ def _publish_release_lifecycle(paths, manifest):
 
 
 def _maintenance(paths, enabled):
+    from .storage_compatibility import require_storage_for_release_operation
+
+    require_storage_for_release_operation(paths, check_space=False)
     _public_directory(paths)
     for path in (
         paths.state / "maintenance.json",
@@ -496,6 +507,9 @@ def _maintenance(paths, enabled):
 
 def publish_result(paths, payload):
     """The API reads public results without gaining write access to host state."""
+    from .storage_compatibility import require_storage_for_release_operation
+
+    require_storage_for_release_operation(paths, check_space=False)
     _public_directory(paths)
     atomic_write_json(paths.ops / "rebuild.result", payload)
     atomic_write_json(paths.ops / "public/rebuild.result", payload, mode=0o644)
@@ -828,6 +842,9 @@ def _cleanup_staging(paths, journal, runner, *, discard_displaced=True):
 
 
 def _retention(paths, journal):
+    from .storage_compatibility import require_storage_for_release_operation
+
+    require_storage_for_release_operation(paths, check_space=False)
     receipts = _successful_release_receipts(paths)
     keep = _retained_successful_releases(paths, receipts=receipts)
     keep_configs = {
@@ -875,9 +892,16 @@ def apply_release(
     request: UpdateRequest, paths: HostPaths, runner: Runner
 ) -> UpdateResult:
     try:
+        from .storage_compatibility import (
+            require_storage_for_release_operation,
+            require_storage_release,
+        )
+
+        require_storage_for_release_operation(paths)
         raw = request.read_artifact(paths)
         key = admission_key(paths)
         previous = _release_target(paths, paths.current)
+        require_storage_release(paths, previous)
         current_key = directory_key(paths, previous)
         current_manifest = verify_directory(previous, current_key)
         completed = _load_journal(paths)
@@ -962,6 +986,9 @@ def apply_release(
         try:
             phase("unpacking")
             release.unpack(stage)
+            from .storage_compatibility import require_storage_release
+
+            require_storage_release(paths, stage)
             phase("unpacked")
             require_record_capacity(paths)
             reserve_images(paths, candidate, request.job_id)
@@ -1041,10 +1068,12 @@ def apply_release(
             verify_directory(stage, key)
             phase("tools_staged")
             phase("publishing")
+            require_storage_release(paths, stage)
             os.replace(stage, candidate)
             sync_directory(paths.releases)
             phase("published")
             phase("switching", cutover_started=True)
+            require_storage_release(paths, candidate)
             atomic_symlink(previous, paths.previous)
             atomic_symlink(candidate, paths.current)
             atomic_symlink(
@@ -1052,12 +1081,12 @@ def apply_release(
                 paths.state / "current-compose.json",
             )
             phase("switched")
+            _activate_system_files(paths, candidate)
             from .terminal_install import (
                 prepare_terminal_installation,
                 terminal_payload_present,
             )
             if terminal_payload_present(candidate):
-                _activate_system_files(paths, candidate)
                 atomic_symlink(candidate / "deploy/host", paths.opt / "host-tools")
                 prepare_terminal_installation(paths, candidate, runner)
             phase("migrating", migration_started=True)
@@ -1491,6 +1520,12 @@ def reconcile_after_exit(paths: HostPaths, runner: Runner) -> RecoveryResult:
 
 
 def recover_interrupted_update(paths: HostPaths, runner: Runner) -> RecoveryResult:
+    from .storage_compatibility import require_storage_for_release_operation
+
+    try:
+        require_storage_for_release_operation(paths, check_space=False)
+    except ReleaseError as error:
+        return UpdateResult("maintenance", str(error))
     with exclusive_lock(paths.host_lock):
         from .restore import active_restore
 
@@ -1538,10 +1573,13 @@ def recover_interrupted_update(paths: HostPaths, runner: Runner) -> RecoveryResu
                 try:
                     candidate = paths.releases / journal["candidate"]
                     verify_directory(candidate, directory_key(paths, candidate))
+                    from .storage_compatibility import require_storage_release
+
+                    require_storage_release(paths, candidate, check_space=False)
                     if paths.current.resolve() != candidate:
                         raise ReleaseError("manual_recovery_required")
                     # Replay activation after a partial unit copy, before accepting health.
-                    _activate_system_files(paths, candidate)
+                    _activate_system_files(paths, candidate, check_space=False)
                     atomic_symlink(candidate / "deploy/host", paths.opt / "host-tools")
                     return _complete(paths, journal, runner)
                 except Exception as exc:

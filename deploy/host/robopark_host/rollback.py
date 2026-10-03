@@ -273,6 +273,9 @@ def rollback_release(paths, journal, runner, phase):
     """Idempotent even if power is lost halfway through a snapshot restore."""
     previous = paths.releases / journal["previous"]
     verify_directory(previous, None)
+    from .storage_compatibility import require_storage_release
+
+    require_storage_release(paths, previous, check_space=False)
     if journal["writes_resumed"]:
         raise ReleaseError("manual_recovery_required")
     quiesce_terminal(paths, runner, reason="rollback")
@@ -285,6 +288,9 @@ def rollback_release(paths, journal, runner, phase):
     restore_previous_link(paths, journal["original_previous"])
     if journal["snapshot_done"]:
         restore_units(paths, journal)
+    from .storage_compatibility import refresh_storage_release_guard
+
+    refresh_storage_release_guard(paths, previous, check_space=False)
     atomic_symlink(previous / "deploy/host", paths.opt / "host-tools")
     runner.run(["systemctl", "daemon-reload"], timeout=60)
     runner.run(["systemctl", "restart", "robopark.service"], timeout=900)

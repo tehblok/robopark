@@ -563,7 +563,7 @@ def scheduled(paths, runner):
     from .state import HostBusy
 
     try:
-        with host_operation(paths):
+        with host_operation(paths, check_space=False):
             return maintenance(paths, runner)
     except HostBusy:
         return {"busy": True}

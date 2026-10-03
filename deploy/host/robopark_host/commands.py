@@ -60,6 +60,14 @@ DESTRUCTIVE_CONFIRMATIONS = {
     OperationKind.DOCKER_IMAGE_EXECUTE: "CLEAN ROBOPARK IMAGES",
     OperationKind.BUILDER_CACHE_EXECUTE: "CLEAN ROBOPARK BUILD CACHE",
 }
+_LOW_SPACE_OPERATION_KINDS = {
+    OperationKind.CLEANUP_PREVIEW,
+    OperationKind.CLEANUP_EXECUTE,
+    OperationKind.DOCKER_IMAGE_PREVIEW,
+    OperationKind.DOCKER_IMAGE_EXECUTE,
+    OperationKind.BUILDER_CACHE_PREVIEW,
+    OperationKind.BUILDER_CACHE_EXECUTE,
+}
 SAFE_CONFIRMATIONS = {OperationKind.BACKUP: "BACKUP ROBOPARK"}
 _DYNAMIC_CONFIRMATION_KINDS = {
     OperationKind.PACKAGE_UPDATE,
@@ -648,6 +656,10 @@ def execute_typed_operation(
     operation = validate_typed_operation(
         request, authorization_fresh=authorization_fresh
     )
+    from .storage_compatibility import require_storage_operations
+
+    check_space = _typed_operation_check_space(paths, operation)
+    require_storage_operations(paths, check_space=check_space)
     if operation.kind in {OperationKind.USB_FORMAT, OperationKind.USB_SELECT}:
         # Device safety is request validation, not a host-effect failure. Resolve it
         # before publishing a dispatch checkpoint so an invalid device cannot strand
@@ -658,10 +670,59 @@ def execute_typed_operation(
             destructive=operation.kind is OperationKind.USB_FORMAT,
         )
     with exclusive_lock(paths.ops / "typed-operation.lock"):
-        return _execute_typed_operation_locked(paths, operation, effects, tuple(devices))
+        return _execute_typed_operation_locked(
+            paths, operation, effects, tuple(devices), check_space=check_space
+        )
 
 
-def _execute_typed_operation_locked(paths, operation, effects, devices):
+def _typed_operation_check_space(paths, operation) -> bool:
+    """Keep fresh admission strict while allowing durable recovery to make progress."""
+
+    if operation.kind in _LOW_SPACE_OPERATION_KINDS | {OperationKind.ROLLBACK}:
+        return False
+    if operation.kind not in {OperationKind.OTA_UPDATE, OperationKind.BACKUP_RESTORE}:
+        return True
+    checkpoint = (
+        paths.state
+        / "typed-operation-dispatch"
+        / f"{operation.operation_id}.json"
+    )
+    if checkpoint.exists() or checkpoint.is_symlink():
+        try:
+            saved = _read(checkpoint, limit=65536)
+        except (OSError, ReleaseError, ValueError):
+            return True
+        if saved == {
+            "schema": 1,
+            "request": operation.request,
+            "state": "dispatched",
+        }:
+            return False
+    if operation.kind is OperationKind.BACKUP_RESTORE:
+        if _matching_restore_journal(
+            paths, operation.operation_id, operation.actor_user_id
+        ):
+            return False
+    return True
+
+
+def _matching_restore_journal(paths, operation_id, actor_user_id) -> bool:
+    from .restore import _load as load_restore_journal
+
+    try:
+        journal = load_restore_journal(paths)
+    except ReleaseError:
+        return False
+    return bool(
+        journal is not None
+        and journal["request"].get("job_id") == operation_id
+        and journal["request"].get("actor_user_id") == actor_user_id
+    )
+
+
+def _execute_typed_operation_locked(
+    paths, operation, effects, devices, *, check_space=True
+):
     from .builder_cleanup import BuilderCleanupPartialError
     from .image_retention import ImageCleanupPartialError
     from .operation_capabilities import (
@@ -671,6 +732,7 @@ def _execute_typed_operation_locked(paths, operation, effects, devices):
     from .ota_update import OtaFinalizationPending
     from .retention import CleanupPartialError
     from .state import read_operation_progress, write_operation_progress
+    from .storage_layout import StorageError
 
     receipt = paths.state / "typed-operation-receipts" / f"{operation.operation_id}.json"
     if receipt.is_file():
@@ -685,7 +747,13 @@ def _execute_typed_operation_locked(paths, operation, effects, devices):
             or result.get("state") not in {"succeeded", "failed"}
         ):
             raise ReleaseError("invalid_command_receipt")
-        write_operation_progress(paths, operation.operation_id, result["state"], 100)
+        write_operation_progress(
+            paths,
+            operation.operation_id,
+            result["state"],
+            100,
+            check_space=check_space,
+        )
         return result
     intent = paths.state / "typed-operation-intents" / f"{operation.operation_id}.json"
     if intent.exists() or intent.is_symlink():
@@ -707,10 +775,14 @@ def _execute_typed_operation_locked(paths, operation, effects, devices):
         dispatched = True
     progress = read_operation_progress(paths, operation.operation_id)
     if progress is None:
-        write_operation_progress(paths, operation.operation_id, "accepted", 0)
+        write_operation_progress(
+            paths, operation.operation_id, "accepted", 0, check_space=check_space
+        )
         progress = read_operation_progress(paths, operation.operation_id)
     if progress["phase"] == "accepted":
-        write_operation_progress(paths, operation.operation_id, "executing", 50)
+        write_operation_progress(
+            paths, operation.operation_id, "executing", 50, check_space=check_space
+        )
     elif progress["phase"] != "executing":
         raise ReleaseError("invalid_operation_progress")
 
@@ -725,21 +797,29 @@ def _execute_typed_operation_locked(paths, operation, effects, devices):
             "error": error,
         }
         atomic_write_json(receipt, {"request": operation.request, "result": result})
-        write_operation_progress(paths, operation.operation_id, state, 100)
+        write_operation_progress(
+            paths, operation.operation_id, state, 100, check_space=check_space
+        )
         return result
 
     available = operation_capabilities(effects)[operation.kind.value]["available"]
     revision = operation.request["capability_revision"]
-    recovering_ota = dispatched and operation.kind is OperationKind.OTA_UPDATE
-    if not available and not recovering_ota:
+    recovering_effect = dispatched and operation.kind in {
+        OperationKind.OTA_UPDATE,
+        OperationKind.BACKUP_RESTORE,
+    }
+    if not available and not recovering_effect:
         return terminal("failed", {}, "manual_recovery_required" if dispatched else "capability_unavailable")
-    if revision != current_capability_revision(paths, effects) and not recovering_ota:
+    if revision != current_capability_revision(paths, effects) and not recovering_effect:
         return terminal("failed", {}, "manual_recovery_required" if dispatched else "capabilities_changed")
 
     if dispatched:
         try:
             reconciliation = effects.reconcile(operation)
         except OtaFinalizationPending:
+            raise
+        except StorageError:
+            # A transient mount/UUID/RO failure must keep recovery retryable.
             raise
         except Exception:
             reconciliation = None
@@ -762,6 +842,9 @@ def _execute_typed_operation_locked(paths, operation, effects, devices):
         detail = _perform_typed(effects, operation, devices)
         return terminal("succeeded", detail, None)
     except OtaFinalizationPending:
+        raise
+    except StorageError:
+        # Storage recovery is reconciled from the durable dispatch checkpoint.
         raise
     except CleanupPartialError as exc:
         return terminal("failed", {
@@ -2758,6 +2841,9 @@ def _claim_public(paths, request, active):
 
 
 def _finish(paths, request, result):
+    from .storage_compatibility import require_storage_operations
+
+    require_storage_operations(paths, check_space=False)
     public = _public(paths)
     atomic_write_json(public / "command-result.json", result, mode=0o644)
     receipts = paths.state / "command-receipts"
@@ -2768,7 +2854,46 @@ def _finish(paths, request, result):
     (paths.state / "command-request.json").unlink(missing_ok=True)
 
 
+def _storage_space_result(request, typed_kind):
+    if typed_kind is not None and (
+        typed_kind is not OperationKind.DIAGNOSTICS or "authorization" in request
+    ):
+        return {
+            "job_id": request["job_id"],
+            "operation_id": request["job_id"],
+            "kind": typed_kind.value,
+            "actor_user_id": request["actor_user_id"],
+            "state": "failed",
+            "detail": {},
+            "error": "storage_space_low",
+        }
+    return {
+        "job_id": request["job_id"],
+        "kind": request["kind"],
+        "actor_user_id": request["actor_user_id"],
+        "state": "failed",
+        "artifact": None,
+        "before": [],
+        "after": [],
+        "performed": [],
+        "failed": [],
+        "error": "storage_space_low",
+    }
+
+
 def _allow_attempt(paths, request):
+    from .storage_compatibility import require_storage_operations
+
+    try:
+        kind = OperationKind(request["kind"])
+    except (KeyError, ValueError):
+        kind = None
+    check_space = kind not in _LOW_SPACE_OPERATION_KINDS | {OperationKind.ROLLBACK}
+    if request.get("kind") == "restore" and _matching_restore_journal(
+        paths, request.get("job_id"), request.get("actor_user_id")
+    ):
+        check_space = False
+    require_storage_operations(paths, check_space=check_space)
     counter = paths.state / "command-attempts.json"
     invalid_restore_counter = False
     try:
@@ -2835,6 +2960,10 @@ def consume_commands(
     """All privileged work is serialized; API never chooses argv or output paths."""
     if paths.root == Path("/") and os.geteuid() != 0:
         return 1
+    from .storage_compatibility import require_storage_operations
+    from .storage_layout import StorageError
+
+    require_storage_operations(paths, check_space=False)
     from .operation_capabilities import (
         publish_operation_capabilities,
         publish_operation_context,
@@ -2855,6 +2984,32 @@ def consume_commands(
                 try:
                     request = _validate(_read(inbox), fresh=False)
                 except ReleaseError:
+                    inbox.unlink(missing_ok=True)
+                    return 1
+                try:
+                    typed_kind = OperationKind(request["kind"])
+                except (KeyError, ValueError):
+                    typed_kind = None
+                try:
+                    if typed_kind is not None and (
+                        typed_kind is not OperationKind.DIAGNOSTICS
+                        or "authorization" in request
+                    ):
+                        operation = validate_typed_operation(
+                            request, authorization_fresh=True
+                        )
+                        check_space = _typed_operation_check_space(paths, operation)
+                    else:
+                        check_space = True
+                    require_storage_operations(paths, check_space=check_space)
+                except ReleaseError:
+                    inbox.unlink(missing_ok=True)
+                    return 1
+                except StorageError as error:
+                    if error.code != "storage_space_low":
+                        raise
+                    result = _storage_space_result(request, typed_kind)
+                    _finish(paths, request, result)
                     inbox.unlink(missing_ok=True)
                     return 1
                 # Persist a private copy before removing the untrusted slot.
@@ -2916,13 +3071,25 @@ def consume_commands(
                 typed_kind is not OperationKind.DIAGNOSTICS or "authorization" in request
             ):
                 devices = typed_devices() if callable(typed_devices) else ()
-                result = execute_typed_operation(
-                    paths,
-                    request,
-                    effects,
-                    devices=devices,
-                    authorization_fresh=not resumed,
-                )
+                try:
+                    result = execute_typed_operation(
+                        paths,
+                        request,
+                        effects,
+                        devices=devices,
+                        authorization_fresh=not resumed,
+                    )
+                except StorageError as error:
+                    if error.code != "storage_space_low":
+                        raise
+                    operation = validate_typed_operation(
+                        request, authorization_fresh=not resumed
+                    )
+                    if not _typed_operation_check_space(paths, operation):
+                        # A durable dispatch or restore journal may represent a
+                        # partially applied effect. Preserve its pending claim.
+                        raise
+                    result = _storage_space_result(request, typed_kind)
                 _finish(paths, request, result)
                 # Refresh user-visible choices after the terminal receipt exists.
                 # Projection failures must never turn a completed host action into a
@@ -2933,7 +3100,14 @@ def consume_commands(
                 except Exception:
                     pass
                 return int(result["state"] != "succeeded")
-            if not _allow_attempt(paths, request):
+            try:
+                allowed = _allow_attempt(paths, request)
+            except StorageError as error:
+                if error.code != "storage_space_low":
+                    raise
+                _finish(paths, request, _storage_space_result(request, typed_kind))
+                return 1
+            if not allowed:
                 return 0
             if request["kind"] == "restore":
                 from .restore import run_restore

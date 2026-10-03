@@ -214,6 +214,9 @@ class OtaUpdateEngine:
         return value
 
     def _write_journal(self, request: OtaUpdateRequest, phase: str, **extra) -> dict:
+        from .storage_compatibility import require_storage_operations
+
+        require_storage_operations(self.paths, check_space=False)
         if phase not in _PHASES:
             raise ValueError("invalid_ota_phase")
         old = self._read_journal()
@@ -350,6 +353,9 @@ class OtaUpdateEngine:
             self._cleanup(request, None)
 
     def apply(self, request: OtaUpdateRequest) -> OtaUpdateReceipt:
+        from .storage_compatibility import require_storage_operations
+
+        require_storage_operations(self.paths, check_space=False)
         request = OtaUpdateRequest.from_dict(request.as_dict())
         with exclusive_lock(self.lock_path):
             receipt = self._existing_receipt(request)
@@ -377,6 +383,7 @@ class OtaUpdateEngine:
                         "ota_operation_conflict" if same_id else "ota_update_in_progress"
                     )
                 return self._recover_locked(old)
+            require_storage_operations(self.paths)
             journal = self._write_journal(request, "accepted")
             try:
                 package = self.store.admit(
@@ -471,6 +478,9 @@ class OtaUpdateEngine:
         return receipt
 
     def recover(self) -> OtaUpdateReceipt | None:
+        from .storage_compatibility import require_storage_operations
+
+        require_storage_operations(self.paths, check_space=False)
         with exclusive_lock(self.lock_path):
             journal = self._read_journal()
             if journal is None:
@@ -497,6 +507,11 @@ class SystemOtaUpdateRuntime:
         self.paths = paths
         self.runner = runner
         self.tuna_state: str | None = None
+
+    def _require_storage(self, *, check_space: bool = True) -> None:
+        from .storage_compatibility import require_storage_operations
+
+        require_storage_operations(self.paths, check_space=check_space)
 
     def _identity(self, request: OtaUpdateRequest) -> str:
         return str(request.operation_id)
@@ -645,15 +660,18 @@ class SystemOtaUpdateRuntime:
         return {"release": release, "rolled_back": True}
 
     def snapshot(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
+        self._require_storage()
         del package
         from .rollback import snapshot
-        from .updater import _maintenance, compose
+        from .storage_compatibility import require_storage_release
         from .terminal_install import quiesce_terminal
-        quiesce_terminal(self.paths, self.runner, reason="ota")
+        from .updater import _maintenance, compose
 
         current = self.paths.current.resolve(strict=True)
         if current.parent != self.paths.releases.resolve() or current.is_symlink():
             raise RuntimeError("ota_unsafe_current")
+        require_storage_release(self.paths, current)
+        quiesce_terminal(self.paths, self.runner, reason="ota")
         compose_link = self.paths.state / "current-compose.json"
         compose_target = compose_link.resolve(strict=True)
         if not compose_link.is_symlink() or not compose_target.is_relative_to(
@@ -708,6 +726,7 @@ class SystemOtaUpdateRuntime:
             raise RuntimeError("ota_snapshot_failed")
 
     def abort_snapshot(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
+        self._require_storage(check_space=False)
         del request, package
         from .runtime import bot_enabled
 
@@ -726,6 +745,7 @@ class SystemOtaUpdateRuntime:
         }
 
     def stage(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
+        self._require_storage()
         from .image_retention import record as record_images
         from .image_retention import require_record_capacity
         from .image_retention import reserve as reserve_images
@@ -774,6 +794,9 @@ class SystemOtaUpdateRuntime:
                 os.fchmod(manifest.fileno(), 0o644)
                 manifest.flush()
                 os.fsync(manifest.fileno())
+            from .storage_compatibility import require_storage_release
+
+            require_storage_release(self.paths, staging)
             journal = {
                 "job_id": identity,
                 "candidate": self._candidate_name(request),
@@ -815,6 +838,7 @@ class SystemOtaUpdateRuntime:
                 raise RuntimeError("ota_smoke_failed")
             self.runner.run(prefix + ["down", "--volumes", "--remove-orphans"], timeout=120)
             _sync_staged_tree(staging)
+            require_storage_release(self.paths, staging)
             self._record_staged_candidate(request)
             os.replace(staging, candidate)
             sync_directory(self.paths.releases)
@@ -824,6 +848,7 @@ class SystemOtaUpdateRuntime:
             raise
 
     def migrate(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
+        self._require_storage()
         from .updater import _verify_database_head, compose
 
         identity = self._identity(request)
@@ -845,15 +870,19 @@ class SystemOtaUpdateRuntime:
         _verify_database_head(self.paths, self.runner, package.manifest.migration_head)
 
     def cutover(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
+        self._require_storage()
         del package
         from .commands import ensure_backup_recovery_key
         from .rollback import atomic_symlink
-        from .updater import _activate_system_files
         from .terminal_install import prepare_terminal_installation
+        from .updater import _activate_system_files
 
         metadata = self._metadata(request)
         current = self.paths.releases / metadata["current"]
         candidate = self.paths.releases / metadata["candidate"]
+        from .storage_compatibility import require_storage_release
+
+        require_storage_release(self.paths, candidate)
         config = self.paths.state / "compose" / f"{request.operation_id}-production.json"
         ensure_backup_recovery_key(self.paths)
         atomic_symlink(current, self.paths.previous)
@@ -866,6 +895,7 @@ class SystemOtaUpdateRuntime:
         self.runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
 
     def health_check(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
+        self._require_storage()
         del request, package
         from .runtime import bot_enabled
 
@@ -879,6 +909,7 @@ class SystemOtaUpdateRuntime:
         reconcile_terminal_installation(self.paths, self.paths.current.resolve(), self.runner)
 
     def publish(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
+        self._require_storage()
         from .image_retention import maintenance as cleanup_images
         from .updater import _retention
 
@@ -938,7 +969,9 @@ class SystemOtaUpdateRuntime:
                 )
 
     def resume(self, request: OtaUpdateRequest) -> None:
+        self._require_storage(check_space=False)
         from robopark_ota.local_update import restart_enabled_tuna
+
         from .updater import _maintenance, _publish_status
 
         _maintenance(self.paths, False)
@@ -949,6 +982,7 @@ class SystemOtaUpdateRuntime:
         _publish_status(self.paths, status)
 
     def rollback(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
+        self._require_storage(check_space=False)
         del package
         from .rollback import (
             atomic_copy,
@@ -965,6 +999,10 @@ class SystemOtaUpdateRuntime:
         )
 
         metadata = self._metadata(request)
+        current = self.paths.releases / metadata["current"]
+        from .storage_compatibility import require_storage_release
+
+        require_storage_release(self.paths, current, check_space=False)
         from .terminal_install import quiesce_terminal
 
         quiesce_terminal(self.paths, self.runner, reason="rollback")
@@ -973,7 +1011,9 @@ class SystemOtaUpdateRuntime:
         self.runner.run(["systemctl", "stop", "robopark.service"], timeout=120)
         restore_data(self.paths, journal, self.runner)
         restore_units(self.paths, journal)
-        current = self.paths.releases / metadata["current"]
+        from .storage_compatibility import refresh_storage_release_guard
+
+        refresh_storage_release_guard(self.paths, current, check_space=False)
         tmpfiles_source = current / TMPFILES_SOURCE
         tmpfiles_target = self.paths.root / TMPFILES_TARGET
         if tmpfiles_source.is_symlink():
@@ -1024,6 +1064,7 @@ class SystemOtaUpdateRuntime:
         reconcile_terminal_installation(self.paths, current, self.runner)
 
     def cleanup(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
+        self._require_storage(check_space=False)
         del package
         from .rollback import discard_rollback_artifacts, sync_directory
 

@@ -92,8 +92,19 @@ def read_operation_progress(paths, operation_id: str) -> dict | None:
     return value
 
 
-def write_operation_progress(paths, operation_id: str, phase: str, progress: int) -> dict:
+def write_operation_progress(
+    paths,
+    operation_id: str,
+    phase: str,
+    progress: int,
+    *,
+    check_space: bool = True,
+) -> dict:
     """Atomically publish monotonic private progress suitable for crash resume."""
+
+    from .storage_compatibility import require_storage_operations
+
+    require_storage_operations(paths, check_space=check_space)
 
     if phase not in _PROGRESS_PHASES or type(progress) is not int or not 0 <= progress <= 100:
         raise ValueError("invalid_operation_progress")
@@ -148,12 +159,15 @@ def operation_pending(paths):
 
 
 @contextmanager
-def host_operation(paths):
+def host_operation(paths, *, check_space: bool = True):
     """Standalone ownership; internal helpers run under their caller's host.lock.
 
     A durable command claim closes the gap while a consumer hands host.lock to
     its worker. Maintenance keeps interrupted transactions exclusive after reboot.
     """
+    from .storage_compatibility import require_storage_operations
+
+    require_storage_operations(paths, check_space=check_space)
     try:
         with exclusive_lock(paths.host_lock, blocking=False):
             if operation_pending(paths):

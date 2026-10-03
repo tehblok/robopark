@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from . import storage
+
 SYSTEMD_UNITS = (
     "robopark-commands.service",
     "robopark-commands.path",
@@ -140,6 +142,8 @@ def _allocated_bytes(path: Path) -> int:
 def preview_owned_installation(
     plan: RemovalPlan, docker: DockerCli, targets: DockerTargets
 ) -> tuple[RemovalPreviewEntry, ...]:
+    storage.require_storage(plan.root, check_space=False)
+    storage.validate_removal_mounts(plan.root, plan.paths)
     entries = []
     for path in plan.paths:
         _validate_path(plan, path)
@@ -172,6 +176,8 @@ def preview_owned_installation(
 def remove_owned_installation(
     plan: RemovalPlan, docker: DockerRemoval, targets: DockerTargets
 ) -> None:
+    status = storage.require_storage(plan.root, check_space=False)
+    storage.validate_removal_mounts(plan.root, plan.paths)
     for target in plan.paths:
         _validate_path(plan, target)
     docker.remove_containers(targets.containers)
@@ -179,7 +185,13 @@ def remove_owned_installation(
     docker.remove_networks(targets.networks)
     docker.remove_images(targets.images)
     for target in sorted(plan.paths, key=lambda item: len(item.parts), reverse=True):
-        _remove_path(target)
+        if (status.get("mode") == "emmc-nvme-data"
+                and target in {plan.root / path.lstrip("/") for path in storage.TARGETS.values()}
+                and target.is_dir()):
+            for child in target.iterdir():
+                _remove_path(child)
+        else:
+            _remove_path(target)
 
 
 class DockerCli:

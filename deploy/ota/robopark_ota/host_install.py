@@ -18,6 +18,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
+from . import storage
 from .credentials import TunaConfiguration, seed_command, write_tuna_configuration
 from .diagnose import collect_local_diagnostics
 from .model import OtaRequirements
@@ -363,6 +364,7 @@ class HostInstallRuntime:
         ]
 
     def prepare_missing_docker(self) -> None:
+        storage.require_storage(self.root)
         if self.root == Path("/"):
             if os.geteuid() != 0:
                 raise PermissionError("root_required")
@@ -451,6 +453,7 @@ class HostInstallRuntime:
         self._run(["systemctl", "enable", "--now", "docker"])
 
     def prepare_missing_tuna(self) -> None:
+        storage.require_storage(self.root)
         if not self.tuna.enabled or shutil.which("tuna") is not None:
             return
         if self.root == Path("/") and os.geteuid() != 0:
@@ -502,6 +505,7 @@ class HostInstallRuntime:
         """Reject unsupported hosts and low disk space before asking for secrets."""
         if self.root == Path("/") and os.geteuid() != 0:
             raise PermissionError("root_required")
+        storage.require_storage(self.root)
         if sys.version_info < (3, 10):  # noqa: UP036 -- OTA runs on host Python 3.10+
             raise RuntimeError("python_3_10_required")
         if self.root == Path("/"):
@@ -515,6 +519,7 @@ class HostInstallRuntime:
             _require_install_space(destination, self.verified.manifest.required_free_bytes)
 
     def preflight(self) -> None:
+        storage.require_storage(self.root)
         if self.root == Path("/") and os.geteuid() != 0:
             raise PermissionError("root_required")
         if sys.version_info < (3, 10):  # noqa: UP036 -- OTA runs on host Python 3.10+
@@ -580,8 +585,10 @@ class HostInstallRuntime:
         _require_install_space(docker_root, self.verified.manifest.required_free_bytes)
 
     def _ensure_empty_robopark_paths(self) -> None:
+        status = storage.require_storage(self.root)
         plan = RemovalPlan.for_root(self.root)
-        blocked = [path for path in plan.paths if path.exists() or path.is_symlink()]
+        blocked = [path for path in plan.paths if (path.exists() or path.is_symlink())
+                   and not storage.prepared_empty_target(self.root, path, status)]
         if blocked:
             raise RuntimeError(
                 "clean_install_requires_empty_host: " + ", ".join(str(path) for path in blocked)
@@ -610,9 +617,12 @@ class HostInstallRuntime:
             raise RuntimeError("clean_install_requires_empty_host: " + ", ".join(names))
 
     def extract_release(self) -> None:
+        storage.require_storage(self.root)
         self.release = extract_release(self.bundle, root=self.root)
 
     def configure(self) -> None:
+        storage.require_storage(self.root)
+        storage.refresh_storage_guard(self.root, self.release)
         prepare_host_layout(self.root)
         memory_kib = 0
         meminfo = self.root / "proc/meminfo"
@@ -655,10 +665,12 @@ class HostInstallRuntime:
         )
 
     def start_database(self) -> None:
+        storage.require_storage(self.root)
         prefix = self._compose_prefix()
         self._run([*prefix, "up", "-d", "--no-build", "--wait", "db"])
 
     def migrate(self) -> None:
+        storage.require_storage(self.root)
         self._run(
             [
                 *self._compose_prefix(),
@@ -673,11 +685,13 @@ class HostInstallRuntime:
         )
 
     def seed_royal(self, credential_path: Path) -> None:
+        storage.require_storage(self.root)
         self._run(
             seed_command(credential_path, compose_prefix=self._compose_prefix()),
         )
 
     def start_application(self) -> None:
+        storage.require_storage(self.root)
         self._run(
             [
                 *self._compose_prefix(),
@@ -715,6 +729,7 @@ class HostInstallRuntime:
                 raise RuntimeError("ota_healthcheck_failed")
 
     def publish(self) -> None:
+        storage.require_storage(self.root)
         install = self.release / "deploy/installer/lib/install-services.py"
         self._run([sys.executable, str(install), str(self.root)])
         self._run([

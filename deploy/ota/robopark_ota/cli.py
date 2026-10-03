@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import storage
 from .credentials import (
     TunaConfiguration,
     collect_royal_credentials,
@@ -13,7 +14,7 @@ from .credentials import (
     credential_file,
 )
 from .diagnose import collect_local_diagnostics
-from .host_install import HostInstallRuntime
+from .host_install import HostInstallRuntime, validate_host_platform
 from .install import CleanInstallCoordinator, clean_install_lock
 from .local_update import apply_local_update
 from .menu import Action, run_menu
@@ -39,6 +40,22 @@ _INTERACTIVE_ERRORS = {
     "confirmation_required": "Операция отменена. Данные не удалялись.",
 }
 
+_STORAGE_ERRORS = {
+    "storage_daemon_running": (
+        "Подготовка NVMe остановлена: Docker/containerd или контейнеры работают. "
+        "На новом хосте завершите контейнеры и остановите docker.socket, "
+        "docker.service и containerd.service, затем повторите подготовку."
+    ),
+    "storage_target_not_empty": (
+        "На хосте уже есть данные в рабочих каталогах. Автоматический перенос "
+        "не выполняется; используйте отдельный план миграции с резервной копией."
+    ),
+    "storage_device_not_empty": "Выбранный раздел содержит файлы. Выберите пустой ext4; форматирование не выполнялось.",
+    "storage_confirmation_required": "Подготовка отменена: фраза с UUID диска не совпала.",
+    "storage_space_low": "На рабочем диске недостаточно места или inode. Освободите место и повторите операцию.",
+    "storage_custom_container_root": "Найден нестандартный каталог Docker/containerd. Нужен отдельный план переноса; конфигурация сохранена.",
+}
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -54,6 +71,11 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("update", help="Обновить существующую установку с сохранением данных")
     diagnose = commands.add_parser("diagnose", help="Собрать диагностику")
     diagnose.add_argument("--output", type=Path, required=True)
+    disk = commands.add_parser("storage", help="Проверить или подготовить размещение на NVMe")
+    disk.add_argument("action", choices=("inspect", "check", "plan", "prepare"))
+    disk.add_argument("--mode", choices=("nvme-root", "emmc-nvme-data"))
+    disk.add_argument("--device")
+    disk.add_argument("--confirmation", default="")
     return parser
 
 
@@ -86,11 +108,13 @@ def _require_delete_confirmation(preview: tuple[RemovalPreviewEntry, ...]) -> No
 
 
 def _remove(root: Path) -> None:
+    storage.require_storage(root, check_space=False)
     plan = RemovalPlan.for_root(root)
     docker = DockerCli()
     targets = docker.discover_owned()
     preview = preview_owned_installation(plan, docker, targets)
     _require_delete_confirmation(preview)
+    storage.require_storage(root, check_space=False)
     if (
         docker.discover_owned() != targets
         or preview_owned_installation(plan, docker, targets) != preview
@@ -115,6 +139,9 @@ def _remove(root: Path) -> None:
 def _clean_install(bundle: Path, root: Path) -> None:
     with clean_install_lock(root):
         runtime = HostInstallRuntime(bundle, root=root, tuna=TunaConfiguration())
+        if root == Path("/"):
+            validate_host_platform(root, runtime.verified.manifest.requirements)
+        storage.choose_install_storage(root)
         runtime.ensure_empty_host()
         runtime.basic_preflight()
         runtime.tuna = collect_tuna_configuration()
@@ -155,6 +182,12 @@ def run_interactive() -> int:
         run_menu(handlers=handlers, preflight=lambda _action: None)
     except (ValueError, RuntimeError) as error:
         message = _INTERACTIVE_ERRORS.get(str(error))
+        if isinstance(error, storage.StorageError):
+            message = _STORAGE_ERRORS.get(error.code, (
+                f"Проверка рабочего диска не пройдена ({error.code}). "
+                "Выполните storage inspect и storage check; не запускайте установку "
+                "до восстановления нужного диска и его точек монтирования."
+            ))
         if str(error).startswith("clean_install_requires_empty_host: "):
             paths = str(error).partition(": ")[2]
             message = (
@@ -173,6 +206,25 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command is None:
         return run_interactive()
+    if args.command == "storage":
+        try:
+            verify_ota(_bundle_path())
+            if args.action == "inspect":
+                result = storage.inspect_storage()
+            elif args.action == "check":
+                result = storage.require_storage(check_space=False)
+            else:
+                if args.mode is None:
+                    parser.error("storage plan/prepare requires --mode")
+                if args.action == "plan":
+                    result = storage.plan_storage(args.mode, args.device)
+                else:
+                    result = storage.prepare_storage(args.mode, args.device, confirmation=args.confirmation)
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0
+        except (storage.StorageError, OtaError) as error:
+            print(json.dumps({"state": "failed", "error": str(error)}, ensure_ascii=False))
+            return 2
     if args.command == "diagnose":
         print(collect_local_diagnostics(args.output))
         return 0

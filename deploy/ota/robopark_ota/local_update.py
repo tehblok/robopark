@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
+from . import storage
 from .verify import verify_ota
 
 
@@ -69,6 +70,7 @@ def _stage_upload(source: Path, target: Path, expected_sha256: str) -> None:
 def apply_local_update(bundle: Path, *, root: Path = Path("/")) -> dict:
     if root == Path("/") and os.geteuid() != 0:
         raise PermissionError("root_required")
+    storage.require_storage(root)
     package = verify_ota(bundle)
     host_tools = (root / "opt/robopark/host-tools").resolve(strict=True)
     if not host_tools.is_relative_to((root / "opt/robopark/releases").resolve()):

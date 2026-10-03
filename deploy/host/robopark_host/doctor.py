@@ -62,6 +62,22 @@ def _platform_check() -> CheckResult:
     )
 
 
+def _storage_layout_check(paths: HostPaths) -> CheckResult:
+    from .storage_layout import StorageError, require_storage
+
+    try:
+        storage = require_storage(paths.root)
+    except StorageError as error:
+        return CheckResult(
+            "storage_layout",
+            "failed",
+            f"Хранилище недоступно: {error.code}",
+            None,
+        )
+    mode = storage.get("mode", "legacy")
+    return CheckResult("storage_layout", "ok", f"Схема хранения: {mode}", None)
+
+
 def _clock_check(runner: Runner) -> CheckResult:
     result = execute(runner, ["timedatectl", "show", "--property=NTPSynchronized", "--value"])
     synchronized = result.stdout.strip().casefold() in {"yes", "true", "1"}
@@ -652,7 +668,9 @@ def _write_human_log(paths: HostPaths, report: DiagnosticReport) -> None:
 def run_doctor(paths: HostPaths, runner: Runner, http: Any) -> DiagnosticReport:
     """Collect host health without printing secrets or changing host services."""
 
+    storage_check = _storage_layout_check(paths)
     checks: list[CheckResult] = [
+        storage_check,
         _platform_check(),
         _clock_check(runner),
         _command_check(runner, "dns", ["getent", "hosts", "github.com"], "DNS доступен"),
@@ -712,6 +730,10 @@ def run_doctor(paths: HostPaths, runner: Runner, http: Any) -> DiagnosticReport:
         _log_growth_check(paths, runner),
     ]
     report = DiagnosticReport(checks)
+    if storage_check.status != "ok":
+        return report
+    if _storage_layout_check(paths).status != "ok":
+        return report
     _publish_service_health(paths, report)
     atomic_write_json(paths.var / "diagnostics" / "latest.json", report.as_dict())
     _write_human_log(paths, report)

@@ -122,13 +122,20 @@ def _print(payload: Any) -> None:
 
 def _doctor_handler(paths: HostPaths) -> int:
     from .retention import retain_artifacts, retain_storage
-
-    retain_artifacts(paths)
-    retain_storage(paths)
-    from .image_retention import scheduled
+    from .storage_compatibility import require_storage_operations
+    from .storage_layout import StorageError
     from .updater import SystemRunner
 
-    scheduled(paths, SystemRunner())
+    try:
+        require_storage_operations(paths, check_space=False)
+    except StorageError:
+        pass
+    else:
+        retain_artifacts(paths)
+        retain_storage(paths)
+        from .image_retention import scheduled
+
+        scheduled(paths, SystemRunner())
     report = run_doctor(paths, _system_runner, _Http())
     _print(report.as_dict())
     return 2 if report.failed else 0
@@ -169,7 +176,9 @@ def _watchdog_handler(paths: HostPaths) -> int:
         publish_operation_capabilities,
         publish_operation_context,
     )
+    from .storage_compatibility import require_storage_operations
 
+    require_storage_operations(paths)
     effects = _production_typed_effects(paths)
     publish_operation_capabilities(paths, effects)
     publish_operation_context(paths, effects)
@@ -368,6 +377,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     arguments = build_parser().parse_args(values)
     paths = paths_from_environment()
+    if arguments.command not in {"status", "doctor", "terminal-worker"}:
+        from .storage_compatibility import require_storage_operations
+        from .storage_layout import StorageError
+
+        try:
+            require_storage_operations(
+                paths,
+                check_space=arguments.command not in {"consume", "restore", "update"},
+            )
+        except StorageError as error:
+            _print({"state": "failed", "error": error.code})
+            return 2
     if arguments.command in {"terminal-prepare", "terminal-reconcile"}:
         from .terminal_install import (
             prepare_terminal_installation,

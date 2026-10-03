@@ -12,17 +12,17 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from migration_graph import MigrationPolicy, plan_upgrade
 
 
-def test_current_release_declares_terminal_upgrade_from_foundation():
+def test_current_release_declares_foundation_and_same_head_upgrade():
     policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
     metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
     compatibility = json.loads((ROOT / "docs/releases/compatibility.json").read_text())
 
     assert policy.target_head == metadata["migration_head"] == "0056_host_terminal"
-    assert policy.known_heads == frozenset({"0055_media_upload_park"})
-    assert metadata["migration_compatibility"]["from_heads"] == ["0055_media_upload_park"]
+    assert policy.known_heads == frozenset({"0055_media_upload_park", "0056_host_terminal"})
+    assert metadata["migration_compatibility"]["from_heads"] == ["0055_media_upload_park", "0056_host_terminal"]
     assert metadata["compatible_from_versions"]
     assert all(version.startswith("0.2.0-rc.") for version in metadata["compatible_from_versions"])
-    assert compatibility["known_heads"] == ["0055_media_upload_park"]
+    assert compatibility["known_heads"] == ["0055_media_upload_park", "0056_host_terminal"]
     for version in metadata["compatible_from_versions"]:
         plan = plan_upgrade(version, "0055_media_upload_park", {
             "app_version": compatibility["target_version"],
@@ -68,4 +68,14 @@ def test_future_release_can_explicitly_accept_this_base(tmp_path):
 
     plan = plan_upgrade("0.2.0-rc.8", "0054_park_coordinates", target, policy)
     assert plan.releases == ("0.2.0-rc.9",)
+    assert plan.recovery == "snapshot"
+
+
+def test_rc21_same_head_has_an_explicit_rc22_upgrade_path():
+    policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
+    metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
+    version = "0.2.0-rc.21.dev13181400260723547202"
+    assert version in metadata["compatible_from_versions"]
+    plan = plan_upgrade(version, "0056_host_terminal", {"app_version": "0.2.0-rc.22", "migration_head": "0056_host_terminal"}, policy)
+    assert plan.releases == ("0.2.0-rc.22",)
     assert plan.recovery == "snapshot"

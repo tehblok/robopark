@@ -1368,6 +1368,275 @@ def test_typed_power_loss_after_dispatch_reconciles_without_repeating_effect(hos
     assert effects.calls == [("reconcile", command["job_id"], "reboot")]
 
 
+def test_dispatched_backup_restore_reconciles_after_capability_revision_changes(
+    host_paths, monkeypatch
+):
+    from robopark_host.commands import execute_typed_operation, validate_typed_operation
+    from robopark_host.state import atomic_write_json, write_operation_progress
+
+    command = typed_request(
+        "backup-restore",
+        backup_id=_BACKUP_UUID,
+        confirmation="RESTORE ROBOPARK BACKUP",
+    )
+    operation = validate_typed_operation(command)
+    atomic_write_json(
+        host_paths.state
+        / "typed-operation-dispatch"
+        / f"{command['job_id']}.json",
+        {"schema": 1, "request": operation.request, "state": "dispatched"},
+    )
+    write_operation_progress(host_paths, command["job_id"], "executing", 50)
+    effects = FakeHostEffects(
+        reconciliation={
+            "state": "succeeded",
+            "detail": {"restored": True},
+            "error": None,
+        }
+    )
+    monkeypatch.setattr(
+        "robopark_host.operation_capabilities.current_capability_revision",
+        lambda *_args: "revision-after-reboot",
+    )
+
+    result = execute_typed_operation(host_paths, command, effects)
+
+    assert result["state"] == "succeeded"
+    assert result["detail"] == {"restored": True}
+    assert effects.calls == [("reconcile", command["job_id"], "backup-restore")]
+
+
+def test_fresh_low_space_typed_request_is_cleared_and_cleanup_can_follow(
+    host_paths, monkeypatch
+):
+    from robopark_host.commands import consume_commands
+    from robopark_host.storage_layout import StorageError
+
+    strict_checks = 0
+
+    def storage(_root, *, check_space=True, **_kwargs):
+        nonlocal strict_checks
+        if check_space:
+            strict_checks += 1
+            # The pre-claim admission succeeds, then space is exhausted before
+            # execute_typed_operation reaches its own guard.
+            if strict_checks >= 2:
+                raise StorageError("storage_space_low")
+        return {"state": "ready", "mode": "emmc-nvme-data"}
+
+    monkeypatch.setattr("robopark_host.storage_layout.require_storage", storage)
+    monkeypatch.setattr(
+        "robopark_host.commands.publish_operation_capabilities",
+        lambda *_args, **_kwargs: {},
+        raising=False,
+    )
+    effects = FakeHostEffects()
+    inbox = host_paths.ops / "inbox/approved.json"
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    update = typed_request(
+        "ota-update",
+        upload_id=_DEVICE_UUID,
+        sha256="a" * 64,
+        version="0.2.0-rc.22",
+        confirmation="UPDATE ROBOPARK",
+    )
+    inbox.write_text(json.dumps(update))
+
+    assert consume_commands(
+        host_paths, None, None, typed_effects=effects, typed_devices=lambda: ()
+    ) == 1
+    assert not (host_paths.state / "command-request.json").exists()
+    assert not inbox.exists()
+    failed = json.loads(
+        (
+            host_paths.state
+            / "command-receipts"
+            / f"{update['job_id']}.json"
+        ).read_text()
+    )["result"]
+    assert failed["error"] == "storage_space_low"
+
+    cleanup = typed_request(
+        "cleanup-execute",
+        plan_id=_PLAN_UUID,
+        confirmation="CLEAN ROBOPARK",
+    )
+    inbox.write_text(json.dumps(cleanup))
+
+    assert consume_commands(
+        host_paths, None, None, typed_effects=effects, typed_devices=lambda: ()
+    ) == 0
+    assert not (host_paths.state / "command-request.json").exists()
+    assert not inbox.exists()
+    assert ("cleanup_execute", cleanup["job_id"], _PLAN_UUID) in effects.calls
+
+
+@pytest.mark.parametrize(
+    ("strict_failure", "pending"),
+    [(1, False), (2, False), (1, True)],
+)
+def test_legacy_diagnostics_low_space_gets_terminal_receipt(
+    host_paths, monkeypatch, strict_failure, pending
+):
+    from robopark_host.commands import consume_commands
+    from robopark_host.storage_layout import StorageError
+
+    strict_checks = 0
+
+    def storage(_root, *, check_space=True, **_kwargs):
+        nonlocal strict_checks
+        if check_space:
+            strict_checks += 1
+            if strict_checks >= strict_failure:
+                raise StorageError("storage_space_low")
+        return {"state": "ready", "mode": "emmc-nvme-data"}
+
+    monkeypatch.setattr("robopark_host.storage_layout.require_storage", storage)
+    command = request(host_paths, kind="diagnostics")
+    if pending:
+        approved = host_paths.ops / "inbox/approved.json"
+        durable = host_paths.state / "command-request.json"
+        durable.parent.mkdir(parents=True, exist_ok=True)
+        durable.write_text(approved.read_text())
+        approved.unlink()
+
+    assert consume_commands(
+        host_paths, None, None, typed_effects=FakeHostEffects()
+    ) == 1
+
+    assert not (host_paths.state / "command-request.json").exists()
+    assert not (host_paths.ops / "inbox/approved.json").exists()
+    receipt = json.loads(
+        (
+            host_paths.state
+            / "command-receipts"
+            / f"{command['job_id']}.json"
+        ).read_text()
+    )["result"]
+    assert receipt["state"] == "failed"
+    assert receipt["error"] == "storage_space_low"
+    assert strict_checks == strict_failure
+
+
+def test_low_space_after_typed_dispatch_preserves_pending_then_reconciles(
+    host_paths
+):
+    from robopark_host.commands import consume_commands
+    from robopark_host.storage_layout import StorageError
+
+    class InterruptedEffects(FakeHostEffects):
+        def ota_update(self, operation_id, upload_id, sha256, version):
+            self.calls.append(("ota_update", operation_id, upload_id, sha256, version))
+            raise StorageError("storage_space_low")
+
+    effects = InterruptedEffects(
+        reconciliation={
+            "state": "succeeded",
+            "detail": {"recovered": True},
+            "error": None,
+        }
+    )
+    command = typed_request(
+        "ota-update",
+        upload_id=_DEVICE_UUID,
+        sha256="a" * 64,
+        version="0.2.0-rc.22",
+        confirmation="UPDATE ROBOPARK",
+    )
+    inbox = host_paths.ops / "inbox/approved.json"
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    inbox.write_text(json.dumps(command))
+
+    with pytest.raises(StorageError, match="storage_space_low"):
+        consume_commands(host_paths, None, None, typed_effects=effects)
+
+    assert (host_paths.state / "command-request.json").exists()
+    assert (
+        host_paths.state
+        / "typed-operation-dispatch"
+        / f"{command['job_id']}.json"
+    ).exists()
+    assert not (
+        host_paths.state / "command-receipts" / f"{command['job_id']}.json"
+    ).exists()
+
+    assert consume_commands(host_paths, None, None, typed_effects=effects) == 0
+    assert not (host_paths.state / "command-request.json").exists()
+    receipt = json.loads(
+        (
+            host_paths.state
+            / "command-receipts"
+            / f"{command['job_id']}.json"
+        ).read_text()
+    )["result"]
+    assert receipt["state"] == "succeeded"
+    assert receipt["detail"] == {"recovered": True}
+    assert effects.calls[-1] == ("reconcile", command["job_id"], "ota-update")
+
+
+def test_storage_failure_during_reconcile_preserves_pending_for_retry(host_paths):
+    from robopark_host.commands import (
+        consume_commands,
+        validate_typed_operation,
+    )
+    from robopark_host.state import atomic_write_json, write_operation_progress
+    from robopark_host.storage_layout import StorageError
+
+    class RecoveringEffects(FakeHostEffects):
+        def __init__(self):
+            super().__init__()
+            self.fail_reconcile = True
+
+        def reconcile(self, operation):
+            self.calls.append(("reconcile", operation.operation_id, operation.kind.value))
+            if self.fail_reconcile:
+                self.fail_reconcile = False
+                raise StorageError("storage_mount_missing")
+            return {
+                "state": "succeeded",
+                "detail": {"recovered": True},
+                "error": None,
+            }
+
+    effects = RecoveringEffects()
+    command = typed_request(
+        "ota-update",
+        upload_id=_DEVICE_UUID,
+        sha256="a" * 64,
+        version="0.2.0-rc.22",
+        confirmation="UPDATE ROBOPARK",
+    )
+    operation = validate_typed_operation(command)
+    atomic_write_json(host_paths.state / "command-request.json", command)
+    atomic_write_json(
+        host_paths.state
+        / "typed-operation-dispatch"
+        / f"{command['job_id']}.json",
+        {"schema": 1, "request": operation.request, "state": "dispatched"},
+    )
+    write_operation_progress(host_paths, command["job_id"], "executing", 50)
+
+    with pytest.raises(StorageError, match="storage_mount_missing"):
+        consume_commands(host_paths, None, None, typed_effects=effects)
+
+    assert (host_paths.state / "command-request.json").exists()
+    assert not (
+        host_paths.state / "command-receipts" / f"{command['job_id']}.json"
+    ).exists()
+
+    assert consume_commands(host_paths, None, None, typed_effects=effects) == 0
+    assert not (host_paths.state / "command-request.json").exists()
+    receipt = json.loads(
+        (
+            host_paths.state
+            / "command-receipts"
+            / f"{command['job_id']}.json"
+        ).read_text()
+    )["result"]
+    assert receipt["state"] == "succeeded"
+    assert receipt["detail"] == {"recovered": True}
+
+
 def test_consumer_resumes_durable_typed_checkpoint_after_authorization_window(host_paths):
     from robopark_host.commands import SystemTypedHostEffects, consume_commands
     from robopark_host.state import atomic_write_json, write_operation_progress

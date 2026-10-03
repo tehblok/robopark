@@ -572,6 +572,9 @@ def pin_images(document, run):
 
 
 def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
+    from .storage_compatibility import require_storage_operations
+
+    require_storage_operations(paths)
     system_runner = run is _run
     if system_runner:
         runtime_log = paths.root / "var/log/robopark/runtime-bootstrap.log"
@@ -621,6 +624,7 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
     document = production_config(raw, paths, release, "release-" + release_id)
     _progress(2, "Готовлю защищённую конфигурацию контейнеров")
     build_config = paths.state / "bootstrap-compose.json"
+    require_storage_operations(paths)
     atomic_write_json(build_config, document)
     try:
         build_command = [
@@ -649,6 +653,7 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
         pin_images(document, run)
         record(paths, release, "release-" + release_id, document)
         immutable = paths.state / "compose" / ("bootstrap-" + release_id + ".json")
+        require_storage_operations(paths)
         atomic_write_json(immutable, document)
         atomic_symlink(immutable, target)
         from .image_retention import cleanup_builder_cache
