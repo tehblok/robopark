@@ -66,11 +66,14 @@ def test_snapshot_builder_rejects_large_input_before_reading_it(tmp_path, monkey
         build_archive(kind=KIND_SNAPSHOT, source_root=root, app_version="0.1.0")
 
 
-def test_snapshot_builder_and_inspector_use_bounded_reads(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_comment", [False, True])
+def test_snapshot_builder_and_inspector_use_bounded_reads(tmp_path, monkeypatch, with_comment):
     root = tmp_path / "tree"
     root.mkdir()
     source = root / "sample.bin"
-    source.write_bytes(b"sample" * 100)
+    # A compressible tiny archive cannot reveal accidental whole-archive reads.
+    payload = b"".join(hashlib.sha256(str(i).encode()).digest() for i in range(8192))
+    source.write_bytes(payload)
     original_read = Path.read_bytes
 
     def guarded_read(path):
@@ -80,15 +83,30 @@ def test_snapshot_builder_and_inspector_use_bounded_reads(tmp_path, monkeypatch)
 
     monkeypatch.setattr(Path, "read_bytes", guarded_read)
     archive = build_archive(kind=KIND_SNAPSHOT, source_root=root, app_version="0.1.0")
+    if with_comment:
+        commented = io.BytesIO(archive)
+        with zipfile.ZipFile(commented, "a") as writer:
+            writer.comment = b"bounded ZIP directory search"
+        archive = commented.getvalue()
+    # ZIP's EOCD record is 22 bytes with an optional 65535-byte comment.
+    tail_limit = 65535 + 22
+    assert len(archive) > tail_limit
 
     class BoundedReader(io.BytesIO):
         def read(self, size=-1):
-            if size < 0:
+            # Python 3.12 zipfile seeks to the bounded tail then calls read().
+            remaining = len(self.getbuffer()) - self.tell()
+            if size < 0 and remaining > tail_limit:
                 raise AssertionError("archive was loaded into memory")
+            if size > 1024 * 1024:
+                raise AssertionError("archive read exceeded the chunk budget")
             return super().read(size)
 
+    # Negative control: the guard must reject the regression it protects against.
+    with pytest.raises(AssertionError, match="archive was loaded into memory"):
+        BoundedReader(archive).read()
     meta = inspect_archive(BoundedReader(archive), expected_kind=KIND_SNAPSHOT)
-    assert meta.files["sample.bin"] == _sha256(b"sample" * 100)
+    assert meta.files["sample.bin"] == _sha256(payload)
 
 
 def test_streamed_snapshot_inspection_rejects_changed_member(tmp_path):

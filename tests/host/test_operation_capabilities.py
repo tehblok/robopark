@@ -135,6 +135,19 @@ def test_periodic_watchdog_refreshes_same_production_adapter(capability_host, mo
     assert not (capability_host.etc / "backup-recovery.key").exists()
 
 
+def test_periodic_watchdog_performance_publication_is_fail_soft(capability_host, monkeypatch):
+    from types import SimpleNamespace
+
+    from robopark_host import cli
+
+    monkeypatch.setattr(cli, "run_watchdog", lambda *args: SimpleNamespace(
+        consecutive_failures=3, restarted="restart_app", busy=False,
+    ))
+    monkeypatch.setattr("robopark_host.performance.publish_performance", lambda _paths: (_ for _ in ()).throw(OSError("read-only")))
+
+    assert cli._watchdog_handler(capability_host) == 0
+
+
 def test_operation_context_projects_only_bounded_safe_choices(capability_host):
     from robopark_host.commands import BlockDevice
     from robopark_host.operation_capabilities import publish_operation_context

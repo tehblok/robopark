@@ -33,6 +33,52 @@ def test_local_benchmark_help_is_renderable():
     )
     assert result.returncode == 0, result.stderr
     assert "--presence" in result.stdout
+    assert "--workers" in result.stdout
+
+
+@pytest.mark.parametrize("workers", [2, 4])
+def test_local_benchmark_uses_shipped_database_profile(workers):
+    from robopark_host.runtime import select_host_profile
+
+    api = local_benchmark_module()
+    expected = select_host_profile(
+        memory_kib=(32 if workers == 4 else 8) * 1024 * 1024,
+        cpu_count=8 if workers == 4 else 4,
+    )
+    profile = api["benchmark_profile"](workers)
+    assert profile == expected
+    assert api["postgres_arguments"](profile) == [
+        "postgres", "-c", f"shared_buffers={expected.postgres_shared_buffers}",
+        "-c", f"max_connections={expected.postgres_max_connections}",
+    ]
+
+
+def test_four_worker_acceptance_requires_four_real_distinct_processes():
+    covered = local_benchmark_module()["workers_served_load"]
+    cadence = "200_open_clients_realistic_cadence"
+    stress = "200_session_stress_bounded_inflight"
+    ready = ["11", "12", "13", "14"]
+    clean = {cadence: {"worker_pids": ready}, stress: {"worker_pids": ready}}
+    assert covered(clean, 4) is True
+    assert covered({"cold": {"worker_pids": ready},
+                    cadence: {"worker_pids": ready[:3]},
+                    stress: {"worker_pids": ready[:3]}}, 4) is False
+    assert covered({cadence: {"worker_pids": ready},
+                    stress: {"worker_pids": ["11", "12", None, ""]}}, 4) is False
+    assert covered({cadence: {"worker_pids": ready},
+                    stress: {"worker_pids": ["11", "12", "13", "15"]}}, 4) is False
+    assert covered(clean, 4, expected_pids=ready) is True
+    assert covered(clean, 4, expected_pids=["11", "12", "13", "15"]) is False
+    assert covered({}, 2) is False
+
+
+def test_local_benchmark_rejects_unbounded_worker_count_before_startup():
+    result = subprocess.run(
+        [sys.executable, str(LOCAL_BENCHMARK), "--workers", "500"],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 2
+    assert "invalid choice" in result.stderr
 
 
 def test_status_history_gate_is_scoped_to_cold_setup_before_ttl_expiry():

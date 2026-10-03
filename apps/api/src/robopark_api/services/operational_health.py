@@ -387,6 +387,9 @@ def cached_host_snapshot(
             "internet": _public_service_health(public_health, "internet"),
             "wifi": _public_service_health(public_health, "wifi"),
         }
+        from robopark_api.services.host_performance import performance_snapshot
+
+        result["performance"] = performance_snapshot(public_health, now=now)
         cleanup = public_health.get("storage", {})
         if not isinstance(cleanup, dict):
             cleanup = {}

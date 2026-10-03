@@ -122,6 +122,7 @@ run_load() {
   PYTHONDONTWRITEBYTECODE=1 \
     uv run --project apps/api --frozen --extra dev \
       python scripts/capacity_benchmark.py --users "${ROBOPARK_LOAD_USERS:-200}" \
+      --workers "${ROBOPARK_LOAD_WORKERS:-2}" \
       --duration "${ROBOPARK_LOAD_DURATION_SECONDS:-60}"
 }
 

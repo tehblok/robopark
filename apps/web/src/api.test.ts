@@ -224,6 +224,53 @@ describe('API transport metadata', () => {
       expect.objectContaining({ headers: {} }))
   })
 
+  it('does not reuse a captured tracker payload when a 304 races authorization cleanup', async () => {
+    let complete!: (response: Response) => void
+    const oldAccountRevalidation = new Promise<Response>(resolve => { complete = resolve })
+    const oldPayload = { items: [{ key: 'OLD-1' }], total: 1, limit: 50, offset: 0, has_more: false }
+    const newPayload = { items: [{ key: 'NEW-1' }], total: 1, limit: 50, offset: 0, has_more: false }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(oldPayload), {
+        status: 200, headers: { 'Content-Type': 'application/json', ETag: '"old-account"' },
+      }))
+      .mockReturnValueOnce(oldAccountRevalidation)
+      .mockResolvedValueOnce(new Response(JSON.stringify(newPayload), {
+        status: 200, headers: { 'Content-Type': 'application/json', ETag: '"new-account"' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.trackerIssues({ limit: 50 })
+    const oldAccountRequest = api.trackerIssues({ limit: 50 })
+    clearApiValidators()
+    complete(new Response(null, { status: 304 }))
+
+    await expect(oldAccountRequest).resolves.toEqual(newPayload)
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/tracker/issues?sort=oldest&limit=50',
+      expect.objectContaining({ headers: {} }))
+  })
+
+  it('does not retain a tracker response larger than the validator byte budget', async () => {
+    const oversizedPayload = {
+      items: [], total: 0, limit: 50, offset: 0, has_more: false,
+      padding: 'x'.repeat(4 * 1024 * 1024),
+    }
+    const freshPayload = { items: [], total: 0, limit: 50, offset: 0, has_more: false }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(oversizedPayload), {
+        status: 200, headers: { 'Content-Type': 'application/json', ETag: '"oversized"' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(freshPayload), {
+        status: 200, headers: { 'Content-Type': 'application/json', ETag: '"fresh"' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.trackerIssues({ limit: 50 })
+    await api.trackerIssues({ limit: 50 })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/tracker/issues?sort=oldest&limit=50',
+      expect.objectContaining({ headers: {} }))
+  })
+
   it('keeps a local mutation owner mounted when a write is forbidden', async () => {
     const authorizationFailure = vi.fn()
     window.addEventListener('robopark:authorization-failure', authorizationFailure)
@@ -539,7 +586,120 @@ describe('API transport metadata', () => {
     await expect(api.changeRevision('work')).resolves.toEqual({ revision: 7 })
 
     expect(fetcher.mock.calls[1][1]).toEqual(expect.objectContaining({
+      cache: 'no-store',
       headers: expect.objectContaining({ 'If-None-Match': '"7"' }),
     }))
+  })
+
+  it('does not conditionally revalidate an expired change revision without its body', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-03T00:00:00Z'))
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('{"revision":7}', { status: 200, headers: { ETag: '"7"' } }))
+      .mockResolvedValueOnce(new Response('{"revision":8}', { status: 200, headers: { ETag: '"8"' } }))
+    vi.stubGlobal('fetch', fetcher)
+
+    await expect(api.changeRevision('work')).resolves.toEqual({ revision: 7 })
+    await vi.advanceTimersByTimeAsync(12 * 60 * 60 * 1000)
+    await expect(api.changeRevision('work')).resolves.toEqual({ revision: 8 })
+
+    expect(fetcher.mock.calls[1][1]).toEqual(expect.objectContaining({ headers: {} }))
+  })
+
+  it.each(['revision', 'tracker'] as const)('keeps newer %s data when an older 304 completes last', async kind => {
+    let complete!: (response: Response) => void
+    const delayed = new Promise<Response>(resolve => { complete = resolve })
+    const oldValue = kind === 'revision' ? { revision: 7 } : { items: [], total: 7 }
+    const newValue = kind === 'revision' ? { revision: 8 } : { items: [], total: 8 }
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(oldValue), { headers: { ETag: '"v1"' } }))
+      .mockReturnValueOnce(delayed)
+      .mockResolvedValueOnce(new Response(JSON.stringify(newValue), { headers: { ETag: '"v2"' } }))
+    vi.stubGlobal('fetch', fetcher)
+    const read = () => kind === 'revision' ? api.changeRevision('work') : api.trackerIssues({ limit: 50 })
+    await read()
+    const older = read()
+    await expect(read()).resolves.toEqual(newValue)
+    complete(new Response(null, { status: 304 }))
+    await expect(older).resolves.toEqual(newValue)
+  })
+
+  it.each([
+    ['revision', true],
+    ['revision', false],
+    ['tracker', true],
+    ['tracker', false],
+  ] as const)('keeps newer %s data when an older 200 with ETag=%s completes last', async (kind, oldHasEtag) => {
+    let complete!: (response: Response) => void
+    const delayed = new Promise<Response>(resolve => { complete = resolve })
+    const value = (revision: number) => kind === 'revision'
+      ? { revision }
+      : { items: [], total: revision, limit: 50, offset: 0, has_more: false }
+    const fetcher = vi.fn()
+      .mockReturnValueOnce(delayed)
+      .mockResolvedValueOnce(new Response(JSON.stringify(value(2)), { headers: { ETag: '"v2"' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(value(3)), { headers: { ETag: '"v3"' } }))
+    vi.stubGlobal('fetch', fetcher)
+    const read = () => kind === 'revision' ? api.changeRevision('work') : api.trackerIssues({ limit: 50 })
+
+    const older = read()
+    await expect(read()).resolves.toEqual(value(2))
+    complete(new Response(JSON.stringify(value(1)), {
+      headers: oldHasEtag ? { ETag: '"v1"' } : {},
+    }))
+
+    await expect(older).resolves.toEqual(value(2))
+    await read()
+    expect(fetcher.mock.calls[2][1]).toEqual(expect.objectContaining({
+      headers: { 'If-None-Match': '"v2"' },
+    }))
+  })
+
+  it('does not conditionally revalidate an evicted change revision without its body', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const scope = new URL(String(input), 'https://robopark.invalid').searchParams.get('scope')
+      return new Response('{"revision":1}', { status: 200, headers: { ETag: `"${scope}"` } })
+    })
+    vi.stubGlobal('fetch', fetcher)
+
+    for (let index = 0; index <= 128; index += 1) await api.changeRevision(`inventory:${index}`)
+    await api.changeRevision('inventory:0')
+
+    expect(fetcher.mock.calls[129][1]).toEqual(expect.objectContaining({ headers: {} }))
+  })
+
+  it('forgets a change validator when a successful response no longer has an ETag', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('{"revision":7}', { status: 200, headers: { ETag: '"7"' } }))
+      .mockResolvedValueOnce(new Response('{"revision":8}', { status: 200 }))
+      .mockResolvedValueOnce(new Response('{"revision":9}', { status: 200 }))
+    vi.stubGlobal('fetch', fetcher)
+
+    await api.changeRevision('work')
+    await api.changeRevision('work')
+    await api.changeRevision('work')
+
+    expect(fetcher.mock.calls[1][1]).toEqual(expect.objectContaining({
+      headers: { 'If-None-Match': '"7"' },
+    }))
+    expect(fetcher.mock.calls[2][1]).toEqual(expect.objectContaining({ headers: {} }))
+  })
+
+  it('does not reuse a captured change revision when a 304 races authorization cleanup', async () => {
+    let complete!: (response: Response) => void
+    const oldAccountRevalidation = new Promise<Response>(resolve => { complete = resolve })
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('{"revision":7}', { status: 200, headers: { ETag: '"old-account"' } }))
+      .mockReturnValueOnce(oldAccountRevalidation)
+      .mockResolvedValueOnce(new Response('{"revision":9}', { status: 200, headers: { ETag: '"new-account"' } }))
+    vi.stubGlobal('fetch', fetcher)
+
+    await api.changeRevision('work')
+    const oldAccountRequest = api.changeRevision('work')
+    clearApiValidators()
+    complete(new Response(null, { status: 304 }))
+    await expect(oldAccountRequest).resolves.toEqual({ revision: 9 })
+
+    expect(fetcher.mock.calls[2][1]).toEqual(expect.objectContaining({ headers: {} }))
   })
 })

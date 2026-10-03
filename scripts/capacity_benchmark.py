@@ -2,7 +2,7 @@
 
 Run with apps/api/.venv/bin/python scripts/capacity_benchmark.py
 --output /tmp/capacity.json
-Starts two uvicorn workers, disposable PostgreSQL 17 and a deterministic
+Starts two or four uvicorn workers, disposable PostgreSQL 17 and a deterministic
 loopback upstream, runs assertions, writes JSON, and removes every fixture.
 200 open clients at a 3s cadence is a different phase from a 200-request burst.
 No .env, shell profiles, live credentials, real integrations or Tuna are used.
@@ -25,6 +25,7 @@ import threading
 import time
 import uuid
 from collections import Counter
+from dataclasses import asdict
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,7 +35,43 @@ from sqlalchemy import create_engine, text
 
 REPO = Path(__file__).resolve().parents[1]
 VIN = "YASADR00000000447"
-POSTGRES_IMAGE = "postgres:17-alpine"
+POSTGRES_IMAGE = "postgres:17.11-alpine"
+
+
+def benchmark_profile(workers):
+    """Use shipped ceilings explicitly; never detect/tune the production host."""
+    if workers not in (2, 4):
+        raise ValueError("unsupported_worker_count")
+    host_source = str(REPO / "deploy" / "host")
+    if host_source not in sys.path:
+        sys.path.insert(0, host_source)
+    from robopark_host.runtime import select_host_profile
+
+    return select_host_profile(
+        memory_kib=(32 if workers == 4 else 8) * 1024 * 1024,
+        cpu_count=8 if workers == 4 else 4,
+    )
+
+
+def postgres_arguments(profile):
+    return [
+        "postgres", "-c", f"shared_buffers={profile.postgres_shared_buffers}",
+        "-c", f"max_connections={profile.postgres_max_connections}",
+    ]
+
+
+def workers_served_load(phases, expected, *, expected_pids=None):
+    def valid_pids(values):
+        return {
+            pid for pid in values
+            if isinstance(pid, str) and pid.isascii() and pid.isdigit() and int(pid) > 0
+        }
+
+    # A worker serving only startup/cold reads does not prove sustained capacity.
+    cadence = valid_pids(phases.get("200_open_clients_realistic_cadence", {}).get("worker_pids", []))
+    stress = valid_pids(phases.get("200_session_stress_bounded_inflight", {}).get("worker_pids", []))
+    ready = valid_pids(expected_pids) if expected_pids is not None else cadence
+    return len(ready) == expected and cadence == stress == ready
 
 
 class StubServer(ThreadingHTTPServer):
@@ -520,6 +557,10 @@ def main():
         "--output", type=Path, default=Path("/tmp/robopark-capacity.json")
     )
     parser.add_argument("--users", type=int, default=200)
+    parser.add_argument(
+        "--workers", type=int, choices=(2, 4), default=2,
+        help="API workers and shipped PostgreSQL profile: 2=vim4-safe, 4=orin",
+    )
     parser.add_argument("--issues", type=int, default=200)
     parser.add_argument(
         "--active-records",
@@ -561,6 +602,7 @@ def main():
         parser.error("--active-records must be between 1 and --issues")
     if args.max_in_flight > args.users:
         parser.error("--max-in-flight cannot exceed --users")
+    profile = benchmark_profile(args.workers)
     stub = StubServer(args.stub_delay_ms / 1000, args.issues)
     thread = threading.Thread(target=stub.serve_forever, daemon=True)
     thread.start()
@@ -569,7 +611,10 @@ def main():
         "configuration": {
             "users": args.users,
             "distinct_sessions": args.users,
-            "uvicorn_workers": 2,
+            "uvicorn_workers": args.workers,
+            "resource_profile": asdict(profile),
+            "postgres_image": POSTGRES_IMAGE,
+            "api_memory_limit_enforced": False,
             "issues": args.issues,
             "initial_reports": args.users,
             "cadence_distinct_issue_keys": min(args.active_records, args.users),
@@ -618,7 +663,10 @@ def main():
                     "POSTGRES_USER=robopark",
                     "--env",
                     "POSTGRES_PASSWORD=capacity-local-only",
+                    "--memory",
+                    profile.postgres_memory,
                     POSTGRES_IMAGE,
+                    *postgres_arguments(profile),
                 ],
                 check=True,
                 capture_output=True,
@@ -641,7 +689,7 @@ def main():
                     with probe.connect() as connection:
                         connection.execute(text("SELECT 1"))
                     break
-                except Exception as exc:  # noqa: BLE001 - bounded database readiness
+                except Exception as exc:  # Bounded database readiness.
                     if time.monotonic() >= deadline:
                         raise RuntimeError("PostgreSQL 17 did not become ready") from exc
                     time.sleep(0.1)
@@ -684,7 +732,7 @@ def main():
                         "--port",
                         str(port),
                         "--workers",
-                        "2",
+                        str(args.workers),
                         "--no-access-log",
                         "--log-level",
                         "warning",
@@ -705,10 +753,10 @@ def main():
                                     base + "/health", headers={"Connection": "close"}
                                 )
                                 if response.status_code == 200:
-                                    ready_workers.add(
-                                        response.headers.get("X-Capacity-Worker")
-                                    )
-                                    if len(ready_workers) == 2:
+                                    pid = response.headers.get("X-Capacity-Worker", "")
+                                    if pid.isascii() and pid.isdigit() and int(pid) > 0:
+                                        ready_workers.add(pid)
+                                    if len(ready_workers) == args.workers:
                                         break
                             except httpx.HTTPError:
                                 pass
@@ -717,12 +765,17 @@ def main():
                             time.sleep(0.05)
                         else:
                             raise RuntimeError(
-                                "Both uvicorn workers did not become ready"
+                                "Not all requested uvicorn workers became ready"
                             )
                     result["phases"] = asyncio.run(exercise(base, args, stub))
+                    result["ready_worker_pids"] = sorted(ready_workers)
                     inspection = create_engine(database_url, pool_pre_ping=True)
                     with inspection.connect() as db:
                         result["database"] = {
+                            "shared_buffers": db.execute(text("SHOW shared_buffers")).scalar_one(),
+                            "max_connections": int(db.execute(text("SHOW max_connections")).scalar_one()),
+                            "work_mem": db.execute(text("SHOW work_mem")).scalar_one(),
+                            "effective_cache_size": db.execute(text("SHOW effective_cache_size")).scalar_one(),
                             "dialect": "postgresql",
                             "major_version": int(
                                 db.execute(text("SHOW server_version_num")).scalar_one()
@@ -770,12 +823,15 @@ def main():
     phases = result.get("phases", {})
     cadence = phases.get("200_open_clients_realistic_cadence", {})
     result["acceptance"] = {
+        "database_profile_applied": (
+            result.get("database", {}).get("shared_buffers") == profile.postgres_shared_buffers
+            and result.get("database", {}).get("max_connections") == profile.postgres_max_connections
+        ),
         "all_requests_match_contract": bool(phases)
         and all(phase_integrity_ok(p) for p in phases.values()),
-        "both_workers_served_load": len(
-            {pid for phase in phases.values() for pid in phase["worker_pids"]}
-        )
-        == 2,
+        "all_workers_served_load": workers_served_load(
+            phases, args.workers, expected_pids=result.get("ready_worker_pids", []),
+        ),
         "cadence_achieves_90_percent_target": cadence.get("throughput_rps", 0)
         >= 0.9 * args.users / args.cadence,
         "cold_search_coalesced_to_one": sum(

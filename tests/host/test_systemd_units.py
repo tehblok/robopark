@@ -147,6 +147,11 @@ def test_timers_are_bounded_and_persistent(name, key, value):
     assert timer["Persistent"] == "true"
 
 
+def test_watchdog_can_publish_the_host_performance_snapshot():
+    writable = unit("robopark-watchdog.service")["Service"]["ReadWritePaths"].split()
+    assert "/var/lib/robopark/api-ops" in writable
+
+
 def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     from robopark_host.runtime import bootstrap_compose
 

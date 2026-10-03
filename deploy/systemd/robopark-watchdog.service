@@ -22,4 +22,4 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 UMask=0077
-ReadWritePaths=/var/lib/robopark/ops -/run/lock/robopark
+ReadWritePaths=/var/lib/robopark/ops /var/lib/robopark/api-ops -/run/lock/robopark

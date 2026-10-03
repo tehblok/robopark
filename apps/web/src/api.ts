@@ -1296,88 +1296,210 @@ async function requestForm<T>(path: string, formData: FormData, headers?: Record
   )
 }
 
-const revisionValidators = new Map<string, { etag: string, value: { revision: number } }>()
-type TrackerIssueValidator = {
+type ValidatorEntry<T> = {
   etag: string
-  value: Paged<TrackerIssue>
+  value: T
   bytes: number
   storedAt: number
 }
-const trackerIssueValidators = new Map<string, TrackerIssueValidator>()
-const TRACKER_VALIDATOR_MAX_ENTRIES = 128
-const TRACKER_VALIDATOR_MAX_BYTES = 4 * 1024 * 1024
-const TRACKER_VALIDATOR_MAX_AGE_MS = 12 * 60 * 60 * 1000
+type ValidatorRequestState<T> = {
+  generation: number
+  nextSequence: number
+  activeCount: number
+  latestCompletedSequence: number
+  latestCompletedValue?: T
+}
+type ValidatorRequest<T> = {
+  state: ValidatorRequestState<T>
+  generation: number
+  sequence: number
+}
+const revisionValidators = new Map<string, ValidatorEntry<{ revision: number }>>()
+const trackerIssueValidators = new Map<string, ValidatorEntry<Paged<TrackerIssue>>>()
+const revisionValidatorRequests = new Map<string, ValidatorRequestState<{ revision: number }>>()
+const trackerIssueValidatorRequests = new Map<string, ValidatorRequestState<Paged<TrackerIssue>>>()
+const VALIDATOR_MAX_ENTRIES = 128
+const VALIDATOR_MAX_BYTES = 4 * 1024 * 1024
+const VALIDATOR_MAX_AGE_MS = 12 * 60 * 60 * 1000
 let apiValidatorGeneration = 0
 
-function rememberTrackerValidator(path: string, entry: TrackerIssueValidator): void {
-  trackerIssueValidators.delete(path)
-  trackerIssueValidators.set(path, entry)
-  let bytes = Array.from(trackerIssueValidators.values()).reduce((sum, item) => sum + item.bytes, 0)
-  while (trackerIssueValidators.size > TRACKER_VALIDATOR_MAX_ENTRIES || bytes > TRACKER_VALIDATOR_MAX_BYTES) {
-    const oldest = trackerIssueValidators.entries().next().value as [string, TrackerIssueValidator] | undefined
+function validatorBytes<T>(key: string, etag: string, value: T): number {
+  return new TextEncoder().encode(`${key}${etag}${JSON.stringify(value)}`).byteLength
+}
+
+function rememberValidator<T>(
+  cache: Map<string, ValidatorEntry<T>>,
+  key: string,
+  etag: string,
+  value: T,
+): void {
+  const entry = { etag, value, bytes: validatorBytes(key, etag, value), storedAt: Date.now() }
+  cache.delete(key)
+  if (entry.bytes > VALIDATOR_MAX_BYTES) return
+  cache.set(key, entry)
+  let bytes = Array.from(cache.values()).reduce((sum, item) => sum + item.bytes, 0)
+  while (cache.size > VALIDATOR_MAX_ENTRIES || bytes > VALIDATOR_MAX_BYTES) {
+    const oldest = cache.entries().next().value as [string, ValidatorEntry<T>] | undefined
     if (!oldest) break
-    trackerIssueValidators.delete(oldest[0])
+    cache.delete(oldest[0])
     bytes -= oldest[1].bytes
   }
+}
+
+function cachedValidator<T>(cache: Map<string, ValidatorEntry<T>>, key: string): ValidatorEntry<T> | undefined {
+  const cached = cache.get(key)
+  if (!cached) return undefined
+  if (Date.now() - cached.storedAt >= VALIDATOR_MAX_AGE_MS) {
+    cache.delete(key)
+    return undefined
+  }
+  cache.delete(key)
+  cache.set(key, cached)
+  return cached
+}
+
+function updateValidator<T>(
+  cache: Map<string, ValidatorEntry<T>>,
+  key: string,
+  etag: string | null,
+  value: T,
+  generation: number,
+): void {
+  if (generation !== apiValidatorGeneration) return
+  if (!etag) {
+    cache.delete(key)
+    return
+  }
+  rememberValidator(cache, key, etag, value)
+}
+
+function beginValidatorRequest<T>(
+  requests: Map<string, ValidatorRequestState<T>>,
+  key: string,
+): ValidatorRequest<T> {
+  let state = requests.get(key)
+  if (!state || state.generation !== apiValidatorGeneration) {
+    state = {
+      generation: apiValidatorGeneration,
+      nextSequence: 0,
+      activeCount: 0,
+      latestCompletedSequence: 0,
+    }
+    requests.set(key, state)
+  }
+  state.activeCount += 1
+  state.nextSequence += 1
+  return { state, generation: state.generation, sequence: state.nextSequence }
+}
+
+function finishValidatorRequest<T>(
+  requests: Map<string, ValidatorRequestState<T>>,
+  key: string,
+  request: ValidatorRequest<T>,
+): void {
+  request.state.activeCount -= 1
+  if (request.state.activeCount === 0 && requests.get(key) === request.state) requests.delete(key)
+}
+
+function completeValidatorResponse<T>(
+  cache: Map<string, ValidatorEntry<T>>,
+  key: string,
+  request: ValidatorRequest<T>,
+  etag: string | null,
+  value: T,
+): T {
+  if (request.generation !== apiValidatorGeneration) return value
+  const { state, sequence } = request
+  if (sequence < state.latestCompletedSequence && state.latestCompletedValue !== undefined) {
+    return state.latestCompletedValue
+  }
+  state.latestCompletedSequence = sequence
+  state.latestCompletedValue = value
+  updateValidator(cache, key, etag, value, request.generation)
+  return value
+}
+
+function completeValidatorNotModified<T>(
+  cache: Map<string, ValidatorEntry<T>>,
+  key: string,
+  request: ValidatorRequest<T>,
+): T | undefined {
+  if (request.generation !== apiValidatorGeneration) return undefined
+  const { state, sequence } = request
+  if (sequence < state.latestCompletedSequence && state.latestCompletedValue !== undefined) {
+    return state.latestCompletedValue
+  }
+  const current = cachedValidator(cache, key)
+  if (!current) return undefined
+  state.latestCompletedSequence = sequence
+  state.latestCompletedValue = current.value
+  return current.value
 }
 
 export function clearApiValidators(): void {
   apiValidatorGeneration += 1
   revisionValidators.clear()
   trackerIssueValidators.clear()
+  revisionValidatorRequests.clear()
+  trackerIssueValidatorRequests.clear()
 }
 
 async function conditionalTrackerIssues(path: string): Promise<Paged<TrackerIssue>> {
-  const generation = apiValidatorGeneration
-  let cached = trackerIssueValidators.get(path)
-  if (cached && Date.now() - cached.storedAt >= TRACKER_VALIDATOR_MAX_AGE_MS) {
-    trackerIssueValidators.delete(path)
-    cached = undefined
-  } else if (cached) {
-    rememberTrackerValidator(path, cached)
-  }
-  return fetchWithTimeout(
-    `/api${path}`,
-    { credentials: 'include', headers: cached ? { 'If-None-Match': cached.etag } : {} },
-    JSON_TIMEOUT_MS,
-    async response => {
-      if (response.status === 304 && cached) return cached.value
-      if (!response.ok) {
-        throw new ApiError(response.status, await readErrorDetail(response), responseRequestId(response), responseRetryAfter(response))
-      }
-      const value = await response.json() as Paged<TrackerIssue>
-      const etag = response.headers.get('ETag')
-      if (etag) {
-        const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength
-        if (generation === apiValidatorGeneration && bytes <= TRACKER_VALIDATOR_MAX_BYTES) {
-          rememberTrackerValidator(path, { etag, value, bytes, storedAt: Date.now() })
+  const request = beginValidatorRequest(trackerIssueValidatorRequests, path)
+  const cached = cachedValidator(trackerIssueValidators, path)
+  try {
+    return await fetchWithTimeout(
+      `/api${path}`,
+      { credentials: 'include', cache: 'no-store', headers: cached ? { 'If-None-Match': cached.etag } : {} },
+      JSON_TIMEOUT_MS,
+      async response => {
+        if (response.status === 304 && cached) {
+          const current = completeValidatorNotModified(trackerIssueValidators, path, request)
+          return current ?? conditionalTrackerIssues(path)
         }
-      }
-      return value
-    },
-  )
+        if (!response.ok) {
+          throw new ApiError(response.status, await readErrorDetail(response), responseRequestId(response), responseRetryAfter(response))
+        }
+        const value = await response.json() as Paged<TrackerIssue>
+        return completeValidatorResponse(
+          trackerIssueValidators, path, request, response.headers.get('ETag'), value,
+        )
+      },
+    )
+  } finally {
+    finishValidatorRequest(trackerIssueValidatorRequests, path, request)
+  }
 }
 
 async function conditionalChangeRevision(scope: string): Promise<{ revision: number }> {
-  const cached = revisionValidators.get(scope)
-  return fetchWithTimeout(
-    `/api/changes?scope=${encodeURIComponent(scope)}`,
-    {
-      credentials: 'include',
-      headers: cached ? { 'If-None-Match': cached.etag } : {},
-    },
-    JSON_TIMEOUT_MS,
-    async (response) => {
-      if (response.status === 304 && cached) return cached.value
-      if (!response.ok) {
-        throw new ApiError(response.status, await readErrorDetail(response), responseRequestId(response), responseRetryAfter(response))
-      }
-      const value = await response.json() as { revision: number }
-      const etag = response.headers.get('ETag')
-      if (etag) revisionValidators.set(scope, { etag, value })
-      return value
-    },
-  )
+  const request = beginValidatorRequest(revisionValidatorRequests, scope)
+  const cached = cachedValidator(revisionValidators, scope)
+  try {
+    return await fetchWithTimeout(
+      `/api/changes?scope=${encodeURIComponent(scope)}`,
+      {
+        credentials: 'include',
+        cache: 'no-store',
+        headers: cached ? { 'If-None-Match': cached.etag } : {},
+      },
+      JSON_TIMEOUT_MS,
+      async (response) => {
+        if (response.status === 304 && cached) {
+          const current = completeValidatorNotModified(revisionValidators, scope, request)
+          return current ?? conditionalChangeRevision(scope)
+        }
+        if (!response.ok) {
+          throw new ApiError(response.status, await readErrorDetail(response), responseRequestId(response), responseRetryAfter(response))
+        }
+        const value = await response.json() as { revision: number }
+        return completeValidatorResponse(
+          revisionValidators, scope, request, response.headers.get('ETag'), value,
+        )
+      },
+    )
+  } finally {
+    finishValidatorRequest(revisionValidatorRequests, scope, request)
+  }
 }
 
 export const api = {

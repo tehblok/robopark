@@ -3,6 +3,7 @@ import { Alert, Panel } from '../../components/PageShell'
 import { MetricCard } from '../../design-system/data/MetricCard'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import type { SystemHistory, SystemSummary } from '../../opsApi'
+import { HostPerformance } from './HostPerformance'
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -159,6 +160,7 @@ export function SystemMetrics({ summary, history }: { summary: SystemSummary; hi
         <MetricCard label="Wi‑Fi" value={state(host.wifi)} />
       </div>
     </Panel>
+    <HostPerformance value={host.performance} />
     <Panel density="dense" title="Очереди и интеграции">
       <div className="rp-system-grid">
         <MetricCard label="Очередь" value={summary.sync.pending_action_count} delta={`${summary.sync.needs_attention_count} требуют внимания`} tone={summary.sync.needs_attention_count ? 'warning' : 'success'} />

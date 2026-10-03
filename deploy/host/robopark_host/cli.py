@@ -183,6 +183,13 @@ def _watchdog_handler(paths: HostPaths) -> int:
     publish_operation_capabilities(paths, effects)
     publish_operation_context(paths, effects)
     result = run_watchdog(paths, _system_runner, _Http())
+    try:
+        from .performance import publish_performance
+
+        publish_performance(paths)
+    except Exception:
+        # Optional observations must not change readiness recovery behavior.
+        pass
     _print(
         {
             "consecutive_failures": result.consecutive_failures,

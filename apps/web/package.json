@@ -1,11 +1,11 @@
 {
   "name": "web",
   "private": true,
-  "version": "0.2.0-rc.22",
+  "version": "0.2.0-rc.23",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && node scripts/build-sw.mjs",
+    "build": "tsc -b && vite build && node scripts/build-sw.mjs && node scripts/compress-assets.mjs",
     "lint": "oxlint",
     "check-nav": "node scripts/check-nav.mjs",
     "check:contrast": "node scripts/check-contrast.mjs",
