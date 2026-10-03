@@ -88,8 +88,9 @@ def test_snapshot_builder_and_inspector_use_bounded_reads(tmp_path, monkeypatch,
         with zipfile.ZipFile(commented, "a") as writer:
             writer.comment = b"bounded ZIP directory search"
         archive = commented.getvalue()
-    # ZIP's EOCD record is 22 bytes with an optional 65535-byte comment.
-    tail_limit = 65535 + 22
+    # Older CPython searches 65536 bytes plus EOCD, although a ZIP comment
+    # itself is limited to 65535 bytes. Keep the guard valid for both versions.
+    tail_limit = (1 << 16) + zipfile.sizeEndCentDir
     assert len(archive) > tail_limit
 
     class BoundedReader(io.BytesIO):
@@ -105,6 +106,15 @@ def test_snapshot_builder_and_inspector_use_bounded_reads(tmp_path, monkeypatch,
     # Negative control: the guard must reject the regression it protects against.
     with pytest.raises(AssertionError, match="archive was loaded into memory"):
         BoundedReader(archive).read()
+    reader = BoundedReader(archive)
+    reader.seek(-(tail_limit + 1), io.SEEK_END)
+    with pytest.raises(AssertionError, match="archive was loaded into memory"):
+        reader.read()
+    # CPython 3.12.3 searches 64 KiB + EOCD, one byte more than the maximum
+    # comment length. Exercise that window even on newer Python versions.
+    legacy_window = (1 << 16) + zipfile.sizeEndCentDir
+    reader.seek(-legacy_window, io.SEEK_END)
+    assert len(reader.read()) == legacy_window
     meta = inspect_archive(BoundedReader(archive), expected_kind=KIND_SNAPSHOT)
     assert meta.files["sample.bin"] == _sha256(payload)
 
