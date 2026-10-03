@@ -1,0 +1,24 @@
+[Unit]
+Description=Robopark verified local backup
+Requires=robopark.service
+After=robopark.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark backup
+TimeoutStartSec=1800
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+ReadWritePaths=/var/backups/robopark /var/lib/robopark/api-ops /var/lib/robopark/ops/state -/run/lock/robopark

@@ -136,9 +136,19 @@ def _is_approved(user: User) -> bool:
 
 
 def _require_park(db: Session, user: User, park_id: int) -> None:
-    if db.get(Park, park_id) is None:
+    park = db.get(Park, park_id)
+    if park is None:
         raise LookupError("park not found")
-    if park_id not in _user_park_ids(db, user):
+    if not park.is_active:
+        raise PermissionError("forbidden")
+    if rbac.is_admin_or_royal(user):
+        return
+    if (
+        db.scalar(
+            select(UserPark.park_id).where(UserPark.user_id == user.id, UserPark.park_id == park_id)
+        )
+        is None
+    ):
         raise PermissionError("forbidden")
 
 
@@ -326,40 +336,83 @@ def _require_non_empty_comment(comment: str) -> str:
     return trimmed
 
 
-def list_inbox(db: Session, user: User, *, park_id: int | None = None) -> list[Report]:
+def list_inbox(
+    db: Session,
+    user: User,
+    *,
+    park_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    anchor_id: int | None = None,
+    before_id: int | None = None,
+    after_id: int | None = None,
+) -> list[Report]:
     if not _can_resolve(db, user):
         raise PermissionError("forbidden")
     scope = _scope_clause(db, user, park_id)
     if _is_admin_inbox_user(user):
-        stmt = select(Report).options(selectinload(Report.attachments))
+        stmt = select(Report)
     elif _is_approved_operator(user):
-        stmt = (
-            select(Report)
-            .options(selectinload(Report.attachments))
-            .where(
-                Report.status == STATUS_OPEN,
-                Report.target_role == RoleSlug.OPERATOR,
-            )
+        stmt = select(Report).where(
+            Report.status == STATUS_OPEN,
+            Report.target_role == RoleSlug.OPERATOR,
         )
     else:
         return []
+    if anchor_id is not None:
+        stmt = stmt.where(Report.id <= anchor_id)
+    if before_id is not None:
+        stmt = stmt.where(Report.id < before_id)
+    if after_id is not None:
+        stmt = stmt.where(Report.id > after_id)
 
-    return list(
-        db.scalars(stmt.where(scope).order_by(Report.created_at.desc(), Report.id.desc())).all()
-    )
-
-
-def list_mine(db: Session, user: User) -> list[Report]:
-    if not _is_approved(user):
-        raise PermissionError("forbidden")
-    return list(
+    rows = list(
         db.scalars(
-            select(Report)
-            .options(selectinload(Report.attachments))
-            .where(Report.author_user_id == user.id, _scope_clause(db, user))
-            .order_by(Report.created_at.desc(), Report.id.desc())
+            stmt.where(scope)
+            .order_by(Report.id.asc() if after_id is not None else Report.id.desc())
+            .limit(limit)
+            .offset(offset)
         ).all()
     )
+    if after_id is not None:
+        rows.reverse()
+    return rows
+
+
+def list_mine(
+    db: Session,
+    user: User,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    status: str | None = None,
+    anchor_id: int | None = None,
+    before_id: int | None = None,
+    after_id: int | None = None,
+) -> list[Report]:
+    if not _is_approved(user):
+        raise PermissionError("forbidden")
+    filters = [Report.author_user_id == user.id, _scope_clause(db, user)]
+    if status is not None and status != "all":
+        filters.append(Report.status == status)
+    if anchor_id is not None:
+        filters.append(Report.id <= anchor_id)
+    if before_id is not None:
+        filters.append(Report.id < before_id)
+    if after_id is not None:
+        filters.append(Report.id > after_id)
+    rows = list(
+        db.scalars(
+            select(Report)
+            .where(*filters)
+            .order_by(Report.id.asc() if after_id is not None else Report.id.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+    )
+    if after_id is not None:
+        rows.reverse()
+    return rows
 
 
 def get_report(db: Session, user: User, report_id: int) -> Report:

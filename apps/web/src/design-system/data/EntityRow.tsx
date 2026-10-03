@@ -2,6 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import '../layout/MasterDetail.css'
 
 export type EntityRowProps = {
+  className?: string
   title: ReactNode
   meta?: ReactNode
   status?: ReactNode
@@ -10,6 +11,7 @@ export type EntityRowProps = {
 }
 
 export function EntityRow({
+  className,
   title,
   meta,
   status,
@@ -17,7 +19,7 @@ export function EntityRow({
   actions,
 }: EntityRowProps): ReactElement {
   return (
-    <article className="rp-entity-row">
+    <article className={`rp-entity-row${className ? ` ${className}` : ''}`}>
       <div className="rp-entity-row__content">
         <div className="rp-entity-row__title">{title}</div>
         {meta ? <div className="rp-entity-row__meta">{meta}</div> : null}

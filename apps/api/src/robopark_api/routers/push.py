@@ -8,15 +8,15 @@ from datetime import UTC, datetime, timedelta
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, or_, select
+from sqlalchemy import and_, delete, exists, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
 from robopark_api.crypto import encrypt_secret
 from robopark_api.db import get_db
-from robopark_api.deps import require_user
-from robopark_api.models import User
+from robopark_api.deps import require_approved, require_user
+from robopark_api.models import AccessStatus, Role, User, UserPark
 from robopark_api.notification_delivery_models import NotificationDelivery
 from robopark_api.schedule_models import (
     NotificationEvent,
@@ -25,12 +25,34 @@ from robopark_api.schedule_models import (
     SystemIncidentOccurrence,
 )
 from robopark_api.schedule_schemas import PushPreferenceIn, PushSubscriptionIn
-from robopark_api.services.schedules import RoutingEvent, eligible_recipients
+from robopark_api.services.schedules import NOTIFICATION_ROLES, RoutingEvent, eligible_recipients
 
 router = APIRouter(prefix="/push", tags=["push"])
 logger = logging.getLogger(__name__)
 
 _P256_ORDER = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+
+
+def _visible_inbox_scope(user: User):
+    allowed_events = [
+        event_type
+        for event_type, (roles, _requires_shift) in NOTIFICATION_ROLES.items()
+        if user.role in roles
+    ]
+    if user.role == "royal":
+        return NotificationEvent.event_type.in_(allowed_events)
+    return and_(
+        NotificationEvent.event_type.in_(allowed_events),
+        or_(
+            NotificationEvent.park_id.is_(None),
+            exists(
+                select(UserPark.user_id).where(
+                    UserPark.user_id == user.id,
+                    UserPark.park_id == NotificationEvent.park_id,
+                )
+            ),
+        ),
+    )
 
 
 def prune_expired_subscriptions(db: Session, *, now: datetime | None = None) -> int:
@@ -113,11 +135,34 @@ class PushService:
     ) -> dict:
         """Stage inbox and delivery rows in the caller's domain transaction."""
         now = datetime.now(UTC)
-        users = (
-            list(db.scalars(select(User).where(User.id.in_(recipient_user_ids)).order_by(User.id)))
-            if recipient_user_ids is not None
-            else eligible_recipients(RoutingEvent(db, event_type, park_id, target_user_ids), now)
-        )
+        if recipient_user_ids is not None:
+            allowed_roles, _requires_shift = NOTIFICATION_ROLES[event_type]
+            recipients_query = (
+                select(User)
+                .join(Role)
+                .where(
+                    User.id.in_(recipient_user_ids),
+                    Role.slug.in_(allowed_roles),
+                    User.access_status == AccessStatus.approved.value,
+                    User.is_active.is_(True),
+                )
+                .order_by(User.id)
+            )
+            if park_id is not None:
+                recipients_query = recipients_query.where(
+                    or_(
+                        Role.slug == "royal",
+                        exists(
+                            select(UserPark.user_id).where(
+                                UserPark.user_id == User.id,
+                                UserPark.park_id == park_id,
+                            )
+                        ),
+                    )
+                )
+            users = list(db.scalars(recipients_query))
+        else:
+            users = eligible_recipients(RoutingEvent(db, event_type, park_id, target_user_ids), now)
         user_ids = {user.id for user in users}
         preferences = {
             item.user_id: item
@@ -167,6 +212,7 @@ class PushService:
                 .order_by(PushSubscription.created_at, PushSubscription.id)
             ):
                 subscriptions.setdefault(row.user_id, []).append(row)
+        fresh_users = []
         for user in users:
             notification_id = f"{event_id}-{user.id}"
             if db.get(NotificationEvent, notification_id) is not None:
@@ -180,6 +226,13 @@ class PushService:
                     protected_text=protected_text,
                 )
             )
+            fresh_users.append(user)
+        if fresh_users:
+            # SQLAlchemy cannot infer flush order from an unmapped FK field.
+            # Persist parents first, keeping both rows in the caller's transaction.
+            db.flush()
+        for user in fresh_users:
+            notification_id = f"{event_id}-{user.id}"
             db.add(
                 NotificationDelivery(
                     event_id=notification_id,
@@ -255,7 +308,7 @@ def _vapid_key_pair(secret_key: str) -> tuple[str, str]:
 
 
 @router.get("/config")
-def push_config(user: User = Depends(require_user)):
+def push_config(user: User = Depends(require_approved)):
     del user
     settings = get_settings()
     if not settings.secret_key:
@@ -266,7 +319,9 @@ def push_config(user: User = Depends(require_user)):
 
 @router.post("/subscriptions", status_code=status.HTTP_201_CREATED)
 def subscribe(
-    payload: PushSubscriptionIn, user: User = Depends(require_user), db: Session = Depends(get_db)
+    payload: PushSubscriptionIn,
+    user: User = Depends(require_approved),
+    db: Session = Depends(get_db),
 ):
     settings = get_settings()
     endpoint_hash = hashlib.sha256(payload.endpoint.encode()).hexdigest()
@@ -303,7 +358,7 @@ def unsubscribe(
 
 @router.put("/preferences")
 def preferences(
-    payload: PushPreferenceIn, user: User = Depends(require_user), db: Session = Depends(get_db)
+    payload: PushPreferenceIn, user: User = Depends(require_approved), db: Session = Depends(get_db)
 ):
     row = db.get(NotificationPreference, user.id)
     if row is None:
@@ -316,10 +371,10 @@ def preferences(
 
 
 @router.get("/inbox")
-def inbox(user: User = Depends(require_user), db: Session = Depends(get_db)):
+def inbox(user: User = Depends(require_approved), db: Session = Depends(get_db)):
     rows = db.scalars(
         select(NotificationEvent)
-        .where(NotificationEvent.user_id == user.id)
+        .where(NotificationEvent.user_id == user.id, _visible_inbox_scope(user))
         .order_by(NotificationEvent.created_at.desc(), NotificationEvent.id.desc())
         .limit(200)
     )
@@ -337,9 +392,15 @@ def inbox(user: User = Depends(require_user), db: Session = Depends(get_db)):
 
 
 @router.post("/inbox/{event_id}/read")
-def mark_read(event_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    row = db.get(NotificationEvent, event_id)
-    if row is None or row.user_id != user.id:
+def mark_read(event_id: str, user: User = Depends(require_approved), db: Session = Depends(get_db)):
+    row = db.scalar(
+        select(NotificationEvent).where(
+            NotificationEvent.id == event_id,
+            NotificationEvent.user_id == user.id,
+            _visible_inbox_scope(user),
+        )
+    )
+    if row is None:
         raise HTTPException(404, "notification_not_found")
     row.read_at = datetime.now(UTC)
     db.commit()

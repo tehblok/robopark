@@ -2,8 +2,17 @@ import math
 from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+
+
+def validate_park_timezone(value: str) -> str:
+    try:
+        ZoneInfo(value)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise ValueError("invalid_timezone") from exc
+    return value
 
 
 class LoginRequest(BaseModel):
@@ -25,6 +34,7 @@ class ParkOut(BaseModel):
     id: int
     name: str
     tag: str
+    timezone: str
     is_active: bool = True
     tracker_queue: str | None = None
     tracker_priority: str | None = None
@@ -40,6 +50,13 @@ class ParkOut(BaseModel):
 class ParkCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     tag: str = Field(min_length=1, max_length=64)
+    timezone: str = Field(default="Europe/Moscow", min_length=1, max_length=64)
+
+    @field_validator("timezone")
+    @classmethod
+    def valid_timezone(cls, value: str) -> str:
+        return validate_park_timezone(value)
+
     tracker_queue: str | None = Field(default=None, max_length=128)
     tracker_priority: str | None = Field(default=None, max_length=64)
     tracker_type: str | None = Field(default=None, max_length=64)
@@ -54,6 +71,13 @@ class ParkCreate(BaseModel):
 class ParkUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     tag: str | None = Field(default=None, min_length=1, max_length=64)
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("timezone")
+    @classmethod
+    def valid_timezone(cls, value: str | None) -> str | None:
+        return validate_park_timezone(value) if value is not None else None
+
     is_active: bool | None = None
     tracker_queue: str | None = Field(default=None, max_length=128)
     tracker_priority: str | None = Field(default=None, max_length=64)
@@ -576,6 +600,7 @@ class TrackerIssueOut(BaseModel):
     queued_at: str | None = None
     sla_deadline: str | None = None
     sla_source: Literal["status_history", "estimated"] | None = None
+    sla_timezone: str | None = None
 
 
 class TrackerIssueCapabilitiesOut(BaseModel):
@@ -589,6 +614,7 @@ class TrackerIssueCapabilitiesOut(BaseModel):
 
 class TrackerIssueClaimOut(BaseModel):
     park_id: int
+    state: Literal["pending", "active"]
 
 
 class TaskHiddenOut(BaseModel):
@@ -669,6 +695,7 @@ class TaskTimelineItemOut(BaseModel):
     text: str
     created_at: str
     sync_state: Literal["saved", "pending", "synced", "needs_attention"]
+    delivery_note: Literal["previous_cycle_not_sent"] | None = None
     attachments: list[TrackerAttachmentOut] = Field(default_factory=list)
 
 
@@ -852,6 +879,20 @@ class ReportOut(BaseModel):
     updated_at: datetime
     resolved_at: datetime | None
     attachments: list[ReportAttachmentOut] = Field(default_factory=list)
+
+
+class ReportSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: str
+    status: str
+    park_id: int | None
+    tracker_key: str | None
+    title: str
+    return_comment: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class ReportBadgeOut(BaseModel):

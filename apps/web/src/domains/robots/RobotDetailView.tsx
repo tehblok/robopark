@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Blocker, EmergencySnapshot } from '../../api'
-import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
+import { ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { Panel } from '../../design-system/layout/PageLayout'
 import type { DomainError } from '../../shared/api/classifyApiError'
 import { RobotIdentityCard } from './RobotIdentityCard'
@@ -57,7 +57,6 @@ export function RobotDetailView({ display = 'all', snapshot, reference, relatedW
                 </ul>
               ) : <p>Связанных задач нет в доступной области.</p>}
       </Panel>}
-      {display === 'all' && <div className="rp-robot-detail__events"><EmptyState title="История событий пока недоступна" description="Источник истории событий пока не подключён." icon="info" /></div>}
     </div>
   )
 }

@@ -19,23 +19,25 @@ import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { refreshReportsBadge } from '../../reports-badge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
 import './campaigns.css'
+import { limitOverviewCampaignRead } from './overviewCampaignRequestLimit'
 
 type CampaignApi = Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>
+type CampaignReadOutcome = 'loaded' | 'error' | 'denied' | 'stale'
 
-const kindLabel = (kind: Campaign['kind']) => kind === 'service_company' ? 'Сервисная компания' : 'Оклейка'
+const kindLabel = (kind: Campaign['kind']) => kind === 'service_company' ? 'Сервисная кампания' : 'Оклейка'
 const campaignStatusLabel = (campaign: Campaign) => !campaign.is_active ? 'Завершена' : campaign.overdue ? 'Просрочена' : 'Активна'
 const dateLabel = (value: string) => new Intl.DateTimeFormat('ru-RU').format(new Date(`${value}T00:00:00`))
 
-function Progress({ value, label }: { value: number; label: string }) {
+function Progress({ value, label, compact = false }: { value: number; label: string; compact?: boolean }) {
   const safe = Math.max(0, Math.min(100, value))
   return <div aria-label={`${label}: ${safe}%`} className="campaign-progress" role="img" style={{ '--campaign-progress': `${safe * 3.6}deg` } as CSSProperties}>
-    <strong>{safe}%</strong><span>выполнено</span>
+    <strong>{safe}%</strong>{compact ? null : <span>выполнено</span>}
   </div>
 }
 
-export function CampaignMetrics({ campaign }: { campaign: Campaign }) {
-  return <div className="campaign-metrics">
-    <Progress label={campaign.name} value={campaign.percent_complete} />
+export function CampaignMetrics({ campaign, showProgress = true }: { campaign: Campaign; showProgress?: boolean }) {
+  return <div className={`campaign-metrics${showProgress ? '' : ' campaign-metrics--compact'}`}>
+    {showProgress && <Progress label={campaign.name} value={campaign.percent_complete} />}
     <div className="stat-grid">
       <MetricCard label="Всего тикетов" value={campaign.total_count} />
       <MetricCard label="Выполнено" tone="success" value={campaign.completed_count} />
@@ -46,30 +48,38 @@ export function CampaignMetrics({ campaign }: { campaign: Campaign }) {
 }
 
 export function CampaignOverviewSection({ parkId, apiClient = api }: { parkId: number; apiClient?: CampaignApi }) {
-  const [items, setItems] = useState<Campaign[] | null>(null)
-  const [error, setError] = useState<unknown>(null)
+  const [items, setItems] = useState<{ parkId: number; values: Campaign[] } | null>(null)
+  const [error, setError] = useState<{ parkId: number; cause: unknown } | null>(null)
+  const [reload, setReload] = useState(0)
   useEffect(() => {
     let active = true
-    apiClient.campaigns(parkId).then((value) => { if (active) { setItems(value.filter(item => item.is_active)); setError(null) } })
-      .catch((reason) => { if (active) setError(reason) })
-    return () => { active = false }
-  }, [apiClient, parkId])
-  if (error) return null
-  if (!items?.length) return null
+    const controller = new AbortController()
+    setError(null)
+    limitOverviewCampaignRead(signal => apiClient.campaigns(parkId, signal), controller.signal).then((value) => { if (active) { setItems({ parkId, values: value.filter(item => item.is_active) }); setError(null) } })
+      .catch((cause) => { if (active) setError({ parkId, cause }) })
+    return () => { active = false; controller.abort() }
+  }, [apiClient, parkId, reload])
+  if (error?.parkId === parkId) {
+    const failure = classifyApiError(error.cause, 'Не удалось загрузить кампании парка.')
+    return <ErrorState description={failure.description} onRetry={failure.retryable ? () => setReload(current => current + 1) : undefined} requestId={failure.requestId} title={failure.title} />
+  }
+  if (items?.parkId !== parkId) return <LoadingState label="Загружаем кампании парка" variant="inline" />
+  if (!items.values.length) return null
   return <Panel collapsible storageKey={`overview-campaigns-${parkId}`} title="СК и оклейка">
-    <div className="campaign-overview-list">{items.map(item => <article className="campaign-overview-item" key={item.id}>
+    <div className="campaign-overview-list">{items.values.map(item => <article className="campaign-overview-item" key={item.id}>
       <div><StatusBadge tone={item.overdue ? 'critical' : 'info'}>{kindLabel(item.kind)}</StatusBadge><h3><Link to={`/campaigns/${item.id}`}>{item.name}</Link></h3><p>{item.park_names.join(', ')} · до {dateLabel(item.due_on)}</p></div>
-      <Progress label={item.name} value={item.percent_complete} />
+      <Progress compact label={item.name} value={item.percent_complete} />
     </article>)}</div>
   </Panel>
 }
 
 function CampaignCreateForm({ apiClient, onCreated, campaign }: { apiClient: CampaignApi; onCreated: (item: Campaign) => void; campaign?: Campaign }) {
   const { parks } = useParkScope()
-  const today = new Date().toISOString().slice(0, 10)
-  const [payload, setPayload] = useState<CampaignCreatePayload>(() => campaign
-    ? { kind: campaign.kind, name: campaign.name, tracker_tag: campaign.tracker_tag, starts_on: campaign.starts_on, due_on: campaign.due_on, park_ids: campaign.park_ids }
-    : { kind: 'service_company', name: '', tracker_tag: '', starts_on: today, due_on: today, park_ids: [] })
+  const [payload, setPayload] = useState<CampaignCreatePayload>(() => {
+    if (campaign) return { kind: campaign.kind, name: campaign.name, tracker_tag: campaign.tracker_tag, starts_on: campaign.starts_on, due_on: campaign.due_on, park_ids: campaign.park_ids }
+    const today = new Date().toISOString().slice(0, 10)
+    return { kind: 'service_company', name: '', tracker_tag: '', starts_on: today, due_on: today, park_ids: [] }
+  })
   const [busy, setBusy] = useState(false)
   const pending = useRef(false)
   const [error, setError] = useState<string | null>(null)
@@ -84,7 +94,7 @@ function CampaignCreateForm({ apiClient, onCreated, campaign }: { apiClient: Cam
   }
   return <ResponsiveDisclosureGroup label={campaign ? 'Настройки кампании' : 'Создание кампании'}><ResponsiveDisclosure id="create" title={campaign ? 'Настройки кампании' : 'Новая кампания'}>
     <form className="form-grid campaign-create" onSubmit={submit}>
-      <label className="field"><span>Тип</span><select disabled={Boolean(campaign)} value={payload.kind} onChange={event => setPayload(current => ({ ...current, kind: event.target.value as Campaign['kind'] }))}><option value="service_company">Сервисная компания</option><option value="wrapping">Оклейка</option></select></label>
+      <label className="field"><span>Тип</span><select disabled={Boolean(campaign)} value={payload.kind} onChange={event => setPayload(current => ({ ...current, kind: event.target.value as Campaign['kind'] }))}><option value="service_company">Сервисная кампания</option><option value="wrapping">Оклейка</option></select></label>
       <label className="field"><span>Название</span><input required maxLength={128} value={payload.name} onChange={event => setPayload(current => ({ ...current, name: event.target.value }))} /></label>
       <label className="field"><span>Часть названия тикета</span><input required minLength={3} maxLength={128} value={payload.tracker_tag} onChange={event => setPayload(current => ({ ...current, tracker_tag: event.target.value }))} /></label>
       <label className="field"><span>Начало</span><input required type="date" value={payload.starts_on} onChange={event => setPayload(current => ({ ...current, starts_on: event.target.value }))} /></label>
@@ -108,17 +118,18 @@ function CampaignList({ apiClient }: { apiClient: CampaignApi }) {
     setError(null)
     apiClient.campaigns(selectedPark?.id).then(value => { if (request === generation.current) setItems(value) }).catch(reason => { if (request === generation.current) { setItems(null); setError(reason) } })
   }, [apiClient, selectedPark?.id])
-  useEffect(() => { load(); return () => { generation.current++ } }, [load])
+  const invalidate = useCallback(() => { generation.current++ }, [])
+  useEffect(() => { load(); return invalidate }, [invalidate, load])
   const manager = user?.role === 'admin' || user?.role === 'royal'
   const failure = error ? classifyApiError(error, 'Не удалось загрузить кампании.') : null
-  return <PageLayout description="Прогресс сервисных компаний и оклейки по доступным паркам." title="СК и оклейка">
+  return <PageLayout description="Прогресс сервисных кампаний и оклейки по доступным паркам." title="СК и оклейка">
     <div className="campaign-list-composition">
     <section>{failure ? <ErrorState description={failure.description} onRetry={failure.retryable ? load : undefined} title={failure.title} />
       : !items ? <LoadingState label="Загружаем кампании" variant="page" />
         : !items.length ? <EmptyState description="Администратор ещё не добавил кампании для доступных парков." icon="work" title="Кампаний нет" />
           : <div className="campaign-list">{items.map(item => <Panel className="campaign-card" density="dense" key={item.id}>
             <div className="campaign-card__heading"><div><div className="campaign-card__badges"><StatusBadge tone="neutral">{kindLabel(item.kind)}</StatusBadge><StatusBadge tone={!item.is_active ? 'neutral' : item.overdue ? 'critical' : 'info'}>{campaignStatusLabel(item)}</StatusBadge></div><h2><Link to={`/campaigns/${item.id}`}>{item.name}</Link></h2><p>{item.park_names.join(', ')} · {dateLabel(item.starts_on)} — {dateLabel(item.due_on)}</p></div><Progress label={item.name} value={item.percent_complete} /></div>
-            <ResponsiveDisclosureGroup label={`Метрики ${item.name}`}><ResponsiveDisclosure id="metrics" summary={`${item.percent_complete}% выполнено`} title="Метрики"><CampaignMetrics campaign={item} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
+            <ResponsiveDisclosureGroup label={`Метрики ${item.name}`}><ResponsiveDisclosure id="metrics" summary={`${item.percent_complete}% выполнено`} title="Метрики"><CampaignMetrics campaign={item} showProgress={false} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
           </Panel>)}</div>}</section>
     {manager ? <div><CampaignCreateForm apiClient={apiClient} onCreated={item => navigate(`/campaigns/${item.id}`)} /></div> : null}
     </div>
@@ -138,6 +149,7 @@ function transitionLabel(value: string | null) {
 function TicketCard({ ticket, campaign, apiClient, reload, editing, onEditingChange }: { ticket: CampaignTicket; campaign: CampaignDetail; apiClient: CampaignApi; reload: () => void; editing: boolean; onEditingChange: (editing: boolean) => void }) {
   const [comment, setComment] = useState('')
   const [photo, setPhoto] = useState<File | null>(null)
+  const photoInput = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const submitting = useRef(false)
@@ -167,7 +179,11 @@ function TicketCard({ ticket, campaign, apiClient, reload, editing, onEditingCha
     {trackerState ? <p className={ticket.tracker_transition === 'failed' || ticket.tracker_transition === 'unavailable' ? 'campaign-warning' : ''}>{trackerState}</p> : null}
     {canSubmit ? <>{editing ? <form className="campaign-complete" onSubmit={submit}>
       <label className="field"><span>Комментарий для оператора</span><textarea required maxLength={4000} value={comment} onChange={event => setComment(event.target.value)} /></label>
-      <label className="field"><span>Фото</span><input accept="image/jpeg,image/png,image/webp" required type="file" onChange={event => setPhoto(event.target.files?.[0] ?? null)} /></label>
+      <div className="field campaign-photo-field"><span>Фото</span>
+        <input accept="image/jpeg,image/png,image/webp" aria-label="Фото" className="issue-attach-input" onChange={event => setPhoto(event.target.files?.[0] ?? null)} ref={photoInput} required type="file" />
+        <Button onClick={() => photoInput.current?.click()} type="button" variant="secondary">Выбрать фото</Button>
+        <span aria-live="polite" className="campaign-photo-name">{photo?.name ?? 'Фото не выбрано'}</span>
+      </div>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       <div className="campaign-actions"><Button busy={busy} disabled={!photo || !comment.trim()} type="submit">Отправить оператору</Button><Button onClick={() => onEditingChange(false)} type="button" variant="ghost">Отмена</Button></div>
     </form> : <Button onClick={() => onEditingChange(true)} variant="secondary">Заполнить и отправить на проверку</Button>}</> : null}
@@ -187,28 +203,62 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
   const [toggleError, setToggleError] = useState<string | null>(null)
   const togglePending = useRef(false)
   const generation = useRef(0)
+  const pendingLoad = useRef<{ campaignId: number; client: CampaignApi; promise: Promise<CampaignReadOutcome> } | null>(null)
   const load = useCallback(() => {
+    const current = pendingLoad.current
+    if (current?.campaignId === campaignId && current.client === apiClient) return current.promise
     const request = ++generation.current
     setError(null)
-    apiClient.campaign(campaignId).then(value => { if (request === generation.current) setData(value) }).catch(reason => {
-      if (request !== generation.current) return
+    const promise: Promise<CampaignReadOutcome> = apiClient.campaign(campaignId).then(value => {
+      if (request !== generation.current) return 'stale'
+      setData(value)
+      return 'loaded'
+    }).catch(reason => {
+      if (request !== generation.current) return 'stale'
       const failure = classifyApiError(reason, 'Не удалось загрузить кампанию.')
       if (failure.kind === 'forbidden' || failure.kind === 'unauthorized') setData(null)
       setError(reason)
-    })
+      return failure.kind === 'forbidden' || failure.kind === 'unauthorized' ? 'denied' : 'error'
+    }).finally(() => { if (pendingLoad.current?.promise === promise) pendingLoad.current = null })
+    pendingLoad.current = { campaignId, client: apiClient, promise }
+    return promise
   }, [apiClient, campaignId])
-  useEffect(() => { load(); return () => { generation.current++ } }, [load])
+  const reloadAfterMutation = useCallback(async () => {
+    const current = pendingLoad.current
+    const hadPending = current?.campaignId === campaignId && current.client === apiClient
+    const outcome = await load()
+    if (hadPending && outcome !== 'denied' && outcome !== 'stale') await load()
+  }, [apiClient, campaignId, load])
+  const invalidate = useCallback(() => {
+    generation.current++
+    pendingLoad.current = null
+  }, [])
+  useEffect(() => {
+    void load()
+    return invalidate
+  }, [invalidate, load])
   useEffect(() => {
     if (data?.snapshot_state !== 'pending' && data?.snapshot_state !== 'running') return
-    const timer = window.setInterval(() => { if (!document.hidden && navigator.onLine !== false) load() }, 3000)
-    return () => window.clearInterval(timer)
+    let active = true
+    let delay = 3000
+    let timer: number
+    const poll = async () => {
+      if (!active) return
+      if (!document.hidden && navigator.onLine !== false) {
+        await load()
+        delay = Math.min(delay * 2, 15_000)
+      }
+      if (active) timer = window.setTimeout(() => { void poll() }, delay)
+    }
+    timer = window.setTimeout(() => { void poll() }, delay)
+    return () => { active = false; window.clearTimeout(timer) }
   }, [data?.snapshot_state, load])
   const refresh = async () => {
     setRefreshMessage(null)
     try {
       await apiClient.refreshCampaign(campaignId)
       setRefreshMessage('Обновление запрошено. Пока показаны последние сохранённые данные.')
-      load()
+      void reloadAfterMutation()
     } catch (reason) {
       setRefreshMessage(classifyApiError(reason, 'Не удалось запросить обновление.').description)
     }
@@ -228,7 +278,7 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
     setToggleBusy(true); setToggleError(null)
     try {
       await apiClient.updateCampaign(data.id, { is_active: !data.is_active })
-      load()
+      void reloadAfterMutation()
     } catch (reason) {
       setToggleError(classifyApiError(reason, 'Не удалось изменить состояние кампании.').description)
     } finally {
@@ -249,14 +299,14 @@ function CampaignDetailPage({ campaignId, apiClient }: { campaignId: number; api
     {refreshMessage ? <p role="status">{refreshMessage}</p> : null}
     {toggleError ? <p role="alert">{toggleError}</p> : null}
     {failure ? <p role="status">Показаны последние полученные данные. Обновление не удалось: {failure.description}</p> : null}
-    <div className="campaign-detail-composition">
+    <div className="campaign-detail-composition rp-domain-composition">
     <section><ResponsiveDisclosureGroup label="Разделы кампании"><ResponsiveDisclosure id="metrics" summary={`${data.percent_complete}% · ${data.completed_count} из ${data.total_count}`} title="Метрики"><CampaignMetrics campaign={data} /></ResponsiveDisclosure></ResponsiveDisclosureGroup>
-    {manager ? <CampaignCreateForm apiClient={apiClient} campaign={data} onCreated={load} /> : null}</section>
+    {manager ? <CampaignCreateForm apiClient={apiClient} campaign={data} onCreated={reloadAfterMutation} /> : null}</section>
     <div className="campaign-columns">
       <Panel density="dense" title={`Открытые · ${data.open_tickets.length}`}><label className="field campaign-search"><span>Поиск по роботу</span><input onChange={event => setQuery(event.target.value)} placeholder="Номер робота или тикет" value={query} /></label>
-        <div className="campaign-tickets">{open.map(ticket => <TicketCard apiClient={apiClient} campaign={data} editing={editingTicketKey === ticket.key} key={ticket.key} onEditingChange={editing => setEditingTicketKey(editing ? ticket.key : null)} reload={load} ticket={ticket} />)}{!open.length ? <p>Открытые тикеты не найдены.</p> : null}</div>
+        <div className="campaign-tickets">{open.map(ticket => <TicketCard apiClient={apiClient} campaign={data} editing={editingTicketKey === ticket.key} key={ticket.key} onEditingChange={editing => setEditingTicketKey(editing ? ticket.key : null)} reload={reloadAfterMutation} ticket={ticket} />)}{!open.length ? <p>Открытые тикеты не найдены.</p> : null}</div>
       </Panel>
-      <Panel density="dense"><ResponsiveDisclosureGroup label="История кампании"><ResponsiveDisclosure id="closed" summary={`${data.closed_tickets.length} тикетов`} title={`Закрытые · ${data.closed_tickets.length}`}><div className="campaign-tickets">{data.closed_tickets.map(ticket => <TicketCard apiClient={apiClient} campaign={data} editing={editingTicketKey === ticket.key} key={ticket.key} onEditingChange={editing => setEditingTicketKey(editing ? ticket.key : null)} reload={load} ticket={ticket} />)}{!data.closed_tickets.length ? <p>Закрытых тикетов пока нет.</p> : null}</div></ResponsiveDisclosure></ResponsiveDisclosureGroup></Panel>
+      <Panel density="dense"><ResponsiveDisclosureGroup label="История кампании"><ResponsiveDisclosure id="closed" summary={`${data.closed_tickets.length} тикетов`} title={`Закрытые · ${data.closed_tickets.length}`}><div className="campaign-tickets">{data.closed_tickets.map(ticket => <TicketCard apiClient={apiClient} campaign={data} editing={editingTicketKey === ticket.key} key={ticket.key} onEditingChange={editing => setEditingTicketKey(editing ? ticket.key : null)} reload={reloadAfterMutation} ticket={ticket} />)}{!data.closed_tickets.length ? <p>Закрытых тикетов пока нет.</p> : null}</div></ResponsiveDisclosure></ResponsiveDisclosureGroup></Panel>
     </div></div>
   </PageLayout>
 }

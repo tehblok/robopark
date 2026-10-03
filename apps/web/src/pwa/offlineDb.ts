@@ -73,6 +73,26 @@ function valueBytes(value: unknown): number {
   try { return new TextEncoder().encode(JSON.stringify(value)).byteLength } catch { return 0 }
 }
 
+function queuedActionMatches(left: OfflineAction, right: OfflineAction): boolean {
+  const canonical = (value: unknown): string => {
+    const normalize = (entry: unknown): unknown => {
+      if (Array.isArray(entry)) return entry.map(normalize)
+      if (entry && typeof entry === 'object') {
+        return Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b))
+          .filter(([, item]) => item !== undefined).map(([key, item]) => [key, normalize(item)]))
+      }
+      return entry
+    }
+    return JSON.stringify(normalize(value)) ?? 'null'
+  }
+  return left.id === right.id && left.deviceId === right.deviceId
+    && left.resourceType === right.resourceType && left.resourceId === right.resourceId
+    && left.action === right.action && left.idempotencyKey === right.idempotencyKey
+    && left.baseRevision === right.baseRevision
+    && canonical(left.dependencies) === canonical(right.dependencies)
+    && canonical(left.payload) === canonical(right.payload)
+}
+
 function createIndex(store: IDBObjectStore, name: string, keyPath: string): void {
   if (!store.indexNames.contains(name)) store.createIndex(name, keyPath, { unique: false })
 }
@@ -115,7 +135,10 @@ export type OfflineTransactionWriter = {
   putEntity(key: string, data: unknown, options?: { updatedAt?: number, accessedAt?: number }): void
   putAction(action: OfflineAction): void
   putMedia(media: OfflineMedia): void
+  deleteMedia(id: string): void
+  putRevision(section: string, revision: string): void
 }
+export type SyncTransactionWriter = Pick<OfflineTransactionWriter, 'putAction' | 'putMedia' | 'deleteMedia' | 'putRevision'>
 
 export class OfflineDb {
   private closed = false
@@ -145,10 +168,8 @@ export class OfflineDb {
     return Array.from(transaction.objectStore(store).indexNames).sort()
   }
 
-  async transaction(mutator: (writer: OfflineTransactionWriter) => unknown): Promise<void> {
-    if (!this.isGenerationCurrent()) throw new Error('Offline scope is no longer active')
-    const transaction = this.db.transaction(['entities', 'actions', 'media'], 'readwrite')
-    const writer: OfflineTransactionWriter = {
+  private transactionWriter(transaction: IDBTransaction): OfflineTransactionWriter {
+    return {
       putEntity: (key, data, options = {}) => {
         const now = options.updatedAt ?? Date.now()
         const entry: EntityRecord = {
@@ -159,9 +180,20 @@ export class OfflineDb {
       },
       putAction: action => transaction.objectStore('actions').put(this.actionRecord(action)),
       putMedia: media => transaction.objectStore('media').put(this.mediaRecord(media)),
+      deleteMedia: id => transaction.objectStore('media').delete(recordId(this.scope, id)),
+      putRevision: (section, revision) => {
+        const entry: RevisionRecord = {
+          dbId: recordId(this.scope, section), scope: this.scope, section, revision,
+          bytes: valueBytes(revision), updatedAt: Date.now(),
+        }
+        transaction.objectStore('revisions').put(entry)
+      },
     }
+  }
+
+  private async finishTransaction(transaction: IDBTransaction, mutator: (writer: OfflineTransactionWriter) => unknown): Promise<void> {
     try {
-      const result = mutator(writer)
+      const result = mutator(this.transactionWriter(transaction))
       if (result && typeof (result as unknown as Promise<unknown>).then === 'function') {
         throw new TypeError('Offline transaction mutator must be synchronous')
       }
@@ -171,6 +203,24 @@ export class OfflineDb {
       throw error
     }
     await transactionDone(transaction)
+  }
+
+  async transaction(mutator: (writer: OfflineTransactionWriter) => unknown): Promise<void> {
+    if (!this.isGenerationCurrent()) throw new Error('Offline scope is no longer active')
+    await this.finishTransaction(this.db.transaction(['entities', 'actions', 'media', 'revisions'], 'readwrite'), mutator)
+  }
+
+  async transactionIfLease(owner: string, now: () => number, mutator: (writer: SyncTransactionWriter) => unknown): Promise<boolean> {
+    if (!this.isGenerationCurrent()) return false
+    const transaction = this.db.transaction(['meta', 'actions', 'media', 'revisions'], 'readwrite')
+    const leaseRecord = await requestResult(transaction.objectStore('meta').get(recordId(this.scope, 'sync-lease'))) as MetaRecord | undefined
+    const lease = leaseRecord?.value as { owner?: string, until?: number } | undefined
+    if (lease?.owner !== owner || !(Number(lease.until) > now())) {
+      await transactionDone(transaction)
+      return false
+    }
+    await this.finishTransaction(transaction, mutator)
+    return true
   }
 
   async putEntity(
@@ -203,6 +253,52 @@ export class OfflineDb {
     if (!this.isGenerationCurrent()) return false
     await this.transaction(writer => writer.putAction(action))
     return this.isGenerationCurrent()
+  }
+  async putQueuedAction(action: OfflineAction, media?: OfflineMedia): Promise<OfflineAction | false> {
+    if (!this.isGenerationCurrent()) return false
+    const transaction = this.db.transaction(media ? ['actions', 'meta', 'media'] : ['actions', 'meta'], 'readwrite')
+    const actions = transaction.objectStore('actions')
+    const meta = transaction.objectStore('meta')
+    const existing = await requestResult(actions.get(recordId(this.scope, action.id))) as ActionRecord | undefined
+    if (existing) {
+      const { dbId: _dbId, scope: _scope, bytes: _bytes, resource: _resource, ...stored } = existing
+      if (!queuedActionMatches(stored, action)) {
+        await transactionDone(transaction)
+        throw new Error('sync_payload_conflict')
+      }
+      if (media) {
+        const mediaStore = transaction.objectStore('media')
+        const prior = await requestResult(mediaStore.get(recordId(this.scope, media.id))) as MediaRecord | undefined
+        if (prior) {
+          if (prior.actionId !== media.actionId || prior.issueKey !== media.issueKey
+            || prior.name !== media.name || prior.mimeType !== media.mimeType
+            || prior.sha256 !== media.sha256 || prior.sizeBytes !== media.sizeBytes) {
+            await transactionDone(transaction)
+            throw new Error('sync_payload_conflict')
+          }
+        } else if (!['confirmed', 'cancelled'].includes(stored.state)) {
+          mediaStore.put(this.mediaRecord(media))
+        }
+      }
+      await transactionDone(transaction)
+      return this.isGenerationCurrent() ? stored : false
+    } else {
+      const key = 'action-order'
+      const id = recordId(this.scope, key)
+      const saved = await requestResult(meta.get(id)) as MetaRecord | undefined
+      let latest = Number(saved?.value)
+      if (!Number.isFinite(latest)) {
+        const records = await requestResult(actions.index('scope').getAll(this.scope)) as ActionRecord[]
+        latest = records.reduce((max, item) => Math.max(max, item.createdAt), Number.NEGATIVE_INFINITY)
+      }
+      const createdAt = Math.max(action.createdAt, latest + 1)
+      action = { ...action, createdAt }
+      meta.put({ dbId: id, scope: this.scope, key, value: createdAt, bytes: valueBytes(createdAt), updatedAt: Date.now() } satisfies MetaRecord)
+    }
+    actions.put(this.actionRecord(action))
+    if (media) transaction.objectStore('media').put(this.mediaRecord(media))
+    await transactionDone(transaction)
+    return this.isGenerationCurrent() ? action : false
   }
   async getAction(id: string): Promise<OfflineAction | undefined> {
     const record = await this.getRecord<ActionRecord>('actions', id)
@@ -262,6 +358,23 @@ export class OfflineDb {
     return true
   }
 
+  async renewLease(owner: string, now: number, leaseMs: number): Promise<boolean> {
+    if (!this.isGenerationCurrent()) return false
+    const transaction = this.db.transaction('meta', 'readwrite')
+    const store = transaction.objectStore('meta')
+    const id = recordId(this.scope, 'sync-lease')
+    const current = await requestResult(store.get(id)) as MetaRecord | undefined
+    const lease = current?.value as { owner?: string, until?: number } | undefined
+    if (lease?.owner !== owner || Number(lease.until) <= now) {
+      await transactionDone(transaction)
+      return false
+    }
+    const value = { owner, until: now + leaseMs }
+    store.put({ dbId: id, scope: this.scope, key: 'sync-lease', value, bytes: valueBytes(value), updatedAt: now } satisfies MetaRecord)
+    await transactionDone(transaction)
+    return true
+  }
+
   async releaseLease(owner: string): Promise<void> {
     if (!this.isGenerationCurrent()) return
     const transaction = this.db.transaction('meta', 'readwrite')
@@ -280,8 +393,12 @@ export class OfflineDb {
     const entities = await this.scopedRecords<EntityRecord>('entities')
     const actions = await this.scopedRecords<ActionRecord>('actions')
     const media = await this.scopedRecords<MediaRecord>('media')
+    const dependenciesOfPendingActions = new Set(actions
+      .filter(item => item.state !== 'confirmed' && item.state !== 'cancelled')
+      .flatMap(item => item.dependencies))
     const expiredEntities = entities.filter(item => now - item.updatedAt >= entityTtl)
-    const expiredActions = actions.filter(item => item.state === 'confirmed' && now - item.updatedAt >= confirmedTtl)
+    const expiredActions = actions.filter(item => item.state === 'confirmed'
+      && !dependenciesOfPendingActions.has(item.id) && now - item.updatedAt >= confirmedTtl)
     const actionsById = new Map(actions.map(item => [item.id, item]))
     const dependentActionIsTerminal = (item: MediaRecord) => {
       const action = actionsById.get(item.actionId)
@@ -303,7 +420,9 @@ export class OfflineDb {
     let bytes = [...remainingEntities, ...remainingActions, ...remainingMedia].reduce((sum, item) => sum + item.bytes, 0)
     const evictable = [
       ...remainingEntities.map(item => ({ store: 'entities' as const, item })),
-      ...remainingActions.filter(item => item.state === 'confirmed' || item.state === 'cancelled').map(item => ({ store: 'actions' as const, item })),
+      ...remainingActions.filter(item => (item.state === 'confirmed' || item.state === 'cancelled')
+        && !dependenciesOfPendingActions.has(item.id))
+        .map(item => ({ store: 'actions' as const, item })),
       ...remainingMedia.filter(item => item.state === 'confirmed' && dependentActionIsTerminal(item)
         && now - mediaRetentionAnchor(item) >= confirmedTtl).map(item => ({ store: 'media' as const, item })),
     ]

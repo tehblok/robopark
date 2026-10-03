@@ -56,6 +56,14 @@ startrek_client-2.8/
 docs/superpowers/
 .skaroignore
 
+# Local audit evidence, VM disks, dependency caches and design captures
+/output/
+/.pnpm-store/
+/.serena/
+/apps/web/tmp/
+/docs/design/mockups/
+/docs/handoffs/
+
 # Offline release-signing material
 .release-secrets/
 

@@ -41,6 +41,30 @@ def test_resolve_transition_prefers_exact_name_over_partial_token_match():
     assert resolve_transition(transitions, "review") == "verification"
 
 
+def test_return_prefers_direct_repair_transition_over_queue_fallback():
+    from robopark_api.services.tracker_transitions import resolve_transition
+
+    transitions = [
+        {"id": "queuedMeta", "display": "В очереди"},
+        {"id": "returnMeta", "display": "Вернуть в работу"},
+    ]
+
+    assert resolve_transition(transitions, "return") == "returnMeta"
+
+
+def test_return_queue_fallback_rejects_transition_away_from_queue():
+    from robopark_api.services.tracker_transitions import resolve_transition
+
+    assert resolve_transition([{"id": "cancel", "display": "Remove from queue"}], "return") is None
+
+
+@pytest.mark.parametrize("status", ["queued", "queue", "В очереди", "Очередь"])
+def test_return_queue_fallback_recognizes_reached_status_on_replay(status):
+    from robopark_api.services.tracker_transitions import target_status_reached
+
+    assert target_status_reached({"status_key": status}, "return")
+
+
 @pytest.mark.parametrize(
     "transitions",
     [

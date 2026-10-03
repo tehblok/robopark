@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { FIXED_TIME, installOperational, settlePage, snapshot, userForRole } from './fixtures'
+import { assertResponsiveContracts } from './routeFixtures'
 
 // Exercise nonzero fleet jitter deterministically (first 15s, periodic 11s, resume 15s).
 test.beforeEach(async ({ page }) => { await page.addInitScript(() => { Math.random = () => 0.5 }) })
@@ -48,7 +49,22 @@ for (const role of ['admin', 'royal'] as const) test(`${role} can edit the globa
   await expect(page.getByRole('button', { name: 'Открыть показание Левый парктроник кузова' })).toBeVisible()
 })
 
+test('empty reading discovery explains the result within the phone viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await installOperational(page, { role: 'royal', routes: [
+    { method: 'GET', path: '/api/admin/emergency/sections', handler: () => ({ json: [{ id: 'sensors', title: 'Датчики', sort_order: 0, is_enabled: true, roles: ['royal'], fields: [] }] }) },
+    { method: 'GET', path: '/api/admin/emergency-readings', handler: () => ({ json: [] }) },
+    { method: 'GET', path: '/api/admin/emergency-readings/discovered', handler: () => ({ json: [] }) },
+  ] })
+  await page.goto('/admin/emergency/config?park=7&tab=readings')
+  await page.getByLabel('Номер робота для примера').fill('R-107')
+  await page.getByRole('button', { name: 'Найти показания' }).click()
+  await expect(page.getByText('Поля не найдены')).toBeVisible()
+  await assertResponsiveContracts(page, 390)
+})
+
 test('mechanic sees role-filtered partial readings and explicit stale age', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
   await installOperational(page, { role: 'mechanic', snapshot: {
     ...snapshot,
     stale: true,
@@ -67,7 +83,7 @@ test('mechanic sees role-filtered partial readings and explicit stale age', asyn
   } })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
   const summary = page.getByRole('region', { name: 'Состояние робота' })
-  await expect(summary.locator('div').filter({ has: page.getByText('АКБ 1', { exact: true }) }).first()).toContainText('Нет данных')
+  await expect(summary.locator('div').filter({ has: page.getByText('АКБ 1', { exact: true }) }).first()).toContainText('Заряд не измерен')
   await expect(summary.locator('div').filter({ has: page.getByText('АКБ 2', { exact: true }) }).first()).toContainText('Не подключена')
   await expect(summary.locator('div').filter({ has: page.getByText('Скорость', { exact: true }) }).first()).toContainText('0 м/с')
   await expect(summary.locator('div').filter({ has: page.getByText('Диск', { exact: true }) }).first()).toContainText('Нет данных')
@@ -78,6 +94,89 @@ test('mechanic sees role-filtered partial readings and explicit stale age', asyn
   await expect(block).toContainText('Парктроник')
   await expect(page.getByRole('link', { name: 'Открыть настройки' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /сохранить|отключить|удалить/i })).toHaveCount(0)
+  await page.getByRole('tab', { name: 'Ошибки' }).click()
+  await expect(page.getByRole('tabpanel', { name: 'Ошибки' })).toContainText('Данные диагностики устарели; отсутствие ошибок не подтверждено.')
+  await expect(page.getByRole('tabpanel', { name: 'Ошибки' })).not.toContainText('Сообщения об ошибках не получены.')
+  await expect(page.locator('html')).toHaveJSProperty('scrollWidth', 390)
+})
+
+test('operator sees both battery checks and marked errors before deciding on robot return', async ({ page }, info) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.clock.install({ time: new Date(FIXED_TIME) })
+  await installOperational(page, { role: 'operator', snapshot: {
+    ...snapshot, battery1_percent: 91, battery2_percent: 90, wheels_fault: [],
+    diagnostic_events: [{
+      id: 'marked-fault', rule_id: 7, source_path: 'errors.0', source_segments: ['errors', 0],
+      raw_value: 'FAULT', title: 'Ошибка привода', description: 'Проверить привод.',
+      severity: 'info', sort_order: 0, part: 'Привод', view: 'top', x: .5, y: .5, indicator: 'point',
+    }],
+  } })
+  await page.goto(`/robots/${snapshot.vin}?park=7&tab=errors`)
+  const summary = page.getByRole('region', { name: 'Состояние робота' })
+  await expect(summary).toContainText('АКБ 1')
+  await expect(summary).toContainText('91 %')
+  await expect(summary).toContainText('АКБ 2')
+  await expect(summary).toContainText('90 %')
+  await expect(summary).toContainText('Требуется внимание')
+  await expect(summary).toContainText('Есть размеченные ошибки: 1')
+  await expect(summary).toContainText('Решение о закрытии принимает оператор')
+  await expect(page.getByRole('tabpanel', { name: 'Ошибки' })).toContainText('Ошибка привода')
+  await assertResponsiveContracts(page, 390)
+  await page.screenshot({ path: info.outputPath('robot-return-review-phone.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 320, height: 700 })
+  await page.screenshot({ path: info.outputPath('robot-return-review-narrow-phone.png'), fullPage: true, animations: 'disabled' })
+  await assertResponsiveContracts(page, 320)
+})
+
+test('robot rate limit explains automatic retry without a dead button on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.clock.install({ time: new Date(FIXED_TIME) })
+  await installOperational(page, { role: 'mechanic', routes: [
+    { method: 'GET', path: /^\/api\/emergency\/[^/]+\/snapshot$/, handler: () => ({
+      status: 429, json: { detail: 'rate_limited' }, headers: { 'Retry-After': '120' },
+    }) },
+  ] })
+  await page.goto(`/robots/${snapshot.vin}?park=7&tab=errors`)
+  await expect(page.getByText('Сервер ограничил частоту запросов. Проверка повторится автоматически.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Повторить' })).toHaveCount(0)
+  await assertResponsiveContracts(page, 390)
+  await page.screenshot({ path: '/tmp/robopark-robot-rate-limit-phone.png', fullPage: true, animations: 'disabled' })
+})
+
+test('robot map explains missing tiles while retaining the position on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await installOperational(page, { role: 'mechanic' })
+  await page.goto(`/robots/${snapshot.vin}?park=7&tab=map`)
+  await expect(page.getByRole('tab', { name: 'Карта', exact: true })).toHaveAttribute('aria-selected', 'true')
+  const warning = page.getByRole('status').filter({ hasText: 'Подложка карты недоступна' })
+  await expect(warning).toContainText('Координаты робота доступны')
+  const map = page.locator('.inspection-map')
+  await expect(map.locator('.leaflet-marker-icon')).toBeVisible()
+  const warningBox = await warning.boundingBox()
+  const mapBox = await map.boundingBox()
+  expect(warningBox && mapBox).toBeTruthy()
+  expect(warningBox!.y + warningBox!.height).toBeLessThanOrEqual(mapBox!.y)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+})
+
+test('robot navigation link uses the shared action color', async ({ page }) => {
+  await installOperational(page, { role: 'mechanic' })
+  await page.goto(`/robots/${snapshot.vin}?park=7&tab=map`)
+  const link = page.getByRole('link', { name: 'Все роботы' })
+  await expect(link).toBeVisible()
+  const colors = await link.evaluate(element => ({
+    actual: getComputedStyle(element).color,
+    action: getComputedStyle(element).getPropertyValue('--rp-action').trim(),
+  }))
+  const normalizedAction = await link.evaluate(element => {
+    const probe = document.createElement('span')
+    probe.style.color = getComputedStyle(element).getPropertyValue('--rp-action').trim()
+    element.append(probe)
+    const color = getComputedStyle(probe).color
+    probe.remove()
+    return color
+  })
+  expect(colors.actual).toBe(normalizedAction)
 })
 
 test('robot search stays first and makes no registry requests across reload and park changes', async ({ page }) => {
@@ -125,8 +224,11 @@ test('manual search survives reload and fetches Emergency only after opening a r
   await expect(page.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toBeVisible()
   expect(emergency.length).toBeGreaterThan(0)
   await expect(page.locator('.rp-shell__desktop-nav').getByRole('link', { name: 'Роботы', exact: true })).toHaveAttribute('aria-current', 'page')
-  await selectSecondaryTab(page, 'История')
-  await expect(page.getByRole('tabpanel')).toContainText('История событий пока недоступна')
+  await page.locator('.rp-check-navigation').getByRole('button', { name: 'Ещё', exact: true }).click()
+  await expect(page.getByRole('menuitem', { name: 'История' })).toHaveCount(0)
+  await page.goto(`/robots/${snapshot.vin}?park=7&tab=history`)
+  await expect(page).toHaveURL(`/robots/${snapshot.vin}?park=7`)
+  await expect(page.getByRole('tab', { name: 'Карта' })).toHaveAttribute('aria-selected', 'true')
 })
 
 for (const state of ['pending', 'failed'] as const) test(`direct robot tasks stay usable with a ${state} Emergency snapshot`, async ({ page }) => {

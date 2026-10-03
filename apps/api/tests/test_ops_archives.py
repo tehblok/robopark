@@ -9,8 +9,6 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from robopark_api.services.ops.archives import (
     FORMAT_VERSION,
@@ -27,32 +25,6 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-@pytest.fixture
-def release_keys() -> tuple[bytes, bytes]:
-    private = Ed25519PrivateKey.generate()
-    return (
-        private.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        ),
-        private.public_key().public_bytes(
-            serialization.Encoding.PEM,
-            serialization.PublicFormat.SubjectPublicKeyInfo,
-        ),
-    )
-
-
-def _signed_release(root: Path, keys: tuple[bytes, bytes], *, version: str = "1") -> bytes:
-    return build_archive(
-        kind=KIND_RELEASE,
-        source_root=root,
-        app_version=version,
-        release_meta={"git_sha": "a" * 40, "migration_head": "0017_driver_work_reports"},
-        signing_key=keys[0],
-    )
-
-
 def test_build_and_inspect_snapshot_roundtrip(tmp_path: Path):
     payload = tmp_path / "tree"
     (payload / "data").mkdir(parents=True)
@@ -60,7 +32,7 @@ def test_build_and_inspect_snapshot_roundtrip(tmp_path: Path):
     db.write_bytes(b"sqlite-bytes")
     env = payload / "config" / "host.env"
     env.parent.mkdir()
-    env.write_text("SECRET_KEY=test\n", encoding="utf-8")
+    env.write_text("APP_MODE=test\n", encoding="utf-8")
 
     archive = build_archive(
         kind=KIND_SNAPSHOT,
@@ -72,6 +44,95 @@ def test_build_and_inspect_snapshot_roundtrip(tmp_path: Path):
     assert meta.format == FORMAT_VERSION
     assert meta.app_version == "0.1.0"
     assert meta.files["data/robopark.db"] == _sha256(b"sqlite-bytes")
+
+
+def test_snapshot_builder_rejects_large_input_before_reading_it(tmp_path, monkeypatch):
+    from robopark_api.services.ops import archives
+
+    root = tmp_path / "tree"
+    root.mkdir()
+    source = root / "large.bin"
+    source.write_bytes(b"x" * 17)
+    monkeypatch.setattr(archives, "MAX_UNCOMPRESSED_BYTES", 16)
+    original_read = Path.read_bytes
+
+    def guarded_read(path):
+        if path == source:
+            raise AssertionError("source was loaded into memory")
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read)
+    with pytest.raises(ArchiveError, match="archive_too_large"):
+        build_archive(kind=KIND_SNAPSHOT, source_root=root, app_version="0.1.0")
+
+
+def test_snapshot_builder_and_inspector_use_bounded_reads(tmp_path, monkeypatch):
+    root = tmp_path / "tree"
+    root.mkdir()
+    source = root / "sample.bin"
+    source.write_bytes(b"sample" * 100)
+    original_read = Path.read_bytes
+
+    def guarded_read(path):
+        if path == source:
+            raise AssertionError("source was loaded into memory")
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read)
+    archive = build_archive(kind=KIND_SNAPSHOT, source_root=root, app_version="0.1.0")
+
+    class BoundedReader(io.BytesIO):
+        def read(self, size=-1):
+            if size < 0:
+                raise AssertionError("archive was loaded into memory")
+            return super().read(size)
+
+    meta = inspect_archive(BoundedReader(archive), expected_kind=KIND_SNAPSHOT)
+    assert meta.files["sample.bin"] == _sha256(b"sample" * 100)
+
+
+def test_streamed_snapshot_inspection_rejects_changed_member(tmp_path):
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "sample.txt").write_text("original")
+    archive = build_archive(kind=KIND_SNAPSHOT, source_root=root, app_version="0.1.0")
+    damaged = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(archive)) as source, zipfile.ZipFile(damaged, "w") as out:
+        for name in source.namelist():
+            out.writestr(name, b"changed" if name == "sample.txt" else source.read(name))
+
+    with pytest.raises(ArchiveError, match="checksum_mismatch"):
+        inspect_archive(damaged, expected_kind=KIND_SNAPSHOT)
+
+
+def test_nonseekable_snapshot_stream_may_return_short_chunks(tmp_path):
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "sample.txt").write_text("original")
+    archive = build_archive(kind=KIND_SNAPSHOT, source_root=root, app_version="0.1.0")
+
+    class ShortReader:
+        def __init__(self, payload):
+            self.payload = io.BytesIO(payload)
+
+        def read(self, size=-1):
+            assert 0 < size <= 1024 * 1024
+            return self.payload.read(min(size, 7))
+
+    meta = inspect_archive(ShortReader(archive), expected_kind=KIND_SNAPSHOT)
+    assert meta.files["sample.txt"] == _sha256(b"original")
+
+
+def test_snapshot_manifest_is_bounded_before_json_decoding(monkeypatch):
+    from robopark_api.services.ops import archives
+
+    monkeypatch.setattr(archives, "MAX_MANIFEST_BYTES", 80)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as out:
+        out.writestr("manifest.json", b" " * 81)
+
+    with pytest.raises(ArchiveError, match="invalid_manifest"):
+        inspect_archive(archive, expected_kind=KIND_SNAPSHOT)
 
 
 def test_release_rejects_snapshot_kind():
@@ -89,20 +150,29 @@ def test_release_rejects_snapshot_kind():
         inspect_archive(buf.getvalue(), expected_kind=KIND_RELEASE)
 
 
-def test_checksum_mismatch_is_rejected(tmp_path: Path, release_keys: tuple[bytes, bytes]):
-    payload = tmp_path / "tree"
-    payload.mkdir()
-    (payload / "a.txt").write_text("ok", encoding="utf-8")
-    source = zipfile.ZipFile(io.BytesIO(_signed_release(payload, release_keys)))
-    lying = io.BytesIO()
-    with source, zipfile.ZipFile(lying, "w") as zf:
-        for info in source.infolist():
-            zf.writestr(
-                info.filename,
-                b"changed" if info.filename == "a.txt" else source.read(info.filename),
-            )
-    with pytest.raises(ArchiveError, match="checksum_mismatch"):
-        inspect_archive(lying.getvalue(), expected_kind=KIND_RELEASE, public_key=release_keys[1])
+def test_legacy_release_builder_rejects_before_reading_source(tmp_path, monkeypatch):
+    root = tmp_path / "tree"
+    root.mkdir()
+    source = root / "large.bin"
+    source.write_bytes(b"legacy payload")
+    original_open = Path.open
+
+    def guarded_open(path, *args, **kwargs):
+        if path == source:
+            raise AssertionError("retired release source was opened")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    with pytest.raises(ArchiveError, match="legacy_release_update_removed"):
+        build_archive(kind=KIND_RELEASE, source_root=root, app_version="0.1.0")
+
+
+def test_legacy_release_inspector_rejects_release_manifest():
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as out:
+        out.writestr("manifest.json", json.dumps({"kind": KIND_RELEASE, "format": 3}))
+    with pytest.raises(ArchiveError, match="legacy_release_update_removed"):
+        inspect_archive(archive, expected_kind=KIND_RELEASE)
 
 
 def test_zip_slip_is_rejected():
@@ -112,7 +182,7 @@ def test_zip_slip_is_rejected():
             "manifest.json",
             json.dumps(
                 {
-                    "kind": KIND_RELEASE,
+                    "kind": KIND_SNAPSHOT,
                     "format": FORMAT_VERSION,
                     "app_version": "1",
                     "files": {"../etc/passwd": _sha256(b"x")},
@@ -121,15 +191,34 @@ def test_zip_slip_is_rejected():
         )
         zf.writestr("../etc/passwd", b"x")
     with pytest.raises(ArchiveError, match="unsafe_path"):
-        inspect_archive(buf.getvalue(), expected_kind=KIND_RELEASE)
+        inspect_archive(buf.getvalue(), expected_kind=KIND_SNAPSHOT)
 
 
-def test_unpack_writes_only_under_dest(tmp_path: Path, release_keys: tuple[bytes, bytes]):
+def test_unpack_snapshot_writes_only_under_dest(tmp_path: Path):
     payload = tmp_path / "tree"
-    (payload / "apps" / "api").mkdir(parents=True)
-    (payload / "apps" / "api" / "ok.py").write_text("x = 1\n", encoding="utf-8")
-    archive = _signed_release(payload, release_keys)
+    (payload / "data").mkdir(parents=True)
+    (payload / "data" / "ok.txt").write_text("snapshot\n", encoding="utf-8")
+    archive = build_archive(kind=KIND_SNAPSHOT, source_root=payload, app_version="0.1.0")
     dest = tmp_path / "out"
-    unpack_archive(archive, dest, expected_kind=KIND_RELEASE, public_key=release_keys[1])
-    assert (dest / "apps" / "api" / "ok.py").read_text(encoding="utf-8") == "x = 1\n"
+    unpack_archive(archive, dest, expected_kind=KIND_SNAPSHOT)
+    assert (dest / "data" / "ok.txt").read_text(encoding="utf-8") == "snapshot\n"
     assert not (tmp_path / "etc").exists()
+
+
+def test_unpack_snapshot_streams_large_member_after_validation(tmp_path, monkeypatch):
+    payload = tmp_path / "tree"
+    (payload / "data").mkdir(parents=True)
+    expected = bytes(range(256)) * 100
+    (payload / "data" / "blob.bin").write_bytes(expected)
+    archive = build_archive(kind=KIND_SNAPSHOT, source_root=payload, app_version="0.1.0")
+    original_read = zipfile.ZipFile.read
+
+    def guarded_read(file, name, *args, **kwargs):
+        if name == "data/blob.bin":
+            raise AssertionError("snapshot member was loaded into memory")
+        return original_read(file, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", guarded_read)
+    dest = tmp_path / "out"
+    unpack_archive(archive, dest, expected_kind=KIND_SNAPSHOT)
+    assert (dest / "data" / "blob.bin").read_bytes() == expected

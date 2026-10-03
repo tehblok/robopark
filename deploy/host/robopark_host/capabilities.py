@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from time import time
 
 from .health_projection import update_public_health
 from .state import atomic_write_json
@@ -96,4 +97,5 @@ def write_capabilities(
     if public_path is not None:
         public = capabilities.as_dict()
         public.pop("model", None)
+        public["checked_at"] = time()
         update_public_health(public_path, capabilities=public)

@@ -26,13 +26,13 @@ export function EmptyState({ title, description, icon, action }: { title: string
   )
 }
 
-export function ErrorState({ title, description, onRetry, retryLabel = 'Повторить', requestId }: { title: string; description: string; onRetry?: () => void; retryLabel?: string; requestId?: string }) {
+export function ErrorState({ title, description, onRetry, retryLabel = 'Повторить', requestId, action }: { title: string; description: string; onRetry?: () => void; retryLabel?: string; requestId?: string; action?: ReactNode }) {
   return (
     <section className="rp-async-state rp-error-state" role="alert">
       <h2>{title}</h2>
       <p>{description}</p>
       {requestId ? <small>Код запроса: {requestId}</small> : null}
-      {onRetry ? <div className="rp-async-state__action"><Button variant="secondary" leadingIcon="refresh" onClick={onRetry}>{retryLabel}</Button></div> : null}
+      {onRetry || action ? <div className="rp-async-state__action">{onRetry ? <Button variant="secondary" leadingIcon="refresh" onClick={onRetry}>{retryLabel}</Button> : null}{action}</div> : null}
     </section>
   )
 }

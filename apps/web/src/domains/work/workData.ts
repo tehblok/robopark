@@ -5,19 +5,23 @@ export const WORK_PAGE_SIZE = 50
 
 export type WorkApiClient = Pick<typeof api, 'trackerIssues'>
 
+export function queueDowntimeHours(item: TrackerIssue, now: number): number | null {
+  if (item.sla_source !== 'status_history' || !item.queued_at || !Number.isFinite(now)) return null
+  const started = Date.parse(item.queued_at)
+  return Number.isFinite(started) && started <= now ? (now - started) / 3_600_000 : null
+}
+
 function effectiveTimestamp(item: TrackerIssue): number | null {
-  for (const value of [item.queued_at, item.created_at]) {
-    if (!value?.trim()) continue
-    const parsed = Date.parse(value)
-    if (Number.isFinite(parsed)) return parsed
-  }
-  return null
+  if (item.sla_source !== 'status_history' || !item.queued_at?.trim()) return null
+  const parsed = Date.parse(item.queued_at)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 /**
  * Tracker normally applies this ordering server-side. Keep it at the UI
- * boundary too: an out-of-order upstream page must not turn the operational
- * queue into newest-first, and callers retain their original array.
+ * boundary too: verified queue entries remain oldest first, while entries
+ * without a proven transition retain source order rather than inheriting
+ * their ticket creation age. Callers retain their original array.
  */
 export function oldestFirst(issues: readonly TrackerIssue[]): TrackerIssue[] {
   return issues
@@ -43,8 +47,10 @@ export function loadWorkPage(
   client: WorkApiClient,
   state: WorkUrlState,
   parkTag: string | undefined,
+  queueFirst = false,
 ): Promise<Paged<TrackerIssue>> {
   const { filters } = state
+  const priorityQueue = queueFirst && !filters.status
 
   return client.trackerIssues({
     queue: filters.queue,
@@ -57,8 +63,8 @@ export function loadWorkPage(
     age_hours: filters.ageHours,
     ...(filters.includeHidden ? { include_hidden: true } : {}),
     ...(state.sync ? { sync_state: state.sync } : {}),
-    sort: 'oldest',
+    sort: priorityQueue ? 'queue_first' : 'oldest',
     limit: WORK_PAGE_SIZE,
     offset: pageOffset(state.page),
-  }).then((page) => ({ ...page, items: oldestFirst(page.items) }))
+  }).then((page) => ({ ...page, items: priorityQueue ? page.items : oldestFirst(page.items) }))
 }

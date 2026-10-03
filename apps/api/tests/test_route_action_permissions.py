@@ -2,13 +2,14 @@
 
 The parametrized ids are consumed verbatim by the web route manifest.  Keep an
 action here only when the request reaches the endpoint capability boundary;
-404/422 is an allow result when the deliberately absent target/body is checked
-after authorization, while 403 is always the deny result.
+404/422 or a deliberately unavailable host capability is an allow result when
+the request passes authorization; 403 is always the deny result.
 """
 
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from conftest import login_as, role_id_for
@@ -43,6 +44,7 @@ ROUTE_ACTION_CASES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset({"royal", "admin", "restricted"}),
         frozenset({"nav.admin"}),
     ),
+    "host-operation": (frozenset({"royal"}), frozenset()),
     "manage-user": (
         frozenset({"royal", "admin", "restricted"}),
         frozenset({"users.manage"}),
@@ -106,6 +108,7 @@ ACTION_HTTP_CONTRACTS = {
     "update-or-delete-campaign": ("PATCH", "/campaigns/999999", {404}),
     "submit-ticket-result": ("POST", "/campaigns/999999/tickets/ROBOPARK-999/complete", {404}),
     "change-platform-settings": ("PUT", "/admin/settings/tracker-policy", {200}),
+    "host-operation": ("POST", "/admin/ops/operations", {409}),
     "manage-user": ("PATCH", "/admin/users/{actor_id}", {200}),
     "approve-user": ("POST", "/admin/users/{pending_user_id}/approve", {204}),
     "manage-role": ("POST", "/admin/roles", {201}),
@@ -212,6 +215,17 @@ def _request(client, action: str, park_id: int, *, actor_id: int, targets: dict[
             "/admin/settings/tracker-policy",
             json={"queue": "ROBOPARK", "allowed_statuses": []},
         )
+    if action == "host-operation":
+        return client.post(
+            "/admin/ops/operations",
+            json={
+                "kind": "cleanup-preview",
+                "operation_id": "00000000-0000-4000-8000-000000000001",
+                "capability_revision": "0" * 64,
+                "confirmation": "PREVIEW",
+                "categories": ["diagnostics"],
+            },
+        )
     if action == "manage-user":
         return client.patch(f"/admin/users/{actor_id}", json={"tracker_login": "matrix.updated"})
     if action == "approve-user":
@@ -237,6 +251,14 @@ def test_route_action_http_permission_matrix(
     actor = _actor(db_session, seed_park_with_tracker, action, role)
     targets = _seed_targets(db_session, seed_park_with_tracker, actor)
     login_as(client, actor.username, "secret")
+
+    if action == "host-operation":
+        from robopark_api.routers import admin_ops
+
+        def unavailable(_settings):
+            raise HTTPException(status_code=409, detail="capability_unavailable")
+
+        monkeypatch.setattr(admin_ops, "_bridge_root", unavailable)
 
     if action in {"claim-and-transition", "attach-photo"}:
         from robopark_api.services import platform_settings, tracker_cache, tracker_client
@@ -289,6 +311,8 @@ def test_route_action_http_permission_matrix(
     else:
         expected = _success_statuses
         assert response.status_code in expected, response.text
+        if action == "host-operation":
+            assert response.json()["detail"] == "capability_unavailable"
 
 
 def test_every_route_action_names_its_exact_http_mutation_contract():

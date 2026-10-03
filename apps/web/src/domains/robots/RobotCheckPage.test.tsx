@@ -40,6 +40,9 @@ it.each([false, true])('classifies configuration 403 before scope and permits se
   await screen.findByRole('heading', { name: 'Интеграция проверки робота требует внимания' })
   expect(screen.getByText(/config-id/)).toBeInTheDocument()
   expect(Boolean(screen.queryByRole('link', { name: 'Открыть настройки' }))).toBe(allowed)
+  expect(screen.getByText(allowed
+    ? 'Cookie проверки робота отклонена. Скопируйте свежую сессию и повторите.'
+    : 'Обратитесь к администратору для проверки подключения.')).toBeVisible()
   expect(document.body).not.toHaveTextContent('emergency_cookie_invalid')
 })
 it('keeps 401 durable through same-principal auth publication, loading and reference changes; refreshes once', async () => {

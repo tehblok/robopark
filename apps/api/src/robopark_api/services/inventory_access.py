@@ -1,5 +1,5 @@
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from robopark_api.models import AccessStatus, Park, User, UserPark
 from robopark_api.services.rbac import (
@@ -38,13 +38,20 @@ def can_view_park(db: Session, user: User, park_id: int) -> bool:
 
 
 def require_park(db: Session, user: User, park_id: int, *, manage: bool = False) -> Park:
-    if park_id not in accessible_park_ids(db, user):
+    if not can_view_inventory(db, user):
+        raise PermissionError("forbidden")
+    statement = (
+        select(Park)
+        .options(load_only(Park.id, Park.tag))
+        .where(Park.id == park_id, Park.is_active.is_(True))
+    )
+    if user.role not in {"admin", "royal", "operator"}:
+        statement = statement.join(UserPark).where(UserPark.user_id == user.id)
+    park = db.scalar(statement)
+    if park is None:
         raise PermissionError("forbidden")
     if manage and not has_permission(db, user, PERMISSION_INVENTORY_STOCK_MANAGE):
         raise PermissionError("forbidden")
-    park = db.get(Park, park_id)
-    if park is None or not park.is_active:
-        raise LookupError("park_not_found")
     return park
 
 

@@ -4,9 +4,9 @@ import type { Park } from '../../api'
 import { ParkMultiSelect } from './ParkMultiSelect'
 
 const parks: Park[] = [
-  { id: 3, name: 'Юг', tag: 'south', is_active: true },
-  { id: 1, name: 'Север', tag: 'north', is_active: true },
-  { id: 2, name: 'Архив', tag: 'archive', is_active: false },
+  { id: 3, name: 'Юг', timezone: 'Europe/Moscow', tag: 'south', is_active: true },
+  { id: 1, name: 'Север', timezone: 'Europe/Moscow', tag: 'north', is_active: true },
+  { id: 2, name: 'Архив', timezone: 'Europe/Moscow', tag: 'archive', is_active: false },
 ]
 
 it('selects active parks, filters choices, and returns sorted unique IDs', () => {

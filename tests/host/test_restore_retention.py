@@ -59,6 +59,25 @@ def test_age_and_byte_retention_counts_real_restore_data_and_keeps_latest(host_p
     assert (host_paths.state / "restore-owned" / f"{current_id}.json").exists()
 
 
+def test_restore_usage_counts_allocated_blocks_instead_of_sparse_length(host_paths):
+    from contextlib import ExitStack
+
+    from robopark_host.restore_retention import entries
+
+    _, targets, _ = material(host_paths)
+    sparse = targets[0] / "data"
+    with ExitStack() as stack:
+        before = entries(host_paths, stack)[0]["bytes"]
+    before_blocks = sparse.stat().st_blocks * 512
+    with sparse.open("wb") as stream:
+        stream.truncate(8 * 1024 * 1024)
+    after_blocks = sparse.stat().st_blocks * 512
+    assert sparse.stat().st_size > after_blocks
+    with ExitStack() as stack:
+        after = entries(host_paths, stack)[0]["bytes"]
+    assert after - before == after_blocks - before_blocks
+
+
 def test_pending_restore_and_unowned_recovery_are_preserved(host_paths):
     identity, pending, upload = material(host_paths)
     material(host_paths)
@@ -131,15 +150,19 @@ def test_expansion_reserves_root_storage_before_extracting(host_paths, monkeypat
     from robopark_api.services.ops.archives import build_archive
     from robopark_host import retention
     from robopark_host.restore import run_restore
-    from test_updater import host as host_factory
 
-    host = host_factory.__wrapped__(host_paths)
     source = tmp_path / "source/data"
     source.mkdir(parents=True)
     (source / "robopark.db").write_bytes(b"not reached")
     blob = build_archive(kind="snapshot", source_root=source.parent, app_version="1.0.0")
     identity = str(uuid4())
     artifact = f"restore-{identity}.zip"
+    (host_paths.ops / "artifacts").mkdir(parents=True)
+    host_paths.state.mkdir(parents=True)
+    host_paths.etc.mkdir(parents=True)
+    (host_paths.etc / "host.env").write_text("ROBOPARK_DATABASE_PROFILE=sqlite-offline-legacy\n")
+    (host_paths.var / "data").mkdir(parents=True)
+    (host_paths.var / "data/live.bin").write_bytes(b"x" * 1000)
     (host_paths.ops / "artifacts" / artifact).write_bytes(blob)
     request = {
         "kind": "restore",
@@ -149,10 +172,23 @@ def test_expansion_reserves_root_storage_before_extracting(host_paths, monkeypat
         "actor_user_id": 1,
         "created_at": datetime.now(UTC).isoformat(),
     }
-    monkeypatch.setattr(retention, "MAX_BYTES", 1)
-    assert run_restore(host_paths, request, host.runner)["state"] == "failed"
+    capacity_requests = []
+    original_capacity = retention.require_capacity
+
+    def reserve(paths, incoming):
+        capacity_requests.append(incoming)
+        if len(capacity_requests) == 2:
+            raise retention.RetentionBlocked("artifact_storage_full")
+        return original_capacity(paths, incoming)
+
+    monkeypatch.setattr(retention, "require_capacity", reserve)
+    # Capacity rejection happens while validating, before any host command.
+    assert run_restore(host_paths, request, None)["state"] == "failed"
+    assert len(capacity_requests) == 2
+    assert capacity_requests[0] == len(blob)
+    assert capacity_requests[1] > capacity_requests[0]
     assert not (host_paths.state / "restores" / identity / "candidate").exists()
-    assert not (host_paths.state / "restores" / identity / "snapshot.zip").exists()
+    assert (host_paths.state / "restores" / identity / "snapshot.zip").exists()
 
 
 def test_interrupted_atomic_receipt_temporary_does_not_strand_restore(host_paths):

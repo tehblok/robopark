@@ -32,20 +32,14 @@ describe('typography bundle', () => {
     {
       label: 'comfortable',
       blockStart: ":root[data-density='comfortable'] {",
-      token: '--rp-control-min-size',
-      expected: 'comfortable: missing --rp-control-min-size',
+      token: '--rp-row-min-size',
+      expected: 'comfortable: missing --rp-row-min-size',
     },
     {
       label: 'compact',
       blockStart: ":root[data-density='compact'] {",
       token: '--rp-row-min-size',
       expected: 'compact: missing --rp-row-min-size',
-    },
-    {
-      label: 'narrow override',
-      blockStart: '@media (max-width: 899px) {',
-      token: '--rp-density-gap',
-      expected: 'narrow: missing --rp-density-gap',
     },
   ])('rejects a missing density token in the $label block', ({ blockStart, token, expected }) => {
     const tokensCss = read('./tokens.css')

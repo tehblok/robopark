@@ -20,9 +20,11 @@ from uuid import UUID, uuid4
 from pydantic import TypeAdapter, ValidationError
 
 from robopark_api.ops_schemas import (
+    CheckOut,
     HostCapabilitiesOut,
     HostOperationIn,
     HostOperationKind,
+    OperationContextOut,
     SystemHealthOut,
     UpdateInspectionOut,
     public_checks,
@@ -53,6 +55,8 @@ _DESTRUCTIVE_PHRASES = {
     HostOperationKind.REBOOT: "REBOOT ROBOPARK",
     HostOperationKind.BACKUP_RESTORE: "RESTORE ROBOPARK BACKUP",
     HostOperationKind.CLEANUP_EXECUTE: "CLEAN ROBOPARK",
+    HostOperationKind.DOCKER_IMAGE_EXECUTE: "CLEAN ROBOPARK IMAGES",
+    HostOperationKind.BUILDER_CACHE_EXECUTE: "CLEAN ROBOPARK BUILD CACHE",
 }
 _SAFE_PHRASES = {
     kind: f"ЗАПУСТИТЬ {kind.value.upper()}"
@@ -60,11 +64,67 @@ _SAFE_PHRASES = {
         HostOperationKind.PACKAGE_INSPECT,
         HostOperationKind.BACKUP_VERIFY,
         HostOperationKind.CLEANUP_PREVIEW,
+        HostOperationKind.DOCKER_IMAGE_PREVIEW,
+        HostOperationKind.BUILDER_CACHE_PREVIEW,
         HostOperationKind.DIAGNOSTICS,
         HostOperationKind.USB_DISCOVER,
         HostOperationKind.USB_SELECT,
     )
 }
+_SAFE_PHRASES[HostOperationKind.BACKUP] = "BACKUP ROBOPARK"
+_PUBLIC_OPERATION_ERRORS = frozenset(
+    {
+        "capabilities_changed",
+        "capability_unavailable",
+        "capabilities_unavailable",
+        "manual_recovery_required",
+        "recovery_key_required",
+        "command_interrupted",
+        "rollback_release_changed",
+        "rollback_unavailable",
+        "package_not_installed",
+        "package_update_failed",
+        "package_inspection_failed",
+        "service_not_allowed",
+        "unsafe_usb_device",
+        "usb_not_selected",
+        "usb_discovery_failed",
+        "backup_not_found",
+        "backup_not_verified",
+        "backup_device_changed",
+        "backup_integrity_failed",
+        "backup_archive_limit",
+        "unsafe_backup_path",
+        "unsafe_backup_receipt",
+        "cleanup_plan_changed",
+        "disk_space_low",
+    }
+)
+_PUBLIC_OTA_FAILURE_ERRORS = frozenset(
+    {
+        "ota_admission_failed",
+        "ota_cache_missing",
+        "ota_current_version_unknown",
+        "ota_cutover_failed",
+        "ota_downgrade_forbidden",
+        "ota_hash_mismatch",
+        "ota_health_check_failed",
+        "ota_incompatible",
+        "ota_insufficient_space",
+        "ota_interrupted",
+        "ota_invalid_container",
+        "ota_manifest_invalid",
+        "ota_migrate_failed",
+        "ota_publish_failed",
+        "ota_rollback_failed",
+        "ota_snapshot_failed",
+        "ota_stage_failed",
+        "ota_unsafe_cache",
+        "ota_unsafe_current",
+        "ota_unsafe_upload",
+        "ota_version_mismatch",
+    }
+)
 
 
 def _required_confirmation(operation):
@@ -123,8 +183,8 @@ UPDATE_PROGRESS_PERCENT = {
 OTA_PROGRESS_PERCENT = {
     "accepted": 2,
     "verified": 5,
-    "snapshot_done": 20,
     "staged": 45,
+    "snapshot_done": 50,
     "migration_started": 55,
     "migration_done": 70,
     "cutover_started": 80,
@@ -140,12 +200,7 @@ def update_progress(root: Path, job) -> tuple[str | None, int | None]:
     if job.kind not in {"update", "ota-update"} or job.state not in ACTIVE_STATES:
         return None, None
     value = read_json(
-        root
-        / (
-            "public/ota-status.json"
-            if job.kind == "ota-update"
-            else "public/host-status.json"
-        )
+        root / ("public/ota-status.json" if job.kind == "ota-update" else "public/host-status.json")
     )
     phase = value.get("phase")
     progress = OTA_PROGRESS_PERCENT if job.kind == "ota-update" else UPDATE_PROGRESS_PERCENT
@@ -294,6 +349,41 @@ def require_operation_capability(root, kind):
     return capabilities.revision
 
 
+def operation_context(root):
+    value = read_json(root / "public/operation-context.json", limit=32768)
+    try:
+        stamp = _timestamp(value.get("generated_at"))
+        lifetime = value.get("valid_for_seconds")
+        if (
+            value.get("schema") != 1
+            or type(value.get("schema")) is not int
+            or _host_boot_id() is None
+            or value.get("boot_id") != _host_boot_id()
+            or stamp is None
+            or stamp.utcoffset().total_seconds() != 0
+            or type(lifetime) is not int
+            or not 0 < lifetime <= 300
+            or not 0 <= (datetime.now(UTC) - stamp).total_seconds() < lifetime
+        ):
+            raise ValueError()
+        return OperationContextOut.model_validate(
+            {
+                key: value[key]
+                for key in (
+                    "packages",
+                    "services",
+                    "rollback_release",
+                    "selected_device_uuid",
+                    "devices",
+                    "backups",
+                )
+            }
+            | {"generated_at": stamp, "expires_at": stamp + timedelta(seconds=lifetime)}
+        )
+    except (ValueError, TypeError, KeyError, AttributeError, OverflowError) as exc:
+        raise BridgeError("operation_context_unavailable") from exc
+
+
 def require_typed_reauthorization(settings, kind, operation_id, capability_revision=None):
     if kind not in set(HostOperationKind):
         return
@@ -345,6 +435,7 @@ def _timestamp(value):
 
 def system_health(root):
     value = read_json(root / "public/system-health.json")
+    snapshot_unavailable = not value
     health = SystemHealthOut()
     if (
         isinstance(value.get("version"), str)
@@ -362,6 +453,15 @@ def system_health(root):
         value.get("overall") if value.get("overall") in ("ok", "degraded") else "unknown"
     )
     health.checks = public_checks(value.get("checks"))
+    if snapshot_unavailable:
+        health.overall = "degraded"
+        health.checks = [
+            CheckOut(
+                code="host_health_unavailable",
+                status="failed",
+                message="Снимок проверки хоста отсутствует или повреждён",
+            )
+        ]
     update = read_json(root / "public/host-status.json") or value.get("update", {})
     if isinstance(update, dict):
         if update.get("state") == "previous_restored":
@@ -726,11 +826,61 @@ def reconcile_host_job(ops, root):
             job.extra["host_result"] = public_result(result).model_dump(mode="json")
         job.state = "succeeded" if ok else "failed"
         job.phase = "completed" if ok else "failed"
+        ota_failure = None
+        if not ok and job.kind == "ota-update" and result.get("error") == "ota_update_failed":
+            ota_status = read_json(root / "public/ota-status.json")
+            if (
+                type(ota_status.get("schema")) is int
+                and ota_status["schema"] == 1
+                and ota_status.get("operation_id") == job.id
+            ):
+                if ota_status.get("phase") == "rolled_back":
+                    ota_failure = "ota_rolled_back"
+                elif (
+                    ota_status.get("phase") == "failed"
+                    and ota_status.get("error") == "ota_rollback_failed"
+                ):
+                    ota_failure = "ota_rollback_failed"
+                elif (
+                    ota_status.get("phase") == "failed"
+                    and isinstance(ota_status.get("error"), str)
+                    and ota_status.get("error") in _PUBLIC_OTA_FAILURE_ERRORS
+                ):
+                    ota_failure = ota_status["error"]
         job.error = (
             None
             if ok
+            else ota_failure
+            if ota_failure
             else "request_superseded"
             if update and result.get("error") == "request_superseded"
+            else "cleanup_partial"
+            if not update
+            and job.kind == "cleanup-execute"
+            and result.get("error") == "cleanup_partial"
+            and job.extra.get("host_result", {}).get("cleanup_result") is not None
+            else "image_cleanup_partial"
+            if not update
+            and job.kind == "docker-image-execute"
+            and result.get("error") == "image_cleanup_partial"
+            and job.extra.get("host_result", {}).get("docker_image_result") is not None
+            else "image_plan_changed"
+            if not update
+            and job.kind == "docker-image-execute"
+            and result.get("error") == "image_plan_changed"
+            else "builder_cleanup_partial"
+            if not update
+            and job.kind == "builder-cache-execute"
+            and result.get("error") == "builder_cleanup_partial"
+            and job.extra.get("host_result", {}).get("builder_cache_result") is not None
+            else "builder_plan_changed"
+            if not update
+            and job.kind == "builder-cache-execute"
+            and result.get("error") == "builder_plan_changed"
+            else result["error"]
+            if not update
+            and isinstance(result.get("error"), str)
+            and result["error"] in _PUBLIC_OPERATION_ERRORS
             else "host_operation_failed"
         )
         job.log = "Операция на хосте завершена." if ok else "Операция на хосте завершилась ошибкой."
@@ -759,3 +909,36 @@ def diagnostic_artifact(root, job):
     ):
         return None
     return target
+
+
+def open_operation_artifact(root, row):
+    """Open the exact diagnostic identity, pinning the inode throughout the download."""
+    if row.kind != "diagnostics" or row.state != "succeeded" or row.receipt_state != "terminal":
+        return None
+    descriptors = []
+    try:
+        identity = str(UUID(row.operation_id))
+        if identity != row.operation_id:
+            return None
+        current = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(current)
+        for part in ("public", "artifacts"):
+            current = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+            descriptors.append(current)
+        fd = os.open(identity + ".zip", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=current)
+        descriptors.append(fd)
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or not 0 < info.st_size <= 128 * 1024**2
+        ):
+            return None
+        stream = os.fdopen(fd, "rb")
+        descriptors.pop()
+        return stream
+    except (OSError, ValueError):
+        return None
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)

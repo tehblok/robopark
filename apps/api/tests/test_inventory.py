@@ -19,7 +19,7 @@ from robopark_api.models import (
 )
 from robopark_api.security import hash_password
 from robopark_api.services import inventory as inventory_svc
-from robopark_api.services import inventory_stock
+from robopark_api.services import inventory_access, inventory_stock
 from robopark_api.task_workflow_models import ReliableAction, TaskMessage
 
 
@@ -218,6 +218,27 @@ def test_operator_and_royal_can_open_every_park_inventory(
     assert client.get(f"/inventory?park_id={other.id}").status_code == 200
     login_as(client, royal.username, "secret")
     assert client.get(f"/inventory?park_id={other.id}").status_code == 200
+
+
+def test_single_park_access_does_not_enumerate_all_inventory_parks(
+    db_session, seed_park_with_tracker, monkeypatch
+):
+    mechanic = _user(db_session, "mechanic", "bounded-inventory-access", [seed_park_with_tracker])
+    other = Park(name="Unassigned", tag="Unassigned", tracker_queue="ROBOPARK", is_active=True)
+    db_session.add(other)
+    db_session.commit()
+    monkeypatch.setattr(
+        inventory_access,
+        "accessible_park_ids",
+        lambda *_args: pytest.fail("single-park request enumerated every park"),
+    )
+
+    assert (
+        inventory_access.require_park(db_session, mechanic, seed_park_with_tracker.id).id
+        == seed_park_with_tracker.id
+    )
+    with pytest.raises(PermissionError, match="forbidden"):
+        inventory_access.require_park(db_session, mechanic, other.id)
 
 
 def test_task_writeoff_requires_owner_and_queues_business_tracker_comment(

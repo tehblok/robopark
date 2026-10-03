@@ -524,7 +524,7 @@ def list_campaigns(db: Session, user: User, park_id: int | None = None) -> list[
         return []
     ids = list(
         db.scalars(
-            select(Campaign.id)
+            select(Campaign.id, Campaign.is_active, Campaign.due_on)
             .join(CampaignPark)
             .where(CampaignPark.park_id.in_(allowed), Campaign.archived_at.is_(None))
             .distinct()
@@ -598,6 +598,10 @@ def complete_ticket(
         previous = db.get(Report, existing.report_id)
         if previous is not None and previous.status != "returned":
             raise ValueError("campaign_ticket_already_completed")
+    if _tracker_closed(
+        {"status": issue.status, "status_key": issue.status_key, "resolution": issue.resolution}
+    ):
+        raise HTTPException(409, "campaign_ticket_closed")
 
     report = Report(
         kind=REPORT_KIND,

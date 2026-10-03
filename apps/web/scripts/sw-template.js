@@ -7,6 +7,12 @@ const shellCachePrefix = 'robopark-shell-'
 const runtimeCachePrefix = 'robopark-runtime-'
 const maxRuntimeEntries = 100
 const hashedAsset = /^\/assets\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+-[A-Za-z0-9_-]{2,}\.(?:js|css|png|svg|webp|woff2?)$/
+let reloadClientIdsOnActivate = null
+let preparedClientIdsOnActivate = null
+let activationPump = null
+let activationCommitted = false
+const pendingActivationRequests = new Map()
+const maxPendingActivationRequests = 32
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
@@ -14,55 +20,124 @@ self.addEventListener('install', (event) => {
     await cache.addAll(precache)
     const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
     clients.forEach((client) => client.postMessage({ type: 'UPDATE_READY' }))
+    await tryActivateWaitingWorker()
   })())
-  // Do not call skipWaiting: an open page must keep using its existing bundle.
+  // Activation happens only after every open page confirms that its durable work is settled.
 })
 
 self.addEventListener('message', (event) => {
   if (event.data?.type !== 'ACTIVATE_WHEN_SAFE') return
   const state = event.data.state
   if (state && (state.status !== 'idle' || state.pending !== 0 || state.conflicts !== 0)) return
-  event.waitUntil((async () => {
-    let prepared = []
-    let committed = false
-    try {
-      if (!await localWorkSettled()) return
-      prepared = await prepareOpenClients()
-      if (!prepared || prepared.some(client => !client.safe || client.vetoed)) return
-      if (!await localWorkSettled()) return
-      const current = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-      if (current.some(client => !prepared.some(item => item.id === client.id)) || prepared.some(client => client.vetoed)) return
-      await self.skipWaiting()
-      committed = true
-    } catch {
-      // Keep the old shell when local work cannot be inspected.
-    } finally {
-      if (!committed) prepared?.forEach(client => client.release())
-    }
-  })())
+  // Older clients send no state and cannot answer PREPARE_ACTIVATION. Their
+  // explicit update button can confirm only the requesting window itself.
+  const legacyRequesterId = state == null && event.source?.type === 'window'
+    ? event.source.id : null
+  event.waitUntil(tryActivateWaitingWorker(legacyRequesterId))
 })
+
+function tryActivateWaitingWorker(legacyRequesterId = null) {
+  if (activationCommitted) return Promise.resolve('activated')
+  const key = legacyRequesterId === null ? 'modern' : `legacy:${legacyRequesterId}`
+  const duplicate = pendingActivationRequests.get(key)
+  if (duplicate) return duplicate.promise
+  // Same-origin clients can request activation, so bound distinct legacy IDs.
+  // Dropped overflow requests fail closed and may retry after this pump settles.
+  if (pendingActivationRequests.size >= maxPendingActivationRequests) return activationPump ?? Promise.resolve('retry')
+  let complete
+  const promise = new Promise(resolve => { complete = resolve })
+  pendingActivationRequests.set(key, { legacyRequesterId, complete, promise })
+  ensureActivationPump()
+  return promise
+}
+
+function ensureActivationPump() {
+  if (activationPump) return
+  activationPump = drainActivationRequests().finally(() => {
+    activationPump = null
+    if (pendingActivationRequests.size) ensureActivationPump()
+  })
+}
+
+async function drainActivationRequests() {
+  while (pendingActivationRequests.size) {
+    const [key, request] = pendingActivationRequests.entries().next().value
+    pendingActivationRequests.delete(key)
+    const result = activationCommitted ? 'activated' : await performActivationAttempt(request.legacyRequesterId)
+    if (result === 'activated') activationCommitted = true
+    request.complete(result)
+    if (activationCommitted) {
+      for (const pending of pendingActivationRequests.values()) pending.complete('activated')
+      pendingActivationRequests.clear()
+    }
+  }
+}
+
+async function performActivationAttempt(legacyRequesterId = null) {
+  let prepared = []
+  let committed = false
+  try {
+    if (!await localWorkSettled()) return 'retry'
+    prepared = await prepareOpenClients()
+    if (!prepared) return 'retry'
+    // Unsolicited updates never reload a silent window. A legacy explicit
+    // request cannot override a negative response or another window's silence.
+    if (prepared.some(client => client.vetoed || (client.responded
+      ? !client.safe : client.id !== legacyRequesterId))) return 'retry'
+    if (!await localWorkSettled()) return 'retry'
+    const current = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    if (current.some(client => !prepared.some(item => item.id === client.id)) || prepared.some(client => client.vetoed)) return 'retry'
+    preparedClientIdsOnActivate = new Set(prepared.map(client => client.id))
+    reloadClientIdsOnActivate = new Set(prepared.filter(client => !client.reloadOnControllerChange).map(client => client.id))
+    await self.skipWaiting()
+    committed = true
+    return 'activated'
+  } catch {
+    // Keep the old shell when local work cannot be inspected.
+    return 'stop'
+  } finally {
+    if (!committed) await Promise.all(prepared?.map(client => client.release()) ?? [])
+  }
+}
 
 async function prepareOpenClients() {
   const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
   return Promise.all(clients.map(client => new Promise(resolve => {
     const channel = new MessageChannel()
     let settled = false
-    const prepared = { id: client.id, safe: false, vetoed: false, release: () => {
-      channel.port1.postMessage({ type: 'RELEASE_ACTIVATION' })
-      channel.port1.close()
-    } }
+    const prepared = { id: client.id, safe: false, responded: false, vetoed: false, reloadOnControllerChange: false, release: () => new Promise(released => {
+      let complete = false
+      const finishRelease = () => {
+        if (complete) return
+        complete = true
+        clearTimeout(timeout)
+        channel.port1.close()
+        released()
+      }
+      // rc.16 and older tabs release their fence but do not acknowledge it.
+      // Bound the compatibility wait so a closed legacy port cannot hang updates.
+      const timeout = setTimeout(finishRelease, 250)
+      channel.port1.onmessage = event => {
+        if (event.data?.type === 'VETO_ACTIVATION') prepared.vetoed = true
+        if (event.data?.type === 'RELEASED_ACTIVATION') finishRelease()
+      }
+      try { channel.port1.postMessage({ type: 'RELEASE_ACTIVATION' }) }
+      catch { finishRelease() }
+    }) }
     const timeout = setTimeout(() => finish(false), 2000)
-    function finish(safe) {
+    function finish(safe, responded = false) {
       if (settled) return
       settled = true
       clearTimeout(timeout)
       channel.port2.close()
       prepared.safe = safe
+      prepared.responded = responded
       resolve(prepared)
     }
     channel.port1.onmessage = event => {
       if (event.data?.type === 'VETO_ACTIVATION') { prepared.vetoed = true; return }
-      finish(event.data?.safe === true)
+      prepared.reloadOnControllerChange = event.data?.reloadOnControllerChange === true
+      finish(event.data?.safe === true, true)
     }
     try { client.postMessage({ type: 'PREPARE_ACTIVATION' }, [channel.port2]) }
     catch { finish(false) }
@@ -110,6 +185,13 @@ self.addEventListener('activate', (event) => {
     await Promise.all(names.filter((name) => (name.startsWith(shellCachePrefix) || name.startsWith(runtimeCachePrefix)) && name !== shellCache && name !== runtimeCache)
       .map((name) => caches.delete(name)))
     await self.clients.claim()
+    if (preparedClientIdsOnActivate) {
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      for (const client of windows.filter(client => !preparedClientIdsOnActivate.has(client.id)
+        || reloadClientIdsOnActivate.has(client.id))) {
+        if (typeof client.navigate === 'function') void client.navigate(client.url).catch(() => {})
+      }
+    }
   })())
 })
 
@@ -145,16 +227,16 @@ self.addEventListener('fetch', (event) => {
     return
   }
   if (request.method !== 'GET') return
+  if (url.pathname === '/terminal.html') return
   if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return
 
   if (request.mode === 'navigate') {
     const shell = caches.open(shellCache).then(async (cache) => {
-      const refresh = fetch('/index.html', { cache: 'no-store' }).then(async (response) => {
-        if (response.ok && response.type !== 'opaque') await cache.put('/index.html', response.clone())
-        return response
-      })
-      event.waitUntil(refresh.then(() => undefined).catch(() => undefined))
-      return (await cache.match('/index.html')) ?? refresh.catch(() => cache.match('/offline.html'))
+      // Keep HTML and chunks from the same installation until the waiting
+      // worker passes the durable-work activation checks. Replacing only HTML
+      // here can expose a new release while its worker is still waiting.
+      return (await cache.match('/index.html'))
+        ?? fetch('/index.html', { cache: 'no-store' }).catch(() => cache.match('/offline.html'))
     })
     event.respondWith(shell)
     return
@@ -177,7 +259,7 @@ self.addEventListener('fetch', (event) => {
 
 function openShareInbox() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('robopark-share-inbox', 1)
+    const request = indexedDB.open('robopark-share-inbox-v2', 1)
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains('drafts')) request.result.createObjectStore('drafts', { keyPath: 'id' })
     }
@@ -187,29 +269,50 @@ function openShareInbox() {
 }
 
 async function storeSharedPhoto(request) {
+  let shareId = null
   try {
     const form = await request.formData()
     const photo = form.get('photo')
     if (photo instanceof Blob && photo.type.startsWith('image/') && photo.size <= 15 * 1024 * 1024) {
       const db = await openShareInbox()
-      const transaction = db.transaction('drafts', 'readwrite')
-      transaction.objectStore('drafts').put({
-        id: crypto.randomUUID(),
-        createdAt: Date.now(),
+      const id = crypto.randomUUID()
+      const now = Date.now()
+      const draft = {
+        id,
+        createdAt: now,
         name: photo.name || 'shared-photo',
         type: photo.type,
         blob: photo,
         assignment: null,
-      })
-      await new Promise((resolve, reject) => {
-        transaction.oncomplete = resolve
-        transaction.onerror = () => reject(transaction.error)
-        transaction.onabort = () => reject(transaction.error)
-      })
-      db.close()
+        ownerAccountId: null,
+        receivedOrder: 0,
+      }
+      try {
+        const transaction = db.transaction('drafts', 'readwrite')
+        const store = transaction.objectStore('drafts')
+        const existing = store.getAll()
+        existing.onsuccess = () => {
+          const rows = existing.result
+          draft.receivedOrder = Math.max(0, ...rows.map(item => Number.isSafeInteger(item.receivedOrder) ? item.receivedOrder : 0)) + 1
+          const unclaimed = rows.filter(item => item.ownerAccountId == null && item.createdAt >= now - 24 * 60 * 60 * 1000)
+          const keep = new Set([...unclaimed, draft]
+            .sort((left, right) => right.createdAt - left.createdAt || (right.receivedOrder ?? 0) - (left.receivedOrder ?? 0))
+            .slice(0, 10).map(item => item.id))
+          for (const item of rows) {
+            if (item.createdAt < now - 24 * 60 * 60 * 1000 || item.ownerAccountId == null && !keep.has(item.id)) store.delete(item.id)
+          }
+          store.put(draft)
+        }
+        await new Promise((resolve, reject) => {
+          transaction.oncomplete = resolve
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        })
+      } finally { db.close() }
+      shareId = id
     }
   } catch {
     // Opening the application is still useful when the shared file cannot be stored.
   }
-  return Response.redirect(`${self.location.origin}/?shared=1`, 303)
+  return Response.redirect(`${self.location.origin}/${shareId ? `?shared=${encodeURIComponent(shareId)}` : ''}`, 303)
 }

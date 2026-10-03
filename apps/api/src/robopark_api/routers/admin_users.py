@@ -17,6 +17,7 @@ from robopark_api.schemas import ParkOut
 from robopark_api.security import PasswordPolicyError, hash_password, validate_password
 from robopark_api.services import audit, privileged_auth, rbac
 from robopark_api.services.database_locks import database_idempotency_lock
+from robopark_api.services.terminal.sessions import revoke_sessions as revoke_terminal_sessions
 from robopark_api.services.user_activity import public_ip
 from robopark_api.task_workflow_models import TaskReview
 
@@ -140,6 +141,7 @@ def _check_password(password: str, settings: Settings, username: str | None) -> 
 
 
 def _revoke_sessions(db: Session, user_id: int) -> None:
+    revoke_terminal_sessions(db, owner_id=user_id, reason="access_changed")
     db.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
 
 
@@ -302,6 +304,11 @@ def _update_user_locked(
 
     # All authorization uses the old effective permissions/role. Synchronize
     # the relationship as well as the FK before deriving new role overrides.
+    if any(
+        key in changes
+        for key in ("role_slug", "permissions", "access_status", "must_change_password")
+    ):
+        revoke_terminal_sessions(db, owner_id=user.id, reason="access_changed")
     user.role_ref = role
     if password := changes.get("password"):
         user.password_hash = hash_password(password)

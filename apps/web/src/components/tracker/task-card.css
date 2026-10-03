@@ -53,8 +53,8 @@
   background: var(--bg);
   margin-bottom: 1rem;
 }
-.issue-comment--new .issue-comment-body { border-inline-start: 3px solid var(--accent, #3164d5); }
-.issue-comment:focus { outline: 2px solid var(--accent, #3164d5); outline-offset: 4px; }
+.issue-comment--new .issue-comment-body { border-inline-start: 3px solid var(--rp-action); }
+.issue-comment:focus { outline: 2px solid var(--rp-focus); outline-offset: 4px; }
 @media (max-width: 599px) {
   .issue-actions .rp-responsive-disclosure__trigger {
     min-height: var(--rp-control-min-size);
@@ -115,12 +115,21 @@
   .rp-task-disclosure-actions {
     display: grid;
     gap: 12px;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
   }
 
   .rp-task-disclosure-actions > .rp-responsive-disclosure {
     width: 100%;
+  }
+
+  .rp-task-disclosure-actions > .rp-responsive-disclosure:has(.rp-disclosure-action[aria-expanded='true']) {
+    grid-column: 1 / -1;
+  }
+
+  .rp-task-disclosure-actions .rp-disclosure-action {
+    font-size: var(--rp-font-size-caption);
+    padding-inline: var(--rp-space-2);
   }
 
   .issue-collaboration {

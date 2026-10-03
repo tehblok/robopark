@@ -6,7 +6,6 @@ export const ru = {
     tasks: 'Работа',
     robot_search: 'Роботы',
     emergency: 'Проверка робота',
-    map: 'Карта',
     analytics: 'Аналитика',
     reports: 'Репорты',
     learning: 'Обучение',
@@ -130,7 +129,6 @@ export const ru = {
     register403: 'Регистрация отклонена. Проверьте общий пароль или логин.',
     register409: 'Регистрация отклонена. Проверьте общий пароль или логин.',
     register: 'Не удалось зарегистрироваться.',
-    tasks503: 'Tracker не настроен — попросите администратора указать OAuth-токен.',
     tasks409: 'Задачи отключены для вашего парка (очередь или feature_blockers).',
     tasks: 'Не удалось загрузить задачи. Проверьте настройки Tracker и парка.',
     robotSearch: 'Поиск не удался. Проверьте токен Tracker.',
@@ -191,6 +189,13 @@ export const ru = {
       tracker_attachment_empty: 'Файл пустой.',
       tracker_attachment_too_large: 'Файл слишком большой (максимум 15 МБ).',
       tracker_attachment_invalid_type: 'Можно прикреплять только изображения (JPEG, PNG, WebP, HEIC).',
+      tracker_attach_disabled: 'Нет прав прикреплять фото к этой задаче.',
+      media_issue_not_found: 'Задача не найдена. Обновите список задач.',
+      media_upload_user_quota_exceeded: 'Достигнут лимит загрузок фото для аккаунта. Дождитесь завершения текущих загрузок или очистки.',
+      media_upload_global_quota_exceeded: 'Хранилище загрузок достигло лимита. Обратитесь к владельцу для очистки.',
+      media_storage_capacity_exceeded: 'Недостаточно свободного места для фото. Освободите хранилище и повторите.',
+      media_storage_unavailable: 'Хранилище фото временно недоступно. Повторите позже.',
+      media_upload_scope_refresh_required: 'Права на загрузку нужно проверить заново. Повторите синхронизацию.',
       emergency_cookie_not_configured:
         'Cookie проверки робота не настроена.',
       emergency_cookie_invalid:
@@ -203,7 +208,7 @@ export const ru = {
       emergency_vin_out_of_scope: 'Нет доступа к диагностике этого робота.',
       tasks_disabled_for_park: 'Задачи отключены: проверьте очередь Startrek и флаг blockers у парка.',
       blockers_disabled_for_park:
-        'Блокеры отключены для этого парка (очередь или feature_blockers).',
+        'У парка не настроена очередь Tracker или отключены задачи. Проверьте настройки парка.',
       no_tracker_parks: 'Нет назначенных парков с очередью Startrek.',
       no_report_parks:
         'Нет парков для отчёта — назначьте парк или включите feature_reports.',

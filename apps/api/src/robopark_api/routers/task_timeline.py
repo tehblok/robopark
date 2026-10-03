@@ -68,6 +68,8 @@ def _issue(db: Session, user: User, key: str, action: str | None, request: Reque
         raise HTTPException(status_code=404)
     if action is not None:
         _authorize(db, user, issue, action, request)
+        if task_lifecycle.tracker_issue_is_closed(issue):
+            raise HTTPException(status_code=409, detail="task_already_closed")
     else:
         if not rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_READ):
             raise HTTPException(status_code=403)
@@ -88,7 +90,11 @@ def get_defect_codes(user: User = Depends(require_user)) -> list[DefectCodeOut]:
     ]
 
 
-@router.get("/issues/{key}/timeline", response_model=list[TaskTimelineItemOut])
+@router.get(
+    "/issues/{key}/timeline",
+    response_model=list[TaskTimelineItemOut],
+    response_model_exclude_unset=True,
+)
 def get_timeline(
     key: str,
     request: Request,
@@ -143,8 +149,6 @@ def _validate_attachment_access(
     db: Session, *, user: User, key: str, attachment_id: str, request: Request
 ) -> tuple[Path, str, str]:
     issue = _issue(db, user, key, None, request)
-    if task_lifecycle.tracker_issue_is_closed(issue):
-        raise HTTPException(status_code=409, detail="task_already_closed")
     issue_park = tracker_signatures.resolve_park(db, issue)
     if issue_park is not None and not issue_park.is_active:
         raise HTTPException(status_code=403, detail="task_park_inactive")
@@ -216,9 +220,12 @@ def post_photo(
     request: Request,
     file: UploadFile = File(...),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    expected_account_id: int | None = Header(default=None, alias="X-Expected-Account-Id"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TaskAttachmentStagedOut:
+    if expected_account_id is not None and expected_account_id != user.id:
+        raise HTTPException(status_code=409, detail="account_changed")
     _issue(db, user, key, "attach", request)
     content = file.file.read(tracker_client.MAX_ATTACHMENT_BYTES + 1)
     try:

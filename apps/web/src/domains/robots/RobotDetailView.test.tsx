@@ -12,7 +12,7 @@ import { RobotDetailView } from './RobotDetailView'
 import { RobotPage } from './RobotPage'
 
 const VIN = 'YASADR00000000447'
-const park = { id: 7, name: 'Север', tag: 'Alpha', tracker_queue: 'ROBOPARK', is_active: true }
+const park = { id: 7, name: 'Север', timezone: 'Europe/Moscow', tag: 'Alpha', tracker_queue: 'ROBOPARK', is_active: true }
 const work: Blocker = { key: 'ROBOPARK-42', summary: 'Робот остановился', status: 'Open', status_key: 'open', robot: '447', created_at: '2026-09-02T08:00:00Z', hours_created: '1', url: 'https://st.yandex-team.ru/ROBOPARK-42', bucket: 'new' }
 function snapshot(overrides: Partial<EmergencySnapshot> = {}): EmergencySnapshot {
   return {
@@ -67,14 +67,14 @@ describe('robot detail presentation', () => {
   function view(overrides: Partial<React.ComponentProps<typeof RobotDetailView>> = {}) {
     return render(<MemoryRouter><RobotDetailView snapshot={snapshot()} relatedWork={[work]} relatedWorkError={null} workScopeLabel="Доступные роли очереди Tracker; выбор парка не определяет фактический парк робота" parkId={7} browserOnline canOpenCheck canOpenWork onRetrySnapshot={vi.fn()} onRetryWork={vi.fn()} {...overrides} /></MemoryRouter>)
   }
-  it('separates robot identity, related scope, unavailable events and authorized destinations', () => {
+  it('separates robot identity, related scope and authorized destinations without an unavailable history panel', () => {
     view()
     expect(screen.getByRole('heading', { name: 'Робот 447' })).toBeInTheDocument()
     expect(screen.getByText(VIN)).toBeInTheDocument()
     expect(screen.getByText(/выбор парка не определяет фактический парк/i)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Открыть ROBOPARK-42' })).toHaveAttribute('href', '/work/ROBOPARK-42?park=7')
     expect(screen.getByRole('link', { name: 'Начать проверку робота' })).toHaveAttribute('href', `/robots/${VIN}/check?park=7`)
-    expect(screen.getByText('История событий пока недоступна')).toBeInTheDocument()
+    expect(screen.queryByText('История событий пока недоступна')).not.toBeInTheDocument()
   })
   it('labels generic model illustration independently of identity and falls back on load failure', () => {
     view()

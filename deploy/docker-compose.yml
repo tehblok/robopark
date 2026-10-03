@@ -4,7 +4,7 @@
 
 services:
   db:
-    image: postgres:17.6-alpine
+    image: postgres:17.11-alpine
     environment:
       POSTGRES_USER: robopark
       POSTGRES_DB: robopark
@@ -48,6 +48,7 @@ services:
       HOST_DATA_PATH: /data
       HOST_HEALTH_PATH: /data/ops/host-health.json
       OPS_HOST_ENV_PATH: /run/robopark/snapshot.env
+      ROBOPARK_BOT_BRIDGE_KEY_FILE: /run/secrets/bot-bridge-key
       # UVICORN_WORKERS comes from host.env; entrypoint defaults to 2.
     volumes:
       - ${ROBOPARK_DATA_SOURCE:-robopark_data}:/data
@@ -56,6 +57,7 @@ services:
       # Hide the root-private checkout file beneath the repository bind. The API
       # sees only the generated non-secret projection above.
       - ${ROBOPARK_SNAPSHOT_CONFIG_FILE:?run sudo compose-production.sh first}:/host-repo/deploy/host.env:ro
+      - ${ROBOPARK_BOT_BRIDGE_KEY_FILE:-/etc/robopark/bot-bridge-key}:/run/secrets/bot-bridge-key:ro
       # Royal ZIP updates copy onto the checkout; ops-agent rebuilds images.
       - ..:/host-repo
     restart: unless-stopped
@@ -64,6 +66,11 @@ services:
         condition: service_healthy
     init: true
     mem_limit: 3g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
     stop_grace_period: 45s
     ulimits:
       nofile:
@@ -110,14 +117,22 @@ services:
         condition: service_healthy
     init: true
     mem_limit: 1g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
     stop_grace_period: 45s
     ulimits:
       nofile:
         soft: 8192
         hard: 8192
-    # The image's HTTP healthcheck belongs to the API process only.
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-m", "robopark_api.worker_healthcheck", "--max-age-seconds", "120"]
+      interval: 15s
+      timeout: 15s
+      start_period: 45s
+      retries: 3
     logging:
       driver: json-file
       options:
@@ -142,6 +157,41 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bot:
+    profiles: [bot]
+    build:
+      context: ../apps/bot
+    image: robopark-bot:local
+    user: "10001:10001"
+    environment:
+      ROBOPARK_API_URL: http://api:8000
+      ROBOPARK_BOT_BRIDGE_KEY_FILE: /run/secrets/bot-bridge-key
+      ROBOPARK_BOT_DATA_DIR: /data/telegram-bot
+      TZ: Europe/Moscow
+    volumes:
+      - ${ROBOPARK_DATA_SOURCE:-robopark_data}:/data
+      - ${ROBOPARK_BOT_BRIDGE_KEY_FILE:-/etc/robopark/bot-bridge-key}:/run/secrets/bot-bridge-key:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 768m
+    stop_grace_period: 30s
     logging:
       driver: json-file
       options:

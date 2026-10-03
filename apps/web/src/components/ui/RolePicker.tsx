@@ -1,8 +1,5 @@
 import { roleLabel } from '../../i18n/ru'
-
-export const REGISTER_ROLES = ['operator', 'mechanic', 'driver'] as const
-
-export type RegisterRole = (typeof REGISTER_ROLES)[number]
+import { REGISTER_ROLES, type RegisterRole } from './rolePickerModel'
 
 const ROLE_HINT: Record<RegisterRole, string> = {
   operator: 'Мониторинг парка, блокеры и репорты',

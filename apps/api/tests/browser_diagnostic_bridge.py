@@ -7,8 +7,9 @@ Run via e2e/support/diagnosticApi.ts, never as an application server.
 
 import json
 import os
+import secrets
 import sys
-from base64 import b64decode
+from base64 import b64decode, b64encode
 from collections import Counter
 from contextlib import ExitStack
 from tempfile import TemporaryDirectory
@@ -18,8 +19,9 @@ from unittest.mock import patch
 def run():
     with TemporaryDirectory(prefix="robopark-diagnostic-e2e-") as directory, ExitStack() as stack:
         os.environ["DATABASE_URL"] = f"sqlite:///{directory}/browser.db"
-        os.environ["SECRET_KEY"] = "public-browser-fixture-key"
+        os.environ["SECRET_KEY"] = os.environ["ROBOPARK_BROWSER_SECRET_KEY"]
         os.environ["ROBOPARK_LIVE_MERGE"] = "0"
+        browser_password = os.environ["ROBOPARK_BROWSER_PASSWORD"]
 
         from robopark_api.config import Settings, get_settings, reset_settings_cache
 
@@ -31,6 +33,7 @@ def run():
         from sqlalchemy.orm import Session, sessionmaker
 
         from robopark_api import main
+        from robopark_api.collaboration_models import TrackerClaim
         from robopark_api.db import get_db
         from robopark_api.models import AuditLog, Base, Park, Permission, Role, User, UserPark
         from robopark_api.routers import emergency
@@ -65,7 +68,7 @@ def run():
                 role = custom if slug == "custom-admin" else rbac.get_role_by_slug(db, role_slug)
                 user = User(
                     username=f"{slug}-browser",
-                    password_hash=hash_password("public-fixture-password"),
+                    password_hash=hash_password(browser_password),
                     role_id=role.id,
                     access_status="approved",
                     is_active=True,
@@ -73,7 +76,9 @@ def run():
                 db.add(user)
                 db.flush()
                 db.add(UserPark(user_id=user.id, park_id=7))
-            platform_settings.set_setting(db, platform_settings.TRACKER_TOKEN_KEY, "browser-token")
+            platform_settings.set_setting(
+                db, platform_settings.TRACKER_TOKEN_KEY, secrets.token_urlsafe(24)
+            )
             db.commit()
 
         tracker = {
@@ -83,6 +88,9 @@ def run():
             "comments": [],
             "field_values": {},
             "counts": Counter(),
+            "assignee": None,
+            "tags": ["north"],
+            "components": ["Колёса"],
             "transitions": [
                 {"id": "start", "display": "В работу"},
                 {"id": "review", "display": "На проверку"},
@@ -99,22 +107,22 @@ def run():
                 "status": tracker["status"],
                 "status_key": tracker["status_key"],
                 "queue": "ROBOPARK",
-                "tags": ["north"],
-                "created": "2026-09-15T08:00:00Z",
-                "updated": "2026-09-15T08:00:00Z",
-                "queued_at": "2026-09-15T08:00:00Z",
-                "sla_deadline": "2026-09-15T13:00:00Z",
+                "tags": list(tracker["tags"]),
+                "created": "2026-09-02T08:00:00Z",
+                "updated": "2026-09-02T08:00:00Z",
+                "queued_at": "2026-09-02T08:00:00Z",
+                "sla_deadline": "2026-09-02T13:00:00Z",
                 "sla_source": "status_history",
                 "hours_created": "1",
                 "robot": "447",
                 "description": "Проверить крепление колеса.",
-                "assignee": None,
+                "assignee": tracker["assignee"],
                 "reporter": {"display": "Оператор", "login": "operator-browser"},
                 "resolution": None,
                 "priority": "normal",
                 "type": "repair",
                 "type_key": "repair",
-                "components": ["Колёса"],
+                "components": list(tracker["components"]),
                 "attachments": [],
             }
 
@@ -139,7 +147,7 @@ def run():
                     "id": external_id,
                     "text": text,
                     "author": "Бот СУРП",
-                    "created_at": "2026-09-15T09:00:00Z",
+                    "created_at": "2026-09-02T09:00:00Z",
                     "attachments": [],
                 }
             )
@@ -166,6 +174,21 @@ def run():
             tracker["counts"][f"field:{field_id}"] += 1
             tracker["field_values"][field_id] = value
 
+        def assign_issue(*, assignee, **_kwargs):
+            require_tracker()
+            tracker["counts"]["assign"] += 1
+            tracker["assignee"] = {"display": assignee, "login": assignee}
+
+        def set_issue_tags(*, tags, **_kwargs):
+            require_tracker()
+            tracker["counts"]["tags"] += 1
+            tracker["tags"] = list(tags)
+
+        def set_issue_components(*, components, **_kwargs):
+            require_tracker()
+            tracker["counts"]["components"] += 1
+            tracker["components"] = list(components)
+
         for name, replacement in {
             "get_issue": tracker_issue,
             "search_issues": lambda **_kwargs: [tracker_issue()],
@@ -177,11 +200,25 @@ def run():
             "add_comment": add_comment,
             "upload_temp_attachment": upload_temp_attachment,
             "transition_issue": transition_issue,
+            "assign_issue": assign_issue,
+            "set_issue_tags": set_issue_tags,
+            "set_issue_components": set_issue_components,
         }.items():
             stack.enter_context(patch.object(tracker_client, name, replacement))
+        stack.enter_context(
+            patch.object(
+                tracker_client,
+                "_client",
+                side_effect=AssertionError("unmocked Tracker client call in diagnostic bridge"),
+            )
+        )
         stack.enter_context(patch.object(tracker_outbox, "_set_issue_field", set_issue_field))
 
-        settings = Settings(_env_file=None, ops_dir=f"{directory}/ops")
+        settings = Settings(
+            _env_file=None,
+            ops_dir=f"{directory}/ops",
+            cors_origins=os.environ.get("ROBOPARK_BROWSER_ORIGIN", "http://127.0.0.1:4173"),
+        )
         stack.enter_context(patch.object(main, "get_settings", return_value=settings))
         payload = {
             "isOnline": True,
@@ -222,7 +259,7 @@ def run():
                 "/auth/login",
                 json={
                     "username": f"{slug}-browser",
-                    "password": "public-fixture-password",
+                    "password": browser_password,
                 },
             )
             assert response.status_code == 204, response.text
@@ -259,7 +296,12 @@ def run():
                 elif request["control"] == "snapshot":
                     with Session(engine) as db:
                         actions = [
-                            {"id": row.id, "action": row.action, "state": row.state}
+                            {
+                                "id": row.id,
+                                "action": row.action,
+                                "state": row.state,
+                                "error_code": row.error_code,
+                            }
                             for row in db.query(ReliableAction).order_by(
                                 ReliableAction.created_at, ReliableAction.id
                             )
@@ -270,12 +312,22 @@ def run():
                                 TaskMessage.created_at, TaskMessage.id
                             )
                         ]
+                        claims = [
+                            {
+                                "issue_key": row.issue_key,
+                                "owner_user_id": row.owner_user_id,
+                                "state": row.state,
+                                "start_action_id": row.start_action_id,
+                            }
+                            for row in db.query(TrackerClaim).order_by(TrackerClaim.issue_key)
+                        ]
                     response_data = {
                         "status": 200,
                         "json": {
                             "counts": dict(tracker["counts"]),
                             "field_values": tracker["field_values"],
                             "actions": actions,
+                            "claims": claims,
                             "timeline": timeline,
                         },
                     }
@@ -307,6 +359,7 @@ def run():
                 response_data = {
                     "status": response.status_code,
                     "body": response.text,
+                    "body_base64": b64encode(response.content).decode("ascii"),
                     "headers": dict(response.headers),
                 }
             print(json.dumps({"id": request["id"], **response_data}), flush=True)

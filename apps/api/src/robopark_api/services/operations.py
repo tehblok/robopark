@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfoNotFoundError
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -19,10 +18,18 @@ from robopark_api.operations_schemas import (
     OverdueTaskOut,
     SlaOut,
     StatusOptionOut,
+    TaskTimingOut,
     WorkloadOut,
 )
 from robopark_api.routers._blockers import blocker_out
-from robopark_api.services import platform_settings, rbac, tracker_cache, tracker_client
+from robopark_api.services import (
+    platform_settings,
+    rbac,
+    sla_clock,
+    tracker_cache,
+    tracker_client,
+    tracker_history,
+)
 from robopark_api.services.blocker_history import BUCKET_SECONDS, align_bucket_start
 from robopark_api.services.tracker_claims import local_assignees
 from robopark_api.services.tracker_filters import (
@@ -32,12 +39,13 @@ from robopark_api.services.tracker_filters import (
     park_priority_type,
     sort_issues_oldest_first,
 )
-from robopark_api.services.tracker_policy import is_issue_status_visible, issue_tags
+from robopark_api.services.tracker_policy import (
+    is_issue_status_visible,
+    issue_tags,
+    park_tag_matches,
+)
 
 TASK_LIMIT = 200
-SLA_TIMEZONE = ZoneInfo("Europe/Moscow")
-SLA_DAY_START = time(9, 0)
-SLA_DAY_END = time(21, 0)
 STATUS_LABELS = {
     "all": "Все",
     "new": "Новые",
@@ -72,10 +80,14 @@ def age_hours(item: dict, now: datetime) -> float | None:
     return hours if hours >= 0 else None
 
 
-def queued_working_hours(item: dict, now: datetime) -> float | None:
-    """Working hours since an observed queue transition, never issue creation."""
-    if issue_status_bucket(item) != "queued":
-        return None
+def _sla_timezone(item: dict, fallback: str) -> str | None:
+    # An explicitly unknown historical park must not inherit today's park zone.
+    value = item.get("sla_anchor_timezone") if "sla_anchor_timezone" in item else fallback
+    return str(value) if value else None
+
+
+def queued_working_hours(item: dict, now: datetime, *, timezone: str) -> float | None:
+    """Working hours since queue entry, through later nonterminal statuses."""
     raw = tracker_client.repair_sla_fields(item)["queued_at"]
     if not raw:
         return None
@@ -85,23 +97,63 @@ def queued_working_hours(item: dict, now: datetime) -> float | None:
         return None
     if created.tzinfo is None:
         return None
-    start = created.astimezone(SLA_TIMEZONE)
-    end = as_utc(now).astimezone(SLA_TIMEZONE)
-    if end < start:
+    if as_utc(now) < as_utc(created):
         return None
-    total = 0.0
-    day = start.date()
-    while day <= end.date():
-        window_start = datetime.combine(day, SLA_DAY_START, SLA_TIMEZONE)
-        window_end = datetime.combine(day, SLA_DAY_END, SLA_TIMEZONE)
-        left, right = max(start, window_start), min(end, window_end)
-        if right > left:
-            total += (right - left).total_seconds() / 3600
-        day += timedelta(days=1)
-    return total
+    anchor_timezone = _sla_timezone(item, timezone)
+    if anchor_timezone is None:
+        return None
+    try:
+        return sla_clock.elapsed_working_hours(created, now, timezone=anchor_timezone)
+    except (ValueError, ZoneInfoNotFoundError):
+        return None
 
 
-def calculate_sla(items: list[dict], *, target_hours: int | None, now: datetime) -> SlaOut:
+def task_timing(item: dict, now: datetime, *, timezone: str) -> TaskTimingOut:
+    raw = tracker_client.repair_sla_fields(item)["queued_at"]
+    queue_started_at = None
+    if raw:
+        try:
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if parsed.tzinfo is not None and as_utc(parsed) <= now:
+                queue_started_at = as_utc(parsed)
+        except (TypeError, ValueError):
+            pass
+    anchor_timezone = _sla_timezone(item, timezone)
+    sla_deadline = sla_working_hours = None
+    if queue_started_at and anchor_timezone:
+        try:
+            sla_deadline = sla_clock.deadline(queue_started_at, timezone=anchor_timezone)
+            sla_working_hours = sla_clock.elapsed_working_hours(
+                queue_started_at, now, timezone=anchor_timezone
+            )
+        except (ValueError, ZoneInfoNotFoundError):
+            sla_deadline = sla_working_hours = None
+    return TaskTimingOut(
+        issue_key=str(item.get("key") or ""),
+        queue_started_at=queue_started_at,
+        sla_deadline=sla_deadline,
+        sla_working_hours=sla_working_hours,
+        sla_timezone=anchor_timezone if sla_deadline is not None else None,
+        downtime_hours=(now - queue_started_at).total_seconds() / 3600
+        if queue_started_at
+        else None,
+    )
+
+
+def _is_sla_overdue(
+    item: dict, *, age: float, target_hours: int, now: datetime, timezone: str
+) -> bool:
+    if age != target_hours:
+        return age > target_hours
+    # At a 21:00 deadline the working clock remains exactly at five hours
+    # overnight, while the absolute due time has already passed.
+    due_at = task_timing(item, now, timezone=timezone).sla_deadline
+    return due_at is not None and as_utc(now) > as_utc(due_at)
+
+
+def calculate_sla(
+    items: list[dict], *, target_hours: int | None, now: datetime, timezone: str
+) -> SlaOut:
     if target_hours is None:
         return SlaOut(
             target_hours=None,
@@ -116,11 +168,11 @@ def calculate_sla(items: list[dict], *, target_hours: int | None, now: datetime)
     at_risk = 0
     overdue: list[tuple[dict, float]] = []
     for item in items:
-        age = queued_working_hours(item, now)
+        age = queued_working_hours(item, now, timezone=timezone)
         if age is None:
             continue
         evaluated += 1
-        if age > target_hours:
+        if _is_sla_overdue(item, age=age, target_hours=target_hours, now=now, timezone=timezone):
             overdue.append((item, age))
         elif age >= target_hours * 0.8:
             at_risk += 1
@@ -142,7 +194,7 @@ def calculate_sla(items: list[dict], *, target_hours: int | None, now: datetime)
 
 
 def calculate_workload(
-    items: list[dict], *, target_hours: int | None, now: datetime
+    items: list[dict], *, target_hours: int | None, now: datetime, timezone: str
 ) -> list[WorkloadOut]:
     grouped: dict[tuple[str | None, str], list[dict]] = {}
     for item in items:
@@ -156,13 +208,26 @@ def calculate_workload(
     for (login, fallback), group in grouped.items():
         display = str((group[0].get("assignee") or {}).get("display") or login or fallback)
         ages = [age for item in group if (age := age_hours(item, now)) is not None]
-        sla_ages = [age for item in group if (age := queued_working_hours(item, now)) is not None]
+        sla_ages = [
+            (item, age)
+            for item in group
+            if (age := queued_working_hours(item, now, timezone=timezone)) is not None
+        ]
         result.append(
             WorkloadOut(
                 login=login,
                 display=display,
                 open_count=len(group),
-                overdue_count=sum(age > target_hours for age in sla_ages)
+                overdue_count=sum(
+                    _is_sla_overdue(
+                        item,
+                        age=age,
+                        target_hours=target_hours,
+                        now=now,
+                        timezone=timezone,
+                    )
+                    for item, age in sla_ages
+                )
                 if target_hours is not None
                 else None,
                 oldest_hours=max(ages) if ages else None,
@@ -209,21 +274,6 @@ def flow_history(db: Session, *, park_id: int, days: int, now: datetime) -> Flow
     )
 
 
-def sla_policy_key(park_id: int) -> str:
-    return f"operations.sla.park.{park_id}"
-
-
-def get_sla_target(db: Session, park_id: int) -> int | None:
-    row = platform_settings.get_setting(db, sla_policy_key(park_id))
-    if row is None:
-        return 5
-    try:
-        value = json.loads(row.value)
-    except (ValueError, TypeError):
-        return 5
-    return value if type(value) is int and 1 <= value <= 8760 else 5
-
-
 def require_operations_park(db: Session, user: User, park_id: int) -> Park:
     rbac.assert_approved(user)
     park = db.get(Park, park_id)
@@ -236,15 +286,11 @@ def require_operations_park(db: Session, user: User, park_id: int) -> Park:
     return park
 
 
-def require_operations_read(db: Session, user: User, *, policy_only: bool = False) -> None:
+def require_operations_read(db: Session, user: User) -> None:
     rbac.assert_approved(user)
     permissions = rbac.permissions_for_user(db, user)
     sections = {rbac.PERMISSION_NAV_DASHBOARD, rbac.PERMISSION_NAV_ANALYTICS}
-    if policy_only:
-        sections.add(rbac.PERMISSION_PARKS_MANAGE)
-    if not permissions & sections or (
-        not policy_only and rbac.PERMISSION_TRACKER_READ not in permissions
-    ):
+    if not permissions & sections or rbac.PERMISSION_TRACKER_READ not in permissions:
         raise HTTPException(status_code=403)
 
 
@@ -311,6 +357,8 @@ def build_overview(
             park_tag=park.tag,
             priority=priority,
             issue_type=issue_type,
+            max_age_seconds=5.0,
+            allow_stale=False,
         )
     except tracker_client.TrackerError as exc:
         raise HTTPException(status_code=502, detail="tracker_upstream_error") from exc
@@ -320,10 +368,11 @@ def build_overview(
         item
         for item in snapshot
         if item.get("queue") == park.tracker_queue
-        and park.tag in issue_tags(item)
+        and park_tag_matches(park.tag, issue_tags(item))
         and is_issue_status_visible(user, item)
         and issue_status_bucket(item) in allowed
     ]
+    items = tracker_history.hydrate_visible_history(db, token=token, issues=items, parks=[park])
     claims = local_assignees(db, [str(item.get("key") or "") for item in items])
     items = [
         {**item, "assignee": claims.get(str(item.get("key") or ""), item.get("assignee"))}
@@ -331,13 +380,26 @@ def build_overview(
     ]
     ordered = sort_issues_oldest_first(sorted(items, key=lambda item: item["key"]))
     tasks = filter_issues_by_status(ordered, selected_status)
-    target = get_sla_target(db, park.id)
+    target = sla_clock.SLA_TARGET_HOURS
     workload = (
-        calculate_workload(items, target_hours=target, now=now) if user.role in LEADERSHIP else None
+        calculate_workload(items, target_hours=target, now=now, timezone=park.timezone)
+        if user.role in LEADERSHIP
+        else None
+    )
+    sla = calculate_sla(items, target_hours=target, now=now, timezone=park.timezone)
+    visible_timing_items = {str(item.get("key") or ""): item for item in tasks[:TASK_LIMIT]}
+    overdue_keys = {row.key for row in sla.overdue}
+    visible_timing_items.update(
+        {
+            str(item.get("key") or ""): item
+            for item in items
+            if str(item.get("key") or "") in overdue_keys
+        }
     )
     return OperationsOverviewOut(
         park_id=park.id,
         generated_at=now,
+        timezone=park.timezone,
         status_options=[
             StatusOptionOut(key=key, label=label)
             for key, label in STATUS_LABELS.items()
@@ -346,10 +408,13 @@ def build_overview(
         selected_status=selected_status,
         counts=count_status_buckets(items),
         tasks=[blocker_out(item) for item in tasks[:TASK_LIMIT]],
+        task_timing=[
+            task_timing(item, now, timezone=park.timezone) for item in visible_timing_items.values()
+        ],
         tasks_total=len(tasks),
         tasks_truncated=len(tasks) > TASK_LIMIT,
         flow=flow_history(db, park_id=park.id, days=days, now=now),
-        sla=calculate_sla(items, target_hours=target, now=now),
+        sla=sla,
         workload=workload,
         operators=operator_loads(db, park.id, workload or [], target)
         if rbac.is_admin_or_royal(user)

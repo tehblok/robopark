@@ -1,0 +1,32 @@
+[Unit]
+Description=Robopark private host terminal broker
+Requires=robopark-terminal-setup.service robopark.service
+After=robopark-terminal-setup.service robopark.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark terminal-broker
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/robopark/ops/state/terminal /var/lib/robopark/ops/public /run/robopark-terminal /run/robopark-terminal-workers /run/lock/robopark
+UMask=0077
+MemoryMax=128M
+TasksMax=64
+LimitNOFILE=512
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

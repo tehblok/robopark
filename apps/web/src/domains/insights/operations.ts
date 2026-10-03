@@ -1,4 +1,4 @@
-import type { OperationsFlow, OperationsOverview, Park, User } from '../../api'
+import type { OperationsOverview, Park, User } from '../../api'
 
 export type OperationsApiClient = {
   operationsOverview(parkId: number, days: number, status: string): Promise<OperationsOverview>
@@ -31,14 +31,4 @@ export function operationsAccessIdentity(user: User, selectedPark?: Park | null)
 export function canReadOperations(user: User, section: 'overview' | 'analytics'): boolean {
   const permissions = user.permissions ?? []
   return user.access_status === 'approved' && !user.must_change_password && permissions.includes('tracker.read') && permissions.includes(section === 'overview' ? 'nav.dashboard' : 'nav.analytics')
-}
-export const SLA_BASIS = 'SLA: рабочие часы с перехода задачи в очередь, 09:00–21:00 МСК. Если время перехода неизвестно, срок не рассчитывается.'
-export function moscowDate(value: string | number): string {
-  return new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(value))
-}
-export function flowBuckets(flow: OperationsFlow) {
-  const points = new Map(flow.points.map(point => [Date.parse(point.bucket_start), point]))
-  const rows: { time: number; point: OperationsFlow['points'][number] | null }[] = []
-  for (let time = Date.parse(flow.window_start); time < Date.parse(flow.window_end); time += 2 * 60 * 60 * 1000) rows.push({ time, point: points.get(time) ?? null })
-  return rows
 }

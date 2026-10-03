@@ -12,7 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.models import AuditLog, Park, User, UserPark
@@ -25,6 +25,7 @@ from robopark_api.services.reliable_actions import (
     canonical_payload,
     complete_action,
 )
+from robopark_api.services.task_cycle import last_confirmed_closure_at
 from robopark_api.services.task_timeline import _validate_filename, _write_staged_blob
 from robopark_api.services.tracker_claims import claim_issue, get_claim, release_claim
 from robopark_api.task_workflow_models import (
@@ -104,7 +105,7 @@ def _transition_action(
         if "depends_on_action_ids" in saved_payload:
             effective_payload["depends_on_action_ids"] = saved_payload["depends_on_action_ids"]
     else:
-        previous = db.scalar(
+        previous_query = (
             select(ReliableAction)
             .where(
                 ReliableAction.resource_type == "tracker_issue",
@@ -113,6 +114,10 @@ def _transition_action(
             )
             .order_by(ReliableAction.created_at.desc(), ReliableAction.id.desc())
         )
+        closure_at = last_confirmed_closure_at(db, issue_key)
+        if closure_at is not None:
+            previous_query = previous_query.where(ReliableAction.created_at > closure_at)
+        previous = db.scalar(previous_query)
         if previous is not None:
             dependencies = list(effective_payload.get("depends_on_action_ids", []))
             effective_payload["depends_on_action_ids"] = [*dependencies, previous.id]
@@ -220,15 +225,14 @@ def hidden_issue_keys(db: Session) -> set[str]:
     )
 
 
-def _sync_state(db: Session, issue_key: str) -> str:
-    states = set(
-        db.scalars(
-            select(ReliableAction.state).where(
-                ReliableAction.resource_type == "tracker_issue",
-                ReliableAction.resource_id == issue_key,
-            )
-        ).all()
+def _sync_state(db: Session, issue_key: str, *, after: float | None = None) -> str:
+    query = select(ReliableAction.state).where(
+        ReliableAction.resource_type == "tracker_issue",
+        ReliableAction.resource_id == issue_key,
     )
+    if after is not None:
+        query = query.where(ReliableAction.created_at > after)
+    states = set(db.scalars(query).all())
     if "needs_attention" in states:
         return "needs_attention"
     if states - {"succeeded"}:
@@ -270,6 +274,32 @@ def reconcile_external_closure(db: Session, issue: dict) -> None:
 
 
 def _reconcile_external_closure_locked(db: Session, issue_key: str) -> None:
+    previous_closure = last_confirmed_closure_at(db, issue_key)
+    unfinished_query = select(ReliableAction.id).where(
+        ReliableAction.resource_type == "tracker_issue",
+        ReliableAction.resource_id == issue_key,
+        ReliableAction.state.in_(("pending", "sending", "retry_wait", "needs_attention")),
+    )
+    if previous_closure is not None:
+        unfinished_query = unfinished_query.where(ReliableAction.created_at > previous_closure)
+    has_current_unfinished_action = db.scalar(unfinished_query.limit(1)) is not None
+    message_query = select(TaskMessage.id).where(
+        TaskMessage.issue_key == issue_key,
+        TaskMessage.kind == "user",
+    )
+    if previous_closure is not None:
+        message_query = message_query.where(TaskMessage.created_at > previous_closure)
+    has_current_local_message = db.scalar(message_query.limit(1)) is not None
+    close_actions = db.scalars(
+        select(ReliableAction)
+        .where(
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == issue_key,
+            ReliableAction.action == "close",
+            ReliableAction.state.in_(("pending", "retry_wait", "needs_attention")),
+        )
+        .with_for_update()
+    ).all()
     review = _active_review(db, issue_key, for_update=True)
     if review is None:
         closing_review = _latest_review(db, issue_key)
@@ -280,7 +310,16 @@ def _reconcile_external_closure_locked(db: Session, issue_key: str) -> None:
         ):
             review = closing_review
     claim = get_claim(db, issue_key)
-    if review is None and claim is None:
+    for action in close_actions:
+        complete_action(db, action, {"already_applied": True, "source": "tracker_closed"})
+    if (
+        review is None
+        and claim is None
+        and not has_current_unfinished_action
+        and not has_current_local_message
+    ):
+        if close_actions:
+            db.commit()
         return
     now = time.time()
     if review is not None:
@@ -289,15 +328,16 @@ def _reconcile_external_closure_locked(db: Session, issue_key: str) -> None:
         review.updated_at = now
     park_id = claim.park_id if claim is not None else None
     release_claim(db, issue_key)
+    message_id = str(uuid4())
     db.add(
         TaskMessage(
-            id=str(uuid4()),
+            id=message_id,
             issue_key=issue_key,
             kind="system",
             author_user_id=None,
             author_name="Tracker",
             text="Задача закрыта в Трекере; работа в системе завершена.",
-            external_id="tracker-external-close",
+            external_id=f"tracker-external-close:{message_id}",
             sync_state="synced",
             visibility="participants",
             created_at=now,
@@ -361,16 +401,30 @@ def workflow(
     elif display_status != "closed" and hidden is None and claim is not None:
         display_status = "in_progress"
     queued_at = str((issue or {}).get("queued_at") or "") or None
-    sync_error = db.scalar(
-        select(ReliableAction.error_code)
+    closure_at = last_confirmed_closure_at(db, issue_key)
+    sync_error_query = (
+        select(ReliableAction.action, ReliableAction.error_code)
         .where(
             ReliableAction.resource_type == "tracker_issue",
             ReliableAction.resource_id == issue_key,
             ReliableAction.state == "needs_attention",
         )
-        .order_by(ReliableAction.updated_at.desc())
+        .order_by(
+            case((ReliableAction.error_code == "prerequisite_failed", 1), else_=0),
+            ReliableAction.updated_at.desc(),
+        )
         .limit(1)
     )
+    if closure_at is not None:
+        sync_error_query = sync_error_query.where(ReliableAction.created_at > closure_at)
+    sync_failure = db.execute(sync_error_query).first()
+    sync_error = sync_failure.error_code if sync_failure is not None else None
+    if (
+        sync_failure is not None
+        and sync_failure.action == "assign_operator"
+        and sync_error == "tracker_error"
+    ):
+        sync_error = "tracker_operator_assignment_failed"
     # Only stable public reason codes, never upstream exception text or credentials.
     if sync_error not in {
         "task_already_closed",
@@ -382,6 +436,8 @@ def workflow(
         "invalid_payload",
         "prerequisite_failed",
         "duplicate_remote_action",
+        "tracker_operator_assignment_failed",
+        "tracker_error",
     }:
         sync_error = None
     return {
@@ -392,7 +448,7 @@ def workflow(
         ),
         "review_state": review.state if review is not None else None,
         "display_status": display_status,
-        "sync_state": _sync_state(db, issue_key),
+        "sync_state": _sync_state(db, issue_key, after=closure_at),
         "sync_error_code": sync_error,
         "queued_at": queued_at,
         "queued_at_source": "tracker_history" if queued_at else None,
@@ -524,20 +580,23 @@ def _claim_locked(
             raise HTTPException(409, "reliable_action_payload_conflict") from None
         operator = db.get(User, operator_id)
     if operator is None:
-        operator = schedules.resolve_active_operator(db, park_id=park.id)
-    if operator is None:
-        raise HTTPException(409, "task_claim_operator_unavailable")
-
-    assign = _action(
-        db,
-        actor=actor,
-        issue_key=issue_key,
-        action="assign_operator",
-        idempotency_key=idempotency_key,
-        payload={
-            "operator_user_id": operator.id,
-            "login": tracker_signatures.tracker_identity(operator),
-        },
+        operator = schedules.resolve_active_operator(
+            db, park_id=park.id, allow_off_shift_fallback=False
+        )
+    assign = (
+        _action(
+            db,
+            actor=actor,
+            issue_key=issue_key,
+            action="assign_operator",
+            idempotency_key=idempotency_key,
+            payload={
+                "operator_user_id": operator.id,
+                "login": tracker_signatures.tracker_identity(operator),
+            },
+        )
+        if operator is not None
+        else None
     )
     tag = _action(
         db,
@@ -545,7 +604,10 @@ def _claim_locked(
         issue_key=issue_key,
         action="ensure_tag",
         idempotency_key=idempotency_key,
-        payload={"tag": "diag_complete", "depends_on_action_ids": [assign.row.id]},
+        payload={
+            "tag": "diag_complete",
+            "depends_on_action_ids": [assign.row.id] if assign else [],
+        },
     )
     component = None
     if existing_assign is not None:
@@ -603,7 +665,7 @@ def _claim_locked(
                 replace=True,
                 state="pending",
                 start_action_id=begun.row.id,
-                operator_user_id=operator.id,
+                operator_user_id=operator.id if operator else None,
             )
         except PermissionError as exc:
             raise HTTPException(409, str(exc)) from exc
@@ -809,6 +871,33 @@ def _validate_photo(
     return name, detected
 
 
+def reviewer_for_review_replay(
+    db: Session,
+    *,
+    actor: User,
+    issue_key: str,
+    idempotency_key: str | None,
+) -> User | None:
+    """Reuse the persisted assignee when an accepted submission is retried."""
+    if not idempotency_key:
+        return None
+    existing = db.scalar(
+        select(ReliableAction.id).where(
+            ReliableAction.actor_user_id == actor.id,
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == issue_key,
+            ReliableAction.action == "review",
+            ReliableAction.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is None:
+        return None
+    claim = get_claim(db, issue_key)
+    if claim is None or claim.owner_user_id != actor.id or claim.operator_user_id is None:
+        return None
+    return db.get(User, claim.operator_user_id)
+
+
 def submit_review(
     db: Session,
     *,
@@ -831,19 +920,8 @@ def submit_review(
         raise HTTPException(409, "tracker_issue_claim_required")
     if claim_row.state != "active":
         raise HTTPException(409, "tracker_issue_claim_not_active")
-    if reviewer is None:
-        reviewer = schedules.resolve_active_operator(db, park_id=claim_row.park_id)
-    if reviewer is None:
-        raise HTTPException(409, "task_review_operator_unavailable")
-    reviewer_login = tracker_signatures.tracker_identity(reviewer)
-    code = validate_defect_code(defect_code)
-    name, mime_type = _validate_photo(filename, content, content_type)
-    clean_comment = (comment or "").strip()
-    digest = hashlib.sha256(content).hexdigest()
-    dependencies = (["comment"] if clean_comment else []) + ["attach", "set_field"]
-    prior_comment = None
-    if not clean_comment:
-        existing_review = db.scalar(
+    existing_review = (
+        db.scalar(
             select(ReliableAction.id).where(
                 ReliableAction.actor_user_id == actor.id,
                 ReliableAction.resource_type == "tracker_issue",
@@ -852,15 +930,55 @@ def submit_review(
                 ReliableAction.idempotency_key == idempotency_key,
             )
         )
-        if existing_review is None:
-            prior_comment = _current_comment_action(
-                db,
-                issue_key=issue_key,
-                owner_id=actor.id,
-                boundary=claim_row.updated_at,
+        if idempotency_key is not None
+        else None
+    )
+    current_review = _active_review(db, issue_key)
+    if (
+        current_review is not None
+        and current_review.state != "returned"
+        and existing_review is None
+    ):
+        raise HTTPException(409, "task_review_already_pending")
+    if claim_row.operator_user_id is None and idempotency_key is not None:
+        existing_assignment = db.scalar(
+            select(ReliableAction).where(
+                ReliableAction.actor_user_id == actor.id,
+                ReliableAction.resource_type == "tracker_issue",
+                ReliableAction.resource_id == issue_key,
+                ReliableAction.action == "assign_operator",
+                ReliableAction.idempotency_key == idempotency_key,
             )
-            if prior_comment is None:
-                raise HTTPException(400, "task_completion_comment_required")
+        )
+        if existing_assignment is not None:
+            try:
+                assigned_id = json.loads(existing_assignment.payload_json)["operator_user_id"]
+            except (KeyError, TypeError, ValueError):
+                raise HTTPException(409, "reliable_action_payload_conflict") from None
+            reviewer = db.get(User, assigned_id)
+            if reviewer is None:
+                raise HTTPException(409, "task_review_operator_unavailable")
+    if reviewer is None:
+        reviewer = schedules.resolve_active_operator(db, park_id=claim_row.park_id)
+    if reviewer is None:
+        raise HTTPException(409, "task_review_operator_unavailable")
+    reviewer_login = tracker_signatures.tracker_identity(reviewer)
+    reviewer_label = f"@{reviewer_login}" if reviewer.tracker_login else reviewer.username
+    code = validate_defect_code(defect_code)
+    name, mime_type = _validate_photo(filename, content, content_type)
+    clean_comment = (comment or "").strip()
+    digest = hashlib.sha256(content).hexdigest()
+    dependencies = (["comment"] if clean_comment else []) + ["attach", "set_field"]
+    prior_comment = None
+    if not clean_comment and existing_review is None:
+        prior_comment = _current_comment_action(
+            db,
+            issue_key=issue_key,
+            owner_id=actor.id,
+            boundary=claim_row.updated_at,
+        )
+        if prior_comment is None:
+            raise HTTPException(400, "task_completion_comment_required")
     payload = {
         "comment": clean_comment,
         "defect_code": code,
@@ -869,6 +987,20 @@ def submit_review(
     }
     if prior_comment is not None:
         payload["depends_on_action_ids"] = [prior_comment.id]
+    deferred_assignment = None
+    if claim_row.operator_user_id != reviewer.id:
+        deferred_assignment = _action(
+            db,
+            actor=actor,
+            issue_key=issue_key,
+            action="assign_operator",
+            idempotency_key=idempotency_key,
+            payload={
+                "operator_user_id": reviewer.id,
+                "login": reviewer_login,
+            },
+        )
+        payload.setdefault("depends_on_action_ids", []).append(deferred_assignment.row.id)
     primary = _transition_action(
         db,
         actor=actor,
@@ -892,6 +1024,8 @@ def submit_review(
         return result
     path: Path | None = None
     try:
+        if deferred_assignment is not None:
+            claim_row.operator_user_id = reviewer.id
         if clean_comment:
             clarification = _action(
                 db,
@@ -926,7 +1060,7 @@ def submit_review(
             db,
             issue_key=issue_key,
             actor=actor,
-            text=f"Передано на проверку\nКод дефекта: {code}\nОператор: @{reviewer_login}",
+            text=f"Передано на проверку\nКод дефекта: {code}\nОператор: {reviewer_label}",
             action=attach.row,
         )
         blob_name = uuid4().hex

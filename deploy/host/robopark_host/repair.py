@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import shutil
-import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from .checks import DiagnosticReport, Runner, execute
-from .paths import HostPaths
 
 DEFAULT_REPAIRS: dict[str, list[str]] = {
     "restart_docker": ["systemctl", "restart", "docker.service"],
@@ -81,29 +77,3 @@ def run_repairs(
         else:
             failed.append(action)
     return RepairReport(performed=performed, skipped=skipped, failed=failed)
-
-
-def cleanup_retained(
-    paths: HostPaths, *, now: float | None = None, retention_seconds: int = 7 * 86400
-) -> list[Path]:
-    """Delete expired entries only from the named staging and diagnostics directories."""
-
-    current_time = time.time() if now is None else now
-    deleted: list[Path] = []
-    for directory in (paths.ops / "staging", paths.var / "diagnostics"):
-        if not directory.is_dir():
-            continue
-        for item in directory.iterdir():
-            try:
-                if item.is_symlink() or current_time - item.stat().st_mtime < retention_seconds:
-                    continue
-                if item.is_file():
-                    item.unlink()
-                elif item.is_dir():
-                    shutil.rmtree(item)
-                else:
-                    continue
-                deleted.append(item)
-            except OSError:
-                continue
-    return deleted

@@ -29,7 +29,7 @@ from typing import Any, Generic, TypeVar
 
 from robopark_api.services.cache_metrics import CacheMetricsSnapshot, family
 from robopark_api.services.cache_policy import CachePolicy
-from robopark_api.services.live_merge import LiveMergeStore, get_live_merge_store
+from robopark_api.services.live_merge import LiveMergeStore, LiveMergeTimeout, get_live_merge_store
 
 T = TypeVar("T")
 
@@ -112,8 +112,14 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             return self._shared
         return get_live_merge_store()
 
-    def _l1_valid(self, key: str, hit: tuple[float, T, float | None, int], now: float) -> bool:
-        if now - hit[0] >= self._ttl:
+    def _l1_valid(
+        self,
+        key: str,
+        hit: tuple[float, T, float | None, int],
+        now: float,
+        ttl: float | None = None,
+    ) -> bool:
+        if now - hit[0] >= (self._ttl if ttl is None else ttl):
             return False
         merge = self._merge()
         if merge is None:
@@ -243,59 +249,77 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         self._metrics.increment("hits")
         return True, blob  # type: ignore[return-value]
 
-    def get_or_load(self, key: str, loader: Callable[[], T]) -> T:
+    def get_or_load(
+        self,
+        key: str,
+        loader: Callable[[], T],
+        *,
+        max_age_seconds: float | None = None,
+        allow_stale: bool = True,
+    ) -> T:
         from robopark_api.db import release_request_session
 
-        now = time.monotonic()
+        if max_age_seconds is not None and max_age_seconds <= 0:
+            raise ValueError("max_age_seconds must be positive")
+        ttl = min(self._ttl, max_age_seconds) if max_age_seconds is not None else self._ttl
         merge = self._merge()
-        stale: tuple[float, T, float | None, int] | None = None
-        with self._lock:
-            self._prune_expired_locked(now)
-            hit = self._store.get(key)
-            if hit is not None and self._l1_valid(key, hit, now):
-                self._store.move_to_end(key)
-                self._metrics.increment("hits")
-                return hit[1]
-            if hit is not None:
-                stale = hit
-                self._remove_locked(key)
+        for _attempt in range(2):
+            now = time.monotonic()
+            stale: tuple[float, T, float | None, int] | None = None
+            with self._lock:
+                self._prune_expired_locked(now)
+                hit = self._store.get(key)
+                if hit is not None and self._l1_valid(key, hit, now, ttl):
+                    self._store.move_to_end(key)
+                    self._metrics.increment("hits")
+                    return hit[1]
+                if hit is not None:
+                    stale = hit
+                    self._remove_locked(key)
 
-        if merge is not None:
-            found, blob = merge.try_fresh(self._name, key, self._ttl)
-            if found:
-                mtime = merge.result_mtime(self._name, key)
-                with self._lock:
-                    loaded_at = self._shared_loaded_at(mtime, time.monotonic())
-                    self._store_locked(key, (loaded_at, blob, mtime))
-                self._metrics.increment("hits")
-                return blob
+            if merge is not None:
+                found, blob = merge.try_fresh(self._name, key, ttl)
+                if found:
+                    mtime = merge.result_mtime(self._name, key)
+                    with self._lock:
+                        loaded_at = self._shared_loaded_at(mtime, time.monotonic())
+                        self._store_locked(key, (loaded_at, blob, mtime))
+                    self._metrics.increment("hits")
+                    return blob
 
-        self._metrics.increment("misses")
+            self._metrics.increment("misses")
+            with self._lock:
+                # A fast leader may have completed before flight registration.
+                raced_hit = self._store.get(key)
+                if raced_hit is not None and self._l1_valid(key, raced_hit, time.monotonic(), ttl):
+                    self._store.move_to_end(key)
+                    self._metrics.increment("hits")
+                    return raced_hit[1]
+                flight = self._flights.get(key)
+                is_leader = flight is None
+                if is_leader:
+                    flight = _Flight[T](
+                        generation=(self._generation, self._key_generations.get(key, 0))
+                    )
+                    self._flights[key] = flight
 
-        with self._lock:
-            # A fast leader may have completed between the first lookup and
-            # flight registration. Recheck under the same lock that owns the
-            # flight map so a late caller cannot start a duplicate load.
-            raced_hit = self._store.get(key)
-            if raced_hit is not None and self._l1_valid(key, raced_hit, time.monotonic()):
-                self._store.move_to_end(key)
-                self._metrics.increment("hits")
-                return raced_hit[1]
-            flight = self._flights.get(key)
-            is_leader = flight is None
+            release_request_session()
             if is_leader:
-                flight = _Flight[T](
-                    generation=(self._generation, self._key_generations.get(key, 0))
-                )
-                self._flights[key] = flight
-
-        release_request_session()
-        if not is_leader:
+                break
             flight.done.wait()
             if flight.error is not None:
                 raise flight.error
             assert flight.value is not _MISSING
-            return flight.value  # type: ignore[return-value]
+            if allow_stale:
+                return flight.value  # type: ignore[return-value]
+            with self._lock:
+                current = self._store.get(key)
+                if current is not None and self._l1_valid(key, current, time.monotonic(), ttl):
+                    return current[1]
+            # A permissive leader may have returned its last-good value.
+            # Retry once; repeated incompatible flights fail closed.
+        else:
+            raise LiveMergeTimeout(key)
 
         value: object = _MISSING
         error: BaseException | None = None
@@ -306,10 +330,10 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                 value = merge.merge_load(
                     self._name,
                     key,
-                    self._ttl,
+                    ttl,
                     loader,
                     shared_payload=self._shared_payload,
-                    max_stale_seconds=self._max_stale,
+                    max_stale_seconds=self._max_stale if allow_stale else 0,
                 )
             else:
                 value = loader()
@@ -317,6 +341,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             load_had_error = True
             if (
                 isinstance(exc, Exception)
+                and allow_stale
                 and stale is not None
                 and time.monotonic() - stale[0] < self._max_stale
             ):

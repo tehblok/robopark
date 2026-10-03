@@ -22,6 +22,7 @@ const commonTokens = [
   '--rp-space-4',
   '--rp-space-6',
   '--rp-space-8',
+  '--rp-control-min-size',
   '--rp-radius-control',
   '--rp-radius-panel',
   '--rp-motion-fast',
@@ -65,7 +66,6 @@ const themeTokens = [
 ]
 
 const densityTokens = [
-  '--rp-control-min-size',
   '--rp-row-min-size',
   '--rp-density-gap',
   '--rp-density-panel-padding',
@@ -137,12 +137,6 @@ for (const density of ['comfortable', 'compact']) {
   )
   requireTokens(tokens, densityTokens, density)
 }
-
-const narrowTokens = blockFor(
-  /@media\s*\(max-width:\s*899px\)\s*\{\s*:root\s*\{([\s\S]*?)\}\s*\}/,
-  'narrow density override',
-)
-requireTokens(narrowTokens, densityTokens, 'narrow')
 
 for (const theme of ['light', 'dark']) {
   const themed = blockFor(

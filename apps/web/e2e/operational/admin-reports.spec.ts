@@ -157,7 +157,7 @@ test('owner role displays immutable effective permissions despite empty stored d
     await expect(checkbox).toBeChecked()
     await expect(checkbox).toBeDisabled()
   }
-  await expect(page.getByRole('navigation', { name: 'Разделы управления' }).getByRole('link', { name: 'Роли и доступы' })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByRole('combobox', { name: 'Раздел управления' })).toHaveValue('/admin/roles?park=7')
   await evidence(page, info, 'roles-owner-light-390')
 })
 
@@ -228,7 +228,8 @@ for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark'] as c
     await detail.getByRole('button', { name: 'Сохранить', exact: true }).click()
     await expect.poll(() => payload).toMatchObject({ permissions: ['reports.create'] })
     await evidence(page, info, `roles-${theme}-${width}`)
-    await expect(page.getByRole('navigation', { name: 'Разделы управления' }).getByRole('link', { name: 'Роли и доступы' })).toHaveAttribute('aria-current', 'page')
+    if (width < 900) await expect(page.getByRole('combobox', { name: 'Раздел управления' })).toHaveValue('/admin/roles?park=7')
+    else await expect(page.getByRole('navigation', { name: 'Разделы управления' }).getByRole('link', { name: 'Роли и доступы' })).toHaveAttribute('aria-current', 'page')
     if (width < 900) await page.getByRole('button', { name: 'Назад к списку' }).click()
     await page.getByRole('button', { name: 'Новая роль', exact: true }).click()
     await expect(detail.getByLabel('Slug (латиница)')).toHaveValue('')

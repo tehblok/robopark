@@ -53,6 +53,9 @@ def test_metadata_has_required_tables():
         "user_permissions",
         "analytics_snapshots",
         "analytics_observations",
+        "tracker_issue_history_state",
+        "tracker_issue_status_events",
+        "tracker_history_backfill_cursors",
         "diagnostic_rules",
         "diagnostic_unknowns",
         "diagnostic_unknown_sightings",
@@ -103,6 +106,9 @@ def test_metadata_has_required_tables():
         "system_metric_aggregates",
         "ip_geo_cache",
         "ip_geo_quota",
+        "terminal_sessions",
+        "terminal_attach_tickets",
+        "terminal_session_events",
     }
 
 
@@ -133,10 +139,111 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_includes_host_operation_status():
+def test_alembic_head_includes_host_terminal():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0050_media_action_dependency"]
+    assert script.get_heads() == ["0056_host_terminal"]
+
+
+def test_host_terminal_migration_builds_bounded_session_schema(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    command.upgrade(Config(Path(__file__).parents[1] / "alembic.ini"), "head")
+    inspector = inspect(create_engine(sqlite_database_url, future=True))
+
+    assert {
+        "terminal_sessions",
+        "terminal_attach_tickets",
+        "terminal_session_events",
+    } <= set(inspector.get_table_names())
+
+    reauthorization_columns = {
+        column["name"]: column for column in inspector.get_columns("privileged_reauthorizations")
+    }
+    assert reauthorization_columns["totp_only"]["nullable"] is False
+    assert str(reauthorization_columns["totp_only"]["default"]).lower() in {"0", "false"}
+
+    session_columns = {column["name"] for column in inspector.get_columns("terminal_sessions")}
+    assert {
+        "owner_id",
+        "auth_session_hash",
+        "profile",
+        "state",
+        "credential_generation",
+        "broker_epoch",
+        "descriptor",
+        "expires_at",
+        "ended_at",
+        "termination_reason",
+        "attachment_id",
+        "attachment_expires_at",
+        "input_bytes",
+        "output_bytes",
+    } <= session_columns
+    assert {
+        index["name"]: index["column_names"] for index in inspector.get_indexes("terminal_sessions")
+    } == {
+        "ix_terminal_sessions_auth_session_hash": ["auth_session_hash"],
+        "ix_terminal_sessions_expires_at": ["expires_at"],
+        "ix_terminal_sessions_owner_id": ["owner_id"],
+    }
+
+    assert {
+        index["name"]: index["column_names"]
+        for index in inspector.get_indexes("terminal_attach_tickets")
+    } == {
+        "ix_terminal_attach_tickets_expires_at": ["expires_at"],
+        "ix_terminal_attach_tickets_session_id": ["session_id"],
+    }
+    assert {
+        index["name"]: index["column_names"]
+        for index in inspector.get_indexes("terminal_session_events")
+    } == {
+        "ix_terminal_session_events_created_at": ["created_at"],
+        "ix_terminal_session_events_session_id": ["session_id"],
+    }
+
+    for table in ("terminal_attach_tickets", "terminal_session_events"):
+        foreign_keys = inspector.get_foreign_keys(table)
+        assert len(foreign_keys) == 1
+        assert foreign_keys[0]["constrained_columns"] == ["session_id"]
+        assert foreign_keys[0]["referred_table"] == "terminal_sessions"
+        assert foreign_keys[0]["referred_columns"] == ["id"]
+        assert foreign_keys[0]["options"].get("ondelete") == "CASCADE"
+
+
+def test_park_coordinates_migration_enforces_pair_and_bounds(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    command.upgrade(Config(Path(__file__).parents[1] / "alembic.ini"), "head")
+    engine = create_engine(sqlite_database_url, future=True)
+    inspector = inspect(engine)
+    assert {"latitude", "longitude"} <= {
+        column["name"] for column in inspector.get_columns("parks")
+    }
+    assert "ck_parks_coordinates" in {
+        constraint["name"] for constraint in inspector.get_check_constraints("parks")
+    }
+    assert "park_id" in {
+        column["name"] for column in inspector.get_columns("media_upload_sessions")
+    }
+    assert any(
+        foreign_key["referred_table"] == "parks"
+        and foreign_key["constrained_columns"] == ["park_id"]
+        for foreign_key in inspector.get_foreign_keys("media_upload_sessions")
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO parks (name, tag, is_active, latitude, longitude) VALUES ('North', 'north', 1, 55.75, 37.62)"
+            )
+        )
+    for latitude, longitude in ((55, None), (91, 37), (55, 181)):
+        with pytest.raises(DBAPIError), engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO parks (name, tag, is_active, latitude, longitude) VALUES ('Bad', 'bad', 1, :latitude, :longitude)"
+                ),
+                {"latitude": latitude, "longitude": longitude},
+            )
 
 
 def test_privileged_audit_is_immutable_after_sqlite_migration(sqlite_database_url, monkeypatch):
@@ -307,7 +414,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
     with engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0050_media_action_dependency"
+            == "0056_host_terminal"
         )
 
 

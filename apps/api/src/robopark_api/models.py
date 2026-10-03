@@ -196,6 +196,7 @@ class PrivilegedReauthorization(Base):
     operation_id: Mapped[str] = mapped_column(String(128))
     capability_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)
     credential_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    totp_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -310,10 +311,23 @@ class IpGeoQuota(Base):
 
 class Park(Base):
     __tablename__ = "parks"
+    __table_args__ = (
+        CheckConstraint(
+            "(latitude IS NULL AND longitude IS NULL) OR "
+            "(latitude IS NOT NULL AND longitude IS NOT NULL AND "
+            "latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180)",
+            name="ck_parks_coordinates",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128))
     tag: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    timezone: Mapped[str] = mapped_column(
+        String(64), default="Europe/Moscow", server_default="Europe/Moscow"
+    )
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     tracker_queue: Mapped[str | None] = mapped_column(String(128), nullable=True)
     tracker_priority: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -794,6 +808,77 @@ class AnalyticsObservation(Base):
     age_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
+class TrackerIssueHistoryState(Base):
+    """Durable Tracker status projection; the first queue anchor never resets."""
+
+    __tablename__ = "tracker_issue_history_state"
+
+    issue_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    observed_park_id: Mapped[int | None] = mapped_column(
+        ForeignKey("parks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    anchor_park_id: Mapped[int | None] = mapped_column(
+        ForeignKey("parks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    anchor_timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    first_queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    latest_status_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    latest_status_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    history_state: Mapped[str] = mapped_column(String(16), default="unknown", index=True)
+    history_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class TrackerHistoryBackfillCursor(Base):
+    """One bounded closed-issue search page per park and collection cycle."""
+
+    __tablename__ = "tracker_history_backfill_cursors"
+
+    park_id: Mapped[int] = mapped_column(
+        ForeignKey("parks.id", ondelete="CASCADE"), primary_key=True
+    )
+    scan_since: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    scan_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    next_page: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    search_failed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    page_cap_reached: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class TrackerIssueStatusEvent(Base):
+    """Only status changes and proven park attribution are retained."""
+
+    __tablename__ = "tracker_issue_status_events"
+    __table_args__ = (
+        UniqueConstraint("issue_key", "event_key", name="uq_tracker_status_issue_event"),
+        Index("ix_tracker_status_issue_occurred", "issue_key", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
+    issue_key: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("tracker_issue_history_state.issue_key", ondelete="CASCADE"),
+        index=True,
+    )
+    event_key: Mapped[str] = mapped_column(String(160))
+    park_id: Mapped[int | None] = mapped_column(
+        ForeignKey("parks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    from_status_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    to_status_key: Mapped[str] = mapped_column(String(128))
+    to_status_display: Mapped[str] = mapped_column(String(128), default="")
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class DiagnosticRule(Base):
     __tablename__ = "diagnostic_rules"
     __table_args__ = (
@@ -1107,3 +1192,7 @@ class DiagnosticUnknownSighting(Base):
     )
     robot: Mapped[str] = mapped_column(String(128), primary_key=True)
     sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+# Register terminal tables with the shared metadata for migrations and fixtures.
+from robopark_api import terminal_models as _terminal_models  # noqa: E402,F401

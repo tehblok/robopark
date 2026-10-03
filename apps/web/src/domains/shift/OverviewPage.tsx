@@ -1,7 +1,6 @@
-import { SyncStatus } from '../../design-system/status/SyncStatus'
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { api, type OperationsOverview, type Park, type User } from '../../api'
+import { Link, useSearchParams } from 'react-router-dom'
+import { api, ApiError, type OperationsOverview, type Park, type User } from '../../api'
 import { useParkScope } from '../../app/park/parkScope'
 import { useAuth } from '../../auth-context'
 import { Button } from '../../design-system/actions/Button'
@@ -15,11 +14,13 @@ import {
   OverviewAlerts,
   OverviewAttentionQueue,
   OverviewFlow,
+  OverviewHeadline,
   OverviewOperatorAccounts,
   OverviewStatusMonitoring,
   OverviewWorkload,
 } from './OverviewSections'
 import { buildOverviewModel } from './overviewModel'
+import { useMinuteClock } from '../../lib/useMinuteClock'
 import { CampaignOverviewSection } from '../campaigns/CampaignsPage'
 import { limitOperationsRequest } from './operationsRequestLimit'
 import './overview.css'
@@ -36,12 +37,16 @@ function OverviewWarning({ failure, busy, onRetry }: { failure: DomainError; bus
 }
 
 function OverviewContent({ data, role, selectable, statusHref, allHref }: { data: OperationsOverview; role: string; selectable: boolean; statusHref: (status: string) => string; allHref: string | null }) {
-  const model = buildOverviewModel(data, role)
+  const now = useMinuteClock()
+  const model = buildOverviewModel(data, role, now)
 
   return <div className="rp-overview">
+    <OverviewHeadline headline={model.headline} />
+    <div className="rp-overview-primary" data-testid="overview-primary">
+      <OverviewAttentionQueue attentionQueue={model.attentionQueue} attentionTruncated={model.attentionTruncated} fullQueueHref={model.fullQueueHref} timezone={model.timezone} />
+      <OverviewAlerts alerts={model.alerts} />
+    </div>
     <OverviewStatusMonitoring allHref={allHref} selectable={selectable} statusCards={model.statusCards} statusHref={statusHref} />
-    <OverviewAttentionQueue attentionQueue={model.attentionQueue} attentionTruncated={model.attentionTruncated} />
-    <OverviewAlerts alerts={model.alerts} />
     <ResponsiveDisclosureGroup label="Вторичные показатели смены">
       <ResponsiveDisclosure id="overview-secondary" summary="Поток, нагрузка и учётные записи" title="Дополнительные показатели">
         <div className="rp-overview-secondary">
@@ -64,19 +69,30 @@ function OverviewResource({ resourceKey, load, parkId, role, selectable, statusH
   allHref: string | null
   onAuthorizationFailure: (error: unknown) => void
 }) {
-  const resource = useCachedResource(resourceKey, load, { persist: false })
+  const { user } = useAuth()
+  const resource = useCachedResource(resourceKey, load, { persist: false, refreshOnMount: true, refreshIntervalMs: 0, refreshOnResume: true })
   useLayoutEffect(() => () => resourceStore.cancelPending(resourceKey), [resourceKey])
   useEffect(() => { if (resource.error) onAuthorizationFailure(resource.error) }, [onAuthorizationFailure, resource.error])
   const data = resource.data?.park_id === parkId ? resource.data : undefined
   const failure = resource.error ? classifyApiError(resource.error, 'Не удалось загрузить обзор смены.') : null
+  const canConfigureTracker = resource.error instanceof ApiError
+    && resource.error.detail === 'tracker_token_not_configured'
+    && user?.permissions?.includes('nav.admin') === true
+  const canConfigurePark = resource.error instanceof ApiError
+    && resource.error.detail === 'blockers_disabled_for_park'
+    && user?.permissions?.includes('parks.manage') === true
 
   if (failure?.kind === 'unauthorized' || failure?.kind === 'forbidden') return null
-  if (failure && !(data && retainable.has(failure.kind))) return <ErrorState description={failure.description} onRetry={failure.retryable ? () => void resource.refresh() : undefined} requestId={failure.requestId} title={failure.title} />
+  if (failure && !(data && retainable.has(failure.kind))) return <ErrorState
+    action={canConfigureTracker ? <Link className="btn" to={`/admin/settings?park=${parkId}&tab=integrations#tracker-token`}>Настроить Tracker</Link>
+      : canConfigurePark ? <Link className="btn" to={`/admin/settings?park=${parkId}&tab=parks`}>Настроить парк</Link> : undefined}
+    description={canConfigureTracker ? 'Укажите токен Tracker в настройках интеграций, затем вернитесь к обзору.' : failure.description}
+    onRetry={failure.retryable ? () => void resource.refresh() : undefined}
+    requestId={failure.requestId} title={failure.title} />
   if (!data) return <LoadingState label="Загружаем обзор смены" variant="page" />
 
   return <>
     {failure ? <OverviewWarning busy={resource.isRevalidating} failure={failure} onRetry={() => void resource.refresh()} /> : null}
-    <SyncStatus {...resource} />
     <OverviewContent allHref={allHref} data={data} role={role} selectable={selectable} statusHref={statusHref} />
   </>
 }
@@ -115,7 +131,7 @@ function OverviewPark({ apiClient, user, park, query, selectable, params, author
 
 function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClient; user: User }) {
   const { refreshUser } = useAuth()
-  const { loading, selectedPark, parks } = useParkScope()
+  const { loading, loadError, refreshParks, selectedPark, parks } = useParkScope()
   const allParks = !selectedPark && canSelectOverviewStatus(user.role)
   const accessible = (park: Park) => park.is_active !== false && (user.role === 'admin' || user.role === 'royal' || user.parks.some(assigned => assigned.id === park.id && assigned.is_active !== false))
   const accessibleParks = parks.filter(accessible)
@@ -150,21 +166,26 @@ function OverviewSessionPage({ apiClient, user }: { apiClient: OperationsApiClie
   }, [cachePrefix, identity, refreshUser, requestOwner])
   const authorizationBlocked = useCallback(() => owner.current !== requestOwner || blocked.current.unauthorized || blocked.current.forbidden === identity, [identity, requestOwner])
   const contextFailure = authorizationFailure?.failure.kind === 'unauthorized' || authorizationFailure?.identity === identity ? authorizationFailure.failure : null
+  const retryParks = () => { void refreshParks().catch(() => undefined) }
+  const firstParkSetup = user.role === 'royal' && user.permissions?.includes('parks.manage') === true && parks.length === 0
 
   useLayoutEffect(() => {
     if (normalized.toString() !== params.toString()) setParams(normalized, { replace: true })
   }, [normalized, params, setParams])
 
 
-  return <PageLayout description={allParks ? "Что происходит сейчас во всех доступных парках. Задачи, SLA и история показаны отдельно по каждому парку." : "Что происходит сейчас и где требуется вмешательство в выбранном парке."} title="Смена / Обзор">
+  return <PageLayout description={allParks ? "Приоритеты всех доступных парков. Задачи и SLA показаны отдельно по каждому парку." : "Задачи, срок SLA и простой в выбранном парке."} eyebrow="Обзор смены" title="Что требует решения сейчас">
     {contextFailure ? <ErrorState description={contextFailure.description} requestId={contextFailure.requestId} title={contextFailure.title} />
-      : loading ? <LoadingState label="Загружаем область парка" variant="page" />
+        : loading ? <LoadingState label="Загружаем область парка" variant="page" />
+        : loadError && overviewParks.length === 0 ? <ErrorState description={loadError} onRetry={retryParks} title="Не удалось загрузить парки" />
         : !canReadOperations(user, 'overview') ? <ErrorState description="Для этого раздела нужны доступ к Tracker и разрешение на обзор смены." title="Нет доступа" />
-          : overviewParks.length === 0 ? <EmptyState description="Нет доступных парков для обзора смены." icon="parks" title="Парк не выбран" />
-            : overviewParks.map(park => {
+          : overviewParks.length === 0 ? firstParkSetup
+            ? <EmptyState action={<Link className="btn" to="/admin/settings?tab=parks">Создать первый парк</Link>} description="Создайте парк, чтобы открыть очередь задач, работу с роботами и показатели смены." icon="parks" title="Парков пока нет" />
+            : <EmptyState description="Нет доступных парков для обзора смены." icon="parks" title="Парк не выбран" />
+            : <>{loadError ? <div className="rp-overview-warning" role="alert"><div><strong>Не удалось обновить список парков</strong><p>{loadError}</p></div><Button leadingIcon="refresh" onClick={retryParks} variant="secondary">Повторить</Button></div> : null}{overviewParks.map(park => {
               const content = <><OverviewPark apiClient={apiClient} authorizationBlocked={authorizationBlocked} identity={identity} onAuthorizationFailure={observeAuthorizationFailure} params={params} park={park} query={query} selectable={selectable} user={user} /><CampaignOverviewSection parkId={park.id} /></>
               return allParks ? <section key={park.id} aria-label={park.name}><h2>{park.name}</h2>{content}</section> : <Fragment key={park.id}>{content}</Fragment>
-            })}
+            })}</>}
   </PageLayout>
 }
 

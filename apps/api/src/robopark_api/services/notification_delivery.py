@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
 from robopark_api.crypto import decrypt_secret
+from robopark_api.models import AccessStatus, User
 from robopark_api.notification_delivery_models import NotificationDelivery
 from robopark_api.schedule_models import NotificationEvent, PushSubscription
 
@@ -25,6 +26,10 @@ RETRY_SECONDS = 60
 
 class LeaseLost(RuntimeError):
     """A delivery may no longer call its external provider."""
+
+
+class DeliveryTargetUnavailable(RuntimeError):
+    """The recipient or device is no longer eligible for this delivery."""
 
 
 def _utc(value: datetime) -> datetime:
@@ -55,6 +60,21 @@ def _send_web_push(
     event: NotificationEvent,
     send: Callable[..., object],
 ) -> str:
+    from robopark_api.routers.push import _vapid_key_pair, _visible_inbox_scope
+
+    recipient = db.get(User, event.user_id)
+    if (
+        recipient is None
+        or not recipient.is_active
+        or recipient.access_status != AccessStatus.approved.value
+        or db.scalar(
+            select(NotificationEvent.id).where(
+                NotificationEvent.id == event.id, _visible_inbox_scope(recipient)
+            )
+        )
+        is None
+    ):
+        return "cancelled"
     subscription = db.scalar(
         select(PushSubscription).where(
             PushSubscription.endpoint_hash == row.endpoint_hash,
@@ -66,8 +86,6 @@ def _send_web_push(
     settings = get_settings()
     if not settings.secret_key:
         raise RuntimeError("push_secret_key_missing")
-    from robopark_api.routers.push import _vapid_key_pair
-
     private_key, _ = _vapid_key_pair(settings.secret_key)
     send(
         subscription_info={
@@ -152,16 +170,44 @@ def process_due(
         gone = False
 
         def send_if_owned(*, row_id=row_id, **payload):
+            from robopark_api.routers.push import _visible_inbox_scope
+
             with session_factory() as lease_db:
-                owns_lease = lease_db.scalar(
-                    select(NotificationDelivery.id).where(
+                owned_row = lease_db.scalar(
+                    select(NotificationDelivery).where(
                         NotificationDelivery.id == row_id,
                         NotificationDelivery.lease_owner == owner_id,
                         NotificationDelivery.lease_until > _utc(read_clock()),
                     )
                 )
-            if owns_lease is None:
-                raise LeaseLost
+                if owned_row is None:
+                    raise LeaseLost
+                owned_event = lease_db.get(NotificationEvent, owned_row.event_id)
+                recipient = lease_db.get(User, owned_event.user_id) if owned_event else None
+                if (
+                    recipient is None
+                    or not recipient.is_active
+                    or recipient.access_status != AccessStatus.approved.value
+                    or lease_db.scalar(
+                        select(NotificationEvent.id).where(
+                            NotificationEvent.id == owned_event.id,
+                            _visible_inbox_scope(recipient),
+                        )
+                    )
+                    is None
+                    or lease_db.scalar(
+                        select(PushSubscription.id).where(
+                            PushSubscription.endpoint_hash == owned_row.endpoint_hash,
+                            PushSubscription.user_id == recipient.id,
+                            or_(
+                                PushSubscription.expires_at.is_(None),
+                                PushSubscription.expires_at > _utc(read_clock()),
+                            ),
+                        )
+                    )
+                    is None
+                ):
+                    raise DeliveryTargetUnavailable
             return (send_web_push or webpush)(**payload)
 
         try:
@@ -186,6 +232,8 @@ def process_due(
                     outcome = adapter(db, row, event, send_if_owned)
         except LeaseLost:
             continue
+        except DeliveryTargetUnavailable:
+            outcome = "cancelled"
         except WebPushException as exc:
             response = getattr(exc, "response", None)
             if response is not None and response.status_code in {404, 410}:

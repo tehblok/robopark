@@ -44,6 +44,34 @@ def test_cleanup_bounds_real_upload_diagnostic_and_inspection_paths(host_paths):
     assert artifact_usage(host_paths)["bytes"] < before
 
 
+def test_scheduled_retention_reclaims_only_expired_ota_copy_residue(host_paths):
+    from robopark_host.retention import retain_artifacts
+
+    abandoned = old(
+        host_paths.state / "ota-packages" / f".{'a' * 64}.{uuid4()}.tmp",
+        b"abandoned ota copy",
+    )
+    result = retain_artifacts(host_paths)
+
+    assert result["ota_temporary_deleted"] == 1
+    assert not abandoned.exists()
+
+
+def test_scheduled_retention_recovers_after_many_abandoned_ota_copies(host_paths):
+    from robopark_host.retention import retain_artifacts
+
+    cache = host_paths.state / "ota-packages"
+    (host_paths.state / "ota-update-receipts").mkdir(parents=True)
+    for _ in range(513):
+        old(cache / f".{'a' * 64}.{uuid4()}.tmp", b"abandoned")
+
+    result = retain_artifacts(host_paths)
+
+    assert not result["blocked"]
+    assert result["ota_temporary_deleted"] == 513
+    assert not list(cache.iterdir())
+
+
 def test_active_approved_recent_and_symlink_targets_are_never_deleted(host_paths, tmp_path):
     from robopark_host.retention import retain_artifacts
 
@@ -333,6 +361,30 @@ def test_scheduled_cleanup_reclaims_only_stale_owned_staging_work(host_paths, tm
     assert all(not path.exists() for path in stale)
     assert active.exists() and recent.exists() and foreign.exists()
     assert outside.read_bytes() == b"safe"
+
+
+def test_scheduled_cleanup_preserves_interrupted_ota_staging_work(host_paths):
+    from robopark_host.retention import retain_artifacts
+
+    operation_id = str(uuid4())
+    work = host_paths.ops / "staging" / operation_id
+    old(work / "test.env", seconds=2 * 86400)
+    os.utime(work, (time.time() - 2 * 86400,) * 2)
+    atomic_write_json(
+        host_paths.state / "ota-update-journal.json",
+        {
+            "schema": 1,
+            "request": {"operation_id": operation_id, "upload_id": str(uuid4()),
+                        "sha256": "a" * 64, "version": "2.0.0"},
+            "phase": "staged", "started_at": "2026-09-27T09:00:00+00:00",
+            "updated_at": "2026-09-27T09:00:00+00:00", "error": None,
+        },
+    )
+
+    result = retain_artifacts(host_paths)
+
+    assert result["staging_deleted"] == 0
+    assert work.is_dir()
 
 
 def test_cleanup_reclaims_only_expired_exact_operation_residue(host_paths, tmp_path):

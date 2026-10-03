@@ -24,3 +24,9 @@ it('rejects a collapsible panel without a stable storage key in development', ()
     'A collapsible Panel requires a nonempty title and storageKey.',
   )
 })
+
+it('exposes dense legacy panels without changing their accessible structure', () => {
+  render(<Panel density="dense" title="Ресурсы"><p>CPU</p></Panel>)
+
+  expect(screen.getByRole('region', { name: 'Ресурсы' })).toHaveAttribute('data-density', 'dense')
+})

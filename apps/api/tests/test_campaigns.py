@@ -138,6 +138,23 @@ def test_campaign_reads_saved_snapshot_without_tracker(
     assert [item["key"] for item in detail.json()["open_tickets"]] == ["ROBOPARK-42"]
 
 
+def test_campaign_list_selects_distinct_order_columns_for_postgres(monkeypatch):
+    monkeypatch.setattr(campaigns_svc, "_accessible_park_ids", lambda _db, _user: {1})
+    captured = []
+
+    class EmptyDb:
+        def scalars(self, statement):
+            captured.append(statement)
+            return self
+
+        def all(self):
+            return []
+
+    assert campaigns_svc.list_campaigns(EmptyDb(), object(), 1) == []
+    selected = {column.key for column in captured[0].selected_columns}
+    assert {"id", "is_active", "due_on"} <= selected
+
+
 def test_new_campaign_refresh_matches_normalized_title_and_park(
     client, db_session, seed_park_with_tracker, monkeypatch
 ):
@@ -556,6 +573,43 @@ def test_non_admin_cannot_create_or_complete_foreign_campaign(
     )
     assert client.get(f"/campaigns/{campaign_id}").status_code == 403
     assert db_session.scalar(select(Campaign).where(Campaign.id == campaign_id)) is not None
+
+
+def test_closed_tracker_snapshot_cannot_start_a_new_campaign_review(
+    client, db_session, seed_park_with_tracker
+):
+    royal = _user(db_session, "royal", name="campaign-closed-owner")
+    mechanic = _user(
+        db_session, "mechanic", name="campaign-closed-mechanic", park=seed_park_with_tracker
+    )
+    login_as(client, royal.username, "secret")
+    campaign_id = client.post(
+        "/campaigns", json=_campaign_payload(seed_park_with_tracker.id)
+    ).json()["id"]
+    db_session.add(
+        CampaignSnapshotTicket(
+            campaign_id=campaign_id,
+            issue_key="ROBOPARK-42",
+            park_id=seed_park_with_tracker.id,
+            summary="A042 замена корпуса",
+            status="Закрыт",
+            status_key="closed",
+            robot="42",
+            rule_revision=1,
+        )
+    )
+    db_session.commit()
+
+    login_as(client, mechanic.username, "secret")
+    response = client.post(
+        f"/campaigns/{campaign_id}/tickets/ROBOPARK-42/complete",
+        data={"comment": "Готово", "park_id": str(seed_park_with_tracker.id)},
+        files={"photo": ("done.png", b"\x89PNG\r\n\x1a\n" + b"0" * 32, "image/png")},
+    )
+
+    assert response.status_code == 409
+    assert db_session.scalar(select(CampaignSubmission)) is None
+    assert db_session.scalar(select(Report).where(Report.kind == "campaign_review")) is None
 
 
 def test_completion_queues_tracker_transition_without_waiting_for_tracker(

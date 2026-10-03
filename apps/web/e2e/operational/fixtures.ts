@@ -9,7 +9,7 @@ import type {
 import { installMockApi, type MockRoute } from '../support/mockApi'
 
 export const FIXED_TIME = '2026-09-02T09:00:00Z'
-export const parkNorth: Park = { id: 7, name: 'Северный парк', tag: 'north', is_active: true, tracker_queue: 'ROBOPARK', tracker_priority: 'normal', tracker_type: 'task', group_id: null, chat_id: null, feature_reports: true, feature_blockers: true, feature_sla_repair: false, feature_backlog_alerts: false }
+export const parkNorth: Park = { id: 7, name: 'Северный парк', tag: 'north', timezone: 'Europe/Moscow', is_active: true, tracker_queue: 'ROBOPARK', tracker_priority: 'normal', tracker_type: 'task', group_id: null, chat_id: null, feature_reports: true, feature_blockers: true, feature_sla_repair: false, feature_backlog_alerts: false }
 export const parkSouth: Park = { ...parkNorth, id: 8, name: 'Южный парк', tag: 'south' }
 export const roles = ['mechanic', 'operator', 'driver', 'admin', 'royal'] as const
 export type OperationalRole = typeof roles[number]
@@ -24,9 +24,9 @@ const allPermissions = [
 ]
 
 const rolePermissions: Record<OperationalRole, string[]> = {
-  driver: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'tracker.read', 'reports.create'],
-  mechanic: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'inventory.stock.manage', 'inventory.documents.post', 'inventory.export'],
-  operator: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.analytics', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'reports.resolve'],
+  driver: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.map', 'nav.reports', 'tracker.read', 'reports.create'],
+  mechanic: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.map', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'inventory.stock.manage', 'inventory.documents.post', 'inventory.export'],
+  operator: ['nav.dashboard', 'nav.tasks', 'nav.robot_search', 'nav.emergency', 'nav.map', 'nav.analytics', 'nav.reports', 'nav.inventory', 'tracker.read', 'tracker.write', 'tracker.attach', 'reports.create', 'reports.resolve'],
   admin: allPermissions.filter((permission) => permission !== 'users.approve'),
   royal: allPermissions,
 }
@@ -90,7 +90,7 @@ function operationsOverview(user: User, request: Request): OperationsOverview {
       { bucket_start: '2026-09-02T05:00:00Z', arrived_count: 1, departed_count: 0 },
       { bucket_start: '2026-09-02T07:00:00Z', arrived_count: 0, departed_count: 1 },
     ] },
-    sla: { target_hours: null, evaluated_count: 0, unknown_count: 1, at_risk_count: null, overdue_count: null, overdue: [], overdue_truncated: false },
+    sla: { target_hours: 5, evaluated_count: 0, unknown_count: 1, at_risk_count: null, overdue_count: null, overdue: [], overdue_truncated: false },
     workload: leadership ? [{ login: user.tracker_login ?? null, display: user.username, open_count: 1, overdue_count: null, oldest_hours: 0 }] : null,
     operators: user.role === 'admin' || user.role === 'royal' ? [{ user_id: user.id, username: user.username, tracker_login: user.tracker_login ?? null, open_count: 1, overdue_count: null, oldest_hours: 0 }] : null,
   }
@@ -151,6 +151,7 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
   }]
   const blocker = (): Blocker => ({ key: currentIssue.key, summary: currentIssue.summary, status: currentIssue.status, status_key: currentIssue.status_key, robot: currentIssue.robot ?? null, created_at: FIXED_TIME, hours_created: '0', url: currentIssue.url, bucket: 'open', priority: 'normal', assignee: currentIssue.assignee })
   const routes: MockRoute[] = [
+    { method: 'GET', path: '/api/changes', handler: () => ({ json: { revision: 0 } }) },
     { method: 'GET', path: '/api/robots', handler: request => {
       const params = new URL(request.url).searchParams
       const query = (params.get('query') ?? '').toUpperCase()
@@ -159,6 +160,7 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
       return { json: { items, total: items.length, offset: 0, limit: 50, has_more: false, partial: true, source_complete: true, source: 'scoped_tracker_issues', park_id: Number(params.get('park_id') ?? 7) } }
     } },
     { method: 'GET', path: '/api/operations/overview', handler: request => ({ json: operationsOverview(user, request) }) },
+    { method: 'GET', path: '/api/campaigns', handler: () => ({ json: [] }) },
     { method: 'GET', path: '/api/dashboard/summary', handler: request => ({ json: summaryForPark(Number(new URL(request.url).searchParams.get('park_id'))) }) },
     { method: 'GET', path: '/api/tracker/issues', handler: request => {
       const params = new URL(request.url).searchParams
@@ -174,6 +176,8 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
       created_at: comment.created_at, sync_state: 'synced', attachments: comment.attachments ?? [],
     })) }) },
     { method: 'GET', path: /^\/api\/tracker\/issues\/ROBOPARK-42\/comments$/, handler: () => ({ json: comments }) },
+    { method: 'GET', path: '/api/tracker/defect-codes', handler: () => ({ json: [] }) },
+    { method: 'GET', path: /^\/api\/tracker\/issues\/ROBOPARK-42\/handoff$/, handler: () => ({ json: { revision: 0, done: '', remaining: '', obstacles: '', author: null, updated_at: null } }) },
     { method: 'GET', path: /^\/api\/tracker\/transitions\/ROBOPARK-42$/, handler: () => ({ json: [{ id: 'resolve', display: 'Решить' }] satisfies TrackerTransition[] }) },
     { method: 'GET', path: '/api/tracker/users', handler: () => ({ json: [] }) },
     { method: 'GET', path: '/api/mechanic/tasks', handler: () => ({ json: { park_tag: 'north', status: 'all', counts: { open: 1 }, items: [blocker()] } satisfies MechanicTasks }) },
@@ -356,8 +360,8 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
   return routes
 }
 
-export async function installOperational(page: Page, options: OperationalOptions & { role?: OperationalRole; user?: User; parks?: Park[]; routes?: MockRoute[] } = {}) {
-  await page.clock.setFixedTime(new Date('2026-09-02T09:05:00Z'))
+export async function installOperational(page: Page, options: OperationalOptions & { role?: OperationalRole; user?: User; parks?: Park[]; routes?: MockRoute[]; realTime?: boolean } = {}) {
+  if (!options.realTime) await page.clock.setFixedTime(new Date('2026-09-02T09:05:00Z'))
   await page.route(/^https?:\/\/(?!localhost(?=[:/])|127\.0\.0\.1(?=[:/]))/, route => route.abort())
   const user = options.user ?? userForRole(options.role ?? 'mechanic')
   const routes = operationalRoutes({ issue: options.issue, snapshot: options.snapshot, listCount: options.listCount, user })

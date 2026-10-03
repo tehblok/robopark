@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, type NotificationEvent } from '../api'
 import { Button } from '../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../design-system/feedback/AsyncState'
@@ -28,9 +28,28 @@ const eventLabel: Record<string, string> = {
 export function NotificationCenter({ apiClient = api }: { apiClient?: NotificationApiClient }) {
   const [items, setItems] = useState<NotificationEvent[] | null>(null)
   const [error, setError] = useState(false)
+  const [reload, setReload] = useState(0)
+  const [readError, setReadError] = useState<string | null>(null)
+  const [readingId, setReadingId] = useState<string | null>(null)
+  const reading = useRef<string | null>(null)
   const [systemStatus, setSystemStatus] = useState<'idle' | 'busy' | 'enabled' | 'denied' | 'unsupported' | 'error'>('idle')
-  useEffect(() => { let active = true; void apiClient.notificationInbox().then(value => { if (active) setItems(value) }).catch(() => { if (active) setError(true) }); return () => { active = false } }, [apiClient])
-  const markRead = async (id: string) => { await apiClient.notificationRead(id); setItems(current => current?.map(item => item.id === id ? { ...item, read_at: new Date().toISOString() } : item) ?? null) }
+  useEffect(() => { let active = true; setError(false); void apiClient.notificationInbox().then(value => { if (active) { setItems(value); setError(false) } }).catch(() => { if (active) setError(true) }); return () => { active = false } }, [apiClient, reload])
+  const markRead = async (id: string) => {
+    if (reading.current) return
+    reading.current = id
+    setReadingId(id)
+    setReadError(null)
+    try {
+      const result = await apiClient.notificationRead(id)
+      if (!result.ok) throw new Error('notification_read_failed')
+      setItems(current => current?.map(item => item.id === id ? { ...item, read_at: new Date().toISOString() } : item) ?? null)
+    } catch {
+      setReadError('Не удалось отметить уведомление прочитанным.')
+    } finally {
+      reading.current = null
+      setReadingId(null)
+    }
+  }
   const enablePush = async () => {
     if (!apiClient.pushConfig || !apiClient.pushSubscribe || !('serviceWorker' in navigator)) {
       setSystemStatus('unsupported')
@@ -52,9 +71,10 @@ export function NotificationCenter({ apiClient = api }: { apiClient?: Notificati
       setSystemStatus('error')
     }
   }
-  if (error) return <ErrorState description="Уведомления остались на сервере. Повторите загрузку." title="Не удалось загрузить уведомления" />
+  if (error) return <ErrorState description="Уведомления остались на сервере. Повторите загрузку." onRetry={() => setReload(current => current + 1)} title="Не удалось загрузить уведомления" />
   if (!items) return <LoadingState label="Загружаем уведомления" />
   return <Panel title="Уведомления" description="События сохраняются здесь независимо от разрешения системных уведомлений.">
+    {readError ? <p role="alert">{readError}</p> : null}
     {systemStatus !== 'enabled' ? <div className="rp-notification-system">
       <Button disabled={systemStatus === 'busy'} onClick={() => void enablePush()} size="compact" variant="secondary">
         {systemStatus === 'busy' ? 'Включаем…' : 'Включить уведомления на устройстве'}
@@ -63,6 +83,6 @@ export function NotificationCenter({ apiClient = api }: { apiClient?: Notificati
       {systemStatus === 'unsupported' ? <p>Это устройство не поддерживает системные уведомления.</p> : null}
       {systemStatus === 'error' ? <p>Не удалось включить. Внутренние уведомления продолжат работать.</p> : null}
     </div> : <p>Уведомления на устройстве включены.</p>}
-    {items.length === 0 ? <EmptyState title="Новых уведомлений нет" /> : <ul className="rp-notification-list">{items.map(item => <li key={item.id}><div><strong>{eventLabel[item.event_type] ?? 'Событие'}</strong><p>{item.protected_text}</p></div>{!item.read_at ? <Button onClick={() => void markRead(item.id)} size="compact" variant="secondary">Прочитано</Button> : null}</li>)}</ul>}
+    {items.length === 0 ? <EmptyState title="Новых уведомлений нет" /> : <ul className="rp-notification-list">{items.map(item => <li key={item.id}><div><strong>{eventLabel[item.event_type] ?? 'Событие'}</strong><p>{item.protected_text}</p></div>{!item.read_at ? <Button busy={readingId === item.id} disabled={readingId !== null} onClick={() => void markRead(item.id)} size="compact" variant="secondary">Прочитано</Button> : null}</li>)}</ul>}
   </Panel>
 }

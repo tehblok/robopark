@@ -1,13 +1,40 @@
 from __future__ import annotations
 
+import fcntl
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
+
+
+@contextmanager
+def clean_install_lock(root: Path) -> Iterator[None]:
+    path = Path(root) / "run/lock/robopark-install.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(
+        path,
+        os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("clean_install_in_progress") from error
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 class CleanInstallRuntime(Protocol):
     def preflight(self) -> None: ...
 
-    def stop_and_remove(self) -> None: ...
+    def ensure_empty_host(self) -> None: ...
 
     def extract_release(self) -> None: ...
 
@@ -35,9 +62,9 @@ class CleanInstallCoordinator:
         self.runtime = runtime
 
     def run(self, credential_path: Path) -> None:
+        self.runtime.preflight()
+        self.runtime.ensure_empty_host()
         try:
-            self.runtime.preflight()
-            self.runtime.stop_and_remove()
             self.runtime.extract_release()
             self.runtime.configure()
             self.runtime.start_database()

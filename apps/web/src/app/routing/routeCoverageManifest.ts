@@ -157,14 +157,15 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
   route('analytics', 'AnalyticsWorkspace.Classic', ANALYTICS_ROLES,
     asyncStates('analytics', ['summary', 'tab'], ['flow', 'tab'], ['sla', 'tab'], ['park-comparison', 'form'])),
   route('system', 'SystemPage.Classic', BUILTIN_MANAGER_ROLES,
-    asyncStates('system', ['metrics', 'view'], ['operations', 'view'], ['confirmation', 'dialog'])),
+    asyncStates('system', ['metrics', 'view'], ['operations', 'view'], ['confirmation', 'dialog']), [
+      action('host-operation', OWNERS),
+    ]),
 
   route('admin', 'ManagementPage.Classic', MANAGER_ROLES,
     asyncStates('admin', ['users', 'tab'], ['roles', 'tab'], ['parks', 'tab'], ['requests', 'tab'])),
   route('admin-settings', 'Admin.ClassicSettings', MANAGER_ROLES,
-    asyncStates('admin-settings', ['integrations', 'tab'], ['tracker-policy', 'form'], ['registration', 'form'], ['backup', 'file'], ['restore', 'dialog']), [
+    asyncStates('admin-settings', ['integrations', 'tab'], ['tracker-policy', 'form'], ['registration', 'form']), [
       action('change-platform-settings', MANAGER_ROLES, 'apps/api/tests/test_tracker_policy_admin_settings.py::test_admin_can_update_tracker_policy'),
-      action('backup-restore-update', OWNERS, 'apps/api/tests/test_ops_http.py::test_admin_cannot_create_snapshot'),
     ]),
   route('admin-users', 'UserManagementPage.Classic', MANAGER_ROLES,
     asyncStates('admin-users', ['accounts', 'tab'], ['activity', 'tab'], ['user', 'dialog'], ['permissions', 'form'], ['last-location', 'stale']), [

@@ -3,6 +3,10 @@ install_services() {
     python3 -I "$ROBOPARK_OPT/current/deploy/compose_secrets.py" \
         --directory "$ROBOPARK_ETC" --host-env "$ROBOPARK_ETC/host.env" \
         || die compose_secret_bootstrap_failed
+    if [ -f "$ROBOPARK_OPT/current/deploy/systemd/robopark-terminal-setup.service" ]; then
+        python3 -I "$INSTALLER_DIR/lib/install-services.py" "$ROBOPARK_ROOT" || die unit_install_failed
+        python3 -I "$ROBOPARK_OPT/host-tools/robopark" terminal-prepare || die terminal_prepare_failed
+    fi
     python3 -I "$ROBOPARK_OPT/host-tools/robopark" bootstrap-compose || die runtime_bootstrap_failed
     python3 -I "$INSTALLER_DIR/lib/install-services.py" "$ROBOPARK_ROOT" || die unit_install_failed
     systemctl daemon-reload
@@ -18,6 +22,9 @@ install_services() {
         [ "$ready_attempt" -lt 30 ] || die application_not_ready
         sleep 2
     done
+    if [ -f "$ROBOPARK_OPT/current/deploy/systemd/robopark-terminal-setup.service" ]; then
+        python3 -I "$ROBOPARK_OPT/host-tools/robopark" terminal-reconcile
+    fi
     systemctl start robopark-tuna.service
     systemctl is-active robopark.service robopark-tuna.service >/dev/null 2>&1 || die service_not_active
     # Tuna terminates public TLS. Require a real HTTPS response so users do not

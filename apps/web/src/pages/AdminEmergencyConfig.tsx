@@ -6,6 +6,7 @@ import { DiagnosticRuleEditor } from '../domains/diagnostics/DiagnosticRuleEdito
 import { ReadingCatalogEditor } from '../domains/diagnostics/ReadingCatalogEditor'
 import {
   api,
+  ApiError,
   type EmergencyAdminSection,
   type EmergencyViewerRole,
 } from '../api'
@@ -14,6 +15,7 @@ import { EmptyBlock, SkeletonList } from '../components/ui/Feedback'
 import { Toggle } from '../components/ui/Tabs'
 import { mapApiError } from '../i18n/errors'
 import { DomainPresentation } from '../app/interface/DomainPresentation'
+import { ErrorState } from '../design-system/feedback/AsyncState'
 import { roleLabel, ru } from '../i18n/ru'
 import { useCachedResource } from '../lib/resource'
 
@@ -30,22 +32,24 @@ export function AdminEmergencyConfig() {
     : canEditCatalog && requestedTab === 'readings'
       ? 'readings'
       : 'fields'
+  const actorKey = JSON.stringify([user?.id, user?.role, user?.access_status, user?.permissions])
   return <PageShell backTo="/admin" title="Настройки проверки робота" subtitle="Разделы диагностики, ошибки и показания действуют во всех парках.">
     <div className="rp-check-settings-tabs"><Tabs ariaLabel="Настройки проверки робота" value={tab} panelIdFor={id => `check-settings-${id}`}
       items={[{ id: 'fields', label: 'Разделы и поля' }, ...(canEditErrors ? [{ id: 'errors', label: 'Ошибки' }] : []), ...(canEditCatalog ? [{ id: 'readings', label: 'Показания' }] : [])]}
       onChange={id => { const next = new URLSearchParams(params); next.set('tab', id); next.delete('rule'); setParams(next) }} /></div>
     <TabPanel id={`check-settings-${tab}`} labelledBy={`tab-${tab}`} active>
-      {tab === 'errors' ? <DiagnosticRuleEditor /> : tab === 'readings' ? <ReadingCatalogEditor /> : <EmergencyFieldsConfig readOnly={!canEditCatalog} />}
+      {tab === 'errors' ? <DiagnosticRuleEditor /> : tab === 'readings' ? <ReadingCatalogEditor /> : <EmergencyFieldsConfig key={actorKey} cacheKey={`admin:emergency-sections:${actorKey}`} readOnly={!canEditCatalog} />}
     </TabPanel>
   </PageShell>
 }
 
-function EmergencyFieldsConfig({ readOnly }: { readOnly: boolean }) {
+function EmergencyFieldsConfig({ readOnly, cacheKey }: { readOnly: boolean; cacheKey: string }) {
   const sectionsRes = useCachedResource<EmergencyAdminSection[]>(
-    'admin:emergency-sections',
+    cacheKey,
     () => api.adminEmergencySections(),
-    // Keep editable section drafts until an explicit save or retry.
-    { refreshIntervalMs: 0 },
+    // Show the cached catalog immediately, then check it on each opening;
+    // never replace an open draft in the background.
+    { refreshIntervalMs: 0, refreshOnMount: true },
   )
   const cached = sectionsRes.data
   const [sections, setSections] = useState<EmergencyAdminSection[]>(cached ?? [])
@@ -183,9 +187,19 @@ function EmergencyFieldsConfig({ readOnly }: { readOnly: boolean }) {
 
   const displayError = error || (sectionsRes.error ? mapApiError(sectionsRes.error, ru.errors.load) : '')
   const showColdSkeleton = sectionsRes.isLoading && !cached
+  const accessDenied = sectionsRes.error instanceof ApiError
+    && (sectionsRes.error.status === 401 || sectionsRes.error.status === 403)
 
   if (showColdSkeleton) {
     return <SkeletonList rows={4} />
+  }
+
+  if (accessDenied) {
+    return <DomainPresentation route="admin-robot-check"><ErrorState title="Каталог недоступен" description={displayError} /></DomainPresentation>
+  }
+
+  if (displayError && !cached && sections.length === 0) {
+    return <DomainPresentation route="admin-robot-check"><ErrorState title="Не удалось загрузить разделы" description={displayError} onRetry={() => void sectionsRes.refresh()} /></DomainPresentation>
   }
 
   return (

@@ -118,7 +118,9 @@ def _zip_info(name: str) -> zipfile.ZipInfo:
     info = zipfile.ZipInfo(name, _ZIP_TIME)
     info.create_system = 3
     info.external_attr = 0o100644 << 16
-    info.compress_type = zipfile.ZIP_DEFLATED
+    # Installed clients read the bounded manifest directly before upload.
+    # Keep it stored; release payloads remain compressed.
+    info.compress_type = zipfile.ZIP_STORED if name == "manifest.json" else zipfile.ZIP_DEFLATED
     return info
 
 

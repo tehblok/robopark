@@ -54,6 +54,11 @@ def test_own_park_tag_is_in_scope(db_session, operator):
     assert is_issue_in_scope(db_session, operator, _issue()) is True
 
 
+def test_assigned_park_tag_scope_is_case_insensitive(db_session, seed_mechanic):
+    """Tracker may return a tag with casing different from the saved park tag."""
+    assert is_issue_in_scope(db_session, seed_mechanic, _issue(tags=["alpha"])) is True
+
+
 def test_foreign_park_tag_denied(db_session, operator):
     """An issue tagged with another park must never be reachable."""
     db_session.add(Park(name="Beta", tag="Beta", is_active=True, tracker_queue="ROBOPARK"))
@@ -64,6 +69,35 @@ def test_foreign_park_tag_denied(db_session, operator):
     with pytest.raises(HTTPException) as exc:
         enforce_issue_scope(db_session, operator, issue)
     assert exc.value.status_code == 403
+
+
+def test_foreign_park_tag_with_different_case_is_still_denied(db_session, operator):
+    """Case normalization must not turn a known foreign park into untagged work."""
+    db_session.add(Park(name="Beta", tag="Beta", is_active=True, tracker_queue="ROBOPARK"))
+    db_session.commit()
+
+    assert is_issue_in_scope(db_session, operator, _issue(tags=["BETA"])) is False
+
+
+def test_mechanic_list_accepts_tracker_tag_casing_for_assigned_park(
+    client, db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_cache
+
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_cache,
+        "search_issues",
+        lambda **_kwargs: [
+            _issue(tags=["ALPHA"], status="Ожидание поставки", status_key="deliveryWaiting")
+        ],
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.get("/tracker/issues?park=Alpha&open_only=true")
+
+    assert response.status_code == 200
+    assert [item["key"] for item in response.json()["items"]] == ["ROBOPARK-1"]
 
 
 def test_missing_queue_denied(db_session, operator):

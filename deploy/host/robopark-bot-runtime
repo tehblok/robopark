@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Reconcile only the optional Telegram bot Compose service."""
+
+import subprocess
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from robopark_host.paths import paths_from_environment  # noqa: E402
+from robopark_host.runtime import bot_compose_command  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) != 2 or sys.argv[1] not in {"reconcile", "stop"}:
+        return 2
+    paths = paths_from_environment()
+    environment = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": "C.UTF-8",
+        "DOCKER_HOST": "unix:///var/run/docker.sock",
+        "DOCKER_CONFIG": str(paths.var / "ops/docker-config"),
+    }
+    try:
+        command = bot_compose_command(paths, sys.argv[1])
+    except ValueError:
+        command = bot_compose_command(paths, "stop")
+        subprocess.run(command, check=False, timeout=90, env=environment)
+        return 1
+    subprocess.run(command, check=True, timeout=180, env=environment)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

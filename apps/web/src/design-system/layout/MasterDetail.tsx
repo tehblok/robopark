@@ -1,4 +1,4 @@
-import type { ReactElement, ReactNode } from 'react'
+import { useLayoutEffect, type ReactElement, type ReactNode } from 'react'
 import { Button } from '../actions/Button'
 import './MasterDetail.css'
 
@@ -16,6 +16,9 @@ export function MasterDetail({
   onBack,
 }: MasterDetailProps): ReactElement {
   const detailEmpty = detail == null
+  useLayoutEffect(() => {
+    if (detailOpen && window.matchMedia('(max-width: 899px)').matches) window.scrollTo(0, 0)
+  }, [detailOpen])
   return (
     <div className="rp-master-detail" data-detail-empty={detailEmpty} data-detail-open={detailOpen}>
       <section aria-label="Список" className="rp-master-detail__list">{list}</section>

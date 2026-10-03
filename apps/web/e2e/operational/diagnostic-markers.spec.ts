@@ -112,6 +112,9 @@ async function assertExplanationUncovered(page: Page) {
     const failures = bounds.top < header.bottom - 1 || bounds.bottom > nav.top + 1
       ? [`Detail ${bounds.top}..${bounds.bottom} outside clear area ${header.bottom}..${nav.top}`] : []
     for (const item of region.querySelectorAll('h3,.rp-status-badge,p,.rp-check-event-raw-label,pre,button,a')) {
+      // Raw payloads remain in the DOM inside a closed disclosure. Only
+      // rendered content can be covered by the fixed navigation.
+      if (!item.checkVisibility()) continue
       const rect = item.getBoundingClientRect()
       for (const y of [rect.top + 2, (rect.top + rect.bottom) / 2, rect.bottom - 2]) {
         const hit = document.elementFromPoint((rect.left + rect.right) / 2, y)

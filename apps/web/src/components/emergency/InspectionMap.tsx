@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useTheme } from '../../design-system/theme/ThemeProvider'
+import { useTheme } from '../../design-system/theme/themeContext'
 import L from 'leaflet'
 import iconUrl from 'leaflet/dist/images/marker-icon.png'
 import iconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png'
@@ -29,6 +29,9 @@ export function InspectionMap({
 }) {
   const { resolvedTheme } = useTheme()
   const [reducedMotion, setReducedMotion] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
+  const [tileFailed, setTileFailed] = useState(false)
+  const [hasBeenVisible, setHasBeenVisible] = useState(visible)
+  const hasCoords = lat != null && lon != null
   const rootRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const markerRef = useRef<L.Marker | null>(null)
@@ -48,14 +51,21 @@ export function InspectionMap({
   }, [onUserPan])
 
   useEffect(() => {
-    if (!rootRef.current || mapRef.current) return
+    if (visible) setHasBeenVisible(true)
+  }, [visible])
+
+  useEffect(() => {
+    if (!hasBeenVisible || !hasCoords || !rootRef.current || mapRef.current) return
     const map = L.map(rootRef.current, { zoomControl: true }).setView([55.75, 37.62], 16)
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       // OSM requires a Referer. Send only the site origin, never a robot VIN
       // or task/query parameters; keep the site's global policy unchanged.
       referrerPolicy: 'strict-origin',
-    }).addTo(map)
+    })
+    tiles.on('loading', () => setTileFailed(false))
+    tiles.on('tileerror', () => setTileFailed(true))
+    tiles.addTo(map)
     map.on('dragstart', () => onUserPanRef.current())
     map.on('zoomstart', () => {
       if (!skipPanRef.current) onUserPanRef.current()
@@ -72,7 +82,7 @@ export function InspectionMap({
       mapRef.current = null
       markerRef.current = null
     }
-  }, [])
+  }, [hasBeenVisible, hasCoords])
 
   useEffect(() => {
     if (!visible) return
@@ -122,10 +132,13 @@ export function InspectionMap({
       skipPanRef.current = false
     }, reducedMotion ? 0 : FOLLOW_PAN_S * 1000 + 300)
     return () => window.clearTimeout(release)
-  }, [lat, lon, follow, reducedMotion])
+  }, [lat, lon, follow, reducedMotion, hasBeenVisible])
 
-  if (lat == null || lon == null) {
+  if (!hasCoords) {
     return null
   }
-  return <div className="inspection-map" data-map-theme={resolvedTheme} ref={rootRef} />
+  return <div className="inspection-map-shell">
+    {tileFailed ? <p className="inspection-map__tile-error" role="status">Подложка карты недоступна. Координаты робота доступны: {lat.toFixed(5)}, {lon.toFixed(5)}.</p> : null}
+    <div className="inspection-map" data-map-theme={resolvedTheme} ref={rootRef} />
+  </div>
 }

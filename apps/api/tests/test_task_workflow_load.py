@@ -21,7 +21,6 @@ from robopark_api.services import (
     rbac,
     tracker_cache,
     tracker_client,
-    tracker_outbox,
 )
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 from robopark_api.services.tracker_outbox import _process_batch
@@ -145,6 +144,7 @@ def test_200_authenticated_sessions_keep_local_p95_and_duplicate_delivery_bounde
         tracker_client, "get_issue", lambda *, key, **_kwargs: _issue(int(key.rsplit("-", 1)[1]))
     )
     monkeypatch.setattr(tracker_client, "get_issue_status_history", lambda **_kwargs: [])
+    monkeypatch.setattr(tracker_client, "_load_work_status_history", lambda **_kwargs: [])
     monkeypatch.setattr(tracker_client, "list_comments", lambda **_kwargs: [])
     monkeypatch.setattr(
         tracker_client,
@@ -155,13 +155,22 @@ def test_200_authenticated_sessions_keep_local_p95_and_duplicate_delivery_bounde
     def transition(**_kwargs):
         upstream["transition"] += 1
 
-    def set_field(**kwargs):
-        assert kwargs["field_id"] == "components"
-        assert kwargs["value"] == ["ROBOT_SUSPENSION"]
+    def set_components(**kwargs):
+        assert kwargs["components"] == ["ROBOT_SUSPENSION"]
         upstream["component"] += 1
 
-    monkeypatch.setattr(tracker_outbox, "_set_issue_field", set_field)
+    def set_tags(**kwargs):
+        assert kwargs["tags"] == ["CapacityAlpha", "diag_complete"]
+        upstream["tag"] += 1
+
+    monkeypatch.setattr(tracker_client, "set_issue_tags", set_tags)
+    monkeypatch.setattr(tracker_client, "set_issue_components", set_components)
     monkeypatch.setattr(tracker_client, "transition_issue", transition)
+    monkeypatch.setattr(
+        tracker_client,
+        "_client",
+        lambda *_args, **_kwargs: pytest.fail("load test attempted an unmocked Tracker client"),
+    )
     monkeypatch.setattr(main, "SessionLocal", factory)
     monkeypatch.setattr(main, "get_settings", lambda: settings)
     tracker_cache.clear_all_for_tests()
@@ -224,9 +233,15 @@ def test_200_authenticated_sessions_keep_local_p95_and_duplicate_delivery_bounde
             break
     with factory() as db:
         actions = db.query(ReliableAction).all()
-        assert len(actions) == 50
+        assert len(actions) == 150
+        assert Counter(action.action for action in actions) == {
+            "ensure_tag": 50,
+            "ensure_components": 50,
+            "start": 50,
+        }
         assert all(action.state == "succeeded" for action in actions)
-    assert processed == 50
+    assert processed == 150
+    assert upstream["tag"] == 50
     assert upstream["component"] == 50
     assert upstream["transition"] == 50
     print(

@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.models import Park, User, UserPark
+from robopark_api.schedule_models import ScheduleEntry
+from robopark_api.schedule_schemas import (
+    ScheduleCopy,
+    ScheduleCreate,
+    ScheduleOut,
+    SchedulePatternCreate,
+    ScheduleUpdate,
+)
 from robopark_api.services import (
     inventory,
     inventory_stock,
@@ -19,6 +29,7 @@ from robopark_api.services import (
     task_lifecycle,
     tracker_cache,
     tracker_client,
+    tracker_policy,
     tracker_signatures,
 )
 from robopark_api.services.database_locks import database_idempotency_lock
@@ -82,7 +93,21 @@ def _issue(db: Session, user: User, item: SyncActionIn, *, fresh: bool = False) 
     return issue
 
 
+def _authorize_review(db: Session, user: User, item: SyncActionIn) -> dict:
+    issue = _issue(db, user, item)
+    for action in ("comment", "attach", "transition"):
+        tracker_policy.ensure_action_allowed(db, user, issue, action)
+    return issue
+
+
 def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, Any]:
+    if item.resource_type == "schedule_entry":
+        try:
+            return _schedule_action(db, user, item)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     if item.resource_type != "tracker_issue":
         raise HTTPException(400, "sync_resource_unsupported")
     if item.action == "comment":
@@ -143,7 +168,7 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
         )
         return {"movement_id": row.id, "balance_after": row.balance_after}
     if item.action == "submit_review":
-        issue = _issue(db, user, item)
+        issue = _authorize_review(db, user, item)
         park = task_lifecycle.issue_park(db, issue)
         if item.park_id is not None and item.park_id != park.id:
             raise HTTPException(409, "sync_park_mismatch")
@@ -190,20 +215,91 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
     raise HTTPException(400, "sync_action_unsupported")
 
 
+def _schedule_action(db: Session, user: User, item: SyncActionIn) -> dict[str, Any]:
+    if item.park_id is None:
+        raise HTTPException(400, "sync_park_required")
+    if item.action in {"schedule_pattern", "schedule_copy"}:
+        schema = SchedulePatternCreate if item.action == "schedule_pattern" else ScheduleCopy
+        try:
+            payload = schema.model_validate(
+                {
+                    **item.payload,
+                    "idempotency_key": item.idempotency_key,
+                }
+            )
+        except ValidationError as exc:
+            raise HTTPException(400, "schedule_payload_invalid") from exc
+        if payload.park_id != item.park_id:
+            raise HTTPException(409, "sync_park_mismatch")
+        created = (
+            schedules.create_pattern(db, user, payload)
+            if item.action == "schedule_pattern"
+            else schedules.copy_period(db, user, payload)
+        )
+        return {"created_count": len(created)}
+    if item.action == "schedule_create":
+        try:
+            payload = ScheduleCreate.model_validate(
+                {
+                    **item.payload,
+                    "idempotency_key": item.idempotency_key,
+                }
+            )
+        except ValidationError as exc:
+            raise HTTPException(400, "schedule_payload_invalid") from exc
+        if payload.park_id != item.park_id:
+            raise HTTPException(409, "sync_park_mismatch")
+        result = schedules.create_entry(db, user, payload)
+        return {"entry": ScheduleOut.model_validate(result).model_dump(mode="json")}
+
+    if item.action not in {"schedule_update", "schedule_delete"}:
+        raise HTTPException(400, "sync_action_unsupported")
+    if item.base_revision is None:
+        raise HTTPException(400, "sync_base_revision_required")
+    row = db.get(ScheduleEntry, item.resource_id)
+    if row is not None and row.park_id != item.park_id:
+        raise HTTPException(409, "sync_park_mismatch")
+    if item.action == "schedule_delete":
+        schedules.delete_entry(
+            db,
+            user,
+            item.resource_id,
+            base_revision=item.base_revision,
+            idempotency_key=item.idempotency_key,
+        )
+        return {"deleted": True, "entry_id": item.resource_id}
+
+    try:
+        payload = ScheduleUpdate.model_validate(
+            {
+                **item.payload,
+                "base_revision": item.base_revision,
+                "idempotency_key": item.idempotency_key,
+            }
+        )
+    except ValidationError as exc:
+        raise HTTPException(400, "schedule_payload_invalid") from exc
+    result = schedules.update_entry(db, user, item.resource_id, payload)
+    return {"entry": ScheduleOut.model_validate(result).model_dump(mode="json")}
+
+
 def _classification(exc: Exception) -> tuple[str, str]:
+    def safe_code(value: object, fallback: str) -> str:
+        code = str(value)
+        return code if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code) else fallback
+
     if isinstance(exc, HTTPException):
-        code = str(exc.detail)
         if exc.status_code == 409:
-            return "conflict", code
+            return "conflict", safe_code(exc.detail, "sync_conflict")
         if exc.status_code >= 500 or exc.status_code in {408, 425, 429}:
-            return "attention", code
-        return "rejected", code
+            return "attention", safe_code(exc.detail, "temporary_failure")
+        return "rejected", safe_code(exc.detail, "sync_rejected")
     if isinstance(exc, inventory_stock.InventoryConflict):
-        return "conflict", str(exc)
+        return "conflict", safe_code(exc, "inventory_conflict")
     if isinstance(exc, PermissionError):
-        return "rejected", str(exc) or "forbidden"
+        return "rejected", safe_code(exc, "forbidden")
     if isinstance(exc, (RuntimeError, ConnectionError, TimeoutError)):
-        return "attention", str(exc) or "temporary_failure"
+        return "attention", "temporary_failure"
     raise exc
 
 
@@ -221,6 +317,35 @@ def _receipt(
     return row, canonical, digest
 
 
+def _verify_prior_dependencies(
+    db: Session, user: User, device_id: str, item: SyncActionIn, states: dict[str, str]
+) -> None:
+    media_id = str(item.payload.get("media_id") or "") if item.action == "submit_review" else ""
+    action_ids = [dep for dep in item.dependencies if dep not in states and dep != media_id]
+    if not action_ids:
+        return
+    receipts = {
+        row.client_action_id: row
+        for row in db.scalars(
+            select(OfflineSyncReceipt).where(
+                OfflineSyncReceipt.actor_user_id == user.id,
+                OfflineSyncReceipt.device_id == device_id,
+                OfflineSyncReceipt.client_action_id.in_(action_ids),
+            )
+        )
+    }
+    for action_id in action_ids:
+        receipt = receipts.get(action_id)
+        if receipt is None:
+            raise HTTPException(503, "dependency_missing")
+        try:
+            state = SyncActionResultOut.model_validate_json(receipt.result_json).state
+        except ValidationError as exc:
+            raise HTTPException(503, "dependency_missing") from exc
+        if state != "confirmed":
+            raise HTTPException(503, "dependency_failed")
+
+
 def _visible_scopes(db: Session, user: User, requested: Iterable[str]) -> tuple[set[str], set[str]]:
     park_ids = set(db.scalars(select(UserPark.park_id).where(UserPark.user_id == user.id)))
     staff = rbac.is_admin_or_royal(user) or rbac.has_permission(
@@ -234,7 +359,9 @@ def _visible_scopes(db: Session, user: User, requested: Iterable[str]) -> tuple[
             continue
         suffix = scope.rsplit(":", 1)[-1]
         if (
-            scope.startswith("work:park:") or scope.startswith("inventory:")
+            scope.startswith("work:park:")
+            or scope.startswith("inventory:")
+            or scope.startswith("schedule:park:")
         ) and suffix.isdecimal():
             if staff or int(suffix) in park_ids:
                 visible.add(scope)
@@ -256,13 +383,21 @@ def synchronize(
     results: list[SyncActionResultOut] = []
     states: dict[str, str] = {}
     changed_scopes: set[str] = set()
-    action_scopes: set[str] = {"work"} if ordered else set()
+    action_scopes: set[str] = set()
     revoked: set[str] = set()
     for item in ordered:
+        dependent_media_id = (
+            str(item.payload.get("media_id") or "") if item.action == "submit_review" else ""
+        )
+        if item.resource_type == "tracker_issue":
+            action_scopes.add("work")
         if item.park_id is not None:
-            action_scopes.add(f"work:park:{item.park_id}")
-            if item.action == "inventory_writeoff":
-                action_scopes.add(f"inventory:{item.park_id}")
+            if item.resource_type == "schedule_entry":
+                action_scopes.add(f"schedule:park:{item.park_id}")
+            else:
+                action_scopes.add(f"work:park:{item.park_id}")
+                if item.action == "inventory_writeoff":
+                    action_scopes.add(f"inventory:{item.park_id}")
         failed_dependency = next(
             (dep for dep in item.dependencies if dep in states and states[dep] != "confirmed"), None
         )
@@ -277,6 +412,30 @@ def synchronize(
             continue
         receipt_key = f"offline-sync:{user.id}:{batch.device_id}:{item.client_action_id}"
         with database_idempotency_lock(db, receipt_key):
+            # A durable receipt is not an authorization grant. Recheck the
+            # current park membership before returning a previous result.
+            if item.park_id is not None and not _park_allowed(db, user, item.park_id):
+                result = SyncActionResultOut(
+                    client_action_id=item.client_action_id,
+                    state="rejected",
+                    code="park_forbidden",
+                )
+                revoked.add(
+                    f"schedule:park:{item.park_id}"
+                    if item.resource_type == "schedule_entry"
+                    else f"work:park:{item.park_id}"
+                )
+                results.append(result)
+                states[item.client_action_id] = result.state
+                if dependent_media_id:
+                    media_uploads.acknowledge_action_dependency(
+                        db,
+                        actor_user_id=user.id,
+                        media_id=dependent_media_id,
+                        device_id=batch.device_id,
+                        action_id=item.client_action_id,
+                    )
+                continue
             existing, _canonical, payload_hash = _receipt(db, user, batch.device_id, item)
             if existing is not None:
                 if existing.payload_hash != payload_hash:
@@ -295,15 +454,16 @@ def synchronize(
                         code="park_forbidden",
                     )
                     if item.park_id is not None:
-                        revoked.add(f"work:park:{item.park_id}")
+                        revoked.add(
+                            f"schedule:park:{item.park_id}"
+                            if item.resource_type == "schedule_entry"
+                            else f"work:park:{item.park_id}"
+                        )
                 else:
-                    dependent_media_id = (
-                        str(item.payload.get("media_id") or "")
-                        if item.action == "submit_review"
-                        else ""
-                    )
                     try:
+                        _verify_prior_dependencies(db, user, batch.device_id, item, states)
                         if dependent_media_id:
+                            _authorize_review(db, user, item)
                             media_uploads.bind_action_dependency(
                                 db,
                                 user,
@@ -318,11 +478,14 @@ def synchronize(
                             state="confirmed",
                             result=value,
                         )
-                        changed_scopes.add("work")
-                        if item.park_id is not None:
-                            changed_scopes.add(f"work:park:{item.park_id}")
-                            if item.action == "inventory_writeoff":
-                                changed_scopes.add(f"inventory:{item.park_id}")
+                        if item.resource_type == "schedule_entry":
+                            changed_scopes.add(f"schedule:park:{item.park_id}")
+                        else:
+                            changed_scopes.add("work")
+                            if item.park_id is not None:
+                                changed_scopes.add(f"work:park:{item.park_id}")
+                                if item.action == "inventory_writeoff":
+                                    changed_scopes.add(f"inventory:{item.park_id}")
                     except Exception as exc:
                         db.rollback()
                         state, code = _classification(exc)
@@ -330,14 +493,6 @@ def synchronize(
                             client_action_id=item.client_action_id,
                             state=state,
                             code=code,
-                        )
-                    if dependent_media_id and result.state == "confirmed":
-                        media_uploads.acknowledge_action_dependency(
-                            db,
-                            actor_user_id=user.id,
-                            media_id=dependent_media_id,
-                            device_id=batch.device_id,
-                            action_id=item.client_action_id,
                         )
                 # Attention and conflict are nonterminal. Persist only applied or
                 # irreversible rejection outcomes; otherwise a resolved conflict
@@ -353,6 +508,14 @@ def synchronize(
                         )
                     )
                     db.commit()
+            if dependent_media_id and result.state in {"confirmed", "rejected"}:
+                media_uploads.acknowledge_action_dependency(
+                    db,
+                    actor_user_id=user.id,
+                    media_id=dependent_media_id,
+                    device_id=batch.device_id,
+                    action_id=item.client_action_id,
+                )
         results.append(result)
         states[item.client_action_id] = result.state
 

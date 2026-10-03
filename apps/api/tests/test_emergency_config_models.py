@@ -1,11 +1,88 @@
+import importlib.util
+import json
 from pathlib import Path
+from unittest.mock import Mock
 
-from sqlalchemy import select
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, select, text
 
 from robopark_api.models import EmergencyField, EmergencySection, EmergencySectionRole
 from robopark_api.services.emergency_config import seed_emergency_config
 
 DEFAULT_JSON_PATH = Path(__file__).resolve().parents[1] / "data" / "emergency_sections.json"
+
+
+def test_initial_emergency_migration_requires_seed_before_creating_tables(tmp_path, monkeypatch):
+    source = (
+        Path(__file__).resolve().parents[1] / "alembic/versions/0004_phase6_emergency_config.py"
+    )
+    spec = importlib.util.spec_from_file_location("emergency_seed_migration_test", source)
+    assert spec and spec.loader
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    monkeypatch.setattr(
+        migration, "__file__", str(tmp_path / "alembic/versions/0004_phase6_emergency_config.py")
+    )
+    create_table = Mock()
+    monkeypatch.setattr(migration.op, "create_table", create_table)
+
+    with pytest.raises(FileNotFoundError, match="emergency_sections_seed_missing"):
+        migration.upgrade()
+
+    create_table.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        '{"sections":{}}',
+        '{"sections":{"status":null}}',
+        '{"sections":{"status":{"fields":[null]}}}',
+    ],
+)
+def test_initial_emergency_migration_rejects_invalid_seed_before_creating_tables(
+    tmp_path, monkeypatch, seed
+):
+    source = (
+        Path(__file__).resolve().parents[1] / "alembic/versions/0004_phase6_emergency_config.py"
+    )
+    spec = importlib.util.spec_from_file_location("emergency_empty_seed_migration_test", source)
+    assert spec and spec.loader
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    monkeypatch.setattr(
+        migration, "__file__", str(tmp_path / "alembic/versions/0004_phase6_emergency_config.py")
+    )
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data/emergency_sections.json").write_text(seed)
+    create_table = Mock()
+    monkeypatch.setattr(migration.op, "create_table", create_table)
+
+    with pytest.raises(ValueError, match="invalid emergency sections seed"):
+        migration.upgrade()
+
+    create_table.assert_not_called()
+
+
+def test_initial_emergency_migration_populates_catalog(sqlite_database_url, monkeypatch):
+    api_dir = Path(__file__).resolve().parents[1]
+    expected = json.loads(DEFAULT_JSON_PATH.read_text(encoding="utf-8"))["sections"]
+    config = Config(api_dir / "alembic.ini")
+    config.set_main_option("script_location", str(api_dir / "alembic"))
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+
+    command.upgrade(config, "0004")
+
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.connect() as connection:
+        section_ids = set(connection.scalars(text("SELECT id FROM emergency_sections")))
+        field_count = connection.scalar(text("SELECT count(*) FROM emergency_fields"))
+        role_count = connection.scalar(text("SELECT count(*) FROM emergency_section_roles"))
+    assert section_ids == set(expected)
+    assert field_count == sum(len(section.get("fields", [])) for section in expected.values())
+    assert role_count >= len(expected)
 
 
 def test_emergency_section_tables_exist(db_session):

@@ -59,7 +59,7 @@ it('leaves horizontal page gutters to the selected presentation shell', () => {
   expect(source).not.toMatch(/\.rp-page-layout\s*\{[^}]*\bpadding-inline\s*:/s)
 })
 
-it('uses the exact Classic geometry tokens at desktop, tablet, and phone widths', () => {
+it('uses separate page, panel, card, and compact-row geometry tokens', () => {
   const interfaceTokens = readFileSync(
     resolve('src/app/interface/interfaceTokens.css'),
     'utf8',
@@ -67,10 +67,13 @@ it('uses the exact Classic geometry tokens at desktop, tablet, and phone widths'
   const designTokens = readFileSync(resolve('src/design-system/styles/tokens.css'), 'utf8')
 
   expect(interfaceTokens).toMatch(/:root\s*\{[^}]*--rp-page-gutter:\s*24px/s)
-  expect(interfaceTokens).toMatch(/:root\s*\{[^}]*--rp-section-gap:\s*24px/s)
-  expect(interfaceTokens).toMatch(/:root\s*\{[^}]*--rp-card-padding:\s*20px/s)
+  expect(interfaceTokens).toMatch(/:root\s*\{[^}]*--rp-section-gap:\s*20px/s)
+  expect(interfaceTokens).toMatch(/:root\s*\{[^}]*--rp-panel-padding:\s*18px/s)
+  expect(interfaceTokens).toMatch(/:root\s*\{[^}]*--rp-panel-gap:\s*14px/s)
+  expect(interfaceTokens).toMatch(/:root\s*\{[^}]*--rp-card-padding:\s*14px/s)
+  expect(interfaceTokens).toMatch(/:root\s*\{[^}]*--rp-card-gap:\s*10px/s)
   expect(interfaceTokens).toMatch(/@media \(max-width:\s*899px\)\s*\{[^}]*:root\s*\{[^}]*--rp-section-gap:\s*16px/s)
-  expect(interfaceTokens).toMatch(/@media \(max-width:\s*899px\)\s*\{[^}]*:root\s*\{[^}]*--rp-card-padding:\s*16px/s)
+  expect(interfaceTokens).toMatch(/@media \(max-width:\s*899px\)\s*\{[^}]*:root\s*\{[^}]*--rp-card-padding:\s*14px/s)
   expect(interfaceTokens).toMatch(/@media \(max-width:\s*899px\)\s*\{[^}]*:root\s*\{[^}]*--rp-page-gutter:\s*16px/s)
   expect(interfaceTokens).not.toMatch(/--rp-page-gutter:\s*12px/)
   expect(designTokens).toMatch(/--rp-control-min-size:\s*44px/)
@@ -81,6 +84,10 @@ it('uses the exact Classic geometry tokens at desktop, tablet, and phone widths'
   expect(designTokens).toMatch(/--rp-radius-card:\s*16px/)
   expect(designTokens).toMatch(/--rp-radius-control:\s*12px/)
   expect(designTokens).toMatch(/--rp-radius-chip:\s*999px/)
+  expect(designTokens).toMatch(/--rp-surface-raised:\s*var\(--rp-surface-elevated\)/)
+  expect(designTokens).toMatch(/--rp-accent:\s*var\(--rp-action\)/)
+  expect(designTokens).toMatch(/--rp-radius-md:\s*var\(--rp-radius-control\)/)
+  expect(designTokens).toMatch(/--rp-radius-sm:\s*8px/)
   expect(designTokens).not.toMatch(/@media \(max-width:\s*899px\)\s*\{[^}]*:root\s*\{[^}]*(?:--rp-density-gap|--rp-density-panel-padding|--rp-row-min-size)/s)
 })
 
@@ -88,10 +95,11 @@ it('contains flexible children and separates nested panel surfaces without negat
   const css = readFileSync(resolve('src/design-system/layout/PageLayout.css'), 'utf8')
   const shellCss = readFileSync(resolve('src/app/interface/ClassicShell.css'), 'utf8')
 
-  expect(css).toMatch(/\.rp-panel\s*\{[^}]*gap:\s*var\(--rp-form-gap\)/s)
+  expect(css).toMatch(/\.rp-panel\s*\{[^}]*gap:\s*var\(--rp-panel-gap\)[^}]*padding:\s*var\(--rp-panel-padding\)/s)
+  expect(css).toMatch(/\.rp-panel\[data-density='dense'\]\s*\{[^}]*gap:\s*var\(--rp-card-gap\)[^}]*padding:\s*var\(--rp-card-padding\)/s)
   expect(css).toMatch(/\.rp-page-layout[^{]*\{[^}]*min-inline-size:\s*0/s)
   expect(css).toMatch(/\.rp-page-layout__content > \*,[^{]*\.rp-panel__content > \*\s*\{[^}]*min-inline-size:\s*0/s)
-  expect(css).toMatch(/\.rp-panel__content:has\(> \.rp-panel\)\s*\{[^}]*gap:\s*var\(--rp-form-gap\)/s)
+  expect(css).toMatch(/\.rp-panel__content:has\(> \.rp-panel\)\s*\{[^}]*gap:\s*var\(--rp-panel-gap\)/s)
   expect(css).toMatch(/\.rp-panel \.rp-panel\s*\{[^}]*background:\s*var\(--rp-surface-elevated\)/s)
   expect(css).toMatch(/\.rp-page-layout__title,[^{]*\.rp-panel__description\s*\{[^}]*overflow-wrap:\s*anywhere/s)
   expect(css).not.toMatch(/margin:\s*-\d/)

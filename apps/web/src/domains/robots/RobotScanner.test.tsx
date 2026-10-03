@@ -50,6 +50,16 @@ describe('RobotScanner', () => {
     )
   })
 
+  it('keeps the camera preview out of the phone layout until scanning starts', () => {
+    const mediaDevices = { getUserMedia: vi.fn(() => new Promise<MediaStream>(() => {})) }
+    const Detector = class { detect = vi.fn() } as unknown as BarcodeDetectorConstructor
+    render(<RobotScanner Detector={Detector} mediaDevices={mediaDevices} onCancel={vi.fn()} onDetected={vi.fn()} open secureContext />)
+    const video = document.querySelector('video')
+    expect(video).toHaveAttribute('hidden')
+    fireEvent.click(screen.getByRole('button', { name: 'Включить камеру' }))
+    expect(video).not.toHaveAttribute('hidden')
+  })
+
   it('starts only while open and stops every camera track after detection', async () => {
     const frames = installFrameQueue()
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()

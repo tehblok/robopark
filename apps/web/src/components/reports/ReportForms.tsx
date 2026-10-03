@@ -6,6 +6,7 @@ import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 import { Alert } from '../PageShell'
 import { Spinner } from '../ui/Feedback'
+import { FileField } from '../../design-system/inputs/FileField'
 
 type ReportFormsProps = {
   apiClient?: ReportsApiClient
@@ -416,16 +417,14 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
           <p className="panel-hint">По одному файлу каждого типа: снимок/фото JPEG, PNG, WebP, HEIC, HEIF до 15 МиБ или лог .log до 64 КиБ. Повтор не создаст новый репорт.</p>
           {attachmentError && <Alert tone="error">{attachmentError}</Alert>}
           {attachmentSuccess && <Alert tone="success">{attachmentSuccess}</Alert>}
-          <label className="field">
-            <span className="field-label">Файл</span>
-            <input
-              accept="image/jpeg,image/jpg,image/png,image/webp,image/heic,image/heif,application/octet-stream,binary/octet-stream,.jpg,.jpeg,.png,.webp,.heic,.heif,text/plain,.log"
-              ref={fileInputRef}
-              disabled={submitting || attaching || !draftReady}
-              onChange={(event) => { edited(); setAttachmentDelivered(false); setAttachment(event.target.files?.[0] ?? null) }}
-              type="file"
-            />
-          </label>
+          <FileField
+            accept="image/jpeg,image/jpg,image/png,image/webp,image/heic,image/heif,application/octet-stream,binary/octet-stream,.jpg,.jpeg,.png,.webp,.heic,.heif,text/plain,.log"
+            disabled={submitting || attaching || !draftReady}
+            inputRef={fileInputRef}
+            label="Файл"
+            onChange={(event) => { edited(); setAttachmentDelivered(false); setAttachment(event.target.files?.[0] ?? null) }}
+            selectedFileLabel={attachment ? `Выбран файл: ${attachment.name} (${Math.ceil(attachment.size / 1024)} КиБ)` : null}
+          />
           <label className="field">
             <span className="field-label">Тип вложения</span>
             <select disabled={submitting || attaching} onChange={(event) => { edited(); setAttachmentKind(event.target.value as ReportAttachmentKind) }} value={attachmentKind}>
@@ -434,7 +433,6 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
               <option value="client_log">Лог клиента</option>
             </select>
           </label>
-          {attachment && <p className="panel-hint">Выбран файл: {attachment.name} ({Math.ceil(attachment.size / 1024)} КиБ)</p>}
           <div className="form-actions">
             <button className="btn btn-secondary" disabled={submitting || attaching || attachment == null || createdReportId == null} onClick={() => void attachFile()} type="button">
               {attaching ? <Spinner label="Загрузка файла" /> : 'Прикрепить файл'}

@@ -4,12 +4,20 @@ Evidence is recorded only after the named command exits successfully. The releas
 
 Stable promotion is stricter than local development: it consumes format-2 evidence
 bound to the exact source SHA, archive SHA-256 and manifest digest. Promotion edits
-only external channel metadata and never runs the packer or signing step.
+only external channel metadata and never rebuilds or alters the package.
 
-## Current-source status
+## Current verification work
+
+The 2026-10-01 production-readiness results and pending gates are tracked in
+[`../reviews/2026-10-01-production-readiness.md`](../reviews/2026-10-01-production-readiness.md).
+That report distinguishes completed exact-source checks, equivalent unchanged
+runtime scopes, browser reruns and live deployment. The eight-hour browser test
+was explicitly cancelled by the user; its partial measurements are not a PASS.
+
+## Historical status before the 2026-10-01 verification
 
 The current versioning work is the commit range after design baseline `e424a1a`.
-No broad gate below is a current-source PASS. The
+No broad gate in this historical section is a current-source PASS. The
 stored full-suite, PostgreSQL, host, visual and 200-user records are historical:
 they belong to source-tree SHA-256
 `c4591526ecdc5bcc56ba7608d8b7336a3726e6f9f35599a8546961b4457d74e0`.

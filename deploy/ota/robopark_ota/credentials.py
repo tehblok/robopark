@@ -70,11 +70,26 @@ def collect_royal_credentials(
 def collect_tuna_configuration(
     *,
     getpass_fn: Callable[[str], str] = getpass.getpass,
+    input_fn: Callable[[str], str] = input,
 ) -> TunaConfiguration:
     token = getpass_fn("Tuna token: ").strip()
     if re.fullmatch(r"[A-Za-z0-9_.-]{8,2048}", token) is None:
         raise ValueError("invalid_tuna_token")
-    return TunaConfiguration(token=token)
+    address = input_fn("Домен Tuna или поддомен зоны ru (например robopark.ru.tuna.am или robopark): ").strip().lower()
+    labels = address.split(".")
+    if len(labels) == 1 and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", address):
+        return TunaConfiguration(token=token, subdomain=address, location="ru")
+    if (
+        len(address) > 253
+        or len(labels) < 2
+        or any(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) is None for label in labels)
+    ):
+        raise ValueError("invalid_tuna_address")
+    if address.endswith(".tuna.am"):
+        if len(labels) != 4 or re.fullmatch(r"[a-z]{2}(?:-[a-z0-9]+)?", labels[1]) is None:
+            raise ValueError("invalid_tuna_address")
+        return TunaConfiguration(token=token, subdomain=labels[0], location=labels[1])
+    return TunaConfiguration(token=token, subdomain="", domain=address)
 
 
 def write_tuna_configuration(directory: Path, configuration: TunaConfiguration) -> Path:

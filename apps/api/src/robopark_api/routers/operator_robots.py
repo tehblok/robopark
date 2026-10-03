@@ -7,7 +7,14 @@ from robopark_api.models import User
 from robopark_api.routers._blockers import blocker_out as _blocker_out
 from robopark_api.schemas import RobotTicketsOut
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import task_lifecycle, tracker_cache, tracker_client, tracker_filters
+from robopark_api.services import (
+    rbac,
+    task_lifecycle,
+    tracker_cache,
+    tracker_client,
+    tracker_filters,
+)
+from robopark_api.services.tracker_policy import is_issue_in_scope, load_issue_scope
 
 router = APIRouter(prefix="/operator", tags=["operator-robots"])
 
@@ -18,6 +25,8 @@ def operator_robot_tickets(
     user: User = Depends(require_approved_operator),
     db: Session = Depends(get_db),
 ) -> RobotTicketsOut:
+    rbac.require_approved_permission(db, user, rbac.PERMISSION_TRACKER_READ)
+    rbac.require_approved_permission(db, user, rbac.PERMISSION_NAV_ROBOT_SEARCH)
     parks = get_operator_parks(db, user)
     queues: list[str] = []
     seen: set[str] = set()
@@ -59,7 +68,12 @@ def operator_robot_tickets(
         ) from exc
 
     hidden_keys = task_lifecycle.hidden_issue_keys(db)
-    visible_items = [item for item in merged if item.get("key") not in hidden_keys]
+    scope = load_issue_scope(db, user)
+    visible_items = [
+        item
+        for item in merged
+        if item.get("key") not in hidden_keys and is_issue_in_scope(db, user, item, scope=scope)
+    ]
     sorted_items = tracker_filters.sort_issues_oldest_first(visible_items)
     return RobotTicketsOut(
         query=query,

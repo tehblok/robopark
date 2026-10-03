@@ -71,7 +71,7 @@ export async function inspectOtaFile(file: File): Promise<OtaManifestPreview> {
   const row = value as Record<string, unknown>
   if (row.format_version !== 1 || typeof row.app_version !== 'string'
     || !Array.isArray(row.compatible_from) || !row.compatible_from.every(item => typeof item === 'string')
-    || !Number.isSafeInteger(row.required_free_bytes) || Number(row.required_free_bytes) < 0
+    || !Number.isSafeInteger(row.required_free_bytes) || Number(row.required_free_bytes) <= 0
     || !Array.isArray(row.changes) || !row.changes.every(item => typeof item === 'string')) throw new Error('ota_manifest_invalid')
   return {
     format_version: 1,

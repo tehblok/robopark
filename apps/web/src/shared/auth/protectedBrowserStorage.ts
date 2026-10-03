@@ -6,7 +6,7 @@ const DISPOSABLE_BROWSER_STORAGE_PREFIXES = [
   'robopark:res:',
   'robopark:system-operation:',
 ] as const
-const DISPOSABLE_BROWSER_STORAGE_KEYS = new Set(['robopark.recentRobots', 'robopark:system-operation'])
+const DISPOSABLE_BROWSER_STORAGE_KEYS = new Set(['robopark.recentRobots', 'robopark:system-operation', 'robopark:offline-identity:v1'])
 
 function resolveStorage(storage?: Storage): Storage | null {
   if (storage) return storage
@@ -24,7 +24,7 @@ export function clearLegacyRecentRobots(storage?: Storage): void {
   try { target.removeItem('robopark.recentRobots') } catch { /* Optional browser storage. */ }
 }
 
-export function clearProtectedBrowserStorage(storage?: Storage): void {
+export function clearProtectedBrowserStorage(storage?: Storage, options: { preserveOfflineIdentity?: boolean } = {}): void {
   const target = resolveStorage(storage)
   if (!target) return
 
@@ -34,7 +34,10 @@ export function clearProtectedBrowserStorage(storage?: Storage): void {
       .filter((key) => DISPOSABLE_BROWSER_STORAGE_KEYS.has(key) || DISPOSABLE_BROWSER_STORAGE_PREFIXES.some(
         (prefix) => key.startsWith(prefix),
       ))
-    for (const key of keys) target.removeItem(key)
+    for (const key of keys) {
+      if (options.preserveOfflineIdentity && key === 'robopark:offline-identity:v1') continue
+      target.removeItem(key)
+    }
   } catch {
     // Unavailable browser storage must not block local auth fail-close.
   }

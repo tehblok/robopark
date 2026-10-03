@@ -6,6 +6,9 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 
 _password_hasher = PasswordHasher()
+# A process-local, unusable credential keeps unknown/disabled-user verification
+# on the same Argon2 path. No request pays a separate dummy-hash generation cost.
+DUMMY_PASSWORD_HASH = _password_hasher.hash(secrets.token_urlsafe(32))
 
 #: Passwords that are long enough to pass the length rule but still trivial.
 _COMMON_PASSWORDS = frozenset(

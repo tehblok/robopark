@@ -107,6 +107,9 @@ class MediaUploadSession(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
     actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    park_id: Mapped[int | None] = mapped_column(
+        ForeignKey("parks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     media_id: Mapped[str] = mapped_column(String(64))
     issue_key: Mapped[str] = mapped_column(String(128))
     original_name: Mapped[str] = mapped_column(String(256))

@@ -1,7 +1,10 @@
 :root {
   --rp-page-gutter: 24px;
-  --rp-section-gap: 24px;
-  --rp-card-padding: 20px;
+  --rp-section-gap: 20px;
+  --rp-panel-padding: 18px;
+  --rp-panel-gap: 14px;
+  --rp-card-padding: 14px;
+  --rp-card-gap: 10px;
   --rp-form-gap: 16px;
   --rp-control-gap: 8px;
   --rp-action-gap: 12px;
@@ -20,6 +23,9 @@
   :root {
     --rp-page-gutter: 16px;
     --rp-section-gap: 16px;
-    --rp-card-padding: 16px;
+    --rp-panel-padding: 16px;
+    --rp-panel-gap: 12px;
+    --rp-card-padding: 14px;
+    --rp-card-gap: 10px;
   }
 }

@@ -16,10 +16,12 @@ for (const width of [390, 1440]) test(`Classic preserves diagnostic draft and wr
   await page.getByLabel('Координата X').fill('0.4')
   await expect(page.getByLabel('Название ошибки', { exact: true })).toHaveValue('Проверить передний лидар')
   await expect(page.getByLabel('Координата X')).toHaveValue('0.4')
-  await expect(page.locator('.rp-diagnostic-form')).toHaveCSS('padding', width < 900 ? '14px' : '20px')
+  await geometry(page)
   await page.getByRole('button', { name: 'Сохранить правило' }).click()
   await expect.poll(() => saves).toBe(1)
   await expect(page.getByRole('button', { name: 'Открыть правило Проверить передний лидар', includeHidden: true })).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Сохранить правило' })).toBeEnabled()
+  await settlePage(page)
   await assertNoSeriousA11yViolations(page)
   await page.evaluate(() => { (document.activeElement as HTMLElement)?.blur(); window.scrollTo(0, 0) })
   await page.screenshot({ path: info.outputPath('diagnostic-classic.png'), fullPage: true })
@@ -173,7 +175,7 @@ for (const theme of ['light', 'dark'] as const) for (const width of [320, 390, 7
     await settlePage(page); await geometry(page)
     const tabs = page.getByRole('tablist', { name: 'Настройки проверки робота' })
     expect(await tabs.evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
-    await expect(page.getByRole('link', { name: 'Администрирование', exact: true }).first()).toHaveAttribute('aria-current', 'true')
+    await expect(tabs.getByRole('tab', { name: 'Ошибки', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.screenshot({ path: info.outputPath(`editor-list-${theme}-${width}.png`), fullPage: true, animations: 'disabled' })
     await page.getByRole('button', { name: `Открыть правило ${rule.title}` }).click()
     if (width >= 600) {
@@ -187,8 +189,10 @@ for (const theme of ['light', 'dark'] as const) for (const width of [320, 390, 7
     const box = (await photo.boundingBox())!
     expect(box.width / box.height).toBeCloseTo(1547 / 2176, 2)
     await page.touchscreen.tap(box.x + box.width * .3, box.y + box.height * .7)
-    expect(Number(await page.getByLabel('Координата X').inputValue())).toBeCloseTo(.3, 2)
-    expect(Number(await page.getByLabel('Координата Y').inputValue())).toBeCloseTo(.7, 2)
+    // Touch injection can round to CSS pixels. Keep a one-pixel placement bound
+    // even on narrow photos, plus the editor's four-decimal storage rounding.
+    expect(Math.abs(Number(await page.getByLabel('Координата X').inputValue()) - .3) * box.width).toBeLessThanOrEqual(1 + box.width * .00005)
+    expect(Math.abs(Number(await page.getByLabel('Координата Y').inputValue()) - .7) * box.height).toBeLessThanOrEqual(1 + box.height * .00005)
     await page.getByLabel('Координата X').fill('0.4'); await page.getByLabel('Координата Y').fill('0.3')
     await page.getByLabel('Координата Y').press('ArrowUp')
     await expect(page.getByLabel('Координата Y')).toHaveValue('0.3001')

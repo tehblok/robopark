@@ -12,6 +12,31 @@ describe('NotificationCenter', () => {
     await waitFor(() => expect(markRead).toHaveBeenCalledWith('n1'))
   })
 
+  it('keeps an unread notification when marking it read fails and retries', async () => {
+    const markRead = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ ok: true })
+    render(<NotificationCenter apiClient={{ notificationInbox: async () => [{ id: 'n1', event_type: 'return', park_id: 1, protected_text: 'Задача вернулась', read_at: null, created_at: '2026-09-20T10:00:00Z' }], notificationRead: markRead }} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Прочитано' }))
+
+    expect(await screen.findByText('Не удалось отметить уведомление прочитанным.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Прочитано' }))
+    await waitFor(() => expect(markRead).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('button', { name: 'Прочитано' })).not.toBeInTheDocument()
+  })
+
+  it('retries an unavailable internal inbox', async () => {
+    const notificationInbox = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce([{ id: 'n2', event_type: 'report', park_id: 1, protected_text: 'Поступил репорт', read_at: null, created_at: '2026-09-20T10:00:00Z' }])
+    render(<NotificationCenter apiClient={{ notificationInbox, notificationRead: async () => ({ ok: true }) }} />)
+
+    expect(await screen.findByText('Не удалось загрузить уведомления')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
+    expect(await screen.findByText('Поступил репорт')).toBeVisible()
+    expect(notificationInbox).toHaveBeenCalledTimes(2)
+  })
+
   it('enables device notifications only after the user presses the button', async () => {
     const pushSubscribe = vi.fn(async () => ({}))
     const subscribe = vi.fn(async () => ({

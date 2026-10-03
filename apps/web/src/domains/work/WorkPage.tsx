@@ -11,6 +11,7 @@ import { PageLayout } from '../../design-system/layout/PageLayout'
 import { useParkScope } from '../../app/park/parkScope'
 import { classifyApiError, type DomainError } from '../../shared/api/classifyApiError'
 import { useCachedResource } from '../../lib/resource'
+import { useMinuteClock } from '../../lib/useMinuteClock'
 import {
   IssueWorkbench,
   type IssueWorkbenchApiClient,
@@ -48,7 +49,7 @@ function WorkPageOwner({
   const navigate = useNavigate()
   const { parkId, selectedPark, loading } = useParkScope()
   const refreshStarted = useRef(false)
-  const [now, setNow] = useState(() => Date.now())
+  const now = useMinuteClock()
   const [authorizationFailure, setAuthorizationFailure] = useState<DomainError | null>(null)
   const [summaryOpen, setSummaryOpen] = useState(false)
   const summary = useCachedResource<DashboardSummary>(
@@ -59,23 +60,11 @@ function WorkPageOwner({
   useEffect(() => {
     if (user.role !== 'driver') return
     const status = params.get('status')
-    if (!status || status === 'new' || status === 'moving') return
+    if (!status || status === 'all' || status === 'new' || status === 'moving') return
     const normalized = new URLSearchParams(params)
     normalized.set('status', 'new')
     navigate({ pathname: location.pathname, search: normalized.toString() }, { replace: true })
   }, [location.pathname, navigate, params, user.role])
-  useEffect(() => {
-    let timer = 0
-    const schedule = () => {
-      const delay = 60_000 - (Date.now() % 60_000)
-      timer = window.setTimeout(() => {
-        setNow(Date.now())
-        schedule()
-      }, delay)
-    }
-    schedule()
-    return () => window.clearTimeout(timer)
-  }, [])
   const observeAuthorizationFailure = useCallback(async (error: unknown) => {
     if (refreshStarted.current) return
     refreshStarted.current = true
@@ -122,7 +111,7 @@ function WorkPageOwner({
     queue,
     status: user.role === 'driver' ? 'new' : 'queued',
   })
-  const state = user.role === 'driver' && parsedState.filters.status !== 'new' && parsedState.filters.status !== 'moving'
+  const state = user.role === 'driver' && parsedState.filters.status != null && parsedState.filters.status !== 'new' && parsedState.filters.status !== 'moving'
     ? { ...parsedState, filters: { ...parsedState.filters, status: 'new' } }
     : parsedState
   const writeState = (
@@ -146,7 +135,7 @@ function WorkPageOwner({
       description={`Парк: ${selectedPark.name} · открытые блокеры`}
       title="Работа"
     >
-      <section className="rp-work-summary">
+      <section className="rp-work-summary" data-open={summaryOpen}>
         <button aria-expanded={summaryOpen} onClick={() => setSummaryOpen(open => !open)} type="button">Сводка смены</button>
         {summaryOpen ? <div className="rp-work-summary__content">
           {summary.error ? <p role="alert">Не удалось загрузить сводку.</p> : null}

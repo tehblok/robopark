@@ -1,7 +1,7 @@
 import { useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
 import './Tabs.css'
 
-export type TabItem = { id: string; label: string; count?: number }
+export type TabItem = { id: string; label: string; accessibleLabel?: string; count?: number }
 
 export function Tabs({
   items,
@@ -10,13 +10,15 @@ export function Tabs({
   ariaLabel,
   panelIdFor,
   variant = 'primary',
+  wrapOnPhone = false,
 }: {
   items: readonly TabItem[]
   value: string
   onChange: (id: string) => void
   ariaLabel: string
   panelIdFor: (id: string) => string
-  variant?: 'primary' | 'secondary'
+  variant?: 'primary' | 'secondary' | 'plain'
+  wrapOnPhone?: boolean
 }) {
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
   const hasSelection = items.some(item => item.id === value)
@@ -46,7 +48,7 @@ export function Tabs({
     <div
       aria-label={ariaLabel}
       aria-orientation="horizontal"
-      className={`rp-tabs rp-tabs--${variant}`}
+      className={`rp-tabs rp-tabs--${variant}${wrapOnPhone ? ' rp-tabs--phone-wrap' : ''}`}
       role="tablist"
       style={{ '--rp-tab-count': items.length } as CSSProperties}
     >
@@ -54,6 +56,7 @@ export function Tabs({
         const active = item.id === value
         return (
           <button
+            aria-label={item.accessibleLabel}
             aria-controls={panelIdFor(item.id)}
             aria-selected={active}
             className="rp-tabs__tab"

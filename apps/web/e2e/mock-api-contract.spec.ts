@@ -1,7 +1,17 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './support/persistentWebKit'
+import { startHttpFixture } from './support/httpFixture'
 import { installMockApi, type MockRoute } from './support/mockApi'
 
 test('custom handlers receive standards-based DOM requests with query, JSON, and multipart bytes', async ({ page }) => {
+  const multipart = await startHttpFixture(async request => {
+    const form = await request.formData()
+    const file = form.get('file')
+    if (!(file instanceof File)) throw new Error('Expected a DOM File')
+    return Response.json({
+      kind: form.get('kind'),
+      file: { name: file.name, type: file.type, size: file.size, contents: await file.text() },
+    })
+  })
   const routes: MockRoute[] = [
     {
       method: 'GET',
@@ -18,54 +28,51 @@ test('custom handlers receive standards-based DOM requests with query, JSON, and
       path: '/api/contract/json',
       handler: async (request) => ({ json: await request.json() }),
     },
-    {
-      method: 'POST',
-      path: /^\/api\/contract\/multipart$/,
-      handler: async (request) => {
-        const form = await request.formData()
-        const file = form.get('file')
-        if (!(file instanceof File)) throw new Error('Expected a DOM File')
-        return {
-          json: {
-            kind: form.get('kind'),
-            file: { name: file.name, type: file.type, size: file.size },
-          },
-        }
-      },
-    },
   ]
 
-  await installMockApi(page, { routes })
-  await page.goto('/login')
+  try {
+    await installMockApi(page, { routes })
+    await page.route('**/api/contract/multipart', route => route.continue({ url: `${multipart.origin}/api/contract/multipart` }))
+    await page.goto('/login')
+    await page.evaluate(() => {
+      const input = document.createElement('input')
+      input.id = 'contract-file'
+      input.type = 'file'
+      document.body.append(input)
+    })
+    await page.locator('#contract-file').setInputFiles({ name: 'robot.txt', mimeType: 'text/plain', buffer: Buffer.from('robot') })
 
-  const observed = await page.evaluate(async () => {
-    const form = new FormData()
-    form.set('kind', 'device_photo')
-    form.set('file', new File(['robot'], 'robot.txt', { type: 'text/plain' }))
+    const observed = await page.evaluate(async () => {
+      const form = new FormData()
+      form.set('kind', 'device_photo')
+      form.set('file', (document.querySelector('#contract-file') as HTMLInputElement).files![0])
 
-    const [queryResponse, jsonResponse, multipartResponse] = await Promise.all([
-      fetch('/api/contract/query?park=7'),
-      fetch('/api/contract/json', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ issue: 'ROBOPARK-42' }),
-      }),
-      fetch('/api/contract/multipart', { method: 'POST', body: form }),
-    ])
+      const [queryResponse, jsonResponse, multipartResponse] = await Promise.all([
+        fetch('/api/contract/query?park=7'),
+        fetch('/api/contract/json', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ issue: 'ROBOPARK-42' }),
+        }),
+        fetch('/api/contract/multipart', { method: 'POST', body: form }),
+      ])
 
-    return {
-      query: await queryResponse.json(),
-      json: await jsonResponse.json(),
-      multipart: await multipartResponse.json(),
-    }
-  })
+      return {
+        query: await queryResponse.json(),
+        json: await jsonResponse.json(),
+        multipart: await multipartResponse.json(),
+      }
+    })
 
-  expect(observed.query).toEqual({ method: 'GET', query: '7' })
-  expect(observed.json).toEqual({ issue: 'ROBOPARK-42' })
-  expect(observed.multipart).toEqual({
-    kind: 'device_photo',
-    file: { name: 'robot.txt', type: 'text/plain', size: 5 },
-  })
+    expect(observed.query).toEqual({ method: 'GET', query: '7' })
+    expect(observed.json).toEqual({ issue: 'ROBOPARK-42' })
+    expect(observed.multipart).toEqual({
+      kind: 'device_photo',
+      file: { name: 'robot.txt', type: 'text/plain', size: 5, contents: 'robot' },
+    })
+  } finally {
+    await multipart.close()
+  }
 })
 
 test('custom routes precede pathname-only defaults and missing fixtures fail loudly', async ({ page }) => {

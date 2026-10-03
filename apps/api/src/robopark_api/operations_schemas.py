@@ -1,9 +1,9 @@
 """Shared Overview/Analytics contract. Null means unavailable, never an invented zero."""
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from robopark_api.schemas import BlockerOut
 
@@ -33,6 +33,15 @@ class FlowOut(BaseModel):
 class OverdueTaskOut(BlockerOut):
     age_hours: float
     overdue_hours: float
+
+
+class TaskTimingOut(BaseModel):
+    issue_key: str
+    queue_started_at: datetime | None
+    sla_deadline: datetime | None
+    sla_working_hours: float | None
+    sla_timezone: str | None = None
+    downtime_hours: float | None
 
 
 class SlaOut(BaseModel):
@@ -65,22 +74,15 @@ class OperatorLoadOut(BaseModel):
 class OperationsOverviewOut(BaseModel):
     park_id: int
     generated_at: datetime
-    timezone: Literal["Europe/Moscow"] = "Europe/Moscow"
+    timezone: str
     status_options: list[StatusOptionOut]
     selected_status: str
     counts: dict[str, int]
     tasks: list[BlockerOut]
+    task_timing: list[TaskTimingOut]
     tasks_total: int
     tasks_truncated: bool
     flow: FlowOut
     sla: SlaOut
     workload: list[WorkloadOut] | None
     operators: list[OperatorLoadOut] | None
-
-
-class SlaPolicyUpdate(BaseModel):
-    target_hours: Annotated[int, Field(strict=True, ge=1, le=8760)] | None
-
-
-class SlaPolicyOut(SlaPolicyUpdate):
-    park_id: int

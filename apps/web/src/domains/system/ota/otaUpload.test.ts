@@ -37,6 +37,11 @@ describe('OTA client pipeline', () => {
     const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
     await expect(inspectOtaFile(new File([buffer], 'release.ota'))).resolves.toEqual(manifest)
     await expect(inspectOtaFile(new File([buffer], 'release.zip'))).rejects.toThrow('ota_filename_invalid')
+    const invalid = storedZip('manifest.json', new TextEncoder().encode(JSON.stringify({
+      ...manifest, required_free_bytes: 0,
+    })))
+    const invalidBuffer = invalid.buffer.slice(invalid.byteOffset, invalid.byteOffset + invalid.byteLength) as ArrayBuffer
+    await expect(inspectOtaFile(new File([invalidBuffer], 'invalid.ota'))).rejects.toThrow('ota_manifest_invalid')
   })
 
   it('hashes incrementally and reports final progress', async () => {
@@ -48,6 +53,7 @@ describe('OTA client pipeline', () => {
   it('resumes at the server offset and sends bounded chunks before finalizing', async () => {
     const offsets: number[] = []
     const client: OtaUploadClient = {
+      list: vi.fn(),
       create: vi.fn().mockResolvedValue(upload()), offset: vi.fn().mockResolvedValue(4),
       append: vi.fn().mockImplementation(async (_id, offset, chunk) => { offsets.push(offset); return offset + chunk.size }),
       finalize: vi.fn().mockResolvedValue(upload({ offset: 10, state: 'verified' })), remove: vi.fn(),

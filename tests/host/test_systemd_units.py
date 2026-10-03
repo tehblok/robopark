@@ -32,7 +32,12 @@ def test_tuna_requires_ready_application_and_bounded_restart():
 
 
 def test_boot_never_builds_or_uses_a_mutable_compose_config():
-    app = unit("robopark.service")["Service"]
+    service = unit("robopark.service")
+    app = service["Service"]
+    assert app["ExecStartPre"].endswith("robopark restore --boot-recover")
+    assert app.get("User", "root") == "root"
+    assert int(app["TimeoutStartSec"]) >= 1800
+    assert service["Install"]["WantedBy"] == "multi-user.target"
     assert "-/run/lock/robopark" in app["ReadWritePaths"].split()
     for directive in ("ExecStart", "ExecStop"):
         command = app[directive].split()
@@ -59,6 +64,20 @@ def test_worker_start_failure_does_not_block_api_and_web_boot():
 def test_command_consumer_can_open_the_shared_stable_host_lock():
     service = unit("robopark-commands.service")["Service"]
     assert "-/run/lock/robopark" in service["ReadWritePaths"].split()
+
+
+def test_command_consumer_can_write_only_supported_backup_mount_roots():
+    service = unit("robopark-commands.service")["Service"]
+    writable = set(service["ReadWritePaths"].split())
+
+    assert {
+        "/var/backups/robopark",
+        "-/mnt",
+        "-/media",
+        "-/run/media",
+    } <= writable
+    assert "/usr" not in writable
+    assert "/var/lib/docker/volumes" not in writable
 
 
 def test_boot_recreates_stable_lock_directory_before_sandboxed_units_start():
@@ -144,6 +163,15 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     def run(command):
         nonlocal built
         calls.append(command)
+        if command[:3] == ["docker", "buildx", "inspect"]:
+            return f"Name: {command[-1]}\nDriver: docker-container\n"
+        if command[:2] == ["docker", "inspect"]:
+            builder = command[-1].removeprefix("buildx_buildkit_").removesuffix("0")
+            return json.dumps(["ROBOPARK_BUILDER_OWNER=" + builder])
+        if command[:3] == ["docker", "buildx", "prune"]:
+            return ""
+        if command[:3] == ["docker", "buildx", "du"]:
+            return ""
         if "config" in command:
             return json.dumps(
                 {
@@ -176,6 +204,8 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
         if "build" in command:
             built = True
             return ""
+        if "pull" in command:
+            return ""
         if command[:3] == ["docker", "image", "inspect"]:
             assert built, "must build before resolving image identity"
             return "sha256:" + ("1" if "api" in command[-1] else "2") * 64
@@ -183,9 +213,16 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
 
     bootstrap_compose(host_paths, run)
     build_calls = [command for command in calls if "build" in command]
-    assert [command[-2:] for command in build_calls] == [
-        ["build", "api"],
-        ["build", "web"],
+    builder = json.loads((host_paths.state / "buildkit-builder.json").read_text())["name"]
+    pull = [command for command in calls if "pull" in command]
+    assert len(pull) == 1 and pull[0][-2:] == ["pull", "db"]
+    assert calls.index(pull[0]) < calls.index(["docker", "image", "inspect", "--format", "{{.Id}}", "postgres:17.11-alpine"])
+    assert [command[-4:] for command in build_calls] == [
+        ["build", "--builder", builder, "api"],
+        ["build", "--builder", builder, "web"],
+    ]
+    assert [command for command in calls if command[:3] == ["docker", "buildx", "prune"]] == [
+        ["docker", "buildx", "prune", "--builder", builder, "-f", "--all", "--max-used-space", "2000000000"]
     ]
     target = host_paths.state / "current-compose.json"
     document = json.loads(target.read_text())
@@ -201,6 +238,20 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     assert worker["depends_on"] == {
         "db": {"condition": "service_healthy"},
         "api": {"condition": "service_healthy"},
+    }
+    assert worker["healthcheck"] == {
+        "test": [
+            "CMD",
+            "python",
+            "-m",
+            "robopark_api.worker_healthcheck",
+            "--max-age-seconds",
+            "120",
+        ],
+        "interval": "15s",
+        "timeout": "15s",
+        "start_period": "45s",
+        "retries": 3,
     }
     assert "worker" not in api.get("depends_on", {})
     assert document["services"]["web"]["image"] == "sha256:" + "2" * 64
@@ -261,9 +312,9 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
     bootstrap_compose(host_paths, run)
 
     build_calls = [command for command in calls if "build" in command]
-    assert [command[-2:] for command in build_calls] == [
-        ["build", "api"],
-        ["build", "web"],
+    assert [command[-4:] for command in build_calls] == [
+        ["build", "--builder", builder, "api"],
+        ["build", "--builder", builder, "web"],
     ]
     assert json.loads(target.read_text())["x-robopark-release"] == str(
         next_release.resolve()
@@ -294,6 +345,11 @@ def test_runtime_bootstrap_source_compose_receives_complete_external_file_contra
     host_paths.current.symlink_to(release)
 
     def run(command):
+        if command[:3] == ["docker", "buildx", "inspect"]:
+            return f"Name: {command[-1]}\nDriver: docker-container\n"
+        if command[:3] == ["docker", "inspect", "--type"]:
+            builder = command[-1].removeprefix("buildx_buildkit_").removesuffix("0")
+            return json.dumps(["ROBOPARK_BUILDER_OWNER=" + builder])
         if "config" in command:
             for key, name in (
                 ("ROBOPARK_POSTGRES_PASSWORD_FILE", "postgres-password"),
@@ -305,6 +361,8 @@ def test_runtime_bootstrap_source_compose_receives_complete_external_file_contra
                 command, check=True, capture_output=True, text=True
             ).stdout
         if "build" in command:
+            return ""
+        if "pull" in command:
             return ""
         if command[:3] == ["docker", "image", "inspect"]:
             return "sha256:" + ("1" if "api" in command[-1] else "2") * 64
@@ -366,7 +424,7 @@ def test_tuna_script_never_starts_tunnel_until_readiness(tmp_path):
     fake.mkdir()
     log = tmp_path / "commands"
     for name, code in {
-        "curl": 'echo "$*" >> "$TEST_LOG"; exit "${UNREADY:-0}"',
+        "python3": 'echo "$*" >> "$TEST_LOG"; exit "${UNREADY:-0}"',
         "sleep": ":",
         "tuna": 'echo STARTED >> "$TEST_LOG"',
     }.items():
@@ -398,6 +456,29 @@ def test_tuna_script_never_starts_tunnel_until_readiness(tmp_path):
     assert log.read_text().endswith("STARTED\n")
 
 
+def test_tuna_script_does_not_require_curl(tmp_path):
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    log = tmp_path / "commands"
+    for name, code in {
+        "python3": 'echo READY >> "$TEST_LOG"',
+        "tuna": 'echo STARTED >> "$TEST_LOG"',
+        "curl": 'echo CURL_USED >> "$TEST_LOG"; exit 1',
+        "sleep": ":",
+    }.items():
+        path = fake / name
+        path.write_text("#!/bin/sh\n" + code + "\n")
+        path.chmod(0o755)
+    result = subprocess.run(
+        ["sh", str(REPO / "deploy/tuna-http.sh")],
+        env={**os.environ, "PATH": str(fake) + ":" + os.environ["PATH"], "TEST_LOG": str(log)},
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert log.read_text() == "READY\nSTARTED\n"
+
+
 def test_api_gate_image_uses_repository_context_and_canonical_entrypoint():
     path = REPO / "deploy/Dockerfile.api-tests"
     assert path.exists(), "missing isolated API verification target"
@@ -424,6 +505,11 @@ def test_bootstrap_rejects_unresolved_images_without_publishing_state(host_paths
     host_paths.current.symlink_to(release)
 
     def run(command):
+        if command[:3] == ["docker", "buildx", "inspect"]:
+            return f"Name: {command[-1]}\nDriver: docker-container\n"
+        if command[:3] == ["docker", "inspect", "--type"]:
+            builder = command[-1].removeprefix("buildx_buildkit_").removesuffix("0")
+            return json.dumps(["ROBOPARK_BUILDER_OWNER=" + builder])
         if "config" in command:
             return json.dumps(
                 {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildClaimAction,
   buildCommentAction,
   buildHandoffAction,
   buildInventoryWriteoffAction,
@@ -9,6 +10,13 @@ import {
 const common = { issueKey: 'RP-77', parkId: 7, id: '12345678-action', now: 1_789_000_000_000 }
 
 describe('offline task actions', () => {
+  it('keeps the park and stable identity for a queued claim', () => {
+    expect(buildClaimAction(common)).toMatchObject({
+      id: common.id, idempotencyKey: common.id, action: 'claim', resourceId: common.issueKey,
+      payload: { park_id: common.parkId }, dependencies: [],
+    })
+  })
+
   it('builds an optimistic comment and keeps one stable replay identity', () => {
     const result = buildCommentAction({ ...common, author: 'Механик', text: 'Заменил колесо' })
 

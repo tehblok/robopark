@@ -1,6 +1,5 @@
-// @vitest-environment node
 import assert from 'node:assert/strict'
-import { test } from 'vitest'
+import { test } from 'node:test'
 import { checkNavigationSources } from './check-nav.mjs'
 
 test('structural parser accepts quoted and unquoted keys, comments and const assertions', () => {

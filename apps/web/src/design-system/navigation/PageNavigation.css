@@ -1,0 +1,3 @@
+.rp-page-navigation{display:flex;align-items:center;justify-content:center;gap:var(--rp-form-gap);flex-wrap:wrap;margin-block-start:var(--rp-section-gap)}
+.rp-page-navigation>span{color:var(--rp-text-muted);font-size:var(--rp-font-size-sm);text-align:center}
+@media(max-width:599px){.rp-page-navigation>span{order:-1;inline-size:100%}.rp-page-navigation>.rp-button{flex:1 1 auto}}

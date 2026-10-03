@@ -1,6 +1,7 @@
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 
 import pytest
@@ -12,6 +13,7 @@ from conftest import login_as, role_id_for
 from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.db import get_db
 from robopark_api.models import AccessStatus, AuditLog, Park, User, UserPark
+from robopark_api.schedule_models import ScheduleEntry
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings, rbac
 from robopark_api.task_workflow_models import (
@@ -41,7 +43,7 @@ def _issue():
     }
 
 
-def _prepare_tracker(db_session, monkeypatch, *, with_operator=True):
+def _prepare_tracker(db_session, monkeypatch, *, with_operator=True, operator_on_shift=True):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import tracker_client
 
@@ -49,7 +51,21 @@ def _prepare_tracker(db_session, monkeypatch, *, with_operator=True):
     if with_operator:
         park = db_session.scalar(select(UserPark.park_id).where(UserPark.user_id.is_not(None)))
         assert park is not None
-        _operator(db_session, db_session.get(Park, park))
+        operator = _operator(db_session, db_session.get(Park, park))
+        if operator_on_shift:
+            now = datetime.now(UTC)
+            db_session.add(
+                ScheduleEntry(
+                    owner_user_id=operator.id,
+                    park_id=park,
+                    kind="shift",
+                    start_at=now - timedelta(hours=1),
+                    end_at=now + timedelta(hours=1),
+                    created_by_user_id=operator.id,
+                    updated_by_user_id=operator.id,
+                )
+            )
+            db_session.commit()
 
 
 def _operator(db_session, park):
@@ -166,6 +182,39 @@ def test_workflow_uses_actual_queue_time_not_creation_time(db_session, seed_mech
     assert result["queued_at_source"] == ("tracker_history" if queued_at else None)
 
 
+def test_workflow_exposes_failed_operator_assignment_before_dependency_error(
+    db_session, seed_mechanic
+):
+    from robopark_api.services import task_lifecycle
+    from robopark_api.services.reliable_actions import begin_action, mark_needs_attention
+
+    for action_name, error_code in (
+        ("assign_operator", "tracker_error"),
+        ("review", "prerequisite_failed"),
+    ):
+        action = begin_action(
+            db_session,
+            actor=seed_mechanic,
+            resource_type="tracker_issue",
+            resource_id=ISSUE_KEY,
+            action=action_name,
+            idempotency_key=f"failure-{action_name}",
+            payload={},
+        ).row
+        mark_needs_attention(db_session, action, error_code=error_code)
+    db_session.commit()
+
+    result = task_lifecycle.workflow(
+        db_session,
+        issue_key=ISSUE_KEY,
+        viewer=seed_mechanic,
+        issue=_issue(),
+    )
+
+    assert result["sync_state"] == "needs_attention"
+    assert result["sync_error_code"] == "tracker_operator_assignment_failed"
+
+
 def test_cannot_claim_task_already_closed_in_tracker(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
@@ -226,6 +275,61 @@ def test_failed_close_is_not_presented_as_confirmed_closure(
     assert result.json()["workflow"]["display_status"] == "closing"
 
 
+def test_tracker_external_close_resolves_pending_close_before_reopened_claim(
+    client,
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+    monkeypatch,
+):
+    _prepare_tracker(db_session, monkeypatch)
+    operator = _operator(db_session, seed_park_with_tracker)
+    assert _claim(client, seed_mechanic).status_code == 200
+    assert _submit(client, comment="Исправлено").status_code == 200
+    login_as(client, operator.username, "secret")
+    assert (
+        client.post(
+            f"/tracker/issues/{ISSUE_KEY}/review/approve",
+            headers={"Idempotency-Key": "close-external-51"},
+        ).status_code
+        == 200
+    )
+    close_action = db_session.scalar(
+        select(ReliableAction).where(
+            ReliableAction.resource_id == ISSUE_KEY,
+            ReliableAction.action == "close",
+        )
+    )
+    close_action.state = "needs_attention"
+    db_session.commit()
+
+    from robopark_api.services import tracker_cache, tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **kw: {
+            **_issue(),
+            "status": "Закрыта",
+            "status_key": "closed",
+        },
+    )
+    tracker_cache.invalidate_issue(ISSUE_KEY)
+    assert client.get(f"/tracker/issues/{ISSUE_KEY}").status_code == 200
+    db_session.refresh(close_action)
+    assert close_action.state == "succeeded"
+
+    monkeypatch.setattr(tracker_client, "get_issue", lambda **kw: _issue())
+    tracker_cache.invalidate_issue(ISSUE_KEY)
+    login_as(client, seed_mechanic.username, "secret")
+    reopened = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/claim",
+        headers={"Idempotency-Key": "claim-reopened-51"},
+    )
+    assert reopened.status_code == 200
+    assert db_session.get(TrackerClaim, ISSUE_KEY) is not None
+
+
 def test_external_tracker_close_finishes_local_review_and_claim_once(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
@@ -252,10 +356,192 @@ def test_external_tracker_close_finishes_local_review_and_claim_once(
     assert db_session.query(TrackerClaim).count() == 0
     assert (
         db_session.query(TaskMessage)
-        .filter(TaskMessage.external_id == "tracker-external-close")
+        .filter(TaskMessage.external_id.like("tracker-external-close:%"))
         .count()
         == 1
     )
+
+
+def test_external_tracker_close_after_reopen_finishes_each_repair_cycle(
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+):
+    from robopark_api.services import task_lifecycle
+    from robopark_api.services.tracker_claims import claim_issue, get_claim
+
+    for _ in range(2):
+        claim_issue(
+            db_session,
+            actor=seed_mechanic,
+            owner=seed_mechanic,
+            issue_key=ISSUE_KEY,
+            park_id=seed_park_with_tracker.id,
+        )
+        db_session.commit()
+        task_lifecycle.reconcile_external_closure(
+            db_session,
+            {"key": ISSUE_KEY, "status_key": "closed"},
+        )
+        assert get_claim(db_session, ISSUE_KEY) is None
+
+    messages = db_session.scalars(
+        select(TaskMessage).where(
+            TaskMessage.issue_key == ISSUE_KEY,
+            TaskMessage.external_id.like("tracker-external-close:%"),
+        )
+    ).all()
+    assert len(messages) == 2
+    assert len({message.external_id for message in messages}) == 2
+    assert (
+        len(
+            db_session.scalars(
+                select(AuditLog).where(
+                    AuditLog.target_id == ISSUE_KEY,
+                    AuditLog.action == "task.external_close",
+                )
+            ).all()
+        )
+        == 2
+    )
+
+
+def test_external_close_marks_cycle_with_only_delivered_local_message(
+    db_session,
+    seed_mechanic,
+):
+    from robopark_api.services import task_lifecycle
+
+    db_session.add(
+        TaskMessage(
+            id="delivered-before-close",
+            issue_key=ISSUE_KEY,
+            kind="user",
+            author_user_id=seed_mechanic.id,
+            author_name=seed_mechanic.username,
+            text="Ремонт завершён",
+            sync_state="synced",
+            created_at=1,
+            updated_at=1,
+        )
+    )
+    db_session.commit()
+
+    for _ in range(2):
+        task_lifecycle.reconcile_external_closure(
+            db_session,
+            {"key": ISSUE_KEY, "status_key": "closed"},
+        )
+
+    markers = db_session.scalars(
+        select(TaskMessage).where(
+            TaskMessage.issue_key == ISSUE_KEY,
+            TaskMessage.external_id.like("tracker-external-close:%"),
+        )
+    ).all()
+    assert len(markers) == 1
+    assert markers[0].created_at > 1
+
+
+def test_reopened_workflow_only_reports_sync_from_current_repair_cycle(
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+):
+    from robopark_api.services import task_lifecycle
+    from robopark_api.services.reliable_actions import begin_action
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key=ISSUE_KEY,
+        park_id=seed_park_with_tracker.id,
+    )
+    old = begin_action(
+        db_session,
+        actor=seed_mechanic,
+        resource_type="tracker_issue",
+        resource_id=ISSUE_KEY,
+        action="comment",
+        idempotency_key="old-comment-51",
+        payload={"text": "Старый комментарий"},
+    ).row
+    db_session.commit()
+    task_lifecycle.reconcile_external_closure(
+        db_session,
+        {"key": ISSUE_KEY, "status_key": "closed"},
+    )
+    assert old.state == "pending"  # The local text remains available for review.
+    reopened = task_lifecycle.workflow(
+        db_session,
+        issue_key=ISSUE_KEY,
+        viewer=seed_mechanic,
+        issue=_issue(),
+    )
+    assert reopened["sync_state"] == "saved"
+
+    current = begin_action(
+        db_session,
+        actor=seed_mechanic,
+        resource_type="tracker_issue",
+        resource_id=ISSUE_KEY,
+        action="comment",
+        idempotency_key="new-comment-51",
+        payload={"text": "Новый комментарий"},
+    ).row
+    db_session.commit()
+    assert current.created_at > old.created_at
+    reopened = task_lifecycle.workflow(
+        db_session,
+        issue_key=ISSUE_KEY,
+        viewer=seed_mechanic,
+        issue=_issue(),
+    )
+    assert reopened["sync_state"] == "pending"
+
+
+def test_new_repair_transition_does_not_depend_on_failed_previous_cycle(
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+):
+    from robopark_api.services import task_lifecycle
+    from robopark_api.services.reliable_actions import begin_action
+    from robopark_api.services.tracker_claims import claim_issue
+
+    claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key=ISSUE_KEY,
+        park_id=seed_park_with_tracker.id,
+    )
+    old = begin_action(
+        db_session,
+        actor=seed_mechanic,
+        resource_type="tracker_issue",
+        resource_id=ISSUE_KEY,
+        action="review",
+        idempotency_key="old-review-51",
+        payload={},
+    ).row
+    old.state = "needs_attention"
+    db_session.commit()
+    task_lifecycle.reconcile_external_closure(
+        db_session,
+        {"key": ISSUE_KEY, "status_key": "closed"},
+    )
+    new = task_lifecycle._transition_action(
+        db_session,
+        actor=seed_mechanic,
+        issue_key=ISSUE_KEY,
+        action="review",
+        idempotency_key="new-review-51",
+        payload={},
+    ).row
+    assert old.id not in json.loads(new.payload_json).get("depends_on_action_ids", [])
 
 
 def test_claim_is_atomic_idempotent_and_never_calls_tracker_mutations(
@@ -302,17 +588,230 @@ def test_claim_is_atomic_idempotent_and_never_calls_tracker_mutations(
     assert "Задача взята в работу" in db_session.query(TaskMessage).one().text
 
 
-def test_claim_rejects_before_mutation_when_park_has_no_operator(
+def test_mechanic_can_claim_open_diagnostic_task_without_changing_role_rules(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch, with_operator=False)
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {**_issue(), "status": "Диагностика", "status_key": "diagnostics"},
+    )
+
+    response = _claim(client, seed_mechanic)
+
+    assert response.status_code == 200
+    assert response.json()["sync_state"] == "pending"
+    assert db_session.get(TrackerClaim, ISSUE_KEY).owner_user_id == seed_mechanic.id
+
+
+def test_mechanic_can_work_on_two_robots_at_the_same_time(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch, with_operator=False)
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **kwargs: {
+            **_issue(),
+            "key": kwargs.get("key", ISSUE_KEY),
+            "summary": f"blocker [{kwargs.get('key', ISSUE_KEY)}]",
+        },
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    first = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/claim",
+        headers={"Idempotency-Key": "two-robots-first"},
+    )
+    second_key = "ROBOPARK-52"
+    second = client.post(
+        f"/tracker/issues/{second_key}/claim",
+        headers={"Idempotency-Key": "two-robots-second"},
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert {claim.issue_key for claim in db_session.query(TrackerClaim).all()} == {
+        ISSUE_KEY,
+        second_key,
+    }
+
+
+def test_claim_without_operator_defers_tracker_assignment_until_review(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
     _prepare_tracker(db_session, monkeypatch, with_operator=False)
 
-    response = _claim(client, seed_mechanic)
+    claimed = _claim(client, seed_mechanic)
+    assert claimed.status_code == 200
+    claim = db_session.get(TrackerClaim, ISSUE_KEY)
+    assert claim is not None
+    assert claim.owner_user_id == seed_mechanic.id
+    assert claim.operator_user_id is None
+    assert [
+        row.action
+        for row in db_session.scalars(select(ReliableAction).order_by(ReliableAction.created_at))
+    ] == ["ensure_tag", "ensure_components", "start"]
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == "task_claim_operator_unavailable"
-    assert db_session.query(TrackerClaim).count() == 0
-    assert db_session.query(ReliableAction).count() == 0
+    unavailable = _submit(client, key="review-no-operator", comment="Ремонт завершён")
+    assert unavailable.status_code == 409
+    assert unavailable.json()["detail"] == "task_review_operator_unavailable"
+    assert db_session.query(ReliableAction).filter(ReliableAction.action == "review").count() == 0
+
+    _operator(db_session, seed_park_with_tracker)
+    reviewed = _submit(client, comment="Ремонт завершён")
+    assert reviewed.status_code == 200
+    actions = list(db_session.scalars(select(ReliableAction).order_by(ReliableAction.created_at)))
+    assignment = next(row for row in actions if row.action == "assign_operator")
+    review = next(row for row in actions if row.action == "review")
+    assert assignment.id in json.loads(review.payload_json)["depends_on_action_ids"]
+    assert db_session.get(TrackerClaim, ISSUE_KEY).operator_user_id is not None
+
+    replayed = _submit(client, comment="Ремонт завершён")
+    assert replayed.status_code == 200
+    assert (
+        db_session.query(ReliableAction).filter(ReliableAction.action == "assign_operator").count()
+        == 1
+    )
+
+
+def test_claim_with_off_shift_operator_waits_to_assign_until_review(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch, operator_on_shift=False)
+
+    claimed = _claim(client, seed_mechanic)
+    assert claimed.status_code == 200
+    claim = db_session.get(TrackerClaim, ISSUE_KEY)
+    assert claim is not None
+    assert claim.operator_user_id is None
+    assert [
+        row.action
+        for row in db_session.scalars(select(ReliableAction).order_by(ReliableAction.created_at))
+    ] == ["ensure_tag", "ensure_components", "start"]
+
+    reviewed = _submit(client, comment="Ремонт завершён")
+    assert reviewed.status_code == 200
+    assert claim.operator_user_id is not None
+    assert (
+        db_session.query(ReliableAction).filter(ReliableAction.action == "assign_operator").count()
+        == 1
+    )
+
+
+def test_review_reassigns_current_operator_after_shift_change_and_replays_same_reviewer(
+    client,
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+    monkeypatch,
+):
+    _prepare_tracker(db_session, monkeypatch)
+    first_operator = _operator(db_session, seed_park_with_tracker)
+    assert _claim(client, seed_mechanic).status_code == 200
+    claim = db_session.get(TrackerClaim, ISSUE_KEY)
+    assert claim is not None and claim.operator_user_id == first_operator.id
+
+    first_shift = db_session.scalar(
+        select(ScheduleEntry).where(
+            ScheduleEntry.owner_user_id == first_operator.id,
+        )
+    )
+    assert first_shift is not None
+    now = datetime.now(UTC)
+    first_shift.end_at = now - timedelta(minutes=1)
+    second_operator = User(
+        username="operator52",
+        password_hash=first_operator.password_hash,
+        role_id=first_operator.role_id,
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(second_operator)
+    db_session.flush()
+    db_session.add(UserPark(user_id=second_operator.id, park_id=seed_park_with_tracker.id))
+    second_shift = ScheduleEntry(
+        owner_user_id=second_operator.id,
+        park_id=seed_park_with_tracker.id,
+        kind="shift",
+        start_at=now - timedelta(hours=1),
+        end_at=now + timedelta(hours=1),
+        created_by_user_id=second_operator.id,
+        updated_by_user_id=second_operator.id,
+    )
+    db_session.add(second_shift)
+    db_session.commit()
+
+    reviewed = _submit(client, key="review-after-shift-change", comment="Исправлено")
+    assert reviewed.status_code == 200
+    db_session.refresh(claim)
+    assert claim.operator_user_id == second_operator.id
+    assignments = list(
+        db_session.scalars(
+            select(ReliableAction).where(
+                ReliableAction.resource_id == ISSUE_KEY,
+                ReliableAction.action == "assign_operator",
+            )
+        )
+    )
+    assert len(assignments) == 2
+    reassignment = next(
+        row
+        for row in assignments
+        if json.loads(row.payload_json)["operator_user_id"] == second_operator.id
+    )
+    review = db_session.scalar(
+        select(ReliableAction).where(
+            ReliableAction.resource_id == ISSUE_KEY,
+            ReliableAction.action == "review",
+        )
+    )
+    assert review is not None
+    assert reassignment.id in json.loads(review.payload_json)["depends_on_action_ids"]
+
+    second_shift.end_at = now - timedelta(minutes=1)
+    first_shift.end_at = now + timedelta(hours=1)
+    db_session.commit()
+    replayed = _submit(client, key="review-after-shift-change", comment="Исправлено")
+    assert replayed.status_code == 200
+    assert replayed.json() == reviewed.json()
+    assert db_session.query(TaskReview).one().reviewer_user_id == second_operator.id
+    assert (
+        db_session.query(ReliableAction)
+        .filter(
+            ReliableAction.resource_id == ISSUE_KEY,
+            ReliableAction.action == "assign_operator",
+        )
+        .count()
+        == 2
+    )
+
+
+def test_review_replay_survives_operator_becoming_unavailable(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _prepare_tracker(db_session, monkeypatch)
+    operator = db_session.scalar(select(User).where(User.username == "operator51"))
+    assert operator is not None
+    assert _claim(client, seed_mechanic).status_code == 200
+    submitted = _submit(client, key="review-operator-gone", comment="Ремонт завершён")
+    assert submitted.status_code == 200
+    action_count = db_session.query(ReliableAction).count()
+
+    operator.is_active = False
+    db_session.commit()
+    replay = _submit(client, key="review-operator-gone", comment="Ремонт завершён")
+
+    assert replay.status_code == 200
+    assert replay.json() == submitted.json()
+    assert db_session.query(ReliableAction).count() == action_count
+    changed = _submit(client, key="review-operator-gone", comment="Другой результат")
+    assert changed.status_code == 409
+    assert db_session.query(ReliableAction).count() == action_count
 
 
 def test_claim_replays_persisted_unmarked_start_payload_without_conflict(
@@ -448,7 +947,7 @@ def test_concurrent_claims_serialize_at_issue_boundary(
     active = 0
     maximum_active = 0
 
-    def controlled_resolve(db, *, park_id, at=None):
+    def controlled_resolve(db, *, park_id, at=None, allow_off_shift_fallback=True):
         nonlocal active, maximum_active
         with counter_lock:
             active += 1
@@ -458,7 +957,12 @@ def test_concurrent_claims_serialize_at_issue_boundary(
                 both_entered.set()
         assert release.wait(timeout=2)
         try:
-            return real_resolve(db, park_id=park_id, at=at)
+            return real_resolve(
+                db,
+                park_id=park_id,
+                at=at,
+                allow_off_shift_fallback=allow_off_shift_fallback,
+            )
         finally:
             with counter_lock:
                 active -= 1
@@ -758,6 +1262,31 @@ def test_submit_review_requires_active_claim_before_persisting_review_effects(
     assert db_session.query(TaskReview).count() == 1
 
 
+def test_second_review_key_is_rejected_before_staging_another_photo(
+    client,
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+    monkeypatch,
+):
+    from robopark_api.services import task_lifecycle
+
+    _prepare_tracker(db_session, monkeypatch)
+    assert _claim(client, seed_mechanic).status_code == 200
+    assert _submit(client, key="review-first-key", comment="Исправлено").status_code == 200
+    action_count = db_session.query(ReliableAction).count()
+
+    def reject_duplicate_staging(*_args, **_kwargs):
+        raise AssertionError("A second pending review must not stage a photo")
+
+    monkeypatch.setattr(task_lifecycle, "_write_staged_blob", reject_duplicate_staging)
+    duplicate = _submit(client, key="review-second-key", comment="Исправлено")
+
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "task_review_already_pending"
+    assert db_session.query(ReliableAction).count() == action_count
+
+
 def test_submit_review_stages_one_photo_and_all_bot_actions_once(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
@@ -799,6 +1328,7 @@ def test_submit_review_stages_one_photo_and_all_bot_actions_once(
     automatic = next(message for message in messages if "Передано на проверку" in message.text)
     assert "BD-01" in automatic.text
     assert "operator51" in automatic.text
+    assert "@operator51" not in automatic.text
 
 
 def test_rapid_review_lifecycle_builds_one_causal_transition_chain(

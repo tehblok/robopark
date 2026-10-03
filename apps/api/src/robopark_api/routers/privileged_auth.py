@@ -13,6 +13,11 @@ from robopark_api.security import hash_session_token
 from robopark_api.services import privileged_auth
 from robopark_api.services.login_throttle import LoginThrottle, client_ip
 from robopark_api.services.ops import host_bridge
+from robopark_api.services.terminal.authorization import (
+    TerminalError,
+    require_origin,
+    validate_grant_context,
+)
 
 router = APIRouter(prefix="/admin/privileged-auth", tags=["privileged-auth"])
 
@@ -48,7 +53,7 @@ class ReauthorizeIn(ConfirmIn):
 
     @model_validator(mode="after")
     def require_typed_capability_revision(self):
-        typed = self.operation_kind in set(HostOperationKind)
+        typed = self.operation_kind in set(HostOperationKind) | privileged_auth.TERMINAL_ACTIONS
         if typed and self.capability_revision is None:
             raise ValueError("capability_revision is required for typed operations")
         return self
@@ -170,13 +175,21 @@ def reauthorize(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> TokenOut:
+    def validate_context():
+        if payload.operation_kind in privileged_auth.TERMINAL_ACTIONS:
+            require_origin(request.headers, settings)
+            validate_grant_context(
+                settings, payload.operation_kind, payload.operation_id, payload.capability_revision
+            )
+        else:
+            host_bridge.require_typed_reauthorization(
+                settings, payload.operation_kind, payload.operation_id, payload.capability_revision
+            )
+
     try:
-        host_bridge.require_typed_reauthorization(
-            settings,
-            payload.operation_kind,
-            payload.operation_id,
-            payload.capability_revision,
-        )
+        validate_context()
+    except TerminalError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.reason) from exc
     except host_bridge.BridgeError as exc:
         detail = str(exc)
         raise HTTPException(
@@ -189,12 +202,9 @@ def reauthorize(
 
     def validate_capability_context() -> tuple[str, int] | None:
         try:
-            host_bridge.require_typed_reauthorization(
-                settings,
-                payload.operation_kind,
-                payload.operation_id,
-                payload.capability_revision,
-            )
+            validate_context()
+        except TerminalError as exc:
+            return exc.reason, exc.status_code
         except host_bridge.BridgeError as exc:
             detail = str(exc)
             return detail, _capability_error_status(detail)

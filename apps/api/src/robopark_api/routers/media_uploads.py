@@ -10,7 +10,7 @@ from robopark_api.media_schemas import (
     MediaUploadSessionOut,
 )
 from robopark_api.models import User
-from robopark_api.services import media_uploads, rbac
+from robopark_api.services import media_uploads
 
 router = APIRouter(prefix="/media/uploads", tags=["media-uploads"])
 
@@ -19,7 +19,6 @@ router = APIRouter(prefix="/media/uploads", tags=["media-uploads"])
 def create_upload(
     payload: MediaUploadCreateIn, user: User = Depends(require_user), db: Session = Depends(get_db)
 ):
-    rbac.assert_approved_or_staff(user)
     started = media_uploads.start(db, user, payload)
     row = started.row
     return MediaUploadSessionOut(

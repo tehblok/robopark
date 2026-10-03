@@ -125,6 +125,11 @@
 
 .rp-user-activity small { color: var(--rp-text-muted); }
 
+.rp-user-activity summary {
+  cursor: pointer;
+  font-weight: var(--rp-font-weight-medium);
+}
+
 .rp-management :is(.admin-perm-check, .toggle, .btn, input:not([type='checkbox']), select) {
   min-block-size: var(--rp-control-min-size);
 }
@@ -219,5 +224,11 @@
   .rp-management .management-grid .rp-entity-row__actions {
     grid-column: 1 / -1;
     grid-row: auto;
+  }
+}
+
+@media (max-width: 899px) {
+  .admin-users[data-detail-open='true'] > .rp-management-metrics {
+    display: none;
   }
 }

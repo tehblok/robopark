@@ -77,7 +77,28 @@ export function InventoryReceiptsView({ apiClient = api, parkId, onInventoryChan
     setListError('')
     apiClient.inventoryReceipts(parkId, { query: query.trim() || undefined, limit: pageSize, offset }).then(value => {
       if (generation === listGeneration.current) setPage(value)
-    }).catch(reason => { if (generation === listGeneration.current) { setPage(null); setListError(classifyApiError(reason, 'Не удалось загрузить поставки.').description) } })
+    }).catch(reason => {
+      if (generation !== listGeneration.current) return
+      const failure = classifyApiError(reason, 'Не удалось загрузить поставки.')
+      setPage(null)
+      setListError(failure.description)
+      if (failure.kind === 'unauthorized' || failure.kind === 'forbidden') {
+        operationGeneration.current += 1
+        partGeneration.current += 1
+        pending.current = false
+        setBusy(false)
+        setSelected(null)
+        setCreating(false)
+        setParts([])
+        setLines([])
+        setSupplier('')
+        setDocumentNumber('')
+        setComment('')
+        setAction(null)
+        setBaselinePayload(null)
+        setNotice('')
+      }
+    })
   }, [apiClient, offset, parkId, query])
 
   useEffect(() => { load(); return () => { listGeneration.current += 1 } }, [load, refreshVersion])

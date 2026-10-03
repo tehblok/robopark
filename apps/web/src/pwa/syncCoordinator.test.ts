@@ -10,9 +10,38 @@ class MemoryLeaseStore implements LeaseStore {
     return true
   }
   async releaseLease(owner: string) { if (this.owner === owner) { this.owner = null; this.until = 0 } }
+  async renewLease(owner: string, now: number, leaseMs: number) {
+    if (this.owner !== owner || this.until <= now) return false
+    this.until = now + leaseMs
+    return true
+  }
 }
 
 describe('SyncCoordinator', () => {
+  it('keeps a fallback lease alive while a slow Wi-Fi request is still running', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const store = new MemoryLeaseStore()
+    const first = new SyncCoordinator({ ownerId: 'one', leaseStore: store, leaseMs: 90 })
+    const second = new SyncCoordinator({ ownerId: 'two', leaseStore: store, leaseMs: 90 })
+    let entered!: () => void
+    let release!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    try {
+      const running = first.runExclusive(async () => { entered(); await gate })
+      await started
+      await vi.advanceTimersByTimeAsync(150)
+      expect(store.until).toBeGreaterThan(Date.now())
+      expect(await second.runExclusive(vi.fn())).toBe(false)
+      release()
+      expect(await running).toBe(true)
+    } finally {
+      release()
+      vi.useRealTimers()
+    }
+  })
+
   it('allows only one fallback leader at a time', async () => {
     const store = new MemoryLeaseStore()
     const first = new SyncCoordinator({ ownerId: 'one', leaseStore: store, now: () => 100 })

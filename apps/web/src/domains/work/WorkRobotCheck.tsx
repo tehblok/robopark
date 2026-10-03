@@ -30,12 +30,12 @@ export function WorkRobotCheck({ robot, user, activeTab, onTabChange, onOpenTask
       if (generation === owner.current) setResolved(value)
     }, error => {
       if (generation !== owner.current) return
-      const classified = classifyCheckError(error)
+      const classified = classifyCheckError(error, user)
       setFailure(classified)
       if (classified.kind === 'unauthorized' || classified.kind === 'forbidden') notify.current?.(classified)
     })
     return () => { owner.current += 1 }
-  }, [robot, apiClient, attempt, allowed])
+  }, [robot, apiClient, attempt, allowed, user])
 
   if (!allowed) return <EmptyState title="Проверка робота недоступна для вашей роли" />
   if (failure) return <CheckError failure={failure} user={user} onRetry={() => setAttempt(value => value + 1)} />

@@ -53,13 +53,20 @@ try {
     })
     await page.goto('/overview?park=7')
     try {
-      await page.locator('.rp-insights').waitFor({ timeout: 10_000 })
+      await page.getByRole('heading', { name: 'Смена / Обзор' }).waitFor({ timeout: 10_000 })
+      await page.getByRole('link', { name: 'Открыть задачу ROBOPARK-42' }).waitFor()
+      if (smoke) {
+        await page.getByRole('link', { name: 'Открыть задачу ROBOPARK-42' }).click()
+        await page.getByRole('heading', { name: 'Работа' }).waitFor({ timeout: 10_000 })
+      }
+      if (smoke) await page.waitForTimeout(100)
+      if (browserErrors.length) throw new Error(`browser errors: ${browserErrors.join(' | ')}`)
     } catch (error) {
       const rendered = (await page.locator('body').innerText()).replaceAll(/\s+/g, ' ').slice(0, 500)
       throw new Error(`Operations did not render for ${role} at ${page.url()}: ${rendered}; browser errors: ${browserErrors.join(' | ') || 'none'}`, { cause: error })
     }
-    await page.getByRole('link', { name: 'Открыть задачу ROBOPARK-42' }).waitFor()
     console.log(`Operations fixture ready: ${role}`)
+    if (smoke) await page.close()
   }
 
   if (smoke) {

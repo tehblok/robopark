@@ -11,6 +11,7 @@ def test_production_compose_uses_local_postgresql_17_and_health_gates_api():
 
     database = compose["services"]["db"]
     api = compose["services"]["api"]
+    worker = compose["services"]["worker"]
 
     assert database["image"].startswith("postgres:17")
     assert database["ports"] == ["127.0.0.1:5432:5432"]
@@ -27,6 +28,20 @@ def test_production_compose_uses_local_postgresql_17_and_health_gates_api():
     assert api["environment"]["HOST_HEALTH_PATH"] == "/data/ops/host-health.json"
     assert api["environment"]["LIVE_MERGE_DIR"] == "/data/live-merge"
     assert api["environment"]["STAGED_ATTACHMENTS_DIR"] == "/data/task-attachments"
+    assert worker["healthcheck"] == {
+        "test": [
+            "CMD",
+            "python",
+            "-m",
+            "robopark_api.worker_healthcheck",
+            "--max-age-seconds",
+            "120",
+        ],
+        "interval": "15s",
+        "timeout": "15s",
+        "start_period": "45s",
+        "retries": 3,
+    }
     assert "sqlite" not in Path("deploy/docker-compose.yml").read_text().lower()
 
 

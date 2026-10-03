@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.models import User
+from robopark_api.services.task_cycle import last_confirmed_closure_at
 from robopark_api.task_workflow_models import ReliableAction
 
 MAX_BATCH_SIZE = 20
@@ -223,13 +224,19 @@ def retry_needs_attention(db: Session, *, resource_id: str, now: float | None = 
     Attempts and the last error remain intact as delivery/audit history.
     """
     current = time.time() if now is None else now
-    rows = db.scalars(
-        select(ReliableAction).where(
-            ReliableAction.resource_type == "tracker_issue",
-            ReliableAction.resource_id == resource_id,
-            ReliableAction.state == "needs_attention",
-        )
-    ).all()
+    closure_at = last_confirmed_closure_at(db, resource_id)
+    query = select(ReliableAction).where(
+        ReliableAction.resource_type == "tracker_issue",
+        ReliableAction.resource_id == resource_id,
+        ReliableAction.state == "needs_attention",
+        or_(
+            ReliableAction.error_code.is_(None),
+            ReliableAction.error_code != "task_already_closed",
+        ),
+    )
+    if closure_at is not None:
+        query = query.where(ReliableAction.created_at > closure_at)
+    rows = db.scalars(query).all()
     for row in rows:
         row.state = "retry_wait"
         row.next_attempt_at = current

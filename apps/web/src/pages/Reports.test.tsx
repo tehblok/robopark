@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { api, type Park, type Report, type User } from '../api'
+import { ApiError, api, type Park, type Report, type User } from '../api'
 import { AuthContext } from '../auth-context'
 import { reportsAccessIdentity, type ReportsApiClient } from '../domains/reports/reports'
 import { resourceStore } from '../lib/resource'
@@ -12,7 +12,7 @@ import { PresentationModeContext } from '../app/interface/presentationModeContex
 import { IDBFactory } from 'fake-indexeddb'
 import { clearReportPhotoDrafts, readReportPhotoDraft, writeReportPhotoDraft } from '../domains/reports/reportPhotoDrafts'
 
-const north: Park = { id: 7, name: 'Север', tag: 'north', tracker_queue: 'RP', is_active: true }
+const north: Park = { id: 7, name: 'Север', timezone: 'Europe/Moscow', tag: 'north', tracker_queue: 'RP', is_active: true }
 const userA: User = {
   id: 1,
   username: 'owner-a',
@@ -145,7 +145,7 @@ it('releases a pending A owner before B and a remounted A start fresh', async ()
   await act(async () => oldA.resolve([report(1, 'Устаревший A')]))
   expect(screen.queryByText('Устаревший A')).not.toBeInTheDocument()
   const stalePrefix = `reports:${userA.id}:${reportsAccessIdentity(userA, north)}:`
-  expect(resourceStore.get(`${stalePrefix}mine`)).toEqual([report(3, 'Свежий A')])
+  expect(resourceStore.get(`${stalePrefix}mine:all:1:latest:latest`)).toEqual([report(3, 'Свежий A')])
 })
 
 it('offers a collapse control for the report list without changing its initial visibility', async () => {
@@ -199,6 +199,141 @@ it('keeps a desktop report list beside its detail and returns to the filtered UR
   await actor.click(screen.getByRole('button', { name: 'Назад к списку' }))
   expect(screen.getByLabelText('URL')).toHaveTextContent('/reports?park=7&status=returned')
   expect(screen.getByLabelText('Статус репортов')).toHaveValue('returned')
+})
+
+it('hides a cached report detail after the server revokes read access', async () => {
+  const item = report(9, 'Закрытая информация')
+  const reportRequest = vi.fn().mockResolvedValueOnce(item)
+    .mockRejectedValueOnce(new ApiError(403, 'forbidden'))
+  render(tree(userA, client({ reportsMine: vi.fn(async () => [item]), report: reportRequest }), '/reports/9?park=7'))
+  expect(await screen.findByRole('heading', { name: 'Закрытая информация' })).toBeVisible()
+
+  const detailKey = `reports:${userA.id}:${reportsAccessIdentity(userA, north)}:detail:9`
+  act(() => resourceStore.revalidate(detailKey))
+
+  expect(await within(screen.getByRole('region', { name: 'Детали' })).findByRole('alert')).toHaveTextContent('Недостаточно прав.')
+  expect(screen.queryByRole('heading', { name: 'Закрытая информация' })).not.toBeInTheDocument()
+})
+
+it('omits inactive page controls when a report list fits on one page', async () => {
+  render(tree(userA, client({ reportsMine: vi.fn(async () => [report(3, 'Один репорт')]) })))
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Один репорт' })).toBeVisible()
+  expect(screen.queryByRole('navigation', { name: 'Страницы репортов' })).not.toBeInTheDocument()
+})
+
+it('pages report history and applies the mine status filter on the server', async () => {
+  const history = Array.from({ length: 30 }, (_, index) => report(30 - index, `История ${index + 1}`))
+  const reportsMine = vi.fn(async ({ beforeId, afterId, limit = 26, status = 'all' }: { beforeId?: number; afterId?: number; limit?: number; status?: string } = {}) => {
+    const filtered = status === 'returned' ? history.filter(item => item.status === 'returned') : history
+    if (afterId) return filtered.filter(item => item.id > afterId).slice(-limit)
+    return filtered.filter(item => beforeId == null || item.id < beforeId).slice(0, limit)
+  })
+  render(tree(userA, client({ reportsMine })))
+
+  expect(await screen.findByRole('button', { name: 'Открыть репорт История 1' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Открыть репорт История 26' })).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Следующая страница' }))
+  expect(await screen.findByRole('button', { name: 'Открыть репорт История 26' })).toBeVisible()
+  expect(screen.getByLabelText('URL')).toHaveTextContent('page=2')
+  expect(reportsMine).toHaveBeenCalledWith({ limit: 26, beforeId: 6, status: 'all', anchorId: 30 })
+
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Статус репортов' }), 'returned')
+  expect(screen.getByLabelText('URL')).not.toHaveTextContent('page=2')
+  await waitFor(() => expect(reportsMine).toHaveBeenCalledWith({ limit: 26, status: 'returned' }))
+})
+
+it('keeps the report page boundary when a new report arrives before navigation', async () => {
+  let history = Array.from({ length: 30 }, (_, index) => report(30 - index, `История ${index + 1}`))
+  const reportsMine = vi.fn(async ({ beforeId, afterId, limit = 26, anchorId }: { beforeId?: number; afterId?: number; limit?: number; anchorId?: number } = {}) => {
+    const filtered = history.filter(item => anchorId == null || item.id <= anchorId)
+    if (afterId) return filtered.filter(item => item.id > afterId).slice(-limit)
+    return filtered.filter(item => beforeId == null || item.id < beforeId).slice(0, limit)
+  })
+  render(tree(userA, client({ reportsMine })))
+  expect(await screen.findByRole('button', { name: 'Открыть репорт История 1' })).toBeVisible()
+
+  history = [report(31, 'Новый репорт'), ...history]
+  await userEvent.click(screen.getByRole('button', { name: 'Следующая страница' }))
+
+  expect(await screen.findByRole('button', { name: 'Открыть репорт История 26' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Открыть репорт История 25' })).not.toBeInTheDocument()
+  expect(reportsMine).toHaveBeenCalledWith({ limit: 26, beforeId: 6, status: 'all', anchorId: 30 })
+  expect(screen.getByLabelText('URL')).toHaveTextContent('anchor=30')
+
+  await userEvent.click(screen.getByRole('button', { name: 'Показать новые' }))
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Новый репорт' })).toBeVisible()
+  expect(screen.getByLabelText('URL')).not.toHaveTextContent('anchor=')
+})
+
+it('keeps the next inbox report when a newer report leaves the queue', async () => {
+  let history = Array.from({ length: 30 }, (_, index) => report(30 - index, `Входящий ${index + 1}`, 2))
+  const reportsInbox = vi.fn(async (_parkId?: number, { beforeId, limit = 26, anchorId }: { beforeId?: number; limit?: number; anchorId?: number } = {}) =>
+    history.filter(item => (anchorId == null || item.id <= anchorId) && (beforeId == null || item.id < beforeId)).slice(0, limit))
+  const operator = { ...userA, permissions: ['nav.reports', 'reports.resolve'] }
+  render(tree(operator, client({ reportsInbox }), '/reports?pane=inbox'))
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Входящий 1' })).toBeVisible()
+
+  history = history.filter(item => item.id !== 30)
+  await userEvent.click(screen.getByRole('button', { name: 'Следующая страница' }))
+
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Входящий 26' })).toBeVisible()
+})
+
+it('opens the first report page when a deep link lacks its history boundary', async () => {
+  const reportsMine = vi.fn(async () => [report(3, 'Первая страница')])
+  render(tree(userA, client({ reportsMine }), '/reports?page=2'))
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Первая страница' })).toBeVisible()
+  expect(reportsMine).toHaveBeenCalledWith({ limit: 26, status: 'all' })
+  await waitFor(() => expect(screen.getByLabelText('URL')).not.toHaveTextContent('page=2'))
+})
+
+it('pages the operator inbox without losing older reports', async () => {
+  const history = Array.from({ length: 28 }, (_, index) => report(28 - index, `Входящий ${index + 1}`, 2))
+  const reportsInbox = vi.fn(async (_parkId?: number, { beforeId, afterId, limit = 26 }: { beforeId?: number; afterId?: number; limit?: number } = {}) => {
+    if (afterId) return history.filter(item => item.id > afterId).slice(-limit)
+    return history.filter(item => beforeId == null || item.id < beforeId).slice(0, limit)
+  })
+  const operator = { ...userA, permissions: ['nav.reports', 'reports.resolve'] }
+  render(tree(operator, client({ reportsInbox }), '/reports?pane=inbox'))
+
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Входящий 1' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Открыть репорт Входящий 26' })).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Следующая страница' }))
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Входящий 26' })).toBeVisible()
+  expect(reportsInbox).toHaveBeenCalledWith(7, { limit: 26, beforeId: 4, anchorId: 28 })
+  await userEvent.click(screen.getByRole('button', { name: 'Предыдущая страница' }))
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Входящий 1' })).toBeVisible()
+  expect(reportsInbox).toHaveBeenCalledWith(7, { limit: 25, afterId: 3, anchorId: 28 })
+})
+
+it('returns to the exact middle inbox page from a third page', async () => {
+  const history = Array.from({ length: 55 }, (_, index) => report(55 - index, `Входящий ${index + 1}`, 2))
+  const reportsInbox = vi.fn(async (_parkId?: number, { beforeId, afterId, limit = 26 }: { beforeId?: number; afterId?: number; limit?: number } = {}) => {
+    if (afterId) return history.filter(item => item.id > afterId).slice(-limit)
+    return history.filter(item => beforeId == null || item.id < beforeId).slice(0, limit)
+  })
+  const operator = { ...userA, permissions: ['nav.reports', 'reports.resolve'] }
+  render(tree(operator, client({ reportsInbox }), '/reports?pane=inbox'))
+
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Входящий 1' })).toBeVisible()
+  await userEvent.click(screen.getByRole('button', { name: 'Следующая страница' }))
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Входящий 26' })).toBeVisible()
+  await userEvent.click(screen.getByRole('button', { name: 'Следующая страница' }))
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Входящий 51' })).toBeVisible()
+  await userEvent.click(screen.getByRole('button', { name: 'Предыдущая страница' }))
+
+  expect(await screen.findByRole('button', { name: 'Открыть репорт Входящий 26' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Открыть репорт Входящий 50' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Открыть репорт Входящий 25' })).not.toBeInTheDocument()
+})
+
+it('loads only the visible report pane on entry', async () => {
+  const reportsMine = vi.fn(async () => [])
+  const reportsInbox = vi.fn(async () => [])
+  const operator = { ...userA, permissions: ['nav.reports', 'reports.create', 'reports.resolve'] }
+  render(tree(operator, client({ reportsMine, reportsInbox }), '/reports?pane=inbox'))
+  await waitFor(() => expect(reportsInbox).toHaveBeenCalledTimes(1))
+  expect(reportsMine).not.toHaveBeenCalled()
 })
 
 it.each(['driver', 'mechanic', 'operator', 'admin', 'royal', 'custom_role'])('allows %s with reports.create to open a creation form', async (role) => {

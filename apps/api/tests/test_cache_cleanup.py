@@ -3,6 +3,8 @@ import os
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -13,12 +15,82 @@ from robopark_api.models import AuthThrottleState
 from robopark_api.routers.push import PushService
 from robopark_api.schedule_models import SystemIncidentOccurrence
 from robopark_api.services import cache_cleanup, worker_runtime
+from robopark_api.services.ops.ota_uploads import OtaUploadStore
 from robopark_api.task_workflow_models import (
     OfflineSyncReceipt,
     ReliableAction,
     TaskAttachment,
     TaskMessage,
 )
+
+
+def test_hourly_cleanup_reclaims_only_expired_ota_uploads(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "robopark_api.services.ops.ota_uploads.shutil.disk_usage",
+        lambda _path: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3),
+    )
+    state = tmp_path / "ops" / "ota-uploads"
+    host = tmp_path / "host" / "ota-uploads"
+    store = OtaUploadStore(state, host)
+    old = store.create(actor_id=7, filename="old.ota", size=10, sha256="a" * 64)
+    current = store.create(actor_id=7, filename="current.ota", size=10, sha256="b" * 64)
+    metadata = store._read(old.upload_id)
+    metadata["expires_at"] = 0
+    store._write(old.upload_id, metadata)
+    settings = SimpleNamespace(
+        ops_dir=str(tmp_path / "ops"),
+        ops_host_root=str(tmp_path / "host"),
+        ops_max_upload_bytes=100,
+    )
+    monkeypatch.setattr(cache_cleanup, "get_settings", lambda: settings)
+
+    assert cache_cleanup.prune_expired_ota_uploads() == 1
+    assert not store._meta(old.upload_id).exists()
+    assert store._part(current.upload_id).exists()
+
+
+def test_hourly_cleanup_keeps_pinned_ota_until_durable_terminal_receipt(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "robopark_api.services.ops.ota_uploads.shutil.disk_usage",
+        lambda _path: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3),
+    )
+    state = tmp_path / "ops" / "ota-uploads"
+    host = tmp_path / "host" / "ota-uploads"
+    store = OtaUploadStore(state, host)
+    upload = store.create(actor_id=7, filename="release.ota", size=10, sha256="a" * 64)
+    metadata = store._read(upload.upload_id)
+    metadata.update(state="verified", offset=10)
+    store._write(upload.upload_id, metadata)
+    store._host(upload.upload_id).write_bytes(b"0123456789")
+    operation_id = uuid4()
+    store.pin_for_operation(upload.upload_id, actor_id=7, operation_id=operation_id)
+    metadata = store._read(upload.upload_id)
+    metadata["expires_at"] = 0
+    store._write(upload.upload_id, metadata)
+    settings = SimpleNamespace(
+        ops_dir=str(tmp_path / "ops"),
+        ops_host_root=str(tmp_path / "host"),
+        ops_max_upload_bytes=100,
+    )
+    monkeypatch.setattr(cache_cleanup, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        cache_cleanup.operation_registry, "snapshot_current_job", lambda *_args: None
+    )
+    receipt = SimpleNamespace(receipt_state="accepted", error=None)
+
+    class Registry:
+        def get(self, _model, identity):
+            return receipt if identity == str(operation_id) else None
+
+    db = Registry()
+    assert cache_cleanup.prune_expired_ota_uploads(db) == 0
+    assert store._host(upload.upload_id).exists()
+    receipt.receipt_state = "terminal"
+    receipt.error = "ota_rollback_failed"
+    assert cache_cleanup.prune_expired_ota_uploads(db) == 0
+    receipt.error = None
+    assert cache_cleanup.prune_expired_ota_uploads(db) == 1
+    assert not store._host(upload.upload_id).exists()
 
 
 def _patch_idle_worker_loops(monkeypatch, *, except_names=frozenset()):

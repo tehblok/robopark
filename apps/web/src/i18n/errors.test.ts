@@ -4,6 +4,12 @@ import { mapApiError, mapLoginError } from './errors'
 import { ru } from './ru'
 
 describe('mapApiError', () => {
+  it('does not describe an unrelated HTTP 503 as an unconfigured Tracker token', () => {
+    expect(mapApiError(new ApiError(503), 'Не удалось загрузить историю процесса.')).toBe('Не удалось загрузить историю процесса.')
+    expect(mapApiError(new ApiError(503, 'tracker_token_not_configured'), 'Не удалось загрузить историю процесса.')).toBe(
+      ru.errors.details.tracker_token_not_configured,
+    )
+  })
   it('never presents the technical Emergency product name in robot-check failures', () => {
     for (const detail of ['emergency_upstream_error', 'emergency_cookie_not_configured', 'emergency_cookie_invalid', 'unmapped']) {
       expect(mapApiError(new ApiError(503, detail), ru.errors.emergency)).not.toMatch(/\bEmergency\b/i)
@@ -58,6 +64,18 @@ it.each([
 
 it('explains bounded archive storage admission', () => {
   expect(mapApiError(new ApiError(409, 'artifact_storage_full'))).toBe('Недостаточно места для нового архива. Дождитесь очистки или проверьте диагностику хоста.')
+})
+
+it.each([
+  ['tracker_attach_disabled', 403, 'Нет прав прикреплять фото к этой задаче.'],
+  ['media_issue_not_found', 404, 'Задача не найдена. Обновите список задач.'],
+  ['media_upload_user_quota_exceeded', 429, 'Достигнут лимит загрузок фото для аккаунта. Дождитесь завершения текущих загрузок или очистки.'],
+  ['media_upload_global_quota_exceeded', 429, 'Хранилище загрузок достигло лимита. Обратитесь к владельцу для очистки.'],
+  ['media_storage_capacity_exceeded', 507, 'Недостаточно свободного места для фото. Освободите хранилище и повторите.'],
+  ['media_storage_unavailable', 503, 'Хранилище фото временно недоступно. Повторите позже.'],
+  ['media_upload_scope_refresh_required', 409, 'Права на загрузку нужно проверить заново. Повторите синхронизацию.'],
+])('explains media admission error %s', (detail, status, expected) => {
+  expect(mapApiError(new ApiError(status, detail), 'Не удалось прикрепить фото.')).toBe(expected)
 })
 
 it.each([

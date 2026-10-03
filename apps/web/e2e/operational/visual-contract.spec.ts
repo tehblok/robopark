@@ -8,6 +8,7 @@ for (const width of [390, 1440] as const) {
     await page.setViewportSize({ width, height: 900 })
     await installOperational(page, { role: 'mechanic' })
     await page.goto('/robots?park=7')
+    await expect(page.getByLabel('Номер или VIN робота')).toBeVisible()
 
     const geometry = await page.evaluate(() => {
       const panel = document.createElement('section')
@@ -32,22 +33,23 @@ for (const width of [390, 1440] as const) {
     })
 
     expect(geometry).toEqual({
-      gutter: width <= 599 ? '12px' : '24px',
-      sectionGap: width <= 599 ? '20px' : '24px',
-      cardPadding: width <= 599 ? '16px' : '20px',
-      formGap: width <= 599 ? '12px' : '16px',
-      controlRadius: '8px',
-      cardRadius: '12px',
+      gutter: width <= 899 ? '16px' : '24px',
+      sectionGap: width <= 899 ? '16px' : '20px',
+      cardPadding: '14px',
+      formGap: '16px',
+      controlRadius: '12px',
+      cardRadius: '16px',
       buttonHeight: 44,
     })
   })
 }
 
-for (const width of [599, 600] as const) {
-  test(`Classic phone boundary remains stable at ${width}px`, async ({ page }) => {
+for (const width of [899, 900] as const) {
+  test(`Classic compact boundary remains stable at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
     await installOperational(page, { role: 'royal' })
     await page.goto('/overview?park=7')
+    await expect(page.getByRole('heading', { name: 'Статусы задач' })).toBeVisible()
     await assertResponsiveContracts(page, width)
     const root = await page.locator('html').evaluate(element => {
       const style = getComputedStyle(element)
@@ -56,9 +58,9 @@ for (const width of [599, 600] as const) {
         cardPadding: style.getPropertyValue('--rp-card-padding').trim(),
       }
     })
-    expect(root).toEqual(width === 599
-      ? { gutter: '12px', cardPadding: '16px' }
-      : { gutter: '24px', cardPadding: '20px' })
+    expect(root).toEqual(width === 899
+      ? { gutter: '16px', cardPadding: '14px' }
+      : { gutter: '24px', cardPadding: '14px' })
   })
 }
 
@@ -69,7 +71,7 @@ test('overview readiness follows the current role-aware triage structure', async
   await expect(page.locator('.rp-overview')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Статусы задач' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Поток задач: пришло / ушло' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Очередь внимания' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Очередь решений' })).toBeVisible()
   await expect(page.locator('.rp-insights')).toHaveCount(0)
 })
 

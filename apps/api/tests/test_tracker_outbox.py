@@ -131,6 +131,241 @@ def test_delayed_transition_cannot_reopen_externally_closed_issue(
     assert exc.value.code == "task_already_closed"
 
 
+@pytest.mark.parametrize("with_claim", [True, False])
+def test_pending_comment_from_closed_cycle_cannot_post_after_reopen(
+    db_engine,
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+    monkeypatch,
+    with_claim,
+):
+    from robopark_api.services import task_lifecycle, tracker_claims, tracker_outbox
+
+    action = _action(db_session, seed_mechanic, payload={"text": "Старый комментарий"})
+    if with_claim:
+        tracker_claims.claim_issue(
+            db_session,
+            actor=seed_mechanic,
+            owner=seed_mechanic,
+            issue_key=action.resource_id,
+            park_id=seed_park_with_tracker.id,
+        )
+    db_session.commit()
+    task_lifecycle.reconcile_external_closure(
+        db_session,
+        {"key": action.resource_id, "status_key": "closed"},
+    )
+    task_lifecycle.reconcile_external_closure(
+        db_session,
+        {"key": action.resource_id, "status_key": "closed"},
+    )
+    markers = db_session.scalars(
+        select(TaskMessage).where(
+            TaskMessage.issue_key == action.resource_id,
+            TaskMessage.external_id.like("tracker-external-close:%"),
+        )
+    ).all()
+    assert len(markers) == 1
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "test-token")
+    monkeypatch.setattr(tracker_outbox.tracker_client, "list_comments", lambda **kw: [])
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kw: {
+            "key": action.resource_id,
+            "status_key": "queued",
+        },
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "add_comment",
+        lambda **kw: pytest.fail("An old comment was posted to the reopened ticket"),
+    )
+    with pytest.raises(tracker_outbox.DeliveryError) as exc:
+        tracker_outbox._deliver_action(db_session, action)
+    assert exc.value.code == "task_already_closed"
+    db_session.rollback()
+    assert tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True)) == 1
+    db_session.refresh(action)
+    assert (action.state, action.error_code) == ("needs_attention", "task_already_closed")
+
+    from robopark_api.services.reliable_actions import begin_action
+
+    current = begin_action(
+        db_session,
+        actor=seed_mechanic,
+        resource_type="tracker_issue",
+        resource_id=action.resource_id,
+        action="comment",
+        idempotency_key="comment-new-cycle",
+        payload={"text": "Новый комментарий"},
+    ).row
+    assert current.created_at > markers[0].created_at
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "add_comment",
+        lambda **kw: {
+            "id": "remote-new-comment",
+        },
+    )
+    assert (
+        tracker_outbox._deliver_action(db_session, current)["external_id"] == "remote-new-comment"
+    )
+
+
+@pytest.mark.parametrize(
+    ("action_name", "payload"),
+    [
+        ("comment", {"text": "Запись"}),
+        ("attach", {}),
+        ("assign_operator", {"login": "operator1"}),
+        ("ensure_tag", {"tag": "Alpha"}),
+        ("ensure_components", {"value": ["ROBOT_SUSPENSION"]}),
+        ("set_field", {"field": "defect_code", "value": "OTHER"}),
+    ],
+)
+def test_outbox_does_not_write_to_currently_closed_tracker_issue(
+    db_session, seed_mechanic, monkeypatch, action_name, payload
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(
+        db_session,
+        seed_mechanic,
+        action=action_name,
+        payload=payload,
+    )
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(tracker_outbox.tracker_client, "list_comments", lambda **kw: [])
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kw: {
+            "key": action.resource_id,
+            "status_key": "closed",
+        },
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "add_comment",
+        lambda **kw: pytest.fail("Closed ticket must not receive a comment"),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "upload_temp_attachment",
+        lambda **kw: pytest.fail("Closed ticket must not receive a photo"),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "assign_issue",
+        lambda **kw: pytest.fail("Closed ticket must not be reassigned"),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "set_issue_tags",
+        lambda **kw: pytest.fail("Closed ticket tags must not change"),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "set_issue_components",
+        lambda **kw: pytest.fail("Closed ticket components must not change"),
+    )
+    monkeypatch.setattr(
+        tracker_outbox,
+        "_set_issue_field",
+        lambda **kw: pytest.fail("Closed ticket fields must not change"),
+    )
+
+    with pytest.raises(tracker_outbox.DeliveryError) as exc:
+        tracker_outbox._deliver_action(db_session, action)
+
+    assert exc.value.code == "task_already_closed"
+
+
+@pytest.mark.parametrize(
+    ("action_name", "payload", "issue_fields"),
+    [
+        ("assign_operator", {"login": "operator1"}, {"assignee": {"login": "operator1"}}),
+        ("ensure_tag", {"tag": "Alpha"}, {"tags": ["Alpha"]}),
+        (
+            "ensure_components",
+            {"value": ["ROBOT_SUSPENSION"]},
+            {"components": ["ROBOT_SUSPENSION"]},
+        ),
+    ],
+)
+def test_closed_issue_accepts_already_applied_outbox_action_without_write(
+    db_session, seed_mechanic, monkeypatch, action_name, payload, issue_fields
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(db_session, seed_mechanic, action=action_name, payload=payload)
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **kw: {
+            "key": action.resource_id,
+            "status_key": "closed",
+            **issue_fields,
+        },
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "assign_issue",
+        lambda **kw: pytest.fail("Already applied assignment must not be resent"),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "set_issue_tags",
+        lambda **kw: pytest.fail("Already applied tag must not be resent"),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "set_issue_components",
+        lambda **kw: pytest.fail("Already applied components must not be resent"),
+    )
+
+    assert tracker_outbox._deliver_action(db_session, action) == {"already_applied": True}
+
+
+def test_closed_cycle_action_waiting_for_dependency_stops_reentering_outbox(
+    db_engine,
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+):
+    from robopark_api.services import task_lifecycle, tracker_claims, tracker_outbox
+
+    dependency = _action(db_session, seed_mechanic, state="retry_wait")
+    dependency.next_attempt_at = 10**12
+    review = _action(
+        db_session,
+        seed_mechanic,
+        action="review",
+        payload={
+            "depends_on_action_ids": [dependency.id],
+        },
+    )
+    tracker_claims.claim_issue(
+        db_session,
+        actor=seed_mechanic,
+        owner=seed_mechanic,
+        issue_key=review.resource_id,
+        park_id=seed_park_with_tracker.id,
+    )
+    db_session.commit()
+    task_lifecycle.reconcile_external_closure(
+        db_session,
+        {"key": review.resource_id, "status_key": "closed"},
+    )
+
+    assert tracker_outbox._process_batch(sessionmaker(bind=db_engine, future=True)) == 1
+    db_session.refresh(review)
+    assert (review.state, review.error_code) == ("needs_attention", "task_already_closed")
+
+
 def test_close_delivery_refreshes_tracker_before_releasing_local_claim(
     db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
@@ -694,6 +929,37 @@ def test_worker_recognizes_return_transition_target_status_after_restart(
     assert transitions == []
 
 
+def test_return_uses_available_queue_transition_and_replay_recognizes_target(
+    db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(db_session, seed_mechanic, action="return", payload={})
+    status = {"key": action.resource_id, "status_key": "waitingForInspection"}
+    sent = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda _db: "token")
+    monkeypatch.setattr(tracker_outbox.tracker_client, "get_issue", lambda **_kw: status)
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_transitions",
+        lambda **_kw: [
+            {"id": "queuedMeta", "display": "В очереди"},
+            {"id": "closedMeta", "display": "Закрыт"},
+        ],
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "transition_issue",
+        lambda **kw: sent.append(kw["transition"]),
+    )
+
+    assert tracker_outbox._deliver_action(db_session, action) == {"transition": "queuedMeta"}
+    assert sent == ["queuedMeta"]
+    status = {"key": action.resource_id, "status_key": "queued"}
+    assert tracker_outbox._deliver_action(db_session, action) == {"already_applied": True}
+    assert sent == ["queuedMeta"]
+
+
 def test_worker_stores_transition_missing_instead_of_choosing_arbitrary_transition(
     db_engine, db_session, seed_mechanic, monkeypatch
 ):
@@ -995,6 +1261,40 @@ def test_claim_preparation_actions_use_fresh_state_and_skip_satisfied_mutations(
 
     assert results == [{"already_applied": True}] * 3
     assert len(reads) == 3
+
+
+def test_failed_operator_assignment_uses_corrected_tracker_login_on_retry(
+    db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    action = _action(
+        db_session,
+        seed_mechanic,
+        action="assign_operator",
+        payload={"operator_user_id": seed_mechanic.id, "login": seed_mechanic.username},
+        state="retry_wait",
+    )
+    action.attempts = 1
+    seed_mechanic.tracker_login = "operator.corrected"
+    db_session.commit()
+    assigned = []
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda _db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **_kwargs: {"key": action.resource_id, "status_key": "in_progress"},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "assign_issue",
+        lambda **kwargs: assigned.append(kwargs["assignee"]),
+    )
+
+    result = tracker_outbox._deliver_action(db_session, action)
+
+    assert assigned == ["operator.corrected"]
+    assert result == {"assignee": "operator.corrected"}
 
 
 def test_claim_chain_retries_failed_step_without_repeating_successful_assignment(

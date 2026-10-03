@@ -73,7 +73,7 @@ it('keeps an offline writeoff pending without announcing completion or allowing 
   })
   expect(writeoff).not.toHaveBeenCalled()
   expect(onWritten).not.toHaveBeenCalled()
-  expect(screen.getByRole('status')).toHaveTextContent('Списание ожидает синхронизации')
+  expect(screen.queryByText(/ожидает синхронизации/)).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
   fireEvent.submit(screen.getByRole('form', { name: 'Списание запчасти' }))
   expect(enqueueAction).toHaveBeenCalledOnce()

@@ -1,7 +1,8 @@
 """Journalled immutable-release update, with a small Docker/readiness boundary.
 
 Runner.run(argv, *, timeout, cwd=None, env=None, capture=False) returns bytes.
-Runner.wait_ready(*, project, config, timeout) checks core API and web readiness.
+Runner.wait_ready(*, project, config, timeout, bot_required=False) checks core readiness
+and the optional bot when enabled.
 Neither boundary may log secret values or include command output in exceptions.
 """
 
@@ -53,7 +54,7 @@ from .rollback import (
     sync_directory,
     verify_source_head,
 )
-from .runtime import explain_process_failure, pin_images, production_config
+from .runtime import bot_enabled, explain_process_failure, pin_images, production_config
 from .state import atomic_write_json, exclusive_lock
 
 
@@ -70,7 +71,10 @@ TMPFILES_TARGET = Path("etc/tmpfiles.d/robopark.conf")
 
 
 def _activate_system_files(paths, candidate):
-    for unit in UNITS:
+    from .terminal_install import TERMINAL_UNITS, terminal_payload_present
+
+    terminal_payload_present(candidate)
+    for unit in (*UNITS, *TERMINAL_UNITS):
         source = candidate / "deploy/systemd" / unit
         if source.is_file():
             atomic_copy(source, paths.root / "etc/systemd/system" / unit, 0o644)
@@ -79,6 +83,22 @@ def _activate_system_files(paths, candidate):
         raise ReleaseError("unsafe_tmpfiles")
     if tmpfiles.is_file():
         atomic_copy(tmpfiles, paths.root / TMPFILES_TARGET, 0o644)
+
+
+def _activate_bot_lifecycle(paths, candidate, runner):
+    """Publish the watcher now; legacy OTA restarted core before unit activation."""
+
+    runner.run(["systemctl", "daemon-reload"], timeout=60)
+    runner.run(["systemctl", "start", "robopark-bot.path"], timeout=60)
+    runner.run(
+        [
+            "python3",
+            "-I",
+            str(candidate / "deploy/host/robopark-bot-runtime"),
+            "reconcile",
+        ],
+        timeout=180,
+    )
 
 
 PRE_MAINTENANCE_PHASES = {
@@ -195,7 +215,7 @@ MAX_SUCCESSFUL_RELEASE_RECEIPT_BYTES = 4096
 class Runner(Protocol):
     def run(self, argv, *, timeout, cwd=None, env=None, capture=False) -> bytes: ...
 
-    def wait_ready(self, *, project, config, timeout) -> bool: ...
+    def wait_ready(self, *, project, config, timeout, bot_required=False) -> bool: ...
 
 
 class SystemRunner:
@@ -324,16 +344,21 @@ class SystemRunner:
         finally:
             self.failure_log = failure_log
 
-    def wait_ready(self, *, project, config, timeout):
+    def wait_ready(self, *, project, config, timeout, bot_required=False):
         deadline = time.monotonic() + timeout
         prefix = compose(project, config)
         while time.monotonic() < deadline:
-            probes = (
+            probes = [
                 ["exec", "-T", "api", "python", "-c",
                  "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=4)"],
                 ["exec", "-T", "web", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"],
                 ["exec", "-T", "web", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/login"],
-            )
+            ]
+            if bot_required:
+                probes.append(
+                    ["exec", "-T", "bot", "python", "-c",
+                     "from pathlib import Path; assert Path('/tmp/bot-ready').is_file()"]
+                )
             if all(
                 self.run_cleanup(
                     prefix + probe,
@@ -556,11 +581,11 @@ def _successful_release_receipts(paths):
         os.close(parent)
 
 
-def _retained_successful_releases(paths, limit=3, receipts=None):
+def _retained_successful_releases(paths, limit=2, receipts=None):
     from .restore_retention import protected_release_names
 
     # The restore recovery release can intentionally be older than the normal
-    # three-release window. Treat every stable link as an independent pin.
+    # two-release window. Treat every stable link as an independent pin.
     keep = protected_release_names(paths)
     keep.add(_release_target(paths, paths.current).name)
     records = _successful_release_receipts(paths) if receipts is None else receipts
@@ -599,6 +624,7 @@ def _disk_preflight(paths, release):
 
 
 def _render_configs(paths, journal, runner, stage):
+    from .image_retention import label_build
     from .runtime import source_compose_environment
 
     work = paths.ops / "staging" / journal["job_id"]
@@ -652,6 +678,8 @@ def _render_configs(paths, journal, runner, stage):
             if isinstance(build, str):
                 build = {"context": build}
                 service["build"] = build
+            if name in {"api", "web", "bot"}:
+                label_build(build, journal["candidate"], journal["job_id"])
             context = Path(build.get("context", "."))
             if not context.is_absolute():
                 context = (stage / "deploy" / context).resolve()
@@ -661,7 +689,8 @@ def _render_configs(paths, journal, runner, stage):
                 paths.releases / journal["candidate"] / context.relative_to(stage)
             )
     production = production_config(
-        production, paths, paths.releases / journal["candidate"], journal["job_id"]
+        production, paths, paths.releases / journal["candidate"], journal["job_id"],
+        source_release=stage,
     )
     smoke = copy.deepcopy(production)
     smoke.pop("volumes", None)
@@ -801,14 +830,6 @@ def _cleanup_staging(paths, journal, runner, *, discard_displaced=True):
 def _retention(paths, journal):
     receipts = _successful_release_receipts(paths)
     keep = _retained_successful_releases(paths, receipts=receipts)
-    # Only delete targets with root-owned success receipts. Never sweep unknown directories.
-    for name, receipt, _ in receipts:
-        if name in keep:
-            continue
-        target = paths.releases / name
-        if target.is_dir() and not target.is_symlink():
-            shutil.rmtree(target)
-        receipt.unlink()
     keep_configs = {
         paths.state / journal["previous_config"],
         (paths.state / "current-compose.json").resolve(),
@@ -821,24 +842,33 @@ def _retention(paths, journal):
             continue
         keep_configs.add(paths.state / "compose" / (identifier + "-production.json"))
         keep_snapshots.add(identifier)
-    for config in (paths.state / "compose").glob("*.json"):
-        if config not in keep_configs and not config.is_symlink():
-            config.unlink()
-    # Keep the active rollback plus material belonging to the retained releases.
-    rollback_root = paths.ops / "rollbacks"
-    if not rollback_root.exists():
-        return
-    for directory in rollback_root.iterdir():
-        if (
-            directory.name not in keep_snapshots
-            and directory.is_dir()
-            and not directory.is_symlink()
-        ):
-            try:
-                UUID(directory.name)
-            except ValueError:
-                continue
-            shutil.rmtree(directory)
+    # Delete only resources with root-owned success receipts.
+    for name, receipt, _ in receipts:
+        if name in keep:
+            continue
+        target = paths.releases / name
+        try:
+            identifier = str(UUID(name[-36:]))
+        except ValueError:
+            identifier = None
+        if identifier is not None:
+            config = paths.state / "compose" / (identifier + "-production.json")
+            if (
+                config not in keep_configs
+                and config.is_file()
+                and not config.is_symlink()
+            ):
+                config.unlink()
+            snapshot = paths.ops / "rollbacks" / identifier
+            if (
+                identifier not in keep_snapshots
+                and snapshot.is_dir()
+                and not snapshot.is_symlink()
+            ):
+                shutil.rmtree(snapshot)
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        receipt.unlink()
 
 
 def apply_release(
@@ -869,6 +899,11 @@ def apply_release(
         return UpdateResult("rejected", str(exc))
     except OSError:
         return UpdateResult("rejected", "preflight_failed")
+    from .terminal_install import quiesce_terminal
+    try:
+        quiesce_terminal(paths, runner, reason="update")
+    except (ReleaseError, OSError):
+        return UpdateResult("rejected", "terminal_stop_failed")
     with exclusive_lock(paths.host_lock):
         from .restore import active_restore
 
@@ -934,14 +969,26 @@ def apply_release(
             _, smoke_config = _render_configs(paths, journal, runner, stage)
             prefix = compose("robopark-candidate-" + request.job_id, smoke_config)
             runner.run(prefix + ["config", "--quiet"], timeout=60)
+            from .owned_builder import ensure_owned_builder
+
+            builder = ensure_owned_builder(paths, runner)
             # Compose otherwise builds independent services concurrently. That
             # creates avoidable memory pressure on the supported 8 GiB ARM host.
-            runner.run(prefix + ["build", "--pull", "api"], timeout=1800)
-            runner.run(prefix + ["build", "--pull", "web"], timeout=1800)
+            from .runtime import build_service_config, build_service_names
+
             production_path = (
                 paths.state / "compose" / (request.job_id + "-production.json")
             )
             production = json.loads(production_path.read_text())
+            for service in build_service_names(production):
+                build_prefix = compose(
+                    "robopark-candidate-" + request.job_id,
+                    build_service_config(service, smoke_config, production_path),
+                )
+                runner.run(
+                    build_prefix + ["build", "--builder", builder, "--pull", service],
+                    timeout=1800,
+                )
             pin_images(
                 production, lambda argv: runner.run(argv, timeout=30, capture=True)
             )
@@ -1005,6 +1052,14 @@ def apply_release(
                 paths.state / "current-compose.json",
             )
             phase("switched")
+            from .terminal_install import (
+                prepare_terminal_installation,
+                terminal_payload_present,
+            )
+            if terminal_payload_present(candidate):
+                _activate_system_files(paths, candidate)
+                atomic_symlink(candidate / "deploy/host", paths.opt / "host-tools")
+                prepare_terminal_installation(paths, candidate, runner)
             phase("migrating", migration_started=True)
             runner.run(
                 compose("robopark", paths.state / "current-compose.json")
@@ -1030,15 +1085,20 @@ def apply_release(
             phase("activating")
             _activate_system_files(paths, candidate)
             atomic_symlink(candidate / "deploy/host", paths.opt / "host-tools")
+            with suppress(OSError, ReleaseError):
+                _activate_bot_lifecycle(paths, candidate, runner)
             phase("activated")
             phase("health_check")
             if not runner.wait_ready(
                 project="robopark",
                 config=paths.state / "current-compose.json",
                 timeout=180,
+                bot_required=bot_enabled(paths),
             ):
                 raise ReleaseError("cutover_unhealthy")
             phase("healthy")
+            from .terminal_install import reconcile_terminal_installation
+            reconcile_terminal_installation(paths, candidate, runner)
             return UpdateResult("awaiting_reconciliation")
         except Exception as exc:
             error = _failure_token(journal["phase"], exc)
@@ -1116,17 +1176,27 @@ def _discard_unstarted_update(paths, journal, runner):
 
 
 def _failed_housekeeping(paths, journal, runner):
+    from .rollback import discard_rollback_artifacts
+
     _cleanup_staging(paths, journal, runner)
     failed_candidate = paths.releases / journal["candidate"]
-    if (
-        failed_candidate.exists()
-        and not failed_candidate.is_symlink()
-        and failed_candidate != paths.current.resolve()
-        and failed_candidate != paths.previous.resolve()
-    ):
+    protected = {paths.current.resolve(), paths.previous.resolve()}
+    if failed_candidate.exists() and not failed_candidate.is_symlink() and failed_candidate not in protected:
         shutil.rmtree(failed_candidate)
     _retention(paths, journal)
     cleanup_images(paths, runner)
+    if failed_candidate not in protected:
+        # Failed candidates have no success receipt, so _retention cannot find
+        # their potentially large database snapshot or generated Compose file.
+        discard_rollback_artifacts(paths, journal)
+        config = paths.state / "compose" / (journal["job_id"] + "-production.json")
+        current_config = (paths.state / "current-compose.json").resolve()
+        previous_config = paths.state / journal["previous_config"]
+        if config.is_symlink():
+            raise ReleaseError("unsafe_config_path")
+        if config.is_file() and config not in {current_config, previous_config}:
+            config.unlink()
+            sync_directory(config.parent)
     return _finish(paths, journal, "previous_restored", journal["error"])
 
 
@@ -1336,13 +1406,15 @@ def _complete(paths, journal, runner):
     runner.run(["systemctl", "daemon-reload"], timeout=60)
     runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
     if not runner.wait_ready(
-        project="robopark", config=paths.state / "current-compose.json", timeout=180
+        project="robopark", config=paths.state / "current-compose.json", timeout=180,
+        bot_required=bot_enabled(paths),
     ):
         return _handle_failure(paths, journal, runner, "cutover_unhealthy")
     _verify_database_head(paths, runner, manifest["migration_head"])
     phase("publication")
     for unit in (
         "robopark-doctor.timer",
+        "robopark-backup.timer",
         "robopark-watchdog.timer",
         "robopark-commands.path",
     ):
@@ -1409,7 +1481,7 @@ def _success_housekeeping(paths, journal, runner):
         _phase(paths, journal, "succeeded", publication_degraded=True)
     _cleanup_staging(paths, journal, runner)
     _retention(paths, journal)
-    cleanup_images(paths, runner)
+    cleanup_images(paths, runner, enforce_builder_budget=True)
     return _finish(paths, journal, "current_healthy")
 
 

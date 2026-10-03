@@ -641,9 +641,9 @@ def main():
                     with probe.connect() as connection:
                         connection.execute(text("SELECT 1"))
                     break
-                except Exception:  # noqa: BLE001 - bounded disposable database readiness
+                except Exception as exc:  # noqa: BLE001 - bounded database readiness
                     if time.monotonic() >= deadline:
-                        raise RuntimeError("PostgreSQL 17 did not become ready")
+                        raise RuntimeError("PostgreSQL 17 did not become ready") from exc
                     time.sleep(0.1)
             probe.dispose()
             (root / "capacity-config.json").write_text(

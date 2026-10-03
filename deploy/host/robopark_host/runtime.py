@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import threading
 from collections import deque
@@ -123,7 +124,9 @@ class DatabaseProfile:
         return ["pg_isready", "-U", self.user, "-d", self.database]
 
 
-def _stream_build(command: Sequence[str], log_path: Path | None) -> str:
+def _stream_build(
+    command: Sequence[str], log_path: Path | None, *, env: dict[str, str]
+) -> str:
     """Stream a long build while retaining its output for diagnosis."""
 
     output_tail: deque[str] = deque(maxlen=500)
@@ -134,6 +137,7 @@ def _stream_build(command: Sequence[str], log_path: Path | None) -> str:
         os.chmod(log_path, 0o600)
     process = subprocess.Popen(
         command,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -175,9 +179,33 @@ def _stream_build(command: Sequence[str], log_path: Path | None) -> str:
 
 
 def _run(command: Sequence[str], *, build_log: Path | None = None) -> str:
+    root = Path(os.environ["ROBOPARK_ROOT"]) if os.environ.get("ROBOPARK_TESTING") == "1" else Path("/")
+    environment = os.environ.copy()
+    for key in ("DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        environment.pop(key, None)
+    environment["DOCKER_HOST"] = "unix:///var/run/docker.sock"
+    environment["DOCKER_CONFIG"] = str(root / "var/lib/robopark/ops/docker-config")
     if "build" in command:
-        return _stream_build(command, build_log)
-    return subprocess.run(command, check=True, capture_output=True, text=True, timeout=1800).stdout
+        return _stream_build(command, build_log, env=environment)
+    return subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=1800,
+        env=environment,
+    ).stdout
+
+
+class _CallableRunner:
+    """Adapt an injected bootstrap command function to retention's runner API."""
+
+    def __init__(self, run: Callable) -> None:
+        self._run = run
+
+    def run(self, argv, *, timeout, capture=False):
+        del timeout, capture
+        return self._run(argv)
 
 
 def explain_process_failure(error: subprocess.CalledProcessError) -> str:
@@ -228,7 +256,114 @@ def _progress(step: int, message: str) -> None:
     print(f"  [Docker {step}/4] {message}", flush=True)
 
 
-def production_config(document, paths, release, image_tag):
+def worker_healthcheck_config() -> dict:
+    """Render the worker's database-backed readiness contract."""
+    return {
+        "test": [
+            "CMD",
+            "python",
+            "-m",
+            "robopark_api.worker_healthcheck",
+            "--max-age-seconds",
+            "120",
+        ],
+        "interval": "15s",
+        "timeout": "15s",
+        "start_period": "45s",
+        "retries": 3,
+    }
+
+
+BOT_ENABLED_RELATIVE_PATH = Path("data/telegram-bot/enabled.json")
+
+
+def bot_enabled(paths: HostPaths) -> bool:
+    """Read the API-owned desired state without following aliases.
+
+    Missing state is the safe default. Invalid state is reported so callers can
+    stop the bot while still surfacing a configuration fault.
+    """
+
+    target = paths.var / BOT_ENABLED_RELATIVE_PATH
+    if target.parent.is_symlink():
+        raise ValueError("invalid_bot_enabled_state")
+    try:
+        descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise ValueError("invalid_bot_enabled_state") from exc
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_size > 256
+            ):
+                raise ValueError("invalid_bot_enabled_state")
+            try:
+                from .release import unique_object
+
+                value = json.loads(stream.read(257), object_pairs_hook=unique_object)
+            except (ValueError, UnicodeError, RecursionError) as exc:
+                raise ValueError("invalid_bot_enabled_state") from exc
+    except OSError as exc:
+        raise ValueError("invalid_bot_enabled_state") from exc
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema", "enabled"}
+        or type(value.get("schema")) is not int
+        or value["schema"] != 1
+        or type(value.get("enabled")) is not bool
+    ):
+        raise ValueError("invalid_bot_enabled_state")
+    return value["enabled"]
+
+
+def bot_compose_command(paths: HostPaths, action: str) -> list[str]:
+    """Return one exact, non-destructive command for the optional bot."""
+
+    prefix = [
+        "docker",
+        "compose",
+        "--project-name",
+        "robopark",
+        "--file",
+        str(paths.state / "current-compose.json"),
+    ]
+    if action == "stop":
+        enabled = False
+    elif action == "reconcile":
+        enabled = bot_enabled(paths)
+    else:
+        raise ValueError("invalid_bot_lifecycle_action")
+    if enabled:
+        return prefix + ["up", "-d", "--no-build", "--no-deps", "bot"]
+    return prefix + ["stop", "--timeout", "30", "bot"]
+
+
+def build_service_names(document: dict) -> tuple[str, ...]:
+    """Keep ARM builds sequential and limited to Robopark-owned images."""
+
+    services = document.get("services", {})
+    return tuple(
+        name
+        for name in ("api", "web", "bot")
+        if isinstance(services.get(name), dict)
+    )
+
+
+def build_service_config(service: str, smoke_config, production_config):
+    """The bot is built but deliberately excluded from external-I/O smoke."""
+
+    if service not in {"api", "web", "bot"}:
+        raise ValueError("invalid_build_service")
+    return production_config if service == "bot" else smoke_config
+
+
+def production_config(document, paths, release, image_tag, *, source_release=None):
     """One container privilege/configuration contract for installation and OTA."""
     document = copy.deepcopy(document)
     document["name"] = "robopark"
@@ -241,7 +376,7 @@ def production_config(document, paths, release, image_tag):
     document["services"].setdefault(
         "db",
         {
-            "image": "postgres:17.6-alpine",
+            "image": "postgres:17.11-alpine",
             "environment": {
                 "POSTGRES_USER": "robopark",
                 "POSTGRES_DB": "robopark",
@@ -264,7 +399,7 @@ def production_config(document, paths, release, image_tag):
     services = document["services"]
     document["services"] = {
         name: services[name]
-        for name in ("db", "api", "web", "worker")
+        for name in ("db", "api", "web", "worker", "bot")
         if name in services
     }
     document["volumes"] = {"robopark_postgres": {}}
@@ -330,7 +465,45 @@ def production_config(document, paths, release, image_tag):
             "db": {"condition": "service_healthy"},
             "api": {"condition": "service_healthy"},
         }
-        worker["healthcheck"] = {"disable": True}
+        worker["healthcheck"] = worker_healthcheck_config()
+    from .terminal_install import terminal_payload_present
+
+    # OTA renders before the staging tree is moved to its final release path.
+    # Inspect the source tree while retaining final paths in the Compose config.
+    if terminal_payload_present(source_release if source_release is not None else release):
+        api["environment"]["TERMINAL_BROKER_SOCKET"] = "/run/robopark-terminal/broker.sock"
+        api["volumes"].append({
+            "type": "bind", "source": str(paths.root / "run/robopark-terminal"),
+            "target": "/run/robopark-terminal", "read_only": True,
+            "bind": {"create_host_path": False},
+        })
+    if "bot" in document["services"]:
+        api["volumes"].append(
+            {
+                "type": "bind",
+                "source": str(paths.etc / "bot-bridge-key"),
+                "target": "/run/secrets/bot-bridge-key",
+                "read_only": True,
+            }
+        )
+        bot = document["services"]["bot"]
+        bot["profiles"] = ["bot"]
+        bot["depends_on"] = {"api": {"condition": "service_healthy"}}
+        bot["environment"] = {
+            "ROBOPARK_API_URL": "http://api:8000",
+            "ROBOPARK_BOT_BRIDGE_KEY_FILE": "/run/secrets/bot-bridge-key",
+            "ROBOPARK_BOT_DATA_DIR": "/data/telegram-bot",
+            "TZ": "Europe/Moscow",
+        }
+        bot["volumes"] = [
+            {"type": "bind", "source": str(paths.var / "data"), "target": "/data"},
+            {
+                "type": "bind",
+                "source": str(paths.etc / "bot-bridge-key"),
+                "target": "/run/secrets/bot-bridge-key",
+                "read_only": True,
+            },
+        ]
     workers = "2"
     for line in (paths.etc / "host.env").read_text().splitlines():
         if line.startswith("UVICORN_WORKERS="):
@@ -368,11 +541,13 @@ def production_config(document, paths, release, image_tag):
         "-c",
         f"max_connections={profile.postgres_max_connections}",
     ]
-    for name in ("api", "web"):
+    for name in build_service_names(document):
         service = document["services"][name]
         service["image"] = f"robopark-{name}:{image_tag}"
         service["build"]["context"] = str(release / "apps" / name)
-        service["mem_limit"] = profile.api_memory if name == "api" else "256m"
+        service["mem_limit"] = (
+            profile.api_memory if name == "api" else "768m" if name == "bot" else "256m"
+        )
         service["pids_limit"] = 512
         service.setdefault("ulimits", {})["nofile"] = {"soft": 65536, "hard": 65536}
     if "worker" in document["services"]:
@@ -397,7 +572,8 @@ def pin_images(document, run):
 
 
 def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
-    if run is _run:
+    system_runner = run is _run
+    if system_runner:
         runtime_log = paths.root / "var/log/robopark/runtime-bootstrap.log"
 
         def logged_run(command):
@@ -425,9 +601,8 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
             raise ValueError("invalid_runtime_config")
         if active_config.get("x-robopark-release") == str(release):
             return
-    if target.exists():
-        if not target.is_symlink():
-            raise ValueError("invalid_runtime_config")
+    if target.exists() and not target.is_symlink():
+        raise ValueError("invalid_runtime_config")
     source = release / "deploy/docker-compose.yml"
     command = ["docker", "compose", "--project-name", "robopark", "--file", str(source)]
     compose_environment = source_compose_environment(paths)
@@ -457,20 +632,29 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
             str(build_config),
         ]
         from .image_retention import record, require_record_capacity
+        from .owned_builder import ensure_owned_builder
 
         require_record_capacity(paths)
-        _progress(3, "Собираю API и web; на ARM это может занять несколько минут")
+        # The database has no build context. A fresh host must fetch it before
+        # pin_images resolves every service to an immutable image ID.
+        run([*build_command, "pull", "db"])
+        builder = ensure_owned_builder(paths, run)
+        _progress(3, "Собираю API, web и bot; на ARM это может занять несколько минут")
         # Keep peak RAM predictable on the 8 GiB Armbian target. Compose builds
         # independent services concurrently when they are passed together.
-        print("    • API", flush=True)
-        run([*build_command, "build", "api"])
-        print("    • Web", flush=True)
-        run([*build_command, "build", "web"])
+        for service in build_service_names(document):
+            print(f"    • {service.upper()}", flush=True)
+            run([*build_command, "build", "--builder", builder, service])
         _progress(4, "Проверяю и закрепляю собранные образы")
         pin_images(document, run)
         record(paths, release, "release-" + release_id, document)
         immutable = paths.state / "compose" / ("bootstrap-" + release_id + ".json")
         atomic_write_json(immutable, document)
         atomic_symlink(immutable, target)
+        from .image_retention import cleanup_builder_cache
+        from .updater import SystemRunner
+
+        cleanup_runner = SystemRunner() if system_runner else _CallableRunner(run)
+        cleanup_builder_cache(paths, cleanup_runner, force=True)
     finally:
         build_config.unlink(missing_ok=True)

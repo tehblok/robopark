@@ -22,6 +22,10 @@ function action(base: ActionBase, name: string, payload: Record<string, unknown>
   }
 }
 
+export function buildClaimAction(base: ActionBase): OfflineActionInput {
+  return action(base, 'claim', {})
+}
+
 export function buildCommentAction(base: ActionBase & { author: string, text: string }): {
   action: OfflineActionInput
   timelineItem: TaskTimelineItem

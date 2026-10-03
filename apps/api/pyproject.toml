@@ -1,6 +1,6 @@
 [project]
 name = "robopark-api"
-version = "0.2.0-rc.8"
+version = "0.2.0-rc.21.dev13181400260723547202"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115.0",
@@ -51,6 +51,10 @@ markers = [
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+
+[tool.ruff.format]
+# Released Alembic revisions have immutable checksums and must not be rewritten.
+exclude = ["alembic/versions/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM"]

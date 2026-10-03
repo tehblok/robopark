@@ -110,3 +110,137 @@ def test_cli_dispatches_each_host_command(command, tmp_path, monkeypatch):
     monkeypatch.setitem(COMMAND_HANDLERS, command, lambda paths: 0)
 
     assert main([command]) == 0
+
+
+def test_recovery_key_cli_moves_encrypted_backup_between_hosts_without_printing_key(
+    tmp_path, monkeypatch, capsys
+):
+    from robopark_host.commands import (
+        create_encrypted_backup,
+        restore_encrypted_backup,
+        verify_encrypted_backup,
+    )
+
+    host_a = tmp_path / "host-a"
+    host_b = tmp_path / "host-b"
+    transfer = tmp_path / "recovery.key"
+    monkeypatch.setenv("ROBOPARK_TESTING", "1")
+    monkeypatch.setenv("ROBOPARK_ROOT", str(host_a))
+    assert main(["recovery-key", "init"]) == 0
+    key_a = (host_a / "etc/robopark/backup-recovery.key").read_bytes()
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "database.dump").write_bytes(b"portable")
+    artifact = tmp_path / "backup.rpb"
+    create_encrypted_backup(
+        source, artifact, recovery_key=key_a,
+        app_version="0.2.0-rc.9", schema_version="0050_media_action_dependency",
+    )
+
+    assert main(["recovery-key", "export", "--output", str(transfer)]) == 0
+    output = capsys.readouterr().out
+    assert key_a.hex() not in output
+    assert stat.S_IMODE(transfer.stat().st_mode) == 0o600
+
+    monkeypatch.setenv("ROBOPARK_ROOT", str(host_b))
+    assert main(["recovery-key", "import", "--input", str(transfer)]) == 0
+    key_b = (host_b / "etc/robopark/backup-recovery.key").read_bytes()
+    assert key_b == key_a
+    receipt = verify_encrypted_backup(artifact, recovery_key=key_b)
+    restored = tmp_path / "restored"
+    restore_encrypted_backup(artifact, restored, recovery_key=key_b, verified=receipt)
+    assert (restored / "database.dump").read_bytes() == b"portable"
+    assert key_b.hex() not in capsys.readouterr().out
+
+
+def test_recovery_key_import_requires_exact_confirmation_and_preserves_previous_key(
+    tmp_path, monkeypatch
+):
+    host_a = tmp_path / "host-a"
+    host_b = tmp_path / "host-b"
+    transfer = tmp_path / "recovery.key"
+    monkeypatch.setenv("ROBOPARK_TESTING", "1")
+    monkeypatch.setenv("ROBOPARK_ROOT", str(host_a))
+    assert main(["recovery-key", "init"]) == 0
+    assert main(["recovery-key", "export", "--output", str(transfer)]) == 0
+    imported = transfer.read_bytes()
+
+    monkeypatch.setenv("ROBOPARK_ROOT", str(host_b))
+    assert main(["recovery-key", "init"]) == 0
+    previous = (host_b / "etc/robopark/backup-recovery.key").read_bytes()
+    assert previous != imported
+    assert main(["recovery-key", "import", "--input", str(transfer)]) == 2
+    assert (host_b / "etc/robopark/backup-recovery.key").read_bytes() == previous
+    assert main([
+        "recovery-key", "import", "--input", str(transfer),
+        "--confirmation", "REPLACE ROBOPARK RECOVERY KEY",
+    ]) == 0
+    assert (host_b / "etc/robopark/backup-recovery.key").read_bytes() == imported
+    preserved = list((host_b / "etc/robopark").glob("backup-recovery.key.previous-*"))
+    assert len(preserved) == 1
+    assert preserved[0].read_bytes() == previous
+    assert stat.S_IMODE(preserved[0].stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("unsafe", ["mode", "length", "symlink", "directory"])
+def test_recovery_key_import_rejects_unsafe_source_without_changing_host_key(
+    unsafe, tmp_path, monkeypatch
+):
+    host = tmp_path / "host"
+    source = tmp_path / "incoming.key"
+    real = tmp_path / "real.key"
+    monkeypatch.setenv("ROBOPARK_TESTING", "1")
+    monkeypatch.setenv("ROBOPARK_ROOT", str(host))
+    assert main(["recovery-key", "init"]) == 0
+    original = (host / "etc/robopark/backup-recovery.key").read_bytes()
+    if unsafe == "directory":
+        source.mkdir()
+    elif unsafe == "symlink":
+        real.write_bytes(b"n" * 32); real.chmod(0o600); source.symlink_to(real)
+    else:
+        source.write_bytes(b"n" * (31 if unsafe == "length" else 32))
+        source.chmod(0o644 if unsafe == "mode" else 0o600)
+
+    assert main([
+        "recovery-key", "import", "--input", str(source),
+        "--confirmation", "REPLACE ROBOPARK RECOVERY KEY",
+    ]) == 2
+    assert (host / "etc/robopark/backup-recovery.key").read_bytes() == original
+
+
+def test_recovery_key_export_is_exclusive_and_does_not_replace_existing_file(
+    tmp_path, monkeypatch
+):
+    host = tmp_path / "host"
+    destination = tmp_path / "existing.key"
+    destination.write_bytes(b"keep")
+    monkeypatch.setenv("ROBOPARK_TESTING", "1")
+    monkeypatch.setenv("ROBOPARK_ROOT", str(host))
+    assert main(["recovery-key", "init"]) == 0
+
+    assert main(["recovery-key", "export", "--output", str(destination)]) == 2
+    assert destination.read_bytes() == b"keep"
+
+
+def test_recovery_key_import_rejects_key_owned_by_another_user(
+    tmp_path, monkeypatch
+):
+    from robopark_host import commands
+
+    host = tmp_path / "host"
+    source = tmp_path / "incoming.key"
+    source.write_bytes(b"n" * 32)
+    source.chmod(0o600)
+    real_fstat = commands.os.fstat
+
+    def foreign_fstat(descriptor):
+        values = list(real_fstat(descriptor))
+        values[stat.ST_UID] = 999_999
+        return os.stat_result(values)
+
+    monkeypatch.setenv("ROBOPARK_TESTING", "1")
+    monkeypatch.setenv("ROBOPARK_ROOT", str(host))
+    monkeypatch.setattr(commands.os, "fstat", foreign_fstat)
+
+    assert main(["recovery-key", "import", "--input", str(source)]) == 2
+    assert not (host / "etc/robopark/backup-recovery.key").exists()

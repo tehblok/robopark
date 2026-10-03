@@ -107,7 +107,7 @@ elif name == 'docker':
     elif any('SELECT version_num FROM alembic_version' in arg for arg in args):
         print('initial' if 'psql' in args else '["initial"]')
     elif 'config' in args:
-        print(json.dumps({'services': {'db': {'image': 'postgres:17.6-alpine', 'environment': {}, 'volumes': []}, 'api': {'build': {'context': 'api'}, 'environment': {}}, 'web': {'build': {'context': 'web'}}, 'ops-agent': {}}}))
+        print(json.dumps({'services': {'db': {'image': 'postgres:17.11-alpine', 'environment': {}, 'volumes': []}, 'api': {'build': {'context': 'api'}, 'environment': {}}, 'web': {'build': {'context': 'web'}}, 'ops-agent': {}}}))
     elif 'build' in args and os.environ.get('BUILD_FAIL') == '1':
         sys.exit(1)
 elif name == 'systemctl':

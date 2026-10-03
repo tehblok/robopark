@@ -1,4 +1,5 @@
 PARK_DEFAULTS = {
+    "timezone": "Europe/Moscow",
     "tracker_queue": None,
     "tracker_priority": None,
     "tracker_type": None,

@@ -5,7 +5,7 @@ import { useAuth } from '../../auth-context'
 import { Button, IconButton } from '../../design-system/actions/Button'
 import { Icon } from '../../design-system/icons/Icon'
 import { BottomSheet } from '../../design-system/overlays/BottomSheet'
-import { useTheme } from '../../design-system/theme/ThemeProvider'
+import { useTheme } from '../../design-system/theme/themeContext'
 import { DENSITY_MEDIA_QUERY } from '../../design-system/theme/theme'
 import { ru, roleLabel } from '../../i18n/ru'
 import { resourceStore, useCachedResource } from '../../lib/resource'
@@ -21,6 +21,7 @@ import './AppShell.css'
 import { usePresentationMode } from '../interface/presentationModeContext'
 import { PresentationShell } from '../interface/PresentationShell'
 import { ShareTargetInbox } from '../../pwa/ShareTargetInbox'
+import { clearLegacyShareTargetNotice, useLegacyShareTargetNotice, usePendingShareTargetId } from '../../pwa/shareTargetIntent'
 import { SyncCenter } from '../../pwa/SyncCenter'
 import { readReportPhotoDraft, writeReportPhotoDraft } from '../../domains/reports/reportPhotoDrafts'
 import { reportDraftKey } from '../../domains/reports/reports'
@@ -80,7 +81,7 @@ function ParkIdentity({
   const typed = useRef({ text: '', at: 0 })
   const parkOptions: { id: number | null; name: string }[] = allowAllParks && parks.length
     ? [{ id: null, name: 'Все доступные парки' }, ...parks] : parks
-  const parkName = selectedPark?.name ?? (loading ? ru.loading : allowAllParks && parks.length ? 'Все доступные парки' : 'Без парка')
+  const parkName = selectedPark?.name ?? (loading ? ru.loading : allowAllParks && parks.length ? 'Все парки' : 'Без парка')
   const canSwitch = PARK_SWITCH_ROLES.has(user.role)
     && !locked
     && parkOptions.length > 1
@@ -281,7 +282,9 @@ function NavigationLink({
 }
 
 export function AppShell() {
-  const { user, logout, refreshUser } = useAuth()
+  const shareTargetId = usePendingShareTargetId()
+  const legacyShareNotice = useLegacyShareTargetNotice()
+  const { user, logout, refreshUser, offlineSession } = useAuth()
   const presenceIdentity = user?.id
   useEffect(() => {
     if (presenceIdentity == null) return
@@ -318,6 +321,8 @@ export function AppShell() {
     densityPreference,
     resolvedDensity,
     setDensityPreference,
+    accentPreference,
+    setAccentPreference,
   } = useTheme()
   const presentationMode = usePresentationMode()
   const location = useLocation()
@@ -462,7 +467,7 @@ export function AppShell() {
       const focus = (target: HTMLElement) => {
         const addedTabIndex = target !== main && !target.hasAttribute('tabindex')
         if (addedTabIndex) target.setAttribute('tabindex', '-1')
-        if (focusNavigationType === 'POP') target.focus({ preventScroll: true })
+        if (focusNavigationType === 'POP' || location.hash) target.focus({ preventScroll: true })
         else target.focus()
         if (addedTabIndex) {
           target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true })
@@ -486,7 +491,7 @@ export function AppShell() {
       window.clearTimeout(observerTimeout)
       observer?.disconnect()
     }
-  }, [location.pathname])
+  }, [location.pathname, location.hash])
 
   useEffect(() => {
     if (!phoneViewport) return
@@ -610,7 +615,7 @@ export function AppShell() {
               user={user}
             />
           ) : <span aria-hidden="true" />}
-          <SyncCenter />
+          <SyncCenter offlineSession={offlineSession} />
           <div className="rp-shell__topbar-actions">
             <span className="rp-shell__user">
               <strong>{user.username}</strong>
@@ -654,6 +659,7 @@ export function AppShell() {
         <div className="rp-shell-controls" data-interface={presentationMode} data-theme={resolvedTheme}>
         {secondaryMobileItems.length > 0 ? (
           <nav aria-label={ru.appShell.secondaryNavigation} className="rp-shell__more-nav">
+            <h3 className="rp-shell__menu-heading">Разделы</h3>
             {secondaryMobileItems.map((item) => (
               <NavigationLink
                 active={item.id === mobileCurrent?.id}
@@ -668,6 +674,7 @@ export function AppShell() {
         ) : null}
 
         <nav aria-label="Профиль" className="rp-shell__more-nav">
+          <h3 className="rp-shell__menu-heading">Профиль</h3>
           <Link className="rp-shell__more-link" onClick={() => setMoreOpen(false)} to="/change-password">
             <Icon name="settings" size={20} />
             <span className="rp-shell__nav-label">Сменить пароль</span>
@@ -699,6 +706,29 @@ export function AppShell() {
           ))}
         </fieldset>
 
+        <fieldset className="rp-shell__preference-group rp-shell__accent-group" role="radiogroup">
+          <legend>Акцентный цвет</legend>
+          {([
+            ['olive', 'Оливковый', 'Олива'],
+            ['blue', 'Синий', 'Синий'],
+            ['violet', 'Фиолетовый', 'Фиолет.'],
+            ['warm', 'Тёплый', 'Тёплый'],
+          ] as const).map(([value, label, shortLabel]) => (
+            <label data-accent-option={value} key={value}>
+              <input
+                aria-label={label}
+                checked={accentPreference === value}
+                name="rp-accent"
+                onChange={() => setAccentPreference(value)}
+                type="radio"
+                value={value}
+              />
+              <span aria-hidden="true" className="rp-shell__accent-swatch" />
+              <span aria-hidden="true">{shortLabel}</span>
+            </label>
+          ))}
+        </fieldset>
+
         <fieldset className="rp-shell__preference-group" role="radiogroup">
           <legend>{ru.appShell.densityLabel}</legend>
           {([
@@ -725,9 +755,12 @@ export function AppShell() {
         </div>
       </BottomSheet>
       <ShareTargetInbox
+        accountId={user.id}
+        shareId={shareTargetId}
+        onVerifyAccount={async () => (await api.me()).id === user.id}
         onAttachTask={async (taskKey, draft) => {
           const file = new File([draft.blob], draft.name, { type: draft.type, lastModified: draft.createdAt })
-          await api.taskPhoto(taskKey, file, crypto.randomUUID())
+          await api.taskPhoto(taskKey, file, draft.id, user.id)
           navigate(`/work/${encodeURIComponent(taskKey)}${parkId == null ? '' : `?park=${parkId}`}`)
         }}
         onAttachReport={parkId == null ? undefined : async draft => {
@@ -743,6 +776,11 @@ export function AppShell() {
           navigate(`/reports/new?park=${parkId}`)
         }}
       />
+      {legacyShareNotice ? <aside aria-label="Фото из старой версии" className="rp-share-inbox">
+        <strong>Фото не открыто после обновления PWA</strong>
+        <p>Отправьте фото ещё раз через «Поделиться». Старая версия приложения не передала безопасный идентификатор снимка.</p>
+        <Button onClick={clearLegacyShareTargetNotice} size="compact" variant="secondary">Понятно</Button>
+      </aside> : null}
     </>
   )
 }

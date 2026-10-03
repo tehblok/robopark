@@ -17,10 +17,11 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfoNotFoundError
 
 import httpx
 
+from robopark_api.services import sla_clock
 from robopark_api.services.response_cache import ResponseCache
 from robopark_api.services.tracker_api import (
     NOTIFICATION_SEARCH_CALL_TIMEOUT_SEC,
@@ -246,6 +247,32 @@ def build_open_blockers_query(
     return _join_query(*parts)
 
 
+def build_closed_blockers_query(
+    queue: str,
+    tag: str,
+    *,
+    priority: str,
+    since: datetime,
+    until: datetime,
+    issue_type: str | None = None,
+) -> str:
+    """Bound one park's closed-ticket discovery by its immutable scan window."""
+    if since.tzinfo is None or until.tzinfo is None or since >= until:
+        raise ValueError("tracker_history_window_invalid")
+    return _join_query(
+        _queue_clause(queue),
+        type_clause(queue, issue_type),
+        _priority_clause(priority),
+        _tag_clause(tag),
+        '(Status: closed OR Status: resolved OR Status: "Закрыт" OR Status: "Решен" OR Status: "Решён")',
+        # Date-only QL may use a different time zone than the UTC cursor.
+        # Widen the search by a day and verify exact UTC timestamps locally.
+        f"Updated: >= {(since.date() - timedelta(days=1)).isoformat()}",
+        f"Updated: < {(until.date() + timedelta(days=2)).isoformat()}",
+        '"Sort By": Updated DESC',
+    )
+
+
 def build_untagged_blockers_query(
     queue: str,
     park_tags: list[str],
@@ -321,6 +348,15 @@ def _utc_text(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+def _sla_deadline_text(queued_at: datetime, timezone: str | None) -> str | None:
+    if not timezone:
+        return None
+    try:
+        return _utc_text(sla_clock.deadline(queued_at, timezone=timezone))
+    except (ValueError, ZoneInfoNotFoundError):
+        return None
+
+
 def _history_items(issue: Any) -> list[Any]:
     embedded = _field(issue, "status_history") or _field(issue, "statusHistory")
     if embedded is not None:
@@ -331,38 +367,17 @@ def _history_items(issue: Any) -> list[Any]:
     return []
 
 
-_MOSCOW = ZoneInfo("Europe/Moscow")
-
-
-def repair_sla_deadline(queued_at: datetime) -> datetime:
-    """Return the deadline after five hours inside 09:00–21:00 Moscow time."""
-    cursor = queued_at.astimezone(_MOSCOW)
-    remaining = timedelta(hours=5)
-    while remaining > timedelta(0):
-        start = cursor.replace(hour=9, minute=0, second=0, microsecond=0)
-        end = cursor.replace(hour=21, minute=0, second=0, microsecond=0)
-        if cursor < start:
-            cursor = start
-        elif cursor >= end:
-            cursor = start + timedelta(days=1)
-            end = cursor.replace(hour=21)
-        available = end - cursor
-        used = min(available, remaining)
-        cursor += used
-        remaining -= used
-    return cursor.astimezone(UTC)
-
-
 def repair_sla_fields(
-    issue: Any, *, status_history: list[Any] | None = None
+    issue: Any, *, status_history: list[Any] | None = None, timezone: str | None = None
 ) -> dict[str, str | None]:
     """Derive the five-working-hour repair SLA from an actual queued transition."""
     if status_history is None and (
         issue.get("sla_source") == "status_history" if isinstance(issue, dict) else False
     ):
+        queued_at = _tracker_datetime(issue.get("queued_at"))
         return {
-            "queued_at": issue.get("queued_at"),
-            "sla_deadline": issue.get("sla_deadline"),
+            "queued_at": _utc_text(queued_at) if queued_at else None,
+            "sla_deadline": _sla_deadline_text(queued_at, timezone) if queued_at else None,
             "sla_source": issue.get("sla_source"),
         }
 
@@ -401,10 +416,10 @@ def repair_sla_fields(
 
     if not queued:
         return {"queued_at": None, "sla_deadline": None, "sla_source": None}
-    queued_at = max(queued)
+    queued_at = min(queued)
     return {
         "queued_at": _utc_text(queued_at),
-        "sla_deadline": _utc_text(repair_sla_deadline(queued_at)),
+        "sla_deadline": _sla_deadline_text(queued_at, timezone),
         "sla_source": "status_history",
     }
 
@@ -877,6 +892,38 @@ def search_issue_page(
     return _search(token, query, filter_open=filter_open, order=order, limit=limit)
 
 
+def search_closed_history_page(*, token: str, query: str, page: int) -> list[dict[str, Any]]:
+    """Fetch one small page for background history import without full issue cards."""
+    if not 1 <= page <= 200:
+        raise ValueError("tracker_page_number_invalid")
+    client = _client(token)
+
+    def _run() -> list[dict[str, Any]]:
+        result = []
+        for issue in client.issues.find(
+            query,
+            per_page=API_PAGE_SIZE,
+            page=page,
+            fields="key,queue,tags,status,updatedAt",
+        ):
+            result.append(
+                {
+                    "key": str(_field(issue, "key") or ""),
+                    "queue": _queue_display(_field(issue, "queue")),
+                    "tags": _tags_from(_field(issue, "tags")),
+                    "status_key": _status_key(_field(issue, "status")),
+                    "status": _status_display(_field(issue, "status")),
+                    "updated": str(_field(issue, "updatedAt") or ""),
+                    "_tracker_resource": issue,
+                }
+            )
+            if len(result) >= API_PAGE_SIZE:
+                break
+        return result
+
+    return _run_tracked(_run, max_attempts=1, call_timeout=15.0)
+
+
 def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
     client = _client(token)
 
@@ -900,7 +947,28 @@ def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
 
 
 def _project_issue_status_history(history: list[Any]) -> list[dict[str, Any]]:
-    """Keep only JSON-safe fields used by the repair-SLA calculation."""
+    """Keep only bounded status and tag changes needed for historical park/SLA attribution."""
+
+    def tags_value(raw: Any) -> list[str] | None:
+        if not isinstance(raw, (list, tuple)) or len(raw) > 256:
+            return None
+        tags = []
+        for item in raw:
+            value = (
+                item
+                if isinstance(item, str)
+                else (
+                    _field(item, "name")
+                    or _field(item, "display")
+                    or _field(item, "key")
+                    or _field(item, "id")
+                )
+            )
+            if not isinstance(value, str) or not value.strip() or len(value) > 480:
+                return None
+            tags.append(value.strip())
+        return tags
+
     projected: list[dict[str, Any]] = []
     for event in history:
         changed_at = _tracker_datetime(_field(event, "updatedAt") or _field(event, "createdAt"))
@@ -916,9 +984,26 @@ def _project_issue_status_history(history: list[Any]) -> list[dict[str, Any]]:
                 or field
                 or ""
             )
-            if str(field_id).strip().lower() != "status":
+            field_id = str(field_id).strip().lower()
+            if field_id == "tags":
+                before = _field(change, "from")
+                after = _field(change, "to")
+                if before is None:
+                    before = _field(change, "oldValue")
+                if after is None:
+                    after = _field(change, "newValue")
+                fields.append(
+                    {
+                        "field": {"id": "tags"},
+                        "from": tags_value(before),
+                        "to": tags_value(after),
+                    }
+                )
+                continue
+            if field_id != "status":
                 continue
             target = _field(change, "to") or _field(change, "newValue")
+            source = _field(change, "from") or _field(change, "oldValue")
             target_key = _field(target, "key") or ""
             target_display = _field(target, "display") or ""
             if not target_key and not target_display and target is not None:
@@ -930,10 +1015,20 @@ def _project_issue_status_history(history: list[Any]) -> list[dict[str, Any]]:
                         "key": str(target_key),
                         "display": str(target_display),
                     },
+                    "from": {
+                        "key": str(_field(source, "key") or ""),
+                        "display": str(_field(source, "display") or ""),
+                    },
                 }
             )
         if fields:
-            projected.append({"updatedAt": _utc_text(changed_at), "fields": fields})
+            projected.append(
+                {
+                    "id": str(_field(event, "id") or ""),
+                    "updatedAt": _utc_text(changed_at),
+                    "fields": fields,
+                }
+            )
     return projected
 
 
@@ -952,10 +1047,17 @@ def _fetch_issue_status_history(
     return _project_issue_status_history(history)
 
 
+def _issue_history_cache_key(key: str, issue: dict[str, Any]) -> str:
+    # A cached pre-queue changelog must not cover a newer issue version. The
+    # bounded cache retains old versions only until its normal TTL/entry limit.
+    updated = str(_field(issue, "updated") or _field(issue, "updatedAt") or "")
+    return f"{key}:{hashlib.sha256(updated.encode()).hexdigest()}" if updated else key
+
+
 def get_issue_status_history(*, token: str, key: str, issue: dict[str, Any]) -> list[Any]:
     try:
         return _issue_status_history_cache.get_or_load(
-            key,
+            _issue_history_cache_key(key, issue),
             lambda: _fetch_issue_status_history(
                 token=token,
                 key=key,
@@ -981,7 +1083,7 @@ def _load_work_status_history(*, token: str, key: str, issue: dict[str, Any]) ->
     """
     try:
         return _issue_status_history_cache.get_or_load(
-            key,
+            _issue_history_cache_key(key, issue),
             lambda: _fetch_issue_status_history(
                 token=token,
                 key=key,
@@ -1007,13 +1109,14 @@ def schedule_issue_status_history(
     new work after their own small request quota while still consuming a cached
     value or an already-running single flight.
     """
-    found, cached = _issue_status_history_cache.get_if_fresh(key)
+    history_key = _issue_history_cache_key(key, issue)
+    found, cached = _issue_status_history_cache.get_if_fresh(history_key)
     if found:
         ready: Future[list[Any]] = Future()
         ready.set_result(cached or [])
         return ready, False
 
-    cache_key = f"{hashlib.sha256(token.encode()).hexdigest()}:{key}"
+    cache_key = f"{hashlib.sha256(token.encode()).hexdigest()}:{history_key}"
     with _work_history_lock:
         flight = _work_history_flights.get(cache_key)
         if flight is not None:
@@ -1052,6 +1155,7 @@ def clear_issue_status_history_cache() -> None:
 
 def invalidate_issue_status_history(key: str) -> None:
     _issue_status_history_cache.invalidate(key)
+    _issue_status_history_cache.invalidate_prefix(f"{key}:")
 
 
 def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:

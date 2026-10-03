@@ -25,9 +25,21 @@ from robopark_api.services.response_cache import ResponseCache
 class _TrackerCache[T](ResponseCache[T]):
     """Keep shared cache failures within the Tracker facade's error contract."""
 
-    def get_or_load(self, key: str, loader: Callable[[], T]) -> T:
+    def get_or_load(
+        self,
+        key: str,
+        loader: Callable[[], T],
+        *,
+        max_age_seconds: float | None = None,
+        allow_stale: bool = True,
+    ) -> T:
         try:
-            return super().get_or_load(key, loader)
+            return super().get_or_load(
+                key,
+                loader,
+                max_age_seconds=max_age_seconds,
+                allow_stale=allow_stale,
+            )
         except (LiveMergeTimeout, LiveMergeUpstreamError) as exc:
             raise tracker_client.TrackerError("Tracker shared request failed") from exc
 
@@ -217,6 +229,8 @@ def fetch_park_blockers(
     park_tag: str,
     priority: str = "blocker",
     issue_type: str | None = None,
+    max_age_seconds: float | None = None,
+    allow_stale: bool = True,
 ) -> list[dict[str, Any]]:
     ck = f"{queue}|{park_tag}|{priority}|{issue_type or ''}"
     return _blockers_cache.get_or_load(
@@ -232,6 +246,8 @@ def fetch_park_blockers(
                 issue_type=issue_type,
             ),
         ),
+        max_age_seconds=max_age_seconds,
+        allow_stale=allow_stale,
     )
 
 

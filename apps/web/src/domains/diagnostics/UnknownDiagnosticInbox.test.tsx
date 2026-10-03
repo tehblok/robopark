@@ -209,7 +209,7 @@ it('constrains the diagnostic master-detail columns and raw payloads', () => {
   const source = readFileSync(resolve('src/domains/diagnostics/diagnostics.css'), 'utf8')
 
   expect(source).toMatch(/grid-template-columns:\s*minmax\(16rem,\s*28rem\)\s+minmax\(0,\s*1fr\)/)
-  expect(source).toMatch(/@media \(max-width:\s*899px\)[\s\S]*\.rp-diagnostic-editor \.rp-master-detail\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+  expect(source).toMatch(/@media \(max-width:\s*1199px\)[\s\S]*\.rp-diagnostic-editor \.rp-master-detail\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
   expect(source).toMatch(/\.rp-diagnostic-raw\s*\{[^}]*white-space:\s*pre-wrap[^}]*overflow-wrap:\s*anywhere[^}]*max-inline-size:\s*100%[^}]*overflow:\s*auto/)
 })
 

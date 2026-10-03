@@ -198,35 +198,39 @@ function AdminRolesWorkspace({ onDenied }: { onDenied: (denied: boolean) => void
         <p className="panel-hint">{ownerRole
           ? 'Владелец всегда имеет все доступы. Этот набор нельзя изменить через настройки роли.'
           : 'Одобрение регистраций доступно только владельцу и не выдаётся другим ролям.'}</p>
-        <h4 className="admin-perm-group-title">Разделы меню</h4>
-        <div className="admin-perm-grid">
-          {navPerms.map((perm) => (
-            <label className="admin-perm-check" key={perm.key}>
-              <input
-                checked={effectiveDraft.has(perm.key)}
-                disabled={ownerRole}
-                onChange={() => togglePerm(perm.key)}
-                type="checkbox"
-              />
-              {perm.label}
-            </label>
-          ))}
-        </div>
+        {navPerms.length > 0 ? <>
+          <h4 className="admin-perm-group-title">Разделы меню</h4>
+          <div className="admin-perm-grid">
+            {navPerms.map((perm) => (
+              <label className="admin-perm-check" key={perm.key}>
+                <input
+                  checked={effectiveDraft.has(perm.key)}
+                  disabled={ownerRole}
+                  onChange={() => togglePerm(perm.key)}
+                  type="checkbox"
+                />
+                {perm.label}
+              </label>
+            ))}
+          </div>
+        </> : null}
 
-        <h4 className="admin-perm-group-title">Действия</h4>
-        <div className="admin-perm-grid">
-          {actionPerms.map((perm) => (
-            <label className="admin-perm-check" key={perm.key}>
-              <input
-                checked={effectiveDraft.has(perm.key)}
-                disabled={ownerRole}
-                onChange={() => togglePerm(perm.key)}
-                type="checkbox"
-              />
-              {perm.label}
-            </label>
-          ))}
-        </div>
+        {actionPerms.length > 0 ? <>
+          <h4 className="admin-perm-group-title">Действия</h4>
+          <div className="admin-perm-grid">
+            {actionPerms.map((perm) => (
+              <label className="admin-perm-check" key={perm.key}>
+                <input
+                  checked={effectiveDraft.has(perm.key)}
+                  disabled={ownerRole}
+                  onChange={() => togglePerm(perm.key)}
+                  type="checkbox"
+                />
+                {perm.label}
+              </label>
+            ))}
+          </div>
+        </> : null}
 
         <EffectivePermissions permissions={effectiveDraft} catalog={catalog} />
         <div className="form-actions">

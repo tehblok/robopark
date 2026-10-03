@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { ApiError, type Park, type User } from '../../api'
 import { InventoryExportView } from './InventoryExportView'
 
-const next: Park = { id: 1, name: 'Next', tag: 'next', is_active: true }
-const archive: Park = { id: 2, name: 'Архив', tag: 'archive', is_active: false }
+const next: Park = { id: 1, name: 'Next', timezone: 'Europe/Moscow', tag: 'next', is_active: true }
+const archive: Park = { id: 2, name: 'Архив', timezone: 'Europe/Moscow', tag: 'archive', is_active: false }
 
 function renderExport(
   role: User['role'],

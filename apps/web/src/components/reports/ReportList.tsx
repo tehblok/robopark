@@ -1,4 +1,4 @@
-import type { Report } from '../../api'
+import type { ReportSummary } from '../../api'
 import { EmptyBlock, SkeletonList } from '../ui/Feedback'
 import { EntityRow } from '../../design-system/data/EntityRow'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
@@ -9,14 +9,14 @@ import {
 } from './report-utils'
 
 type ReportListProps = {
-  reports: Report[]
+  reports: ReportSummary[]
   loading: boolean
   emptyMessage?: string
   emptyHint?: string
-  onSelect?: (report: Report) => void
+  onSelect?: (report: ReportSummary) => void
   selectedId?: number | null
   showReturnComment?: boolean
-  parkNameForReport?: (report: Report) => string
+  parkNameForReport?: (report: ReportSummary) => string
 }
 
 export function ReportList({

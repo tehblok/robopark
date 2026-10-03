@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useId, useRef, useState, type FormEvent, type PointerEvent } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
-import { api, ApiError, type DiagnosticCatalog, type DiagnosticPreview, type DiagnosticRule, type DiagnosticRuleCreate, type User } from '../../api'
+import { api, ApiError, type DiagnosticCatalog, type DiagnosticPreview, type DiagnosticRule, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import { Tabs, Toggle } from '../../components/ui/Tabs'
 import { Panel } from '../../components/PageShell'
@@ -15,6 +15,7 @@ import { adminResourceOptions } from '../../components/admin/adminResources'
 import { UnknownDiagnosticInbox } from './UnknownDiagnosticInbox'
 import { testDiagnosticSamples, type DiagnosticSampleResult } from './diagnosticSampleApi'
 import { DiagnosticSampleSummary } from './DiagnosticSampleSummary'
+import { emptyDraft, errorText, type Draft } from './diagnosticRuleDraft'
 import './diagnostics.css'
 
 const catalogOwners = new WeakMap<User, number>()
@@ -24,33 +25,13 @@ function catalogKey(user: User, park: string | null) {
   return `admin:diagnostic-rules:${catalogOwners.get(user)}:${park ?? ''}`
 }
 
-export type Draft = Required<Omit<DiagnosticRuleCreate, 'sort_order'>>
 const SEVERITIES = { info: 'Информация', warning: 'Предупреждение', critical: 'Критическая ошибка' } as const
 const INDICATORS = { point: 'Точка', outline: 'Контур', zone: 'Зона' } as const
-export const emptyDraft: Draft = { source_path: '', match_kind: 'exact', pattern: '', example: '', title: '', description: '', severity: 'warning', part: '', preferred_view: 'front', x: .5, y: .5, indicator: 'point', is_enabled: true }
 const isCoordinate = (value: number) => Number.isFinite(value) && value >= 0 && value <= 1
 function toDraft(rule: DiagnosticRule): Draft {
   const { source_path, match_kind, pattern, example, title, description, severity, part, preferred_view, x, y, indicator, is_enabled } = rule
   return { source_path, match_kind, pattern, example, title, description, severity, part, preferred_view, x, y, indicator, is_enabled }
 }
-export function errorText(error: unknown) {
-  if (error instanceof ApiError) {
-    if (error.status === 401) return 'Сессия истекла. Войдите снова.'
-    if (error.status === 403) return 'Нет доступа к каталогу ошибок. Обратитесь к администратору.'
-    if (error.detail === 'unsupported_diagnostic_regex') return 'Этот шаблон не поддерживается или слишком сложен. Упростите регулярное выражение.'
-    if (error.detail === 'invalid_diagnostic_regex') return 'Некорректное регулярное выражение. Проверьте скобки и специальные символы.'
-    if (error.detail === 'diagnostic_preview_source_too_large') return 'Пример требует слишком большого массива. Уменьшите индексы в пути источника.'
-    if (error.detail === 'invalid_diagnostic_source_path') return 'Проверьте путь источника: используйте имена полей и индексы через точку.'
-    if (error.detail === 'unknown_sample_requires_observation') return 'Повторите проверку робота для получения исходного сигнала.'
-    if (error.detail === 'unknown_rule_does_not_match') return 'Правило не распознаёт исходный сигнал. Проверьте шаблон и повторите проверку примера.'
-    if (error.detail === 'diagnostic_sample_catalog_too_large') return 'Каталог слишком велик для полной проверки пересечений. Допускается до 100 включённых правил.'
-    if (error.status === 422) return 'Проверьте поля правила и пример: сервер не смог их обработать.'
-    if (error.detail === 'diagnostic_unknown_already_mapped') return 'Эту ошибку уже разметили. Откройте связанное правило.'
-    if (error.status === 409) return 'Правило конфликтует с каталогом. Обновите список и повторите сохранение.'
-  }
-  return 'Не удалось выполнить запрос. Повторите попытку.'
-}
-
 export function DiagnosticRuleEditor() {
   const { user } = useAuth()
   const [params] = useSearchParams()
@@ -75,7 +56,7 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
   const cacheKey = catalogKey(user, params.get('park'))
   const [section, setSection] = useState('catalog')
   const [inboxOpened, setInboxOpened] = useState(false)
-  const [catalog, setCatalog] = useState<DiagnosticCatalog | null>(() => resourceStore.get<DiagnosticCatalog>(cacheKey) ?? null)
+  const [loadedCatalog, setCatalog] = useState<DiagnosticCatalog | null>(() => resourceStore.get<DiagnosticCatalog>(cacheKey) ?? null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -94,7 +75,7 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
   const mutation = useRef(false)
   const alive = useRef(false)
   const listGeneration = useRef(0)
-  const pendingLists = useRef(0)
+  const catalogRequest = useRef<{ controller: AbortController; pending: number } | null>(null)
   const refreshAuth = useRef(refreshUser)
   useLayoutEffect(() => { refreshAuth.current = refreshUser }, [refreshUser])
   const deniedRef = useRef(false)
@@ -110,10 +91,11 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
   const reload = useCallback(async (signal?: AbortSignal) => {
     // A queued focus callback may outlive the effect that disabled polling.
     // Retire it before any protected request, not only before applying its result.
-    if (!alive.current || deniedRef.current || signal?.aborted) throw new DOMException('Retired catalog owner', 'AbortError')
+    const requestOwner = catalogRequest.current
+    if (!requestOwner || signal && signal !== requestOwner.controller.signal || !alive.current || deniedRef.current || requestOwner.controller.signal.aborted) throw new DOMException('Retired catalog owner', 'AbortError')
     advancePreviewOwner()
     const generation = ++listGeneration.current
-    pendingLists.current++
+    requestOwner.pending++
     setLoading(true)
     try {
       const next = await api.diagnosticRules(signal)
@@ -129,27 +111,30 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
       }
       throw failure
     } finally {
-      pendingLists.current--
+      requestOwner.pending--
       if (alive.current && generation === listGeneration.current) setLoading(false)
     }
   }, [handleAccess, advancePreviewOwner, cacheKey])
-  const catalogRequest = useRef<AbortController | null>(null)
   useEffect(() => {
     alive.current = true
-    const controller = new AbortController()
-    catalogRequest.current = controller
+    const requestOwner = { controller: new AbortController(), pending: 0 }
+    catalogRequest.current = requestOwner
     return () => {
       alive.current = false
       // StrictMode may immediately mount again. Do not let that mount share a
       // request this owner is about to abort; completed cache entries survive.
-      if (pendingLists.current > 0) resourceStore.invalidate(cacheKey)
-      controller.abort()
+      if (requestOwner.pending > 0) resourceStore.invalidate(cacheKey)
+      requestOwner.controller.abort()
     }
   }, [reload, user, cacheKey])
-  useCachedResource(cacheKey, () => reload(catalogRequest.current?.signal), {
+  const resource = useCachedResource(cacheKey, () => reload(catalogRequest.current?.controller.signal), {
     ...adminResourceOptions,
+    refreshOnMount: true,
     enabled: !denied,
   })
+  // Device hydration can satisfy the request without invoking reload. Render
+  // that result too, otherwise a fresh persisted catalog leaves an empty page.
+  const catalog = loadedCatalog ?? resource.data ?? null
 
   const select = (id: string | null) => {
     if (params.get('rule') === id) return
@@ -226,7 +211,7 @@ function DiagnosticCatalogEditor({ user }: { user: User }) {
           <button type="button" className="rp-diagnostic-select" aria-label={`Открыть правило ${item.title}`} aria-pressed={selected === String(item.id)} onClick={() => select(String(item.id))}>
             <strong>{item.title}</strong>
             <StatusBadge tone={item.severity}>{SEVERITIES[item.severity]}</StatusBadge>
-            <span>{item.is_enabled ? 'Включено' : 'Отключено'} · {ROBOT_PHOTOS.find(photo => photo.id === item.preferred_view)?.title}</span>
+            <span className="rp-diagnostic-select__meta">{item.is_enabled ? 'Включено' : 'Отключено'} · {ROBOT_PHOTOS.find(photo => photo.id === item.preferred_view)?.title}</span>
           </button>
           <div className="rp-diagnostic-order">
             <Button type="button" variant="ghost" aria-label={`Выше: ${item.title}`} disabled={busy || loading || index === 0} onClick={() => void reorder(index, -1)}>↑</Button>

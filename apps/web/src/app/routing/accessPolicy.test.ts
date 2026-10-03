@@ -10,6 +10,7 @@ import { isSystemUserRole, type AppRouteId } from './routeManifest'
 const north: Park = {
   id: 7,
   name: 'North Park',
+  timezone: 'Europe/Moscow',
   tag: 'NORTH',
   is_active: true,
   tracker_queue: 'NORTHROBOTS',

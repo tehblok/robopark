@@ -1,5 +1,6 @@
 /** Small, visible-tab-only revision checks. Response bodies stay in the resource hooks. */
 const lastSeenRevisions = new Map<string, number>()
+const VISIBLE_REVISION_CHECK_MS = 20_000
 
 export function resetChangeFeedVersionsForTests(): void {
   lastSeenRevisions.clear()
@@ -60,7 +61,7 @@ export function startChangeFeed({
     } finally {
       pending = false
       if (!stopped) {
-        const base = failures ? Math.min(60_000, 4_000 * 2 ** failures) : 4_000
+        const base = failures ? Math.min(60_000, 4_000 * 2 ** failures) : VISIBLE_REVISION_CHECK_MS
         const cadence = base + Math.floor(200 * Math.random())
         schedule(Math.max(0, cadence - (Date.now() - startedAt)))
       }

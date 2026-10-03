@@ -58,6 +58,7 @@ run_web() {
     npm run lint
     npm run build
     npm test
+    npm run test:scripts
     npm run check-nav
   )
 }
@@ -68,7 +69,11 @@ run_docker() {
     return 127
   }
   sh -n deploy/ops-agent.sh
+  verify_placeholder=$repo_root/deploy/host.env.example
   HOST_ENV_FILE=./host.env.example \
+    ROBOPARK_POSTGRES_PASSWORD_FILE="$verify_placeholder" \
+    ROBOPARK_PGPASS_FILE="$verify_placeholder" \
+    ROBOPARK_SNAPSHOT_CONFIG_FILE="$verify_placeholder" \
     docker compose --project-name robopark -f deploy/docker-compose.yml config --quiet
   docker build -t robopark-api:verify apps/api
   docker build -t robopark-web:verify apps/web
@@ -87,7 +92,7 @@ run_host() {
     sh -n "$script"
   done
   PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH="$repo_root/deploy/host:$repo_root/apps/api/src" \
+    PYTHONPATH="$repo_root/deploy/ota:$repo_root/deploy/host:$repo_root/apps/api/src" \
     uv run --project "$repo_root/apps/api" --frozen --extra dev \
       python -m pytest -p no:cacheprovider tests/host -q
 }
@@ -122,15 +127,17 @@ run_load() {
 
 run_soak() {
   : "${ROBOPARK_SOAK_DURATION_SECONDS:?set an explicit soak duration in seconds}"
-  : "${ROBOPARK_SOAK_OUTPUT:?set an explicit relative soak output path}"
+  : "${ROBOPARK_SOAK_OUTPUT:?set an explicit soak output path}"
+  soak_token=${ROBOPARK_SOAK_RUN_TOKEN:-$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')}
   ROBOPARK_E2E_SUITE=soak ROBOPARK_SOAK_DURATION_SECONDS="$ROBOPARK_SOAK_DURATION_SECONDS" \
+    ROBOPARK_SOAK_RUN_TOKEN="$soak_token" \
     ROBOPARK_SOAK_OUTPUT="$ROBOPARK_SOAK_OUTPUT" \
     npm --prefix apps/web run test:e2e:soak
 }
 
 usage() {
   printf '%s\n' \
-    "usage: $0 [fast|full|load|soak|api|api-postgres|web|docker|host|ota]" \
+    "usage: $0 [fast|full|load|soak|api|api-postgres|web|docker|host|ota|terminal-linux]" \
     "" \
     "fast  Short static and focused regression checks (typically under 2 minutes)." \
     "full  Full API, PostgreSQL, web, Docker and host verification; may take many minutes." \
@@ -144,6 +151,11 @@ if [ "$#" -gt 1 ]; then
 fi
 
 case "${1:-all}" in
+  terminal-linux)
+    # Explicit opt-in only. The Python guard refuses unmarked/non-systemd hosts.
+    : "${ROBOPARK_TERMINAL_ACCEPTANCE_OUTPUT:?Set an absolute report path inside the disposable VM}"
+    python3 scripts/terminal_acceptance.py --output "$ROBOPARK_TERMINAL_ACCEPTANCE_OUTPUT"
+    ;;
   fast)
     run_fast
     ;;

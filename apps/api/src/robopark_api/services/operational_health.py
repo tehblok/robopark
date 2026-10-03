@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import threading
@@ -140,7 +141,9 @@ def read_memory() -> dict:
     return result
 
 
-def backup_status(ops_dir: Path, *, now: float | None = None) -> dict:
+def backup_status(
+    ops_dir: Path, *, now: float | None = None, host_attempt: dict | None = None
+) -> dict:
     now = time.time() if now is None else now
     verified = None
     failed = False
@@ -150,9 +153,17 @@ def backup_status(ops_dir: Path, *, now: float | None = None) -> dict:
             verified = value
     except (OSError, ValueError, AttributeError):
         pass
+    if isinstance(host_attempt, dict) and host_attempt.get("status") == "failed":
+        try:
+            stamp = datetime.fromisoformat(host_attempt["completed_at"].replace("Z", "+00:00"))
+            attempted_at = stamp.astimezone(UTC).timestamp() if stamp.tzinfo else None
+            if attempted_at is not None and 0 < attempted_at <= now + 60:
+                failed = failed or verified is None or attempted_at >= verified
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
+            pass
     try:
         job = json.loads((ops_dir / "job.json").read_text())
-        failed = job.get("kind") == "snapshot" and job.get("state") == "failed"
+        failed = failed or job.get("kind") == "snapshot" and job.get("state") == "failed"
     except (OSError, ValueError, AttributeError):
         pass
     return {
@@ -259,8 +270,26 @@ def process_observations(
 
 
 def _capabilities(public_health: dict) -> dict:
-    value = public_health.get("capabilities", {})
+    value = public_health.get("capabilities")
+    current = time.time()
+    if "capabilities" not in public_health:
+        source_state = "missing"
+    elif (
+        not isinstance(value, dict)
+        or not isinstance(value.get("profile"), str)
+        or not isinstance(value.get("jpeg_backend"), str)
+        or type(value.get("checked_at")) not in (int, float)
+        or not math.isfinite(value["checked_at"])
+    ):
+        source_state = "invalid"
+    elif not current - 35 * 60 <= value["checked_at"] <= current + 60:
+        source_state = "stale"
+    else:
+        source_state = "reported"
+    if source_state != "reported":
+        value = {}
     return {
+        "source_state": source_state,
         "profile": value.get("profile", "generic-arm"),
         "jpeg_backend": value.get("jpeg_backend", "software"),
         "hardware_jpeg": value.get("hardware_jpeg") is True,
@@ -315,10 +344,14 @@ def cached_host_snapshot(
         cached = _snapshot_cache.get(key)
         if cached and now - cached[0] < 10:
             return cached[1]
-        disk = {"total_bytes": None, "free_bytes": None}
+        disk = {"total_bytes": None, "free_bytes": None, "source_state": "unavailable"}
         try:
             usage = shutil.disk_usage(data_dir)
-            disk = {"total_bytes": usage.total, "free_bytes": usage.free}
+            disk = {
+                "total_bytes": usage.total,
+                "free_bytes": usage.free,
+                "source_state": "measured",
+            }
         except OSError:
             pass
         public_health = _read_json(public_health_path)
@@ -329,9 +362,14 @@ def cached_host_snapshot(
         result = {
             "sampled_at": now,
             "window_seconds": WINDOW_SECONDS,
+            "host_health_source_state": "reported" if public_health else "unavailable",
             "disk": disk,
             "memory": read_memory(),
-            "backup": backup_status(ops_dir, now=now),
+            "backup": backup_status(
+                ops_dir,
+                now=now,
+                host_attempt=public_health.get("backup_attempt"),
+            ),
             "requests": read_observations(ops_dir / "observations", now=now),
             "process": process_observations(
                 category_roots={
@@ -347,21 +385,87 @@ def cached_host_snapshot(
             "container": _public_service_health(public_health, "docker"),
             "tuna": _public_service_health(public_health, "tuna"),
             "internet": _public_service_health(public_health, "internet"),
+            "wifi": _public_service_health(public_health, "wifi"),
         }
         cleanup = public_health.get("storage", {})
+        if not isinstance(cleanup, dict):
+            cleanup = {}
+        host_categories = cleanup.get("category_bytes")
+        category_bytes = dict(result["process"]["directory_bytes"])
+        sampled_at = cleanup.get("inventory_sampled_at")
+        cleanup_at = cleanup.get("completed_at")
+        cleanup_fresh = type(cleanup_at) in (int, float) and now - 35 * 60 <= cleanup_at <= now + 60
+        inventory_fresh = (
+            type(sampled_at) in (int, float) and now - 35 * 60 <= sampled_at <= now + 60
+        )
+        if isinstance(host_categories, dict):
+            cleanup_categories = {"logs", "diagnostics"}
+            inventory_categories = {
+                "backups",
+                "scheduled_backups",
+                "releases",
+                "ota_uploads",
+                "ota_cache",
+                "journald",
+                "docker_images",
+                "buildkit_cache",
+                "robopark_buildkit_reported",
+                "robopark_buildkit_private_reclaimable",
+                "docker_volumes",
+                "postgresql_data",
+            }
+            category_bytes.update(
+                {
+                    key: value
+                    for key, value in host_categories.items()
+                    if (
+                        (key in cleanup_categories and cleanup_fresh)
+                        or (key in inventory_categories and inventory_fresh)
+                    )
+                    and type(value) is int
+                    and 0 <= value < 2**63
+                }
+            )
         api_cleanup = _read_json(ops_dir / "api-storage-retention.json")
+        builder_budget = public_health.get("builder_cache_budget")
+        builder_budget = builder_budget if isinstance(builder_budget, dict) else {}
+        budget_reported = (
+            type(builder_budget.get("attempted")) is bool
+            and type(builder_budget.get("blocked")) is bool
+            and type(builder_budget.get("checked_at")) in (int, float)
+            and 0 < builder_budget["checked_at"] <= now + 60
+        )
         result["process"]["last_cleanup"] = cleanup
         floor = max(6 * 1024**3, int((disk["total_bytes"] or 0) * 0.15))
-        free = disk["free_bytes"] or 0
+        free = disk["free_bytes"]
+        cleanup_busy = cleanup.get("busy") is True
         result["storage"] = {
             "floor_bytes": floor,
-            "bytes_to_reclaim": max(0, floor - free),
-            "category_bytes": cleanup.get("category_bytes", result["process"]["directory_bytes"]),
+            "bytes_to_reclaim": max(0, floor - free) if free is not None else None,
+            "space_pressure": free < floor if free is not None else None,
+            "category_bytes": category_bytes,
+            "inventory_failed": cleanup.get("inventory_failed") is True,
+            "inventory_stale": sampled_at is not None and not inventory_fresh,
+            "cleanup_stale": cleanup_at is not None and not cleanup_fresh,
             "last_cleanup_at": cleanup.get("completed_at"),
-            "cleanup_failed": cleanup.get("blocked") is True or cleanup.get("pressure") is True,
+            "cleanup_busy": cleanup_busy,
+            "cleanup_failed": (
+                True
+                if cleanup.get("blocked") is True
+                and (not cleanup_busy or cleanup.get("pressure") is True)
+                else False
+                if type(cleanup.get("completed_at")) in (int, float)
+                else None
+            ),
             "api_last_cleanup_at": api_cleanup.get("completed_at"),
             "api_cleanup_failed": api_cleanup.get("pressure") is True,
             "api_cleanup_owners": api_cleanup.get("owners", {}),
+            "builder_cache_budget": {
+                "attempted": builder_budget["attempted"],
+                "blocked": builder_budget["blocked"],
+            }
+            if budget_reported
+            else None,
         }
         _snapshot_cache.clear()
         _snapshot_cache[key] = (now, result)

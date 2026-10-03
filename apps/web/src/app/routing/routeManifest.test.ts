@@ -6,6 +6,7 @@ import { ROUTE_MANIFEST } from './routeManifest'
 const north: Park = {
   id: 7,
   name: 'North Park',
+  timezone: 'Europe/Moscow',
   tag: 'NORTH',
   is_active: true,
   tracker_queue: 'NORTHROBOTS',
@@ -126,7 +127,7 @@ describe('ROUTE_MANIFEST', () => {
       {
         id: 'robots',
         path: '/robots',
-        legacyPaths: ['/robots/search'],
+        legacyPaths: ['/robots/search', '/map'],
         label: 'Роботы',
         icon: 'robot',
         permission: 'nav.robot_search',

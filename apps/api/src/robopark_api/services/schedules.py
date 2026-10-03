@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from fastapi import HTTPException
 from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
@@ -165,7 +166,13 @@ def _eligible_recipient_batch(
             ),
             func.count(ScheduleEntry.id),
         )
-        .where(park_filter, or_(*day_predicates))
+        .where(
+            park_filter,
+            or_(
+                *day_predicates,
+                and_(ScheduleEntry.start_at <= at, ScheduleEntry.end_at > at),
+            ),
+        )
         .group_by(ScheduleEntry.owner_user_id)
     ).all()
     states = {
@@ -198,10 +205,27 @@ class SchedulePage:
 
 
 def resolve_active_operator(
-    db: Session, *, park_id: int, at: datetime | None = None
+    db: Session,
+    *,
+    park_id: int,
+    at: datetime | None = None,
+    allow_off_shift_fallback: bool = True,
 ) -> User | None:
-    """Choose an approved park operator, preferring a shift covering ``at``."""
+    """Choose an approved park operator, optionally requiring a covering shift."""
     moment = at or datetime.now(UTC)
+    leave = aliased(ScheduleEntry)
+    is_absent = (
+        select(leave.id)
+        .where(
+            leave.owner_user_id == User.id,
+            leave.park_id == park_id,
+            leave.kind.in_(("vacation", "sick")),
+            leave.start_at <= moment,
+            leave.end_at > moment,
+        )
+        .correlate(User)
+        .exists()
+    )
     eligible = (
         select(User)
         .join(UserPark, UserPark.user_id == User.id)
@@ -211,6 +235,7 @@ def resolve_active_operator(
             Role.slug == "operator",
             User.access_status == AccessStatus.approved.value,
             User.is_active.is_(True),
+            ~is_absent,
         )
         .order_by(User.username, User.id)
     )
@@ -224,7 +249,7 @@ def resolve_active_operator(
         )
         .limit(1)
     )
-    return scheduled or db.scalar(eligible.limit(1))
+    return scheduled or (db.scalar(eligible.limit(1)) if allow_off_shift_fallback else None)
 
 
 def _park_access(db: Session, actor: User, park_id: int) -> bool:
@@ -243,6 +268,17 @@ def _owner_in_park(db: Session, owner_id: int, park_id: int) -> User:
     if (
         db.scalar(select(UserPark).where(UserPark.user_id == owner_id, UserPark.park_id == park_id))
         is None
+    ):
+        raise PermissionError
+    return owner
+
+
+def _assignable_owner_in_park(db: Session, owner_id: int, park_id: int) -> User:
+    owner = _owner_in_park(db, owner_id, park_id)
+    if (
+        not owner.is_active
+        or owner.access_status != AccessStatus.approved.value
+        or owner.role not in {"mechanic", "operator"}
     ):
         raise PermissionError
     return owner
@@ -367,6 +403,20 @@ def list_entries_page(
     statement = statement.where(
         ScheduleEntry.end_at > window_start, ScheduleEntry.start_at < window_end
     )
+    absence = aliased(ScheduleEntry)
+    suppressed_by_absence = (
+        select(absence.id)
+        .where(
+            absence.owner_user_id == ScheduleEntry.owner_user_id,
+            absence.park_id == ScheduleEntry.park_id,
+            absence.kind.in_(("vacation", "sick")),
+            absence.start_at < ScheduleEntry.end_at,
+            absence.end_at > ScheduleEntry.start_at,
+        )
+        .correlate(ScheduleEntry)
+        .exists()
+    )
+    statement = statement.where(or_(ScheduleEntry.kind != "shift", ~suppressed_by_absence))
     if after_start_at is not None and after_id is not None:
         statement = statement.where(
             or_(
@@ -431,16 +481,53 @@ def list_participants(db: Session, actor: User, *, park_id: int) -> list[dict]:
 
 
 def create_entry(db: Session, actor: User, payload: ScheduleCreate) -> dict:
+    if payload.idempotency_key is None:
+        row = _create_entry_once(db, actor, payload)
+        db.commit()
+        db.refresh(row)
+        return shell(db, row)
+
+    if not _park_access(db, actor, payload.park_id):
+        raise PermissionError
+    action_payload = payload.model_dump(mode="json", exclude={"idempotency_key"})
+    lock_key = f"schedule-create:{actor.id}:{payload.park_id}:{payload.idempotency_key}"
+    with database_idempotency_lock(db, lock_key):
+        try:
+            begin = reliable_actions.begin_action(
+                db,
+                actor=actor,
+                resource_type="schedule_park",
+                resource_id=str(payload.park_id),
+                action="schedule_create",
+                idempotency_key=payload.idempotency_key,
+                payload=action_payload,
+            )
+            if begin.result is not None:
+                return dict(begin.result)
+            row = _create_entry_once(db, actor, payload)
+            result = ScheduleOut.model_validate(shell(db, row)).model_dump(mode="json")
+            reliable_actions.complete_action(db, begin.row, result)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return result
+
+
+def _create_entry_once(db: Session, actor: User, payload: ScheduleCreate) -> ScheduleEntry:
     if actor.role == "admin":
         raise PermissionError
     owner_id = payload.owner_user_id or actor.id
-    owner = db.get(User, owner_id)
-    if owner is None:
-        raise LookupError("user_not_found")
     if owner_id != actor.id and actor.role != "royal":
         raise PermissionError
-    if not _park_access(db, actor if owner_id == actor.id else owner, payload.park_id):
-        raise PermissionError
+    if owner_id == actor.id:
+        owner = db.get(User, owner_id)
+        if owner is None:
+            raise LookupError("user_not_found")
+        if not _park_access(db, actor, payload.park_id):
+            raise PermissionError
+    else:
+        owner = _assignable_owner_in_park(db, owner_id, payload.park_id)
     if owner_id == actor.id and payload.timezone is not None:
         owner.timezone = payload.timezone
     row = ScheduleEntry(
@@ -454,9 +541,8 @@ def create_entry(db: Session, actor: User, payload: ScheduleCreate) -> dict:
         updated_by_user_id=actor.id,
     )
     db.add(row)
-    db.commit()
-    db.refresh(row)
-    return shell(db, row)
+    db.flush()
+    return row
 
 
 def create_bulk(db: Session, actor: User, payload: ScheduleBulkCreate) -> list[dict]:
@@ -466,7 +552,11 @@ def create_bulk(db: Session, actor: User, payload: ScheduleBulkCreate) -> list[d
     if db.get(Park, payload.park_id) is None:
         raise LookupError("park_not_found")
     for owner_id in owner_ids:
-        owner = _owner_in_park(db, owner_id, payload.park_id)
+        owner = (
+            _assignable_owner_in_park(db, owner_id, payload.park_id)
+            if actor.role == "royal" and owner_id != actor.id
+            else _owner_in_park(db, owner_id, payload.park_id)
+        )
         if owner_id == actor.id and payload.timezone is not None:
             owner.timezone = payload.timezone
     series_id = str(uuid4())
@@ -494,11 +584,14 @@ def create_bulk(db: Session, actor: User, payload: ScheduleBulkCreate) -> list[d
 def create_pattern(db: Session, actor: User, payload: SchedulePatternCreate) -> list[dict]:
     if actor.role == "admin" or (actor.role != "royal" and payload.owner_user_ids != [actor.id]):
         raise PermissionError
+    if actor.role != "royal" and not _park_access(db, actor, payload.park_id):
+        raise PermissionError
     on_days, cycle_days = {
         "none": (1, None),
         "5/2": (5, 7),
-        "2/2": (2, 4),
         "4/4": (4, 8),
+        "3/3": (3, 6),
+        "2/2": (2, 4),
     }[payload.pattern]
     day_count = (payload.end_date - payload.start_date).days + 1
     active_dates = [
@@ -647,6 +740,8 @@ def copy_period(db: Session, actor: User, payload: ScheduleCopy) -> list[dict]:
     owners = payload.owner_user_ids or [actor.id]
     if actor.role != "royal" and owners != [actor.id]:
         raise PermissionError
+    if actor.role != "royal" and not _park_access(db, actor, payload.park_id):
+        raise PermissionError
     if payload.idempotency_key is None:
         try:
             result = _copy_period_once(db, actor, payload, owners)
@@ -684,7 +779,11 @@ def _copy_period_once(
     db: Session, actor: User, payload: ScheduleCopy, owners: list[int]
 ) -> list[dict]:
     for owner_id in owners:
-        owner = _owner_in_park(db, owner_id, payload.park_id)
+        owner = (
+            _assignable_owner_in_park(db, owner_id, payload.park_id)
+            if actor.role == "royal" and owner_id != actor.id
+            else _owner_in_park(db, owner_id, payload.park_id)
+        )
         if owner_id == actor.id and payload.timezone is not None:
             owner.timezone = payload.timezone
     source = list(
@@ -728,28 +827,49 @@ def _copy_period_once(
 
 
 def delete_series(db: Session, actor: User, series_id: str) -> int:
-    rows = list(
-        db.scalars(select(ScheduleEntry).where(ScheduleEntry.series_id == series_id).limit(1000))
+    members = list(
+        db.execute(
+            select(ScheduleEntry.owner_user_id, ScheduleEntry.park_id)
+            .where(ScheduleEntry.series_id == series_id)
+            .distinct()
+        )
     )
-    if not rows:
+    if not members:
         raise LookupError("series_not_found")
     if actor.role == "admin" or (
-        actor.role != "royal" and any(row.owner_user_id != actor.id for row in rows)
+        actor.role != "royal" and any(owner_id != actor.id for owner_id, _park_id in members)
     ):
         raise PermissionError
-    for row in rows:
-        db.delete(row)
+    if any(not _park_access(db, actor, park_id) for park_id in {park_id for _, park_id in members}):
+        raise PermissionError
+    result = db.execute(delete(ScheduleEntry).where(ScheduleEntry.series_id == series_id))
     db.commit()
-    return len(rows)
+    return int(result.rowcount or 0)
 
 
-def update_entry(db: Session, actor: User, entry_id: str, payload: ScheduleUpdate) -> dict:
-    row = db.get(ScheduleEntry, entry_id)
+def _editable_entry(db: Session, actor: User, entry_id: str) -> ScheduleEntry:
+    row = db.scalar(select(ScheduleEntry).where(ScheduleEntry.id == entry_id).with_for_update())
     if row is None:
         raise LookupError("schedule_not_found")
     if actor.role != "royal" and (actor.role == "admin" or row.owner_user_id != actor.id):
         raise PermissionError
-    values = payload.model_dump(exclude_none=True, exclude={"timezone"})
+    if not _park_access(db, actor, row.park_id):
+        raise PermissionError
+    return row
+
+
+def _check_entry_revision(row: ScheduleEntry, base_revision: str | None) -> None:
+    if base_revision is not None and row.updated_at.isoformat() != base_revision:
+        raise HTTPException(409, "schedule_revision_conflict")
+
+
+def _update_entry_once(
+    db: Session, actor: User, row: ScheduleEntry, payload: ScheduleUpdate
+) -> dict:
+    _check_entry_revision(row, payload.base_revision)
+    values = payload.model_dump(
+        exclude_none=True, exclude={"timezone", "base_revision", "idempotency_key"}
+    )
     if payload.timezone is not None and row.owner_user_id == actor.id:
         db.get(User, row.owner_user_id).timezone = payload.timezone
     for key, value in values.items():
@@ -758,16 +878,79 @@ def update_entry(db: Session, actor: User, entry_id: str, payload: ScheduleUpdat
         raise ValueError("invalid_range")
     row.updated_by_user_id = actor.id
     row.updated_at = datetime.now(UTC)
-    db.commit()
+    db.flush()
     db.refresh(row)
     return shell(db, row)
 
 
-def delete_entry(db: Session, actor: User, entry_id: str) -> None:
-    row = db.get(ScheduleEntry, entry_id)
-    if row is None:
-        raise LookupError("schedule_not_found")
-    if actor.role != "royal" and (actor.role == "admin" or row.owner_user_id != actor.id):
-        raise PermissionError
-    db.delete(row)
-    db.commit()
+def update_entry(db: Session, actor: User, entry_id: str, payload: ScheduleUpdate) -> dict:
+    if payload.idempotency_key is None:
+        row = _editable_entry(db, actor, entry_id)
+        result = _update_entry_once(db, actor, row, payload)
+        db.commit()
+        return result
+
+    lock_key = f"schedule-update:{actor.id}:{entry_id}:{payload.idempotency_key}"
+    action_payload = payload.model_dump(mode="json", exclude={"idempotency_key"})
+    with database_idempotency_lock(db, lock_key):
+        try:
+            row = _editable_entry(db, actor, entry_id)
+            begin = reliable_actions.begin_action(
+                db,
+                actor=actor,
+                resource_type="schedule_entry",
+                resource_id=entry_id,
+                action="schedule_update",
+                idempotency_key=payload.idempotency_key,
+                payload=action_payload,
+            )
+            if begin.result is not None:
+                return dict(begin.result)
+            result = ScheduleOut.model_validate(
+                _update_entry_once(db, actor, row, payload)
+            ).model_dump(mode="json")
+            reliable_actions.complete_action(db, begin.row, result)
+            db.commit()
+            return result
+        except Exception:
+            db.rollback()
+            raise
+
+
+def delete_entry(
+    db: Session,
+    actor: User,
+    entry_id: str,
+    *,
+    base_revision: str | None = None,
+    idempotency_key: str | None = None,
+) -> None:
+    if idempotency_key is None:
+        row = _editable_entry(db, actor, entry_id)
+        _check_entry_revision(row, base_revision)
+        db.delete(row)
+        db.commit()
+        return
+
+    lock_key = f"schedule-delete:{actor.id}:{entry_id}:{idempotency_key}"
+    with database_idempotency_lock(db, lock_key):
+        try:
+            begin = reliable_actions.begin_action(
+                db,
+                actor=actor,
+                resource_type="schedule_entry",
+                resource_id=entry_id,
+                action="schedule_delete",
+                idempotency_key=idempotency_key,
+                payload={"base_revision": base_revision},
+            )
+            if begin.result is not None:
+                return
+            row = _editable_entry(db, actor, entry_id)
+            _check_entry_revision(row, base_revision)
+            db.delete(row)
+            reliable_actions.complete_action(db, begin.row, {"deleted": True})
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise

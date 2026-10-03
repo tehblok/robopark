@@ -39,6 +39,52 @@ afterEach(async () => {
 })
 
 describe('offline database', () => {
+  it('keeps a confirmed receipt when the same action is queued again and rejects changed content', async () => {
+    const db = await openOfflineDb(scope())
+    const completed = { ...action('one', 'confirmed'), result: { message_id: 42 } }
+    await db.putAction(completed)
+
+    expect(await db.putQueuedAction(action('one', 'ready', 2))).toMatchObject(completed)
+    expect(await db.getAction('one')).toMatchObject(completed)
+    await expect(db.putQueuedAction({ ...action('one', 'ready', 3), payload: { text: 'changed' } }))
+      .rejects.toThrow('sync_payload_conflict')
+    expect(await db.getAction('one')).toMatchObject(completed)
+  })
+
+  it('does not requeue confirmed media attached to a repeated action', async () => {
+    const db = await openOfflineDb(scope())
+    const completed = action('review', 'confirmed')
+    const photo = {
+      id: 'review-photo', actionId: 'review', issueKey: 'SDCFLEETOPS-1',
+      name: 'robot.jpg', blob: new Blob(['photo']), mimeType: 'image/jpeg',
+      sha256: 'photo-digest', sizeBytes: 5, createdAt: 1, updatedAt: 1,
+      state: 'confirmed' as const,
+    }
+    await db.putAction(completed)
+    await db.putMedia(photo)
+
+    await db.putQueuedAction(action('review', 'ready', 2), { ...photo, state: 'ready', updatedAt: 2 })
+
+    expect(await db.getAction('review')).toMatchObject({ state: 'confirmed' })
+    expect(await db.getMedia('review-photo')).toMatchObject({ state: 'confirmed', updatedAt: 1 })
+  })
+
+  it('rejects a stale leader write in the same transaction that reads its lease', async () => {
+    const db = await openOfflineDb(scope())
+    await db.putAction(action('stale-leader', 'sending'))
+    expect(await db.claimLease('tab-one', 0, 90)).toBe(true)
+    expect(await db.renewLease('tab-one', 30, 90)).toBe(true)
+    expect(await db.claimLease('tab-two', 121, 90)).toBe(true)
+
+    const written = await db.transactionIfLease('tab-one', () => 121, writer => {
+      writer.putAction(action('stale-leader', 'confirmed'))
+    })
+
+    expect(written).toBe(false)
+    expect(await db.getAction('stale-leader')).toMatchObject({ state: 'sending' })
+    expect(await db.renewLease('tab-two', 121, 90)).toBe(true)
+  })
+
   it('migrates a legacy database and creates every required store and index', async () => {
     const legacy = indexedDB.open(OFFLINE_DATABASE_NAME, 1)
     legacy.onupgradeneeded = () => legacy.result.createObjectStore('entities', { keyPath: 'dbId' })
@@ -308,6 +354,35 @@ describe('offline database', () => {
 
     await db.cleanup({ maxBytes: 1_000_000, now: 20_050, confirmedTtlMs: 100, entityTtlMs: 100 })
     expect(await db.getMedia('review-photo')).toBeUndefined()
+  })
+
+  it('retains a cancelled dependency tombstone while a review still references it', async () => {
+    const db = await openOfflineDb(scope())
+    await db.transaction(writer => {
+      writer.putAction(action('cancelled-comment', 'cancelled'))
+      writer.putAction({ ...action('pending-review', 'ready'), action: 'submit_review',
+        dependencies: ['cancelled-comment'] })
+    })
+
+    await expect(db.cleanup({ maxBytes: 0, now: 10_000, confirmedTtlMs: 100, entityTtlMs: 100 }))
+      .rejects.toBeInstanceOf(OfflineStorageFullError)
+    expect(await db.getAction('cancelled-comment')).toMatchObject({ state: 'cancelled' })
+    expect(await db.getAction('pending-review')).toMatchObject({ state: 'ready' })
+  })
+
+  it('retains a confirmed comment receipt while a queued review depends on it', async () => {
+    const db = await openOfflineDb(scope())
+    await db.transaction(writer => {
+      writer.putAction(action('confirmed-comment', 'confirmed'))
+      writer.putAction({ ...action('pending-review', 'ready'), action: 'submit_review',
+        dependencies: ['confirmed-comment'] })
+    })
+
+    await db.cleanup({ maxBytes: 1_000_000, now: 10_000, confirmedTtlMs: 100, entityTtlMs: 100 })
+    expect(await db.getAction('confirmed-comment')).toMatchObject({ state: 'confirmed' })
+    await expect(db.cleanup({ maxBytes: 0, now: 10_000, confirmedTtlMs: 100, entityTtlMs: 100 }))
+      .rejects.toBeInstanceOf(OfflineStorageFullError)
+    expect(await db.getAction('confirmed-comment')).toMatchObject({ state: 'confirmed' })
   })
 
   it('stores and replaces section revisions inside the active scope', async () => {

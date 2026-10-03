@@ -77,7 +77,7 @@ function activityTime(value?: string | null): string {
   return Number.isNaN(parsed.getTime()) ? 'Нет данных' : new Intl.DateTimeFormat('ru-RU', {
     timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).format(parsed)
+  }).format(parsed) + ' МСК'
 }
 
 export function AdminUsersPanel({ parks }: { parks: Park[] }) {
@@ -363,7 +363,7 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
   if (loading && !initialized) return <Spinner label="Загрузка пользователей…" />
 
   return (
-    <div className="admin-users">
+    <div className="admin-users" data-detail-open={detailOpen}>
       {(error || loadError) && <Alert tone="error">{error || loadError}</Alert>}
       {success && <Alert tone="success">{success}</Alert>}
 
@@ -454,15 +454,14 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
         >
           {selectedUser ? (
             <div className="form-grid">
-              <div className="rp-user-activity" aria-label="Последняя активность">
-                <strong>Последняя активность</strong>
-                <span>{activityTime(selectedUser.last_seen_at)} МСК</span>
+              <details className="rp-user-activity" aria-label="Последняя активность">
+                <summary>Последняя активность · {activityTime(selectedUser.last_seen_at)}</summary>
                 <span>IP: {selectedUser.last_ip || 'Нет данных'}</span>
                 <span>Устройство: {selectedUser.last_device || 'Нет данных'}</span>
                 <span>{locationStatus(selectedUser)}</span>
                 <span>{locationSource(selectedUser)}</span>
                 <small>Местоположение по IP не подтверждает присутствие в парке или офисе.</small>
-              </div>
+              </details>
               <label className="field">
                 <span className="field-label">Роль</span>
                 <select
@@ -558,40 +557,44 @@ function AdminUsersWorkspace({ parks, onDenied }: { parks: Park[]; onDenied: (de
                     Роль задаёт базовый набор. Снимите галочку, чтобы забрать доступ, или поставьте — чтобы выдать сверх роли.
                     {' '}Одобрение регистраций доступно только владельцу.
                   </p>
-                  <h4 className="admin-perm-group-title">Разделы меню</h4>
-                  <div className="admin-perm-grid">
-                    {navPerms.map((perm) => (
-                      <label className="admin-perm-check" key={perm.key}>
-                        <input
-                          checked={draft.permissions.has(perm.key)}
-                          disabled={selectedLocked || busy}
-                          onChange={() => togglePerm(perm.key)}
-                          type="checkbox"
-                        />
-                        {perm.label}
-                        {roleDefaultPerms(draft.role_slug).includes(perm.key) ? (
-                          <span className="issue-muted"> · роль</span>
-                        ) : null}
-                      </label>
-                    ))}
-                  </div>
-                  <h4 className="admin-perm-group-title">Действия</h4>
-                  <div className="admin-perm-grid">
-                    {actionPerms.map((perm) => (
-                      <label className="admin-perm-check" key={perm.key}>
-                        <input
-                          checked={draft.permissions.has(perm.key)}
-                          disabled={selectedLocked || busy}
-                          onChange={() => togglePerm(perm.key)}
-                          type="checkbox"
-                        />
-                        {perm.label}
-                        {roleDefaultPerms(draft.role_slug).includes(perm.key) ? (
-                          <span className="issue-muted"> · роль</span>
-                        ) : null}
-                      </label>
-                    ))}
-                  </div>
+                  {navPerms.length > 0 ? <>
+                    <h4 className="admin-perm-group-title">Разделы меню</h4>
+                    <div className="admin-perm-grid">
+                      {navPerms.map((perm) => (
+                        <label className="admin-perm-check" key={perm.key}>
+                          <input
+                            checked={draft.permissions.has(perm.key)}
+                            disabled={selectedLocked || busy}
+                            onChange={() => togglePerm(perm.key)}
+                            type="checkbox"
+                          />
+                          {perm.label}
+                          {roleDefaultPerms(draft.role_slug).includes(perm.key) ? (
+                            <span className="issue-muted"> · роль</span>
+                          ) : null}
+                        </label>
+                      ))}
+                    </div>
+                  </> : null}
+                  {actionPerms.length > 0 ? <>
+                    <h4 className="admin-perm-group-title">Действия</h4>
+                    <div className="admin-perm-grid">
+                      {actionPerms.map((perm) => (
+                        <label className="admin-perm-check" key={perm.key}>
+                          <input
+                            checked={draft.permissions.has(perm.key)}
+                            disabled={selectedLocked || busy}
+                            onChange={() => togglePerm(perm.key)}
+                            type="checkbox"
+                          />
+                          {perm.label}
+                          {roleDefaultPerms(draft.role_slug).includes(perm.key) ? (
+                            <span className="issue-muted"> · роль</span>
+                          ) : null}
+                        </label>
+                      ))}
+                    </div>
+                  </> : null}
                 </div>
               )}
 

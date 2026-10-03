@@ -1,3 +1,6 @@
+"""Compatibility policy for the clean-install base and its future successors."""
+
+import json
 import sys
 from pathlib import Path
 
@@ -9,100 +12,60 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from migration_graph import MigrationPolicy, plan_upgrade
 
 
-def test_old_release_requires_declared_bridge():
+def test_current_release_declares_terminal_upgrade_from_foundation():
     policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
-    target = {
-        "app_version": "0.2.0-rc.6",
-        "migration_head": "0050_media_action_dependency",
-    }
-    plan = plan_upgrade("0.1.18", "0036_audit_remediation_state", target, policy)
-    assert plan.releases == ("0.1.45", "0.2.0-rc.6")
-    assert plan.recovery == "snapshot"
+    metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
+    compatibility = json.loads((ROOT / "docs/releases/compatibility.json").read_text())
+
+    assert policy.target_head == metadata["migration_head"] == "0056_host_terminal"
+    assert policy.known_heads == frozenset({"0055_media_upload_park"})
+    assert metadata["migration_compatibility"]["from_heads"] == ["0055_media_upload_park"]
+    assert metadata["compatible_from_versions"]
+    assert all(version.startswith("0.2.0-rc.") for version in metadata["compatible_from_versions"])
+    assert compatibility["known_heads"] == ["0055_media_upload_park"]
+    for version in metadata["compatible_from_versions"]:
+        plan = plan_upgrade(version, "0055_media_upload_park", {
+            "app_version": compatibility["target_version"],
+            "migration_head": policy.target_head,
+        }, policy)
+        assert plan.releases == (compatibility["target_version"],)
+        assert plan.recovery == "snapshot"
 
 
-def test_recent_release_can_update_directly():
+@pytest.mark.parametrize(
+    ("current_version", "current_head"),
+    [
+        ("0.2.0-rc.7", "0050_media_action_dependency"),
+        ("0.2.0-rc.7", "unknown_schema"),
+        ("0.2.0-rc.8", "0050_media_action_dependency"),
+    ],
+)
+def test_current_base_rejects_unknown_schema_upgrade(current_version, current_head):
     policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
-    target = {
-        "app_version": "0.2.0-rc.6",
-        "migration_head": "0050_media_action_dependency",
-    }
-    plan = plan_upgrade("0.2.0-rc.5", "0036_audit_remediation_state", target, policy)
-    assert plan.releases == ("0.2.0-rc.6",)
+    target = {"app_version": "0.2.0-rc.8", "migration_head": policy.target_head}
 
-
-def test_rc6_accepts_only_three_source_heads():
-    policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
-    assert policy.known_heads == {
-        "0036_audit_remediation_state",
-        "0037_claim_workflow_visibility",
-        "0038_inventory_photo_cleanup",
-    }
-    target = {"app_version": "0.2.0-rc.6", "migration_head": "0050_media_action_dependency"}
-    for head in policy.known_heads:
-        assert plan_upgrade("0.2.0-rc.5", head, target, policy).releases == ("0.2.0-rc.6",)
     with pytest.raises(ValueError, match="migration_incompatible"):
-        plan_upgrade("0.2.0-rc.5", "0035_schedules_and_push", target, policy)
+        plan_upgrade(current_version, current_head, target, policy)
 
 
-def test_unknown_schema_is_rejected_before_mutation():
-    policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
-    with pytest.raises(ValueError, match="migration_incompatible"):
-        plan_upgrade(
-            "0.1.9",
-            "unknown",
+def test_future_release_can_explicitly_accept_this_base(tmp_path):
+    path = tmp_path / "migration-policy.json"
+    path.write_text(
+        json.dumps(
             {
-                "app_version": "0.2.0-rc.6",
-                "migration_head": "0050_media_action_dependency",
-            },
-            policy,
+                "schema": 1,
+                "target_head": "0055_next_base_migration",
+                "known_heads": ["0054_park_coordinates"],
+                "bridge_before": "0.2.0-rc.8",
+                "bridge_version": "0.2.0-rc.8",
+                "reversible": False,
+                "recovery": "snapshot",
+            }
         )
-
-
-def test_host_admission_requires_declared_bridge_before_mutation():
-    from robopark_host.release import ReleaseError, check_compatibility
-
-    candidate = {
-        "app_version": "0.2.0-rc.1",
-        "migration_head": "0036_audit_remediation_state",
-        "migration_compatibility": {
-            "from_heads": ["0022_tracker_collaboration"],
-            "reversible": True,
-        },
-        "min_installer_version": "0",
-        "required_capabilities": [],
-        "upgrade_policy": {
-            "mode": "graph",
-            "bridge_before": "0.1.45",
-            "bridge_version": "0.1.45",
-            "reversible": False,
-            "recovery": "snapshot",
-        },
-        "files": {
-            name: {}
-            for name in (
-                "deploy/Dockerfile.api-tests",
-                "apps/api/Dockerfile",
-                "apps/api/uv.lock",
-                "apps/api/pyproject.toml",
-                "apps/web/Dockerfile",
-                "apps/web/package-lock.json",
-                "apps/web/package.json",
-                "scripts/verify.sh",
-            )
-        },
-    }
-    with pytest.raises(ReleaseError, match="bridge_required"):
-        check_compatibility(
-            candidate,
-            {
-                "app_version": "0.1.18",
-                "migration_head": "0022_tracker_collaboration",
-            },
-        )
-    check_compatibility(
-        candidate,
-        {
-            "app_version": "0.1.45",
-            "migration_head": "0022_tracker_collaboration",
-        },
     )
+    policy = MigrationPolicy.from_file(path)
+    target = {"app_version": "0.2.0-rc.9", "migration_head": policy.target_head}
+
+    plan = plan_upgrade("0.2.0-rc.8", "0054_park_coordinates", target, policy)
+    assert plan.releases == ("0.2.0-rc.9",)
+    assert plan.recovery == "snapshot"

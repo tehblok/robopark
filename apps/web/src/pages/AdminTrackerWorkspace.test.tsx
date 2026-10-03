@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { resourceStore } from '../lib/resource'
 import { installMatchMedia, renderApp, testUser } from '../test/renderApp'
 
-const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
+const north = { id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 
 afterEach(() => { vi.restoreAllMocks(); resourceStore.clearAll() })
 

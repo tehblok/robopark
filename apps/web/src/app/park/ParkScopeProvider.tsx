@@ -8,7 +8,7 @@ import {
   type PropsWithChildren,
 } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
-import { api, type Park, type User } from '../../api'
+import { api, ApiError, type Park, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import {
   hasFleetParkScope,
@@ -18,6 +18,12 @@ import {
   validParkId,
 } from './parkScope'
 import { activateDeviceResourceCache } from '../../lib/deviceResourceCache'
+import { resourceStore } from '../../lib/resource'
+
+function directoryKey(user: User, includeInactive: boolean): string {
+  return `park-directory:${JSON.stringify([user.id, user.username, user.role, user.access_status,
+    [...(user.permissions ?? [])].sort(), user.parks.map(park => park.id).sort((a, b) => a - b), includeInactive])}`
+}
 
 function activeParks(parks: Park[]): Park[] {
   return parks.filter((park) => park.is_active !== false)
@@ -56,6 +62,8 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
     && pathname.replace(/\/$/, '') === '/inventory'
     && searchParams.get('view') === 'export')
   const fleetScope = Boolean(user && (hasFleetParkScope(user) || inventoryFleetScope))
+  const cacheKey = user && fleetScope ? directoryKey(user, includeInactiveInventoryParks) : null
+  const cachedParks = cacheKey ? resourceStore.get<Park[]>(cacheKey) : undefined
   const [loadState, setLoadState] = useState<ParkLoadState | null>(null)
   const [selectionState, setSelectionState] = useState<ParkSelectionState | null>(null)
   const currentLoadState = loadState?.user === user && loadState.fleetScope === fleetScope && loadState.includeInactive === includeInactiveInventoryParks
@@ -70,7 +78,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   const loadedParks = !user
     ? EMPTY_PARKS
     : fleetScope
-      ? (currentLoadState?.parks ?? EMPTY_PARKS)
+      ? (currentLoadState?.parks ?? cachedParks ?? EMPTY_PARKS)
       : (currentLoadState?.parks ?? user.parks)
   const parks = useMemo(() => allowAllParks
     ? loadedParks.filter(park => park.is_active !== false && (user?.role !== 'operator' || user.parks.some(assigned => assigned.id === park.id)))
@@ -78,7 +86,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   const loading = !user
     ? false
     : fleetScope
-      ? (currentLoadState?.loading ?? true)
+      ? (currentLoadState?.loading ?? cachedParks === undefined)
       : (currentLoadState?.loading ?? false)
   const parkId = currentSelectionState?.parkId ?? null
 
@@ -97,6 +105,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
     requestFleetScope: boolean,
     requestIncludeInactive: boolean,
     currentParks: Park[],
+    background = false,
   ) => {
     const generation = ++loadGeneration.current
     setLoadState({
@@ -104,7 +113,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
       fleetScope: requestFleetScope,
       includeInactive: requestIncludeInactive,
       parks: currentParks,
-      loading: true,
+      loading: !background,
       error: null,
     })
     return generation
@@ -117,6 +126,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
     requestIncludeInactive: boolean,
     nextParks: Park[],
     error: string | null = null,
+    remember = false,
   ) => {
     if (
       generation !== loadGeneration.current
@@ -124,6 +134,10 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
       || requestFleetScope !== currentScope.current.fleetScope
       || requestIncludeInactive !== currentScope.current.includeInactive
     ) return
+
+    if (remember && requestUser && requestFleetScope) {
+      resourceStore.set(directoryKey(requestUser, requestIncludeInactive), nextParks, false)
+    }
 
     setLoadState({
       user: requestUser,
@@ -142,20 +156,29 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!user || !fleetScope) return
 
-    const fallbackParks = includeInactiveInventoryParks ? user.parks : activeParks(user.parks)
-    const generation = beginLoad(user, true, includeInactiveInventoryParks, fallbackParks)
+    const key = directoryKey(user, includeInactiveInventoryParks)
+    const remembered = resourceStore.get<Park[]>(key)
+    const fallbackParks = remembered ?? (includeInactiveInventoryParks ? user.parks : activeParks(user.parks))
+    const generation = beginLoad(user, true, includeInactiveInventoryParks, fallbackParks, remembered !== undefined)
+    let authoritative = false
+    void resourceStore.hydrate<Park[]>(key).then(saved => {
+      if (saved !== undefined && !authoritative) commitLoad(generation, user, true, includeInactiveInventoryParks, saved)
+    })
     void api
       .parks()
       .then((nextParks) => {
-        commitLoad(generation, user, true, includeInactiveInventoryParks, includeInactiveInventoryParks ? nextParks : activeParks(nextParks))
+        authoritative = true
+        commitLoad(generation, user, true, includeInactiveInventoryParks, includeInactiveInventoryParks ? nextParks : activeParks(nextParks), null, true)
       })
-      .catch(() => {
+      .catch((error) => {
+        const denied = error instanceof ApiError && (error.status === 401 || error.status === 403)
+        if (denied) { authoritative = true; resourceStore.evict(key) }
         commitLoad(
           generation,
           user,
           true,
           includeInactiveInventoryParks,
-          fallbackParks,
+          denied ? [] : resourceStore.get<Park[]>(key) ?? fallbackParks,
           PARK_LOAD_ERROR,
         )
       })
@@ -217,6 +240,8 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
           requestFleetScope,
           requestIncludeInactive,
           requestIncludeInactive ? nextParks : activeParks(nextParks),
+          null,
+          true,
         )
         return
       }
@@ -230,12 +255,15 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
         refreshedUser.parks,
       )
     } catch (error) {
+      if (requestUser && requestFleetScope && error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        resourceStore.evict(directoryKey(requestUser, requestIncludeInactive))
+      }
       commitLoad(
         generation,
         requestUser,
         requestFleetScope,
         requestIncludeInactive,
-        parks,
+        error instanceof ApiError && error.status === 403 ? [] : parks,
         PARK_LOAD_ERROR,
       )
       throw error
@@ -249,7 +277,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
       parkId,
       selectedPark,
       parks,
-      loading: loading || Boolean(allowAllParks && user && (!currentSelectionState || (parkId !== null && !selectedPark))),
+      loading: loading || Boolean(allowAllParks && user && !currentLoadState?.error && (!currentSelectionState || (parkId !== null && !selectedPark))),
       loadError: currentLoadState?.error ?? null,
       locked,
       setParkId,

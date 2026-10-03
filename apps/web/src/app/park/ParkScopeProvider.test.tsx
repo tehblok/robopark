@@ -12,9 +12,12 @@ import { api, type Park, type User } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ParkScopeProvider } from './ParkScopeProvider'
 import { PARK_STORAGE_KEY, useParkScope } from './parkScope'
+import { resourceStore } from '../../lib/resource'
+import { IDBFactory } from 'fake-indexeddb'
+import { activateDeviceResourceCache, currentDeviceResourceCache, purgeDeviceResourceCache } from '../../lib/deviceResourceCache'
 
 function park(id: number): Park {
-  return { id, name: `Парк ${id}`, tag: `park-${id}`, is_active: true }
+  return { id, name: `Парк ${id}`, tag: `park-${id}`, timezone: 'Europe/Moscow', is_active: true }
 }
 
 function scopeUser(role: 'operator' | 'mechanic', parks: Park[]): User {
@@ -153,7 +156,7 @@ function renderScope(
   refreshUser = vi.fn<() => Promise<User>>().mockResolvedValue(currentUser),
 ) {
   const actor = userEvent.setup()
-  render(
+  const view = render(
     <MemoryRouter initialEntries={[path]}>
       <AuthContext.Provider
         value={{
@@ -170,12 +173,42 @@ function renderScope(
       </AuthContext.Provider>
     </MemoryRouter>,
   )
-  return { actor, refreshUser }
+  return { actor, refreshUser, ...view }
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await purgeDeviceResourceCache()
+  resourceStore.clearAll()
   sessionStorage.clear()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
+it('restores the fleet directory from IndexedDB with empty memory on an offline cold start', async () => {
+  vi.stubGlobal('indexedDB', new IDBFactory())
+  const owner: User = { ...scopeUser('operator', []), role: 'royal' }
+  await activateDeviceResourceCache(owner)
+  vi.spyOn(api, 'parks').mockResolvedValueOnce([park(7), park(9)]).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  const first = renderScope('/work?park=7', owner)
+  await waitFor(() => expect(screen.getByTestId('parks')).toHaveTextContent('7,9'))
+  await waitFor(async () => expect((await currentDeviceResourceCache()!.stats()).entries).toBeGreaterThan(0))
+  first.unmount()
+  resourceStore.clearAll()
+  renderScope('/work?park=7', owner)
+  await waitFor(() => expect(screen.getByTestId('parks')).toHaveTextContent('7,9'))
+  expect(screen.getByTestId('selected-park')).toHaveTextContent('Парк 7')
+})
+
+it('restores the fleet directory on a revisit while the network is unavailable', async () => {
+  const owner: User = { ...scopeUser('operator', []), role: 'royal' }
+  vi.spyOn(api, 'parks').mockResolvedValueOnce([park(7), park(9)]).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  const first = renderScope('/work?park=7', owner)
+  await waitFor(() => expect(screen.getByTestId('parks')).toHaveTextContent('7,9'))
+  first.unmount()
+  renderScope('/work?park=7', owner)
+  await waitFor(() => expect(screen.getByTestId('loading')).toHaveTextContent('false'))
+  expect(screen.getByTestId('parks')).toHaveTextContent('7,9')
+  expect(screen.getByTestId('selected-park')).toHaveTextContent('Парк 7')
 })
 
 describe('ParkScopeProvider', () => {

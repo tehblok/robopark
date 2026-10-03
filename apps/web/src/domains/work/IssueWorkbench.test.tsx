@@ -46,6 +46,7 @@ const park: Park = {
   id: 7,
   name: 'Север',
   tag: 'Alpha',
+  timezone: 'Europe/Moscow',
   tracker_queue: 'ROBOPARK',
 }
 
@@ -146,6 +147,22 @@ function apiClient(
   }
 }
 
+it('keeps transfer and review locked until Tracker confirms the mechanic claim', async () => {
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic' }
+  const pending: TrackerIssueDetail = {
+    ...issue,
+    assignee: { display: 'mech', login: 'mech' },
+    claim: { park_id: park.id, state: 'pending' },
+    workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'pending', has_current_cycle_comment: true },
+  }
+  renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => pending) }) })
+
+  expect(await screen.findByText(/Tracker ещё подтверждает взятие задачи/)).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Передать на проверку' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Передать смену' })).not.toBeInTheDocument()
+  expect(screen.getByRole('tab', { name: 'Проверка' })).toBeVisible()
+})
+
 it('lets an admin retry a task needing attention once and announces recovery', async () => {
   const admin = { ...user, role: 'admin' as const }
   const attention = {
@@ -239,16 +256,169 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-it('requires a mechanic to claim a task before opening it', async () => {
+it('allows a mechanic to inspect a task before claiming it for changes', async () => {
   const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: 'mech.login' }
   const unassigned = { ...issue, assignee: null }
   const client = apiClient({ trackerIssues: vi.fn(async () => page([unassigned])) })
   renderWorkbench({ client, selectedIssue: '', currentUser: mechanic })
 
   const take = await screen.findByRole('button', { name: 'Взять в работу' })
-  expect(screen.queryByRole('button', { name: /Открыть задачу/ })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /Открыть задачу/ })).toBeVisible()
   fireEvent.click(take)
   await waitFor(() => expect(client.trackerAssign).toHaveBeenCalledWith(issue.key, 'mech1'))
+})
+
+it('lets a mechanic claim an unassigned open task in another status through the reliable action', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: 'mech.login' }
+  const diagnostic = { ...issue, status: 'Диагностика', status_key: 'diagnostics', assignee: null }
+  const taskClaim = vi.fn(async () => taskActionResult('claim'))
+  const client = apiClient({ trackerIssues: vi.fn(async () => page([diagnostic])), taskClaim })
+  renderWorkbench({ client, selectedIssue: '', currentUser: mechanic, currentState: { filters: { queue: 'ROBOPARK', status: 'diagnostics' }, sort: 'oldest', page: 1 } })
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Взять в работу' }))
+  await waitFor(() => expect(taskClaim).toHaveBeenCalledWith(issue.key, expect.any(String)))
+})
+
+it('queues a mechanic claim locally and does not treat it as owned before confirmation', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const taskClaim = vi.fn(async () => taskActionResult('claim'))
+  let queued: OfflineAction | undefined
+  const enqueueAction = vi.fn(async (input: Parameters<SyncContextValue['enqueueAction']>[0]) => {
+    queued = { ...input, state: 'ready', attempts: 0, createdAt: 1, updatedAt: 1 }
+    return queued
+  })
+  const sync = {
+    state: { status: 'offline' as const, pending: 0, conflicts: 0 },
+    actionTrackingReady: true,
+    enqueueAction,
+    enqueueMedia: vi.fn(),
+    syncNow: vi.fn(async () => false),
+    cancelAction: vi.fn(async () => undefined),
+    resolveConflict: vi.fn(async () => undefined),
+    findAction: vi.fn(async () => queued),
+    subscribeAction: vi.fn(() => () => undefined),
+  } satisfies SyncContextValue
+  const view = renderWorkbench({
+    client: apiClient({ trackerIssues: vi.fn(async () => page([{ ...issue, assignee: null }])), taskClaim }),
+    currentUser: mechanic,
+    selectedIssue: '',
+    sync,
+  })
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Взять в работу' }))
+
+  await waitFor(() => expect(enqueueAction).toHaveBeenCalledWith(expect.objectContaining({
+    action: 'claim', resourceType: 'tracker_issue', resourceId: issue.key,
+    payload: { park_id: park.id },
+  })))
+  expect(taskClaim).not.toHaveBeenCalled()
+  expect(view.onOpenIssue).not.toHaveBeenCalled()
+  expect(await screen.findByText('Взятие ожидает подтверждения')).toBeVisible()
+})
+
+it('does not bypass a still-initializing offline queue with a direct claim request', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const taskClaim = vi.fn(async () => taskActionResult('claim'))
+  const sync = {
+    state: { status: 'idle' as const, pending: 0, conflicts: 0 },
+    actionTrackingReady: false,
+    enqueueAction: vi.fn(), enqueueMedia: vi.fn(), syncNow: vi.fn(async () => false),
+    cancelAction: vi.fn(async () => undefined), resolveConflict: vi.fn(async () => undefined),
+    findAction: vi.fn(async () => undefined), subscribeAction: vi.fn(() => () => undefined),
+  } satisfies SyncContextValue
+  renderWorkbench({
+    client: apiClient({ trackerIssues: vi.fn(async () => page([{ ...issue, assignee: null }])), taskClaim }),
+    currentUser: mechanic, selectedIssue: '', sync,
+  })
+
+  expect(await screen.findByRole('button', { name: 'Взять в работу' })).toBeDisabled()
+  expect(taskClaim).not.toHaveBeenCalled()
+  expect(sync.enqueueAction).not.toHaveBeenCalled()
+})
+
+it('keeps claim controls closed when saved claim hydration fails', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const sync = {
+    state: { status: 'offline' as const, pending: 0, conflicts: 0 },
+    actionTrackingReady: true,
+    enqueueAction: vi.fn(), enqueueMedia: vi.fn(), syncNow: vi.fn(async () => false),
+    cancelAction: vi.fn(async () => undefined), resolveConflict: vi.fn(async () => undefined),
+    findAction: vi.fn(async () => { throw new Error('indexeddb_unavailable') }),
+    subscribeAction: vi.fn(() => () => undefined),
+  } satisfies SyncContextValue
+  renderWorkbench({
+    client: apiClient({ trackerIssues: vi.fn(async () => page([{ ...issue, assignee: null }])) }),
+    currentUser: mechanic, selectedIssue: '', sync,
+  })
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось проверить сохранённое назначение')
+  expect(screen.queryByRole('button', { name: 'Взять в работу' })).not.toBeInTheDocument()
+  expect(sync.enqueueAction).not.toHaveBeenCalled()
+})
+
+it('restores a queued claim after reopening work and refreshes only after confirmation', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const pending: OfflineAction = {
+    id: 'claim-persisted-42', deviceId: 'local', resourceType: 'tracker_issue',
+    resourceId: issue.key, action: 'claim', idempotencyKey: 'claim-persisted-42',
+    baseRevision: null, dependencies: [], payload: { park_id: park.id },
+    state: 'ready', attempts: 0, createdAt: 1, updatedAt: 1,
+  }
+  let stored: OfflineAction | undefined = pending
+  let notify: ((action: OfflineAction | undefined) => void) | undefined
+  const trackerIssues = vi.fn(async () => page([{ ...issue, assignee: null }]))
+  const sync = {
+    state: { status: 'offline' as const, pending: 1, conflicts: 0 },
+    actionTrackingReady: true,
+    enqueueAction: vi.fn(), enqueueMedia: vi.fn(),
+    syncNow: vi.fn(async () => false), cancelAction: vi.fn(async () => undefined),
+    resolveConflict: vi.fn(async () => undefined),
+    findAction: vi.fn(async () => stored),
+    subscribeAction: vi.fn((_id: string, callback: (action: OfflineAction | undefined) => void) => {
+      notify = callback
+      return () => undefined
+    }),
+  } satisfies SyncContextValue
+  renderWorkbench({
+    client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '', sync,
+  })
+
+  expect(await screen.findByText('Взятие ожидает подтверждения')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Взять в работу' })).not.toBeInTheDocument()
+  expect(sync.enqueueAction).not.toHaveBeenCalled()
+  const readsBeforeConfirmation = trackerIssues.mock.calls.length
+  await act(async () => {
+    stored = undefined
+    notify?.({ ...pending, state: 'confirmed' })
+  })
+  await waitFor(() => expect(trackerIssues.mock.calls.length).toBeGreaterThan(readsBeforeConfirmation))
+  expect(screen.queryByText('Взятие ожидает подтверждения')).not.toBeInTheDocument()
+})
+
+it('shows a persisted claim conflict without offering a duplicate claim', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const conflicted: OfflineAction = {
+    id: 'claim-conflict-42', deviceId: 'local', resourceType: 'tracker_issue',
+    resourceId: issue.key, action: 'claim', idempotencyKey: 'claim-conflict-42',
+    baseRevision: null, dependencies: [], payload: { park_id: park.id },
+    state: 'conflict', attempts: 1, createdAt: 1, updatedAt: 2,
+  }
+  const enqueueAction = vi.fn()
+  const sync = {
+    state: { status: 'attention' as const, pending: 0, conflicts: 1 },
+    actionTrackingReady: true,
+    enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(async () => false),
+    cancelAction: vi.fn(async () => undefined), resolveConflict: vi.fn(async () => undefined),
+    findAction: vi.fn(async () => conflicted), subscribeAction: vi.fn(() => () => undefined),
+  } satisfies SyncContextValue
+  renderWorkbench({
+    client: apiClient({ trackerIssues: vi.fn(async () => page([{ ...issue, assignee: null }])) }),
+    currentUser: mechanic, selectedIssue: '', sync,
+  })
+
+  expect(await screen.findByRole('alert', { name: 'Взятие задачи требует внимания' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Взять в работу' })).not.toBeInTheDocument()
+  expect(enqueueAction).not.toHaveBeenCalled()
 })
 
 it('shows a claimed mechanic task only once', async () => {
@@ -269,15 +439,15 @@ it('pins owned active tasks from an independent query and deduplicates the queue
   const queued = { ...issue, key: 'ROBOPARK-QUEUE', summary: 'Общая очередь' }
   const trackerIssues = vi.fn(async (query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) => (
     query.owned_by_me
-      ? page([owned])
-      : page([queued, owned])
+      ? { ...page([owned]), total: 1, has_more: false }
+      : { ...page([queued, owned]), total: 2, has_more: false }
   ))
   renderWorkbench({
     client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '',
     currentState: { filters: { queue: 'ROBOPARK', status: 'queued' }, sort: 'oldest', page: 1 },
   })
 
-  expect(await screen.findByRole('heading', { name: 'Мои задачи в работе' })).toBeVisible()
+  expect(await screen.findByRole('heading', { name: 'Очередь парка' })).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: /Мои задачи \(1\)/ }))
   expect(screen.getAllByRole('article')).toHaveLength(1)
   expect(screen.getByRole('button', { name: /Открыть задачу ROBOPARK-OWNED/ })).toBeVisible()
@@ -285,8 +455,8 @@ it('pins owned active tasks from an independent query and deduplicates the queue
   fireEvent.click(screen.getByRole('button', { name: 'Очередь' }))
   const rows = screen.getAllByRole('article')
   expect(rows.map(row => row.textContent)).toEqual([
-    expect.stringContaining('ROBOPARK-OWNED'),
     expect.stringContaining('ROBOPARK-QUEUE'),
+    expect.stringContaining('ROBOPARK-OWNED'),
   ])
   expect(trackerIssues).toHaveBeenCalledWith(expect.objectContaining({
     owned_by_me: true, open_only: true, sort: 'oldest', limit: 50, offset: 0,
@@ -298,15 +468,178 @@ it('pins owned active tasks from an independent query and deduplicates the queue
   expect(ownedQuery).not.toHaveProperty('status')
 })
 
+it('does not show a false zero for owned tasks while their request is pending', async () => {
+  const mechanic: User = { ...user, username: 'mech-loading', role: 'mechanic', tracker_login: null }
+  let completeOwned!: (value: Paged<TrackerIssue>) => void
+  const ownedPending = new Promise<Paged<TrackerIssue>>(resolve => { completeOwned = resolve })
+  const trackerIssues = vi.fn((query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) =>
+    query.owned_by_me ? ownedPending : Promise.resolve(page([])))
+  renderWorkbench({ client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '' })
+
+  expect(await screen.findByRole('button', { name: 'Мои задачи' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Мои задачи (0)' })).not.toBeInTheDocument()
+  await act(async () => { completeOwned(page([])) })
+  expect(await screen.findByRole('button', { name: 'Мои задачи (0)' })).toBeVisible()
+})
+
+it('offers all open park tasks when the mechanic priority queue is empty', async () => {
+  const mechanic: User = { ...user, username: 'mech-empty-queue', role: 'mechanic', tracker_login: null }
+  const trackerIssues = vi.fn(async () => page([]))
+  const view = renderWorkbench({
+    client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '',
+    currentState: { filters: { queue: 'ROBOPARK', status: 'queued' }, sort: 'oldest', page: 1 },
+  })
+
+  const showAll = await screen.findByRole('button', { name: 'Показать все открытые задачи' })
+  fireEvent.click(showAll)
+
+  expect(view.onStateChange).toHaveBeenCalledWith({
+    filters: { queue: 'ROBOPARK', status: undefined }, sort: 'oldest', page: 1,
+  }, { replace: false })
+  await waitFor(() => expect(trackerIssues).toHaveBeenCalledWith(expect.objectContaining({
+    status: undefined, open_only: true, sort: 'queue_first',
+  })))
+})
+
+it('puts the oldest queued park work before a mechanic’s started repairs', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const owner = { display: 'mech1', login: 'mech1' }
+  const owned = { ...issue, key: 'ROBOPARK-OWNED', assignee: owner, status_key: 'in_progress' }
+  const newer = { ...issue, key: 'ROBOPARK-NEWER', queued_at: '2026-09-02T09:00:00Z', sla_source: 'status_history' as const }
+  const older = { ...issue, key: 'ROBOPARK-OLDER', queued_at: '2026-09-01T09:00:00Z', sla_source: 'status_history' as const }
+  const trackerIssues = vi.fn(async (query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) =>
+    query.owned_by_me ? page([owned]) : page([newer, older]))
+  renderWorkbench({
+    client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '',
+    currentState: { filters: { queue: 'ROBOPARK', status: 'queued' }, sort: 'oldest', page: 1 },
+  })
+
+  expect(await screen.findByText('ROBOPARK-OLDER')).toBeVisible()
+  expect(screen.getAllByRole('article').map(row => row.textContent)).toEqual([
+    expect.stringContaining('ROBOPARK-OLDER'),
+    expect.stringContaining('ROBOPARK-NEWER'),
+    expect.stringContaining('ROBOPARK-OWNED'),
+  ])
+  expect(screen.getByRole('button', { name: /Открыть задачу ROBOPARK-OLDER:/ })).toBeVisible()
+  expect(screen.getByRole('button', { name: /Открыть задачу ROBOPARK-NEWER:/ })).toBeVisible()
+  const queuePages = screen.getByRole('navigation', { name: 'Страницы задач' })
+  const ownedRow = screen.getAllByRole('article')[2]
+  expect(queuePages.compareDocumentPosition(ownedRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+})
+
+it('explains an empty park queue while keeping several owned open tasks visible', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const owner = { display: 'mech1', login: 'mech1' }
+  const owned = [
+    { ...issue, key: 'ROBOPARK-OWNED-1', assignee: owner },
+    { ...issue, key: 'ROBOPARK-OWNED-2', assignee: owner, status_key: 'review' },
+  ]
+  const trackerIssues = vi.fn(async (query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) =>
+    query.owned_by_me ? page(owned) : page([]))
+  renderWorkbench({
+    client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '',
+    currentState: { filters: { queue: 'ROBOPARK', status: 'queued' }, sort: 'oldest', page: 1 },
+  })
+
+  expect(await screen.findByRole('heading', { name: 'Мои открытые задачи' })).toBeVisible()
+  expect(screen.getByRole('button', { name: /Открыть задачу ROBOPARK-OWNED-1/ })).toBeVisible()
+  expect(screen.getByRole('button', { name: /Открыть задачу ROBOPARK-OWNED-2/ })).toBeVisible()
+  expect(screen.getByText('В очереди парка сейчас нет задач.')).toBeVisible()
+  expect(screen.getByText('Задач по фильтру: 0')).toBeVisible()
+})
+
+it('keeps concurrent tasks on different robots visible in My Tasks', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const owner = { display: 'mech1', login: 'mech1' }
+  const first = { ...issue, key: 'ROBOPARK-ROBOT-447', robot: '447', assignee: owner }
+  const second = { ...issue, key: 'ROBOPARK-ROBOT-448', robot: '448', assignee: owner }
+  const trackerIssues = vi.fn(async (query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) =>
+    query.owned_by_me ? { ...page([first, second]), total: 2, has_more: false } : page([]))
+  renderWorkbench({ client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '' })
+
+  fireEvent.click(await screen.findByRole('button', { name: /Мои задачи \(2\)/ }))
+  expect(screen.getByRole('button', { name: /Открыть задачу ROBOPARK-ROBOT-447/ })).toBeVisible()
+  expect(screen.getByRole('button', { name: /Открыть задачу ROBOPARK-ROBOT-448/ })).toBeVisible()
+})
+
+it('loads additional owned tasks only when their next page is requested', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const owner = { display: 'mech1', login: 'mech1' }
+  const firstPage = Array.from({ length: 50 }, (_, index) => ({
+    ...issue, key: `ROBOPARK-OWNED-${index + 1}`, assignee: owner,
+  }))
+  const last = { ...issue, key: 'ROBOPARK-OWNED-51', assignee: owner }
+  const trackerIssues = vi.fn(async (query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) => {
+    if (!query.owned_by_me) return page([])
+    return {
+      items: query.offset === 50 ? [last] : firstPage,
+      total: 51, limit: 50, offset: query.offset ?? 0, has_more: query.offset !== 50,
+    }
+  })
+  renderWorkbench({
+    client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '',
+    currentState: { filters: { queue: 'ROBOPARK', status: 'queued' }, sort: 'oldest', page: 1 },
+  })
+
+  const mine = await screen.findByRole('button', { name: 'Мои задачи (51)' })
+  expect(trackerIssues.mock.calls.filter(([query]) => query.owned_by_me && query.offset === 50)).toHaveLength(0)
+  fireEvent.click(mine)
+  fireEvent.click(screen.getByRole('button', { name: 'Следующая страница моих задач' }))
+  expect(await screen.findByRole('button', { name: /Открыть задачу ROBOPARK-OWNED-51/ })).toBeVisible()
+  expect(screen.queryByRole('button', { name: /Открыть задачу ROBOPARK-OWNED-1:/ })).not.toBeInTheDocument()
+  expect(trackerIssues).toHaveBeenCalledWith(expect.objectContaining({ owned_by_me: true, limit: 50, offset: 50 }))
+  fireEvent.click(screen.getByRole('button', { name: 'Предыдущая страница моих задач' }))
+  expect(await screen.findByRole('button', { name: /Открыть задачу ROBOPARK-OWNED-1:/ })).toBeVisible()
+})
+
+it('shows a retryable error for an owned task page without replacing it with an empty state', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const owner = { display: 'mech1', login: 'mech1' }
+  const owned = { ...issue, key: 'ROBOPARK-OWNED', assignee: owner }
+  let secondPageAttempts = 0
+  const trackerIssues = vi.fn(async (query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) => {
+    if (!query.owned_by_me) return page([])
+    if (query.offset === 50) {
+      secondPageAttempts += 1
+      if (secondPageAttempts === 1) throw new ApiError(502, 'tracker_upstream_error', 'owned-page-2')
+      return { items: [owned], total: 51, limit: 50, offset: 50, has_more: false }
+    }
+    return { items: [owned], total: 51, limit: 50, offset: 0, has_more: true }
+  })
+  renderWorkbench({ client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '' })
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Мои задачи (51)' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Следующая страница моих задач' }))
+  expect(await screen.findByText('Ошибка интеграции со Startrek.')).toBeVisible()
+  expect(screen.queryByRole('heading', { name: 'Моих задач пока нет' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
+  expect(await screen.findByRole('button', { name: /Открыть задачу ROBOPARK-OWNED/ })).toBeVisible()
+  expect(secondPageAttempts).toBe(2)
+})
+
+it('calls the all-status park list open tasks rather than only queue', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
+  const owned = { ...issue, key: 'ROBOPARK-OWNED', assignee: { display: 'mech1', login: 'mech1' } }
+  const trackerIssues = vi.fn(async (query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) =>
+    query.owned_by_me ? page([owned]) : page([issue]))
+  renderWorkbench({ client: apiClient({ trackerIssues }), currentUser: mechanic, selectedIssue: '', currentState: state })
+
+  expect(await screen.findByRole('heading', { name: /^Открытые задачи$/ })).toBeVisible()
+  expect(screen.getByRole('button', { name: /^Задачи парка$/ })).toBeVisible()
+  expect(await screen.findByRole('heading', { name: 'Открытые задачи парка' })).toBeVisible()
+})
+
 it('opens My Tasks directly from the mechanic navigation URL', async () => {
   const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: null }
   const owned = { ...issue, key: 'ROBOPARK-OWNED', assignee: { display: 'mech1', login: 'mech1' } }
   const queued = { ...issue, key: 'ROBOPARK-QUEUE' }
-  const client = apiClient({ trackerIssues: vi.fn(async query => page(query.owned_by_me ? [owned] : [queued])) })
+  const trackerIssues = vi.fn(async (query: Parameters<IssueWorkbenchApiClient['trackerIssues']>[0]) => page(query.owned_by_me ? [owned] : [queued]))
+  const client = apiClient({ trackerIssues })
   renderWorkbench({ client, currentUser: mechanic, selectedIssue: '', initialPath: '/work?view=mine' })
   expect(await screen.findByRole('heading', { name: 'Мои задачи' })).toBeVisible()
   expect(screen.getByRole('button', { name: /Открыть задачу ROBOPARK-OWNED/ })).toBeVisible()
   expect(screen.queryByRole('button', { name: /Открыть задачу ROBOPARK-QUEUE/ })).not.toBeInTheDocument()
+  expect(trackerIssues.mock.calls.every(([query]) => query.owned_by_me)).toBe(true)
 })
 
 it('shows assigned pending reviews as operator my tasks', async () => {
@@ -431,11 +764,14 @@ it('keeps an offline write-off visible as pending when sync later needs attentio
     sync,
   })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
+  await screen.findByRole('option', { name: 'Колёса' })
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
 
-  expect(await screen.findByText('Списание ожидает синхронизации', { selector: '[role="status"]' })).toBeVisible()
+  await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
+  expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
+  expect(screen.queryByText('Списание ожидает синхронизации')).not.toBeInTheDocument()
   expect(screen.queryByText('Запчасть списана', { selector: '[role="status"]' })).not.toBeInTheDocument()
   expect(screen.getByRole('form', { name: 'Списание запчасти' })).toBeVisible()
 })
@@ -463,7 +799,8 @@ it('keeps one queued write-off across close and reopen, then collapses only afte
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
   fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
-  await screen.findByText('Списание ожидает синхронизации')
+  await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
+  expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
 
   fireEvent.click(screen.getByRole('button', { name: 'Списать запчасть' }))
   fireEvent.click(screen.getByRole('button', { name: 'Списать запчасть' }))
@@ -490,7 +827,9 @@ it('blocks an early write-off until durable pending-action hydration completes',
   const part: InventoryCatalogSearchItem = { id: 91, component_id: 21, component_name: 'Колёса', name: 'Шина', article: 'WH-91', is_active: true, has_photo: false, quantity: '3', minimum_quantity: '1', location: 'Склад', stock_is_active: true }
   const existing: OfflineAction = { id: 'existing-writeoff', deviceId: 'phone', resourceType: 'tracker_issue', resourceId: issue.key, action: 'inventory_writeoff', idempotencyKey: 'existing-writeoff', baseRevision: null, dependencies: [], payload: { part_id: -91, quantity: '1', park_id: park.id }, state: 'ready', attempts: 0, createdAt: 1, updatedAt: 1 }
   let finishHydration!: (action: OfflineAction | undefined) => void
-  const findAction = vi.fn(() => new Promise<OfflineAction | undefined>(resolve => { finishHydration = resolve }))
+  const findAction = vi.fn((_issueKey: string, action: string) => action === 'claim'
+    ? Promise.resolve(undefined)
+    : new Promise<OfflineAction | undefined>(resolve => { finishHydration = resolve }))
   const enqueueAction = vi.fn()
   const sync: SyncContextValue = { state: { status: 'idle', pending: 1, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction, subscribeAction: vi.fn(() => () => undefined) }
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
@@ -503,7 +842,9 @@ it('blocks an early write-off until durable pending-action hydration completes',
   expect(enqueueAction).not.toHaveBeenCalled()
 
   act(() => finishHydration(existing))
-  expect(await screen.findByText('Списание ожидает синхронизации')).toBeVisible()
+  await waitFor(() => expect(findAction).toHaveBeenCalledWith(issue.key, 'inventory_writeoff'))
+  expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
+  expect(screen.queryByText('Списание ожидает синхронизации')).not.toBeInTheDocument()
   expect(enqueueAction).not.toHaveBeenCalled()
 })
 
@@ -512,7 +853,10 @@ it('fails closed when durable write-off hydration fails and retries the original
   const claimedIssue = { ...issue, claim: { park_id: park.id }, assignee: { display: 'mech', login: 'mech' }, workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress' as const, sync_state: 'saved' as const, has_current_cycle_comment: false } }
   const part: InventoryCatalogSearchItem = { id: 91, component_id: 21, component_name: 'Колёса', name: 'Шина', article: 'WH-91', is_active: true, has_photo: false, quantity: '3', minimum_quantity: '1', location: 'Склад', stock_is_active: true }
   const existing: OfflineAction = { id: 'existing-writeoff', deviceId: 'phone', resourceType: 'tracker_issue', resourceId: issue.key, action: 'inventory_writeoff', idempotencyKey: 'existing-writeoff', baseRevision: null, dependencies: [], payload: { part_id: -91, quantity: '1', park_id: park.id }, state: 'ready', attempts: 0, createdAt: 1, updatedAt: 1 }
-  const findAction = vi.fn().mockRejectedValueOnce(new Error('indexeddb unavailable')).mockResolvedValue(existing)
+  const findWriteoff = vi.fn().mockRejectedValueOnce(new Error('indexeddb unavailable')).mockResolvedValue(existing)
+  const findAction = vi.fn((_issueKey: string, action: string) => action === 'claim'
+    ? Promise.resolve(undefined)
+    : findWriteoff())
   const enqueueAction = vi.fn()
   const sync: SyncContextValue = { state: { status: 'idle', pending: 1, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction, subscribeAction: vi.fn(() => () => undefined) }
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
@@ -526,8 +870,9 @@ it('fails closed when durable write-off hydration fails and retries the original
   expect(enqueueAction).not.toHaveBeenCalled()
 
   fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
-  expect(await screen.findByText('Списание ожидает синхронизации')).toBeVisible()
-  expect(findAction).toHaveBeenCalledTimes(2)
+  await waitFor(() => expect(findWriteoff).toHaveBeenCalledTimes(2))
+  expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
+  expect(screen.queryByText('Списание ожидает синхронизации')).not.toBeInTheDocument()
   expect(enqueueAction).not.toHaveBeenCalled()
 })
 
@@ -538,12 +883,15 @@ it('clears a confirmed legacy desktop write-off while mounted and creates a fres
   let current: OfflineAction | undefined
   let listener: ((action: OfflineAction | undefined) => void) | undefined
   const enqueueAction = vi.fn(async input => (current = { ...input, state: 'ready', attempts: 0, createdAt: 1, updatedAt: 1 }))
-  const sync: SyncContextValue = { state: { status: 'idle', pending: 0, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction: vi.fn(async () => current), subscribeAction: vi.fn((_id, next) => { listener = next; return () => undefined }) }
+  const subscribeAction = vi.fn((_id: string, next: (action: OfflineAction | undefined) => void) => { listener = next; return () => undefined })
+  const sync: SyncContextValue = { state: { status: 'idle', pending: 0, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction: vi.fn(async () => current), subscribeAction }
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => legacyIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
   fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
-  await screen.findByText('Списание ожидает синхронизации')
+  await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
+  expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
+  await waitFor(() => expect(subscribeAction).toHaveBeenCalledOnce())
   const firstId = enqueueAction.mock.calls[0][0].id
 
   current = { ...current!, state: 'confirmed', updatedAt: 2 }
@@ -555,6 +903,18 @@ it('clears a confirmed legacy desktop write-off while mounted and creates a fres
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(enqueueAction).toHaveBeenCalledTimes(2))
   expect(enqueueAction.mock.calls[1][0].id).not.toBe(firstId)
+})
+
+it('shows legacy shift handoff under one disclosure without a blank nested summary', async () => {
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic', parks: [park] }
+  const legacyIssue = { ...issue, claim: { park_id: park.id }, assignee: { display: 'mech', login: 'mech' }, workflow: undefined }
+  vi.spyOn(collaborationClient, 'handoff').mockResolvedValue({ revision: 0, done: '', remaining: '', obstacles: '', author: null, updated_at: null })
+  const view = renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => legacyIssue) }), currentUser: mechanic })
+
+  await screen.findByRole('heading', { name: legacyIssue.summary })
+  expect(view.container.querySelector('.issue-collaboration')).not.toBeNull()
+  expect(view.container.querySelector('.issue-collaboration details')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Передача смены' })).toBeVisible()
 })
 
 it('keeps legacy phone write-off durable across close and confirms through the shared contract', async () => {
@@ -638,10 +998,11 @@ it('lets a mechanic inspect and explicitly take over a shiftmates task', async (
   const client = apiClient({ trackerIssues: vi.fn(async () => page([claimedByShiftmate])) })
   renderWorkbench({ client, selectedIssue: '', currentUser: mechanic })
 
-  expect(await screen.findByRole('button', {
+  const open = await screen.findByRole('button', {
     name: `Открыть задачу ${issue.key}: ${issue.summary}`,
-  })).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Взять вместо сменщика' }))
+  })
+  fireEvent.click(open)
+  fireEvent.click(await screen.findByRole('button', { name: 'Взять вместо сменщика' }))
   await waitFor(() => expect(client.trackerAssign).toHaveBeenCalledWith(issue.key, 'mech2'))
 })
 
@@ -688,6 +1049,7 @@ function renderWorkbench({
   initialPath = '/',
   sync,
   syncEngine,
+  now,
 }: {
   client?: IssueWorkbenchApiClient
   selectedIssue?: string
@@ -699,6 +1061,7 @@ function renderWorkbench({
   initialPath?: string
   sync?: SyncContextValue
   syncEngine?: SyncEngineLike
+  now?: number
 } = {}) {
   const modeStore = createInterfaceModeStore(() => ({
     getItem: () => null,
@@ -710,6 +1073,7 @@ function renderWorkbench({
   function ControlledWorkbench() {
     const [value, setValue] = useState(currentState)
     return <IssueWorkbench apiClient={client} issueKey={selectedIssue}
+      now={now}
       onAuthorizationFailure={onAuthorizationFailure} onCloseIssue={onCloseIssue} onOpenIssue={onOpenIssue}
       onStateChange={(next, options) => { onStateChange(next, options); setValue(next) }}
       selectedPark={selectedPark} state={value} user={currentUser} />
@@ -735,7 +1099,7 @@ function renderWorkbench({
 }
 
 async function openTaskChat() {
-  fireEvent.click(await screen.findByRole('tab', { name: 'Чат' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'История и сообщения' }))
 }
 
 function listKey(currentUser = user, currentPark = park, currentState = state) {
@@ -749,8 +1113,8 @@ function accessPrefix(currentUser = user, currentPark = park) {
   return `work:${currentUser.id}:${JSON.stringify([
     currentUser.id, currentUser.username, currentUser.tracker_login, currentUser.role, currentUser.access_status,
     Boolean(currentUser.must_change_password), [...new Set(currentUser.permissions ?? [])].sort(),
-    [...currentUser.parks].sort((a, b) => a.id - b.id).map(scope), scope(currentPark),
-  ])}:`
+    [...currentUser.parks].sort((a, b) => a.id - b.id).map(scope),
+  ])}:${JSON.stringify(scope(currentPark))}:`
 }
 
 function seedCurrentWork(currentUser = user, currentIssue = issue) {
@@ -785,6 +1149,40 @@ beforeEach(() => {
 })
 
 describe('IssueWorkbench', () => {
+  it('uses the first queue park timezone for SLA after a task moves to another park', async () => {
+    const transferred: TrackerIssueDetail = {
+      ...queuedWorkflowIssue,
+      queued_at: '2026-09-18T12:00:00Z',
+      sla_deadline: '2026-09-18T17:00:00Z',
+      sla_source: 'status_history',
+      sla_timezone: 'Europe/Moscow',
+    }
+    renderWorkbench({
+      now: Date.parse('2026-09-18T14:00:00Z'),
+      selectedPark: { ...park, timezone: 'Asia/Yekaterinburg' },
+      client: apiClient({ trackerIssues: vi.fn(async () => page([transferred])), trackerIssue: vi.fn(async () => transferred) }),
+    })
+    expect((await screen.findAllByText('SLA: 3:00')).length).toBeGreaterThan(0)
+  })
+
+  it('prioritizes the remaining SLA instead of calendar downtime or ticket creation age', async () => {
+    const timed = {
+      ...queuedWorkflowIssue,
+      created_at: '2026-09-01T00:00:00Z',
+      hours_created: '60',
+      queued_at: '2026-09-03T00:00:00Z',
+      sla_deadline: '2026-09-03T12:00:00Z',
+      sla_source: 'status_history' as const,
+    }
+    renderWorkbench({
+      now: Date.parse('2026-09-03T12:00:00Z'),
+      client: apiClient({ trackerIssues: vi.fn(async () => page([timed])), trackerIssue: vi.fn(async () => timed) }),
+    })
+    await screen.findByRole('heading', { name: issue.summary })
+    expect(screen.getAllByText(/SLA: 0:00/).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/Простой/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Возраст: 60/)).not.toBeInTheDocument()
+  })
   it('keeps a task read-only when the server has not supplied workflow state', async () => {
     renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => issue) }) })
     expect(await screen.findByRole('heading', { name: issue.summary })).toBeVisible()
@@ -972,6 +1370,50 @@ describe('IssueWorkbench', () => {
     expect(screen.getAllByText('Статус обновляется')).toHaveLength(1)
     expect(screen.queryByText('future')).not.toBeInTheDocument()
   })
+  it('distinguishes returned work from the Tracker queue status', async () => {
+    const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
+    const returnedIssue: TrackerIssueDetail = {
+      ...issue,
+      status: 'В очереди',
+      status_key: 'queued',
+      claim: { park_id: park.id },
+      workflow: {
+        owner: { display: 'mech', login: 'mech' },
+        review_state: 'returned',
+        display_status: 'in_progress',
+        sync_state: 'saved',
+        has_current_cycle_comment: true,
+      },
+    }
+    renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => returnedIssue) }) })
+
+    expect(await screen.findByRole('heading', { name: issue.summary })).toBeVisible()
+    expect(screen.getByText('На доработке')).toBeVisible()
+    expect(screen.getByText('В Tracker: В очереди')).toBeVisible()
+    expect(screen.queryByText('В работе')).not.toBeInTheDocument()
+  })
+  it('shows the Tracker status before a task enters the local repair workflow', async () => {
+    const waitingIssue: TrackerIssueDetail = {
+      ...issue,
+      status: 'Ожидание поставки',
+      status_key: 'deliveryWaiting',
+      assignee: null,
+      claim: null,
+      workflow: {
+        owner: null,
+        review_state: null,
+        display_status: 'queued',
+        sync_state: 'saved',
+        has_current_cycle_comment: false,
+      },
+    }
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => waitingIssue) }) })
+
+    const card = (await screen.findByRole('heading', { name: issue.summary })).closest('article')
+    expect(card).not.toBeNull()
+    expect(within(card!).getByText('Ожидание поставки')).toBeVisible()
+    expect(within(card!).queryByText('В очереди')).not.toBeInTheDocument()
+  })
   it('uses one chat and keeps task actions in compact lifecycle order', async () => {
     const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
     renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => ({
@@ -997,11 +1439,11 @@ describe('IssueWorkbench', () => {
 
     const primaryTabs = await screen.findByRole('tablist', { name: 'Разделы задачи' })
     expect(primaryTabs).toBeVisible()
-    expect(primaryTabs).toHaveClass('rp-tabs--primary')
+    expect(primaryTabs).toHaveClass('rp-tabs--plain')
     expect(within(primaryTabs).getByRole('tab', { name: 'Задача' })).toBeVisible()
     expect(within(primaryTabs).getByRole('tab', { name: 'Проверка' })).toBeVisible()
-    expect(within(primaryTabs).getByRole('tab', { name: 'Чат' })).toBeVisible()
-    expect(screen.getByRole('tablist', { name: 'Другие задачи робота' })).toHaveClass('rp-tabs--secondary')
+    expect(screen.getByRole('button', { name: 'История и сообщения' })).toBeVisible()
+    expect(screen.queryByRole('tablist', { name: 'Другие задачи робота' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Списать запчасть' })).toHaveClass('rp-disclosure-action')
     expect(screen.getByRole('button', { name: 'Передать смену' })).toHaveClass('rp-disclosure-action')
     const disclosures = screen.getByRole('group', { name: 'Дополнительные разделы задачи' })
@@ -1019,10 +1461,10 @@ describe('IssueWorkbench', () => {
     )
     expect(phoneDisclosure?.style.display).toBe('grid')
     expect(phoneDisclosure?.style.gap).toBe('12px')
-    expect(phoneDisclosure?.style.gridTemplateColumns).toBe('minmax(0, 1fr)')
+    expect(phoneDisclosure?.style.gridTemplateColumns).toBe('repeat(2, minmax(0, 1fr))')
     style.remove()
   })
-  it('moves chat into its tab and preserves task and composer state while switching', async () => {
+  it('keeps history inside the task and preserves the message draft when collapsed', async () => {
     const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
     renderWorkbench({ currentUser: mechanic, client: apiClient({
       trackerIssue: vi.fn(async () => ({
@@ -1036,29 +1478,22 @@ describe('IssueWorkbench', () => {
     expect(screen.getByRole('button', { name: 'Передать на проверку' })).toBeVisible()
     fireEvent.click(parts)
     expect(parts).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('Проверил привод')).not.toBeVisible()
+    expect(screen.queryByText('Проверил привод')).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: ru.tracker.comments })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Чат' }))
+    fireEvent.click(screen.getByRole('button', { name: 'История и сообщения' }))
     expect(await screen.findByText('Проверил привод')).toBeVisible()
     const composer = screen.getByRole('textbox', { name: ru.tracker.comments })
     fireEvent.change(composer, { target: { value: 'Черновик ответа' } })
-    expect(screen.queryByRole('button', { name: 'Списать запчасть' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Передать на проверку' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Списать запчасть' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Передать на проверку' })).toBeVisible()
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Задача' }))
+    fireEvent.click(screen.getByRole('button', { name: 'История и сообщения' }))
     expect(screen.getByRole('button', { name: 'Списать запчасть' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('button', { name: 'Передать на проверку' })).toBeVisible()
     expect(screen.queryByRole('textbox', { name: ru.tracker.comments })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('tab', { name: 'Чат' }))
+    fireEvent.click(screen.getByRole('button', { name: 'История и сообщения' }))
     expect(screen.getByRole('textbox', { name: ru.tracker.comments })).toHaveValue('Черновик ответа')
-  })
-  it('keeps related task tabs in the Classic semantic styling wrapper', async () => {
-    renderWorkbench()
-
-    await screen.findByRole('heading', { name: issue.summary })
-
-    expect(screen.getByRole('tablist', { name: 'Другие задачи робота' }).closest('.rp-work-related')).not.toBeNull()
   })
   it('shows the write-off control in the main tab only to the mechanic assigned to the task', async () => {
     const mechanic: User = { ...user, role: 'mechanic', username: 'mech', tracker_login: 'Mech.Login' }
@@ -1130,7 +1565,7 @@ describe('IssueWorkbench', () => {
     expect(emergencyResolve).not.toHaveBeenCalled()
   })
 
-  it('keeps phone workflow actions on task and timeline in the dedicated chat tab', async () => {
+  it('keeps phone workflow actions and timeline inside the task card', async () => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
       matches: true,
       addEventListener: vi.fn(),
@@ -1155,28 +1590,29 @@ describe('IssueWorkbench', () => {
     expect(await screen.findByRole('heading', { name: currentIssue.summary })).toBeVisible()
     expect(screen.getAllByText('В очереди').some(element => element.closest('.issue-detail'))).toBe(true)
     expect(screen.getByText('Operator')).toBeVisible()
-    expect(screen.getByText('Последняя важная деталь')).not.toBeVisible()
-    expect(screen.getByText('Старый комментарий')).not.toBeVisible()
+    expect(screen.queryByText('Последняя важная деталь')).not.toBeInTheDocument()
+    expect(screen.queryByText('Старый комментарий')).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: ru.tracker.comments })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: ru.tracker.history })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Статус задачи' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Исполнитель' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Передать смену' })).toHaveAttribute('aria-expanded', 'false')
-    fireEvent.click(screen.getByRole('tab', { name: 'Чат' }))
+    fireEvent.click(screen.getByRole('button', { name: 'История и сообщения' }))
     expect(screen.getByText('Последняя важная деталь')).toBeVisible()
     expect(screen.getByText('Старый комментарий')).toBeVisible()
     expect(screen.getByRole('textbox', { name: ru.tracker.comments })).toBeVisible()
-    fireEvent.click(screen.getByRole('tab', { name: 'Задача' }))
+    fireEvent.click(screen.getByRole('button', { name: 'История и сообщения' }))
     expect(document.querySelector('.issue-collaboration')).not.toBeInTheDocument()
     expect(screen.queryByText('Загружаем передачу смены…')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Передать смену' }))
     expect(document.querySelector('.issue-collaboration')).toBeInTheDocument()
   })
 
-  it('offers a collapse control for the selected issue detail', async () => {
+  it('keeps the selected issue open without a collapse control', async () => {
     renderWorkbench()
 
-    expect(await screen.findByRole('button', { name: 'Свернуть: Задача ROBOPARK-42' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: issue.summary })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Свернуть: Детали задачи' })).not.toBeInTheDocument()
   })
 
   it('paints settled same-scope detail immediately on route return', async () => {
@@ -1201,7 +1637,7 @@ describe('IssueWorkbench', () => {
     await waitFor(() => expect(client.trackerIssues).toHaveBeenCalledTimes(2))
   })
 
-  it.each(['pending', 'cached'] as const)('releases %s first-A detail across A unmount, B unmount, A', async (mode) => {
+  it.each(['pending', 'cached'] as const)('retires pending but retains settled %s park data across A, B, A', async (mode) => {
     const old = deferred<TrackerIssueDetail>()
     const fresh = deferred<TrackerIssueDetail>()
     const client = apiClient({ trackerIssue: vi.fn()
@@ -1216,7 +1652,8 @@ describe('IssueWorkbench', () => {
     second.unmount()
     if (mode === 'pending') await act(async () => old.resolve(issue))
     renderWorkbench({ client })
-    expect(screen.queryByRole('heading', { name: issue.summary })).not.toBeInTheDocument()
+    if (mode === 'cached') expect(screen.getByRole('heading', { name: issue.summary })).toBeInTheDocument()
+    else expect(screen.queryByRole('heading', { name: issue.summary })).not.toBeInTheDocument()
     await waitFor(() => expect(client.trackerIssue).toHaveBeenCalledTimes(3))
     await act(async () => fresh.resolve({ ...issue, summary: 'Свежая область A' }))
     expect(await screen.findByRole('heading', { name: 'Свежая область A' })).toBeInTheDocument()
@@ -1256,6 +1693,19 @@ describe('IssueWorkbench', () => {
     expect(document.querySelector('.robot-check')).toBeNull()
   })
 
+  it('keeps task, check, chat and related repairs in one task navigation', async () => {
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => queuedWorkflowIssue) }) })
+    await screen.findByRole('heading', { name: issue.summary })
+    const tabs = screen.getByRole('tablist', { name: 'Разделы задачи' })
+    expect(within(tabs).getAllByRole('tab').map(tab => tab.textContent)).toEqual([
+      'Задача', 'Проверка', 'Открытые', 'Закрытые',
+    ])
+    expect(screen.getByRole('button', { name: 'История и сообщения' })).toHaveAttribute('aria-expanded', 'false')
+    expect(within(tabs).getByRole('tab', { name: 'Открытые задачи' })).toBeVisible()
+    expect(within(tabs).getByRole('tab', { name: 'Закрытые задачи' })).toBeVisible()
+    expect(screen.queryByRole('tablist', { name: 'Другие задачи робота' })).not.toBeInTheDocument()
+  })
+
   it('marks selected-task mode and omits an origin link back to the same task', async () => {
     renderWorkbench()
 
@@ -1284,6 +1734,43 @@ describe('IssueWorkbench', () => {
       queue: 'ROBOPARK', park: 'Alpha', robot_exact: '447', exclude_key: issue.key,
       related_repairs: true, open_only: true, sort: 'oldest', limit: 10, offset: 0,
     }))
+  })
+
+  it('highlights a possible repeat when another task on the robot has the same problem', async () => {
+    const client = apiClient({ trackerIssues: vi.fn()
+      .mockResolvedValueOnce(page())
+      .mockResolvedValueOnce(page([
+        issue,
+        { ...issue, key: 'ROBOPARK-7', summary: '  РОБОТ не продолжает маршрут!  ' },
+        { ...issue, key: 'ROBOPARK-8', summary: 'Не заряжается аккумулятор' },
+      ])) })
+    renderWorkbench({ client })
+    fireEvent.click(await screen.findByRole('tab', { name: 'Открытые задачи' }))
+    const repeated = await screen.findByText('Возможный повтор проблемы')
+    expect(repeated.closest('.rp-entity-row')).toHaveClass('rp-work-possible-repeat')
+    expect(screen.getByText(/Не заряжается аккумулятор/).closest('.rp-entity-row')).not.toHaveClass('rp-work-possible-repeat')
+    expect(client.trackerIssues).toHaveBeenCalledTimes(2)
+  })
+
+  it('recognizes the same robot problem across different Tracker author suffixes', async () => {
+    const current = { ...issue, summary: '[a447] MECHANICAL_PROBLEM by ivan' }
+    const client = apiClient({
+      trackerIssue: vi.fn(async () => current),
+      trackerIssues: vi.fn()
+        .mockResolvedValueOnce(page())
+        .mockResolvedValueOnce(page([
+          { ...issue, key: 'ROBOPARK-7', summary: 'mechanical_problem by petr' },
+          { ...issue, key: 'ROBOPARK-8', summary: '[A447] OTHER by petr' },
+        ])),
+    })
+    renderWorkbench({ client })
+    fireEvent.click(await screen.findByRole('tab', { name: 'Открытые задачи' }))
+
+    expect((await screen.findByText(/mechanical_problem by petr/i)).closest('.rp-entity-row'))
+      .toHaveClass('rp-work-possible-repeat')
+    expect(screen.getByText(/OTHER by petr/).closest('.rp-entity-row'))
+      .not.toHaveClass('rp-work-possible-repeat')
+    expect(client.trackerIssues).toHaveBeenCalledTimes(2)
   })
 
   it('preserves permitted untagged context for related repairs', async () => {
@@ -1359,7 +1846,7 @@ describe('IssueWorkbench', () => {
   it.each(['other447', 'A447B', '[A447] extra', '447/448', '[A447', 'A447]'])('does not infer related robot tasks from ambiguous identifier %s', async robot => {
     const client = apiClient({ trackerIssue: vi.fn(async () => ({ ...issue, robot })) })
     renderWorkbench({ client, currentState: { ...state, detailTab: 'open' } })
-    await screen.findByRole('heading', { name: `Задача ${issue.key}` })
+    await screen.findByText('Робот в задаче не указан — связанные задачи недоступны.')
     expect(screen.queryByRole('heading', { name: /Открытые задачи робота/ })).not.toBeInTheDocument()
     expect(client.trackerIssues).toHaveBeenCalledTimes(1)
   })
@@ -1381,6 +1868,12 @@ describe('IssueWorkbench', () => {
     expect(await screen.findByRole('heading', { name: 'Сервис временно недоступен' })).toBeVisible()
     fireEvent.click(screen.getByRole('tab', { name: 'Задача' }))
     expect(screen.getByRole('button', { name: 'Принять и закрыть' })).toBeEnabled()
+  })
+
+  it('does not offer an empty mechanic handoff form to the reviewing operator', async () => {
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => reviewWorkflowIssue) }) })
+    expect(await screen.findByRole('button', { name: 'Принять и закрыть' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Передать смену' })).not.toBeInTheDocument()
   })
 
   it.each(['success', 'error'] as const)(
@@ -1666,7 +2159,7 @@ describe('IssueWorkbench', () => {
     expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}list:${park.id}:`, {
       prefix: true,
     })
-    expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}owned:${user.username}`)
+    expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}owned:${user.username}`, { prefix: true })
     expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}issue:${issue.key}`)
     expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}comments:${issue.key}`)
     expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}transitions:${issue.key}`)
@@ -1692,6 +2185,7 @@ describe('IssueWorkbench', () => {
       expect(screen.getAllByRole('alert').length).toBeGreaterThan(0)
     })
     expect(screen.getAllByText(/Нет связи с источником/).length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('button', { name: 'История и сообщения' }))
     expect(screen.getByLabelText(ru.tracker.comments)).toBeInTheDocument()
   })
 

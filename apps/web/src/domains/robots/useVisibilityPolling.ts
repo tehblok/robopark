@@ -4,12 +4,15 @@ import { periodicDelay, resumeDelay, retryAfterMs } from '../../lib/pollingSched
 
 // A stable task callback is the request identity. A changed callback starts a new
 // generation; old requests cannot coalesce with it or schedule its next timeout.
-export function useVisibilityPolling({ enabled, online, task }: { enabled: boolean; online: boolean; task: (force?: boolean) => Promise<void> }) {
+export function useVisibilityPolling({ enabled, online, task, scopeKey = '' }: { enabled: boolean; online: boolean; task: (force?: boolean) => Promise<void>; scopeKey?: string }) {
   const [pending, setPending] = useState(false)
+  const [retryAfterAt, setRetryAfterAt] = useState<number | null>(null)
   const runner = useRef<(manual: boolean) => Promise<void>>(async () => undefined)
   const resumeRunner = useRef<() => void>(() => {})
   const connection = useRef(online)
+  const serverRetryAt = useRef(0)
   useLayoutEffect(() => { connection.current = online }, [online])
+  useLayoutEffect(() => { serverRetryAt.current = 0; setRetryAfterAt(null) }, [scopeKey])
   useLayoutEffect(() => {
     let current = true
     let initialPoll = true
@@ -22,6 +25,7 @@ export function useVisibilityPolling({ enabled, online, task }: { enabled: boole
     const schedule = (delay: number) => { clear(); if (automatic()) timer = window.setTimeout(() => void run(false), delay) }
     const run = (manual: boolean): Promise<void> => {
       if (!current || !enabled || (!manual && !automatic())) return Promise.resolve()
+      if (Date.now() < serverRetryAt.current) { schedule(Math.max(retryAt, serverRetryAt.current) - Date.now()); return Promise.resolve() }
       if (!manual && Date.now() < retryAt) { schedule(retryAt - Date.now()); return Promise.resolve() }
       if (inFlight) return inFlight
       clear(); setPending(true)
@@ -29,10 +33,14 @@ export function useVisibilityPolling({ enabled, online, task }: { enabled: boole
         if (current && enabled && (manual || automatic())) return task(manual)
       }).then(() => {
         if (!current) return
-        failures = 0; retryAt = 0; schedule(periodicDelay(ROBOT_POLL_MS, initialPoll)); initialPoll = false
+        failures = 0; retryAt = 0; serverRetryAt.current = 0; setRetryAfterAt(null)
+        schedule(periodicDelay(ROBOT_POLL_MS, initialPoll)); initialPoll = false
       }, (error: unknown) => {
         if (!current) return
-        const delay = periodicDelay(Math.max(pollDelayAfterFailure(failures), retryAfterMs(error)))
+        const requestedDelay = retryAfterMs(error)
+        serverRetryAt.current = requestedDelay > 0 ? Date.now() + requestedDelay : 0
+        setRetryAfterAt(serverRetryAt.current || null)
+        const delay = periodicDelay(Math.max(pollDelayAfterFailure(failures), requestedDelay))
         retryAt = Date.now() + delay
         schedule(delay); failures += 1
       }).finally(() => {
@@ -44,6 +52,7 @@ export function useVisibilityPolling({ enabled, online, task }: { enabled: boole
     const visibility = () => {
       clear()
       if (!automatic()) return
+      if (Date.now() < serverRetryAt.current) { schedule(Math.max(retryAt, serverRetryAt.current) - Date.now()); return }
       retryAt = 0
       void run(false)
     }
@@ -59,7 +68,7 @@ export function useVisibilityPolling({ enabled, online, task }: { enabled: boole
     document.addEventListener('visibilitychange', visibility)
     void run(false)
     return () => { current = false; clear(); document.removeEventListener('visibilitychange', visibility) }
-  }, [enabled, task])
+  }, [enabled, task, scopeKey])
   useLayoutEffect(() => { resumeRunner.current() }, [online])
-  return { pending, refreshNow: useCallback(() => runner.current(true), []) }
+  return { pending, retryAfterAt, refreshNow: useCallback(() => runner.current(true), []) }
 }

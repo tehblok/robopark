@@ -22,7 +22,14 @@ from robopark_api.models import PlatformSetting
 logger = logging.getLogger(__name__)
 
 #: Settings whose values are encrypted at rest.
-SECRET_KEYS = frozenset({"tracker_token", "emergency_cookie", "registration_shared_password"})
+SECRET_KEYS = frozenset(
+    {
+        "tracker_token",
+        "emergency_cookie",
+        "registration_shared_password",
+        "telegram_bot_token",
+    }
+)
 
 TRACKER_TOKEN_KEY = "tracker_token"
 # Legacy cloud-org keys kept for DB compatibility; unused for internal Startrek.
@@ -48,6 +55,7 @@ SCREENSHOT_GUARD_ADMIN_KEY = "screenshot_guard_admin"
 SCREENSHOT_GUARD_ROYAL_KEY = "screenshot_guard_royal"
 SCREENSHOT_GUARD_DRIVER_KEY = "screenshot_guard_driver"
 REGISTRATION_SHARED_PASSWORD_KEY = "registration_shared_password"
+TELEGRAM_BOT_TOKEN_KEY = "telegram_bot_token"
 
 _keepalive_ring_lock = threading.Lock()
 
@@ -142,6 +150,14 @@ def migrate_plaintext_secrets(db: Session) -> int:
 
 def get_tracker_token(db: Session) -> str | None:
     return get_secret_setting(db, TRACKER_TOKEN_KEY)
+
+
+def get_telegram_bot_token(db: Session) -> str | None:
+    return get_secret_setting(db, TELEGRAM_BOT_TOKEN_KEY)
+
+
+def set_telegram_bot_token(db: Session, token: str) -> None:
+    set_setting(db, TELEGRAM_BOT_TOKEN_KEY, token)
 
 
 def get_emergency_cookie(db: Session) -> str | None:

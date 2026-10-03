@@ -7,7 +7,7 @@ import { AuthContext } from '../../auth-context'
 import { WorkPage } from './WorkPage'
 import type { IssueWorkbenchApiClient } from './IssueWorkbench'
 
-const park = { id: 7, name: 'Север', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
+const park = { id: 7, name: 'Север', timezone: 'Europe/Moscow', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 const user: User = {
   id: 3, username: 'operator', role: 'operator', access_status: 'approved',
   permissions: ['nav.tasks', 'tracker.read'], parks: [park],
@@ -57,12 +57,14 @@ describe('WorkPage operations summary', () => {
     const { dashboardSummary } = renderPage()
     expect(await screen.findByRole('heading', { name: 'Работа' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Сводка смены' })).toHaveAttribute('aria-expanded', 'false')
+    expect(document.querySelector('.rp-work-summary')).toHaveAttribute('data-open', 'false')
     expect(dashboardSummary).not.toHaveBeenCalled()
   })
 
   it('loads the cached local summary endpoint only after opening', async () => {
     const { dashboardSummary } = renderPage()
     fireEvent.click(await screen.findByRole('button', { name: 'Сводка смены' }))
+    expect(document.querySelector('.rp-work-summary')).toHaveAttribute('data-open', 'true')
     await waitFor(() => expect(dashboardSummary).toHaveBeenCalledExactlyOnceWith(7))
     expect(screen.getByText('Пришли: 4')).toBeVisible()
     expect(screen.getByText('Ушли: 3')).toBeVisible()
@@ -78,6 +80,16 @@ describe('WorkPage operations summary', () => {
     ))
   })
 
+  it('lets a mechanic switch from the priority queue to other open statuses', async () => {
+    const mechanic = { ...user, username: 'mechanic', role: 'mechanic' as const }
+    const { apiClient } = renderPage(undefined, mechanic)
+    await waitFor(() => expect(apiClient.trackerIssues).toHaveBeenCalledWith(expect.objectContaining({ status: 'queued' })))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Статус задач' }), { target: { value: 'diagnostics' } })
+    await waitFor(() => expect(apiClient.trackerIssues).toHaveBeenCalledWith(expect.objectContaining({ status: 'diagnostics' })))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Статус задач' }), { target: { value: 'all' } })
+    await waitFor(() => expect(apiClient.trackerIssues).toHaveBeenCalledWith(expect.objectContaining({ status: undefined, open_only: true, sort: 'queue_first' })))
+  })
+
   it('defaults drivers to an API-permitted viewing status', async () => {
     const driver = { ...user, username: 'driver', role: 'driver' as const }
     const { apiClient } = renderPage(undefined, driver)
@@ -88,6 +100,17 @@ describe('WorkPage operations summary', () => {
     expect(screen.getByRole('combobox', { name: 'Статус задач' })).toHaveValue('new')
   })
 
+  it('keeps a driver overview link scoped to all driver-visible open statuses', async () => {
+    const driver = { ...user, username: 'driver', role: 'driver' as const }
+    const { apiClient } = renderPage(undefined, driver, '/work?park=7&status=all')
+
+    await waitFor(() => expect(apiClient.trackerIssues).toHaveBeenCalledWith(
+      expect.objectContaining({ status: undefined, open_only: true }),
+    ))
+    expect(screen.getByRole('combobox', { name: 'Статус задач' })).toHaveValue('all')
+    expect(screen.getByTestId('location')).toHaveTextContent('/work?park=7&status=all')
+  })
+
   it('does not request a forbidden driver status from a stale deep link', async () => {
     const driver = { ...user, username: 'driver', role: 'driver' as const }
     const { apiClient } = renderPage(undefined, driver, '/work?park=7&status=queued&robot=447')
@@ -95,7 +118,7 @@ describe('WorkPage operations summary', () => {
     await waitFor(() => expect(apiClient.trackerIssues).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'new', open_only: true, robot: '447' }),
     ))
-    expect(screen.getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['new', 'moving'])
+    expect(screen.getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['all', 'new', 'moving'])
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/work?park=7&status=new&robot=447'))
   })
 })

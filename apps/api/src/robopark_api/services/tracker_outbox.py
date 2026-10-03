@@ -31,6 +31,7 @@ from robopark_api.services.reliable_actions import (
     mark_needs_attention,
     schedule_retry,
 )
+from robopark_api.services.task_cycle import last_confirmed_closure_at
 from robopark_api.services.task_lifecycle import (
     reconcile_external_closure,
     tracker_issue_is_closed,
@@ -368,10 +369,17 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         # Wait for the marker to become visible; never send a second note.
         raise DeliveryError("tracker_comment_unconfirmed")
 
+    closed_at = last_confirmed_closure_at(db, action.resource_id)
+    if closed_at is not None and action.created_at <= closed_at:
+        raise DeliveryError("task_already_closed")
+
     # This intentionally bypasses tracker_cache: replay safety needs fresh state.
     issue = tracker_client.get_issue(token=token, key=action.resource_id)
     if issue is None:
         raise DeliveryError("invalid_payload")
+    closed_issue = tracker_issue_is_closed(issue)
+    if closed_issue and action.action in {"comment", "attach", "campaign_review", "set_field"}:
+        raise DeliveryError("task_already_closed")
 
     if action.action == "comment":
         body = str(payload.get("text") or "").strip()
@@ -394,10 +402,19 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         return _deliver_campaign_review(action, token=token, issue=issue)
     if action.action == "assign_operator":
         login = str(payload.get("login") or "").strip()
+        if action.attempts > 0 and payload.get("operator_user_id") is not None:
+            # A manager may correct the same local operator's Tracker identity
+            # after an assignment was rejected. Keep the immutable action and
+            # idempotency key, but resolve that identity again for its retry.
+            operator = db.get(User, payload["operator_user_id"])
+            if operator is not None and operator.tracker_login:
+                login = operator.tracker_login.strip()
         if not login:
             raise DeliveryError("invalid_payload")
         if tracker_signatures.tracker_identity_from_issue(issue) == login:
             return {"already_applied": True}
+        if closed_issue:
+            raise DeliveryError("task_already_closed")
         tracker_client.assign_issue(token=token, key=action.resource_id, assignee=login)
         return {"assignee": login}
     if action.action == "ensure_tag":
@@ -407,6 +424,8 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         tags = [str(value).strip() for value in issue.get("tags") or [] if str(value).strip()]
         if tag in tags:
             return {"already_applied": True}
+        if closed_issue:
+            raise DeliveryError("task_already_closed")
         tracker_client.set_issue_tags(token=token, key=action.resource_id, tags=[*tags, tag])
         return {"tag": tag}
     if action.action == "ensure_components":
@@ -419,6 +438,8 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
             raise DeliveryError("invalid_payload")
         if issue.get("components"):
             return {"already_applied": True}
+        if closed_issue:
+            raise DeliveryError("task_already_closed")
         tracker_client.set_issue_components(
             token=token,
             key=action.resource_id,
@@ -623,6 +644,17 @@ def _process_batch(session_factory) -> int:
         for action in actions:
             try:
                 dependency_state = _dependency_state(db, action)
+                closed_at = (
+                    last_confirmed_closure_at(db, action.resource_id)
+                    if dependency_state != "ready"
+                    else None
+                )
+                if closed_at is not None and action.created_at <= closed_at:
+                    mark_needs_attention(db, action, error_code="task_already_closed")
+                    _sync_message(db, action)
+                    _sync_claim(db, action)
+                    db.commit()
+                    continue
                 if dependency_state == "failed":
                     mark_needs_attention(db, action, error_code="prerequisite_failed")
                     _sync_claim(db, action)

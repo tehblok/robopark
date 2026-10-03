@@ -4,7 +4,11 @@ import { installOperational, issue } from './fixtures'
 test('task and comments update automatically without losing a comment draft', async ({ page }) => {
   let revision = 0
   let details = 0
-  await installOperational(page, { routes: [
+  // Timer control must be installed before the application creates intervals.
+  // setFixedTime only freezes Date; installing runFor's clock after navigation
+  // leaves the existing polling timers outside the controlled scheduler.
+  await page.clock.install({ time: new Date('2026-09-02T09:05:00Z') })
+  await installOperational(page, { realTime: true, routes: [
     { method: 'GET', path: '/api/tracker/issues/ROBOPARK-42', handler: () => {
       details += 1
       return { json: { ...issue, claim: { park_id: 7 }, workflow: {
@@ -17,9 +21,9 @@ test('task and comments update automatically without losing a comment draft', as
       created_at: '2026-09-02T09:06:00Z', attachments: [],
     }] : [] }) },
   ] })
-  await page.clock.install({ time: new Date('2026-09-02T09:05:00Z') })
   await page.goto('/work/ROBOPARK-42?park=7&status=queued')
   await expect(page.getByText('Исходное описание', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'История и сообщения' }).click()
   const draft = page.getByRole('textbox', { name: 'Комментарии', exact: true })
   await draft.fill('Мой незавершённый комментарий')
   const initialDetails = details

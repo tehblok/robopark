@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from robopark_api.config import get_settings
 from robopark_api.models import TaskMessageVisibility, User
 from robopark_api.services.reliable_actions import begin_action, canonical_payload
+from robopark_api.services.task_cycle import last_confirmed_closure_at
 from robopark_api.services.tracker_client import (
     ALLOWED_ATTACHMENT_MIMES,
     MAX_ATTACHMENT_BYTES,
@@ -261,6 +262,10 @@ def stage_attachment(
             existing_attachment = db.get(TaskAttachment, existing_action.id)
             if existing_attachment is not None:
                 return existing_attachment, existing_action
+    if message is not None:
+        closure_at = last_confirmed_closure_at(db, issue_key)
+        if closure_at is not None and message.created_at <= closure_at:
+            raise HTTPException(409, "task_message_previous_cycle")
     begun = begin_action(
         db,
         actor=actor,
@@ -526,14 +531,23 @@ def merge_timeline(
         else {}
     )
 
-    items = [
-        {
+    closure_at = last_confirmed_closure_at(db, issue_key)
+    items = []
+    for row in local_rows:
+        action = actions.get(row.action_id)
+        old_unsent = (
+            action is not None
+            and action.state != "succeeded"
+            and closure_at is not None
+            and action.created_at <= closure_at
+        )
+        item = {
             "id": row.id,
             "kind": row.kind,
             "author": row.author_name,
             "text": _strip_action_marker(row.text) if row.kind == "tracker" else row.text,
             "created_at": _iso(row.created_at),
-            "sync_state": _sync_state(row, actions.get(row.action_id)),
+            "sync_state": "needs_attention" if old_unsent else _sync_state(row, action),
             "attachments": _remote_attachments(
                 external_attachments.get(row.external_id or "", []),
                 *[
@@ -543,7 +557,8 @@ def merge_timeline(
             ),
             "_sort": (row.created_at, _SOURCE_RANK[row.kind], row.id),
         }
-        for row in local_rows
-    ]
+        if old_unsent:
+            item["delivery_note"] = "previous_cycle_not_sent"
+        items.append(item)
     items.sort(key=lambda item: item.pop("_sort"))
     return items

@@ -38,6 +38,24 @@ def test_backup_status_requires_confirmed_copy_and_survives_later_failed_job(tmp
     assert backup_status(tmp_path, now=200000)["overdue"] is True
 
 
+def test_backup_status_reports_host_copy_failure_after_api_snapshot_succeeds(tmp_path):
+    from datetime import UTC, datetime
+
+    from robopark_api.services.operational_health import backup_status
+
+    (tmp_path / "scheduled-copy.json").write_text(json.dumps({"verified_at": 900}))
+    (tmp_path / "job.json").write_text(json.dumps({"kind": "snapshot", "state": "succeeded"}))
+    failed = {"status": "failed", "completed_at": datetime.fromtimestamp(950, UTC).isoformat()}
+    result = backup_status(tmp_path, now=1000, host_attempt=failed)
+    assert result["verified_at"] == 900
+    assert result["last_attempt_failed"] is True
+
+    newer_copy = {"status": "failed", "completed_at": datetime.fromtimestamp(850, UTC).isoformat()}
+    assert (
+        backup_status(tmp_path, now=1000, host_attempt=newer_copy)["last_attempt_failed"] is False
+    )
+
+
 def test_health_api_restricts_access_and_returns_no_sensitive_paths(
     client, seed_mechanic, seed_royal, monkeypatch
 ):
@@ -73,6 +91,22 @@ def test_unavailable_platform_memory_is_unknown(monkeypatch):
 
     monkeypatch.setattr(Path, "read_text", unavailable)
     assert all(value is None for value in health.read_memory().values())
+
+
+def test_nonfinite_host_capability_timestamp_is_invalid():
+    from robopark_api.services.operational_health import _capabilities
+
+    for checked_at in (float("nan"), float("inf")):
+        value = _capabilities(
+            {
+                "capabilities": {
+                    "profile": "orin",
+                    "jpeg_backend": "software",
+                    "checked_at": checked_at,
+                }
+            }
+        )
+        assert value["source_state"] == "invalid"
 
 
 def test_last_failed_request_is_flushed_even_when_no_more_requests_arrive(tmp_path, monkeypatch):

@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch Robopark Telegram bot desired state
+Requires=robopark.service
+After=robopark.service
+PartOf=robopark.service
+
+[Path]
+PathChanged=/var/lib/robopark/data/telegram-bot/enabled.json
+Unit=robopark-bot.service

@@ -1,3 +1,4 @@
+.campaign-list-composition { display:grid; gap:var(--rp-section-gap); }
 .campaign-list,.campaign-tickets,.campaign-overview-list { display:grid; gap:var(--rp-form-gap); }
 .campaign-card__heading,.campaign-overview-item,.campaign-ticket__head,.campaign-actions { display:flex; align-items:flex-start; justify-content:space-between; gap:var(--rp-form-gap); }
 .campaign-card__badges { display:flex; flex-wrap:wrap; gap:var(--rp-space-2); }
@@ -5,13 +6,17 @@
 .campaign-card h2 a { display:inline-flex; align-items:center; min-block-size:var(--rp-control-min-size); overflow-wrap:anywhere; }
 .campaign-card p,.campaign-overview-item p,.campaign-ticket p { margin:.25rem 0; color:var(--rp-text-muted); }
 .campaign-metrics { display:grid; grid-template-columns:auto 1fr; align-items:center; gap:var(--rp-section-gap); }
+.campaign-metrics--compact { grid-template-columns:minmax(0,1fr); }
 .campaign-progress { --campaign-progress:0deg; inline-size:7rem; block-size:7rem; flex:0 0 auto; border-radius:50%; display:grid; place-content:center; text-align:center; background:radial-gradient(circle closest-side,var(--rp-surface) 72%,transparent 74% 99%),conic-gradient(var(--rp-accent) var(--campaign-progress),var(--rp-border) 0); }
 .campaign-progress strong { font-size:1.45rem; }.campaign-progress span { font-size:var(--rp-font-size-body);color:var(--rp-text-muted); }
 .campaign-overview-item { border-block-end:1px solid var(--rp-border); padding-block-end:var(--rp-space-3); }.campaign-overview-item:last-child{border:0;padding:0}.campaign-overview-item .campaign-progress{inline-size:5rem;block-size:5rem}
-.campaign-columns { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--rp-space-4);align-items:start; }
+.campaign-columns { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--rp-section-gap);align-items:start; }
 .campaign-ticket { border:1px solid var(--rp-border);border-radius:var(--rp-radius-card);padding:var(--rp-card-padding);display:grid;gap:var(--rp-form-gap);min-inline-size:0;overflow-wrap:anywhere; }
 .rp-page-layout:has(.campaign-columns) .rp-page-layout__eyebrow a,.campaign-ticket__head a { align-items:center;display:inline-flex;min-block-size:var(--rp-control-min-size);font-size:var(--rp-font-size-body); }
+.campaign-ticket__head a { min-inline-size:var(--rp-control-min-size);justify-content:center; }
 .campaign-ticket small { font-size:var(--rp-font-size-body); }
 .campaign-ticket blockquote { margin:0;padding-inline-start:var(--rp-space-3);border-inline-start:3px solid var(--rp-border); }
 .campaign-complete { display:grid;gap:var(--rp-form-gap); }.campaign-complete textarea{min-block-size:7rem;resize:vertical}.campaign-warning,.form-error{color:var(--rp-critical-text)!important}.campaign-create{align-items:end}.campaign-search{margin-block-end:var(--rp-form-gap)}
+.campaign-photo-field{display:grid;gap:var(--rp-control-gap)}.campaign-photo-field .rp-button{justify-self:start}.campaign-photo-name{color:var(--rp-text-muted);overflow-wrap:anywhere}
 @media (max-width:800px){.campaign-columns,.campaign-metrics{grid-template-columns:1fr}.campaign-progress{margin-inline:auto}.campaign-card__heading{flex-direction:column}.campaign-card__heading>.campaign-progress{align-self:center}}
+@media (max-width:599px){.campaign-actions{display:grid;grid-template-columns:minmax(0,1fr)}.campaign-actions .rp-button,.campaign-photo-field .rp-button{inline-size:100%}}

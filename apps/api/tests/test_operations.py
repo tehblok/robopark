@@ -1,10 +1,11 @@
+import secrets
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
 
 from conftest import login_as, role_id_for
-from robopark_api.models import AuditLog, Park, ParkBlockerHistory, PlatformSetting, User, UserPark
+from robopark_api.models import ParkBlockerHistory, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings, rbac, tracker_client, tracker_filters
 
@@ -113,7 +114,7 @@ def test_sla_working_hours_boundaries_and_unknown_queue_times():
         {**issue("invalid", status="queued"), "created": "nonsense", "status_history": []},
         {**issue("missing", status="queued"), "created": None, "status_history": []},
     ]
-    result = calculate_sla(rows, target_hours=10, now=NOW)
+    result = calculate_sla(rows, target_hours=10, now=NOW, timezone="Europe/Moscow")
     assert result.evaluated_count == 5
     assert result.unknown_count == 3
     assert result.at_risk_count == 1
@@ -124,7 +125,7 @@ def test_sla_working_hours_boundaries_and_unknown_queue_times():
 def test_no_sla_target_is_unknown_not_zero():
     from robopark_api.services.operations import calculate_sla
 
-    result = calculate_sla([issue()], target_hours=None, now=NOW)
+    result = calculate_sla([issue()], target_hours=None, now=NOW, timezone="Europe/Moscow")
     assert result.target_hours is None
     assert result.evaluated_count == 0
     assert result.unknown_count == 1
@@ -133,7 +134,7 @@ def test_no_sla_target_is_unknown_not_zero():
     assert result.overdue == []
 
 
-def test_sla_counts_only_queued_working_hours_in_moscow():
+def test_sla_continues_after_a_queued_task_moves_to_diagnostics():
     from robopark_api.services.operations import calculate_sla
 
     now = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)  # 15:00 Moscow
@@ -147,18 +148,110 @@ def test_sla_counts_only_queued_working_hours_in_moscow():
         "status_key": "diagnostics",
     }
 
-    result = calculate_sla([queued, diagnostics], target_hours=4, now=now)
+    result = calculate_sla([queued, diagnostics], target_hours=4, now=now, timezone="Europe/Moscow")
+    assert result.evaluated_count == 2
+    assert result.unknown_count == 0
+    assert result.overdue_count == 2
+    assert {task.age_hours for task in result.overdue} == {7}
+
+
+def test_sla_uses_the_selected_parks_timezone():
+    from robopark_api.services.operations import calculate_sla, queued_working_hours
+
+    queued = issue("queued", status="queued")
+    queued["status_history"][0]["updatedAt"] = "2026-09-18T04:00:00Z"
+    now = datetime(2026, 9, 18, 6, tzinfo=UTC)
+    assert queued_working_hours(queued, now, timezone="Asia/Yekaterinburg") == 2
+    result = calculate_sla(
+        [queued],
+        target_hours=5,
+        now=now,
+        timezone="Asia/Yekaterinburg",
+    )
     assert result.evaluated_count == 1
+    assert result.overdue_count == 0
+    assert result.at_risk_count == 0
+    assert result.unknown_count == 0
+
+
+def test_open_task_becomes_overdue_after_a_deadline_at_closing_time():
+    from robopark_api.services.operations import calculate_sla, calculate_workload, task_timing
+
+    queued_at = datetime(2026, 9, 18, 13, tzinfo=UTC)  # 16:00 Moscow.
+    due_at = datetime(2026, 9, 18, 18, tzinfo=UTC)  # 21:00 Moscow.
+    queued = issue("night-edge", status="queued")
+    queued["created"] = queued_at.isoformat()
+    queued["status_history"][0]["updatedAt"] = queued_at.isoformat()
+
+    at_deadline = calculate_sla([queued], target_hours=5, now=due_at, timezone="Europe/Moscow")
+    assert at_deadline.overdue_count == 0
+
+    after_deadline = due_at + timedelta(minutes=1)
+    assert task_timing(queued, after_deadline, timezone="Europe/Moscow").sla_working_hours == 5
+    overdue = calculate_sla([queued], target_hours=5, now=after_deadline, timezone="Europe/Moscow")
+    assert overdue.overdue_count == 1
+    assert overdue.overdue[0].key == "night-edge"
+    assert (
+        calculate_workload([queued], target_hours=5, now=after_deadline, timezone="Europe/Moscow")[
+            0
+        ].overdue_count
+        == 1
+    )
+
+
+def test_invalid_historical_timezone_preserves_downtime_but_not_sla():
+    from robopark_api.services.operations import calculate_sla, task_timing
+
+    queued = issue("queued", status="queued", age=6)
+    queued["sla_anchor_timezone"] = "Invalid/Timezone"
+    timing = task_timing(queued, NOW, timezone="Europe/Moscow")
+    assert timing.downtime_hours == 6
+    assert timing.sla_deadline is None
+    assert timing.sla_working_hours is None
+
+    result = calculate_sla([queued], target_hours=5, now=NOW, timezone="Europe/Moscow")
+    assert result.evaluated_count == 0
     assert result.unknown_count == 1
-    assert result.overdue_count == 1
-    assert result.overdue[0].age_hours == 7
+    assert result.overdue_count == 0
+
+
+def test_task_timing_exposes_confirmed_anchor_timezone_for_device_countdown():
+    from robopark_api.services.operations import task_timing
+
+    queued = issue("queued", status="queued", age=1)
+    queued["sla_anchor_timezone"] = "Europe/Moscow"
+    timing = task_timing(queued, NOW, timezone="Asia/Yekaterinburg")
+    assert timing.sla_timezone == "Europe/Moscow"
+    queued["sla_anchor_timezone"] = "Invalid/Timezone"
+    assert task_timing(queued, NOW, timezone="Europe/Moscow").sla_timezone is None
+
+
+def test_unknown_queue_park_keeps_downtime_without_using_current_park_timezone():
+    from robopark_api.services.operations import calculate_sla, task_timing
+
+    queued = {
+        **issue("queued", status="queued", age=6),
+        "queued_at": (NOW - timedelta(hours=6)).isoformat(),
+        "sla_source": "status_history",
+        "sla_anchor_timezone": None,
+    }
+    timing = task_timing(queued, NOW, timezone="Europe/Moscow")
+    assert timing.downtime_hours == 6
+    assert timing.sla_deadline is None
+    assert timing.sla_working_hours is None
+    result = calculate_sla([queued], target_hours=5, now=NOW, timezone="Europe/Moscow")
+    assert result.unknown_count == 1
+    assert result.evaluated_count == 0
 
 
 def test_sla_bounded_list_retains_exact_total():
     from robopark_api.services.operations import calculate_sla
 
     result = calculate_sla(
-        [issue(str(i), status="queued", age=300 - i) for i in range(210)], target_hours=10, now=NOW
+        [issue(str(i), status="queued", age=300 - i) for i in range(210)],
+        target_hours=10,
+        now=NOW,
+        timezone="Europe/Moscow",
     )
     assert result.overdue_count == 210
     assert len(result.overdue) == 200
@@ -192,6 +285,55 @@ def test_overview_role_defaults(client, db_session, seed_park_with_tracker, sour
         assert data["workload"] is None
     if role not in {"admin", "royal"}:
         assert data["operators"] is None
+
+
+def test_overview_exposes_separate_working_sla_and_calendar_downtime(
+    db_session,
+    seed_park_with_tracker,
+    source,
+):
+    from robopark_api.services.operations import build_overview
+
+    park = seed_park_with_tracker
+    user = account(db_session, park)
+    result = build_overview(
+        db_session,
+        user,
+        park,
+        days=7,
+        selected_status="all",
+        now=NOW,
+    )
+    timing = {row.issue_key: row for row in result.task_timing}
+    assert timing["ROBOPARK-2"].downtime_hours == 12
+    assert timing["ROBOPARK-2"].sla_working_hours == 6.5
+    assert timing["ROBOPARK-2"].sla_deadline == datetime(2026, 9, 3, 11, tzinfo=UTC)
+    assert timing["ROBOPARK-1"].downtime_hours is None
+
+
+def test_overview_open_requires_recent_tracker_data_without_silent_stale_fallback(
+    monkeypatch,
+    db_session,
+    seed_park_with_tracker,
+    source,
+):
+    from robopark_api.services import operations, tracker_cache
+
+    park = seed_park_with_tracker
+    user = account(db_session, park)
+    original = tracker_cache.fetch_park_blockers
+    options = []
+
+    def observe(**kwargs):
+        options.append(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(tracker_cache, "fetch_park_blockers", observe)
+    operations.build_overview(db_session, user, park, days=7, selected_status="all", now=NOW)
+
+    assert options[0]["max_age_seconds"] == 5.0
+    assert options[0]["allow_stale"] is False
+    assert len(source[1]) == 1
 
 
 def test_overview_uses_local_task_owner_instead_of_tracker_assignee(
@@ -306,6 +448,32 @@ def test_overview_upstream_failure_is_not_empty_success(
     assert response.json()["detail"] == "tracker_upstream_error"
 
 
+def test_overview_upstream_failure_does_not_reuse_expired_tracker_snapshot(
+    client,
+    db_session,
+    seed_park_with_tracker,
+    source,
+    monkeypatch,
+):
+    from robopark_api.services import tracker_cache
+
+    park = seed_park_with_tracker
+    account(db_session, park)
+    login_as(client, "subject", "secret")
+    url = f"/operations/overview?park_id={park.id}"
+    assert client.get(url).status_code == 200
+    monkeypatch.setattr(tracker_cache._blockers_cache, "_ttl", 0.01)
+    time.sleep(0.02)
+
+    def fail(**_kwargs):
+        raise tracker_client.TrackerError("test upstream unavailable")
+
+    monkeypatch.setattr(tracker_client, "fetch_park_blockers", fail)
+    response = client.get(url)
+    assert response.status_code == 502
+    assert response.json()["detail"] == "tracker_upstream_error"
+
+
 def test_flow_is_closed_observed_v2_only(db_session, seed_park_with_tracker):
     from robopark_api.services.operations import flow_history
 
@@ -373,59 +541,20 @@ def test_operator_stats_use_exact_login_and_only_current_park_accounts(
     assert rows["case"]["open_count"] == 0
 
 
-def test_sla_policy_roundtrip_clear_and_audit(client, db_session, seed_park_with_tracker):
-    account(db_session, seed_park_with_tracker, "admin")
-    login_as(client, "subject", "secret")
-    url = f"/operations/sla-policy?park_id={seed_park_with_tracker.id}"
-    assert client.get(url).json() == {"park_id": seed_park_with_tracker.id, "target_hours": 5}
-    response = client.put(url, json={"target_hours": 24})
-    assert response.status_code == 200
-    assert client.get(url).json()["target_hours"] == 24
-    row = db_session.get(PlatformSetting, f"operations.sla.park.{seed_park_with_tracker.id}")
-    assert row.value == "24"
-    assert client.put(url, json={"target_hours": None}).status_code == 200
-    assert client.get(url).json()["target_hours"] == 5
-    edits = db_session.scalars(
-        select(AuditLog).where(AuditLog.action == "operations.sla_policy.updated")
-    ).all()
-    assert len(edits) == 2
-    assert edits[0].park_id == seed_park_with_tracker.id
-    assert edits[0].actor_username == "subject"
-
-
-@pytest.mark.parametrize("target", [0, -1, 8761, 1.5, True, "24"])
-def test_sla_policy_rejects_non_integer_or_out_of_range(
-    client, db_session, seed_park_with_tracker, target
+def test_sla_is_fixed_at_five_hours_even_if_an_old_setting_exists(
+    client, db_session, seed_park_with_tracker, source
 ):
     account(db_session, seed_park_with_tracker, "admin")
     login_as(client, "subject", "secret")
-    assert (
-        client.put(
-            f"/operations/sla-policy?park_id={seed_park_with_tracker.id}",
-            json={"target_hours": target},
-        ).status_code
-        == 422
-    )
-
-
-def test_sla_policy_write_requires_permission_and_authorized_park(
-    client, db_session, seed_park_with_tracker
-):
-    user = account(db_session, seed_park_with_tracker)
-    login_as(client, "subject", "secret")
     url = f"/operations/sla-policy?park_id={seed_park_with_tracker.id}"
-    assert client.get(url).status_code == 200
-    assert client.put(url, json={"target_hours": 24}).status_code == 403
-    rbac.set_user_effective_permissions(db_session, user, ["parks.manage"])
-    db_session.add(Park(name="Other", tag="Other", is_active=True))
-    db_session.commit()
-    other = db_session.scalar(select(Park).where(Park.tag == "Other"))
-    assert (
-        client.put(
-            f"/operations/sla-policy?park_id={other.id}", json={"target_hours": 24}
-        ).status_code
-        == 403
+    platform_settings.set_setting(
+        db_session, f"operations.sla.park.{seed_park_with_tracker.id}", "24"
     )
+    assert client.get(url).status_code == 404
+    assert client.put(url, json={"target_hours": 24}).status_code == 404
+    overview = client.get(f"/operations/overview?park_id={seed_park_with_tracker.id}")
+    assert overview.status_code == 200
+    assert overview.json()["sla"]["target_hours"] == 5
 
 
 @pytest.mark.parametrize(
@@ -568,7 +697,10 @@ def test_workload_uses_assignee_identity_and_marks_unassigned():
         issue("unassigned", login=None),
         {**issue("invalid", login="invalid"), "created": "bad"},
     ]
-    loads = {row.login: row for row in calculate_workload(rows, target_hours=10, now=NOW)}
+    loads = {
+        row.login: row
+        for row in calculate_workload(rows, target_hours=10, now=NOW, timezone="Europe/Moscow")
+    }
     assert loads["operator.one"].open_count == 2
     assert loads["operator.one"].overdue_count == 0
     assert loads["operator.one"].oldest_hours == 20
@@ -619,6 +751,39 @@ def test_overview_unconfigured_source_is_explicit(
     assert source[1] == []
 
 
+def test_first_tracker_token_unblocks_park_overview(client, seed_royal, test_settings, monkeypatch):
+    monkeypatch.setattr(platform_settings, "get_settings", lambda: test_settings)
+    received_tokens = []
+
+    def fake_blockers(**kwargs):
+        received_tokens.append(kwargs["token"])
+        return [issue(status="queued")]
+
+    monkeypatch.setattr(tracker_client, "fetch_park_blockers", fake_blockers)
+    login_as(client, "royal", "secret")
+    created = client.post(
+        "/parks", json={"name": "Alpha", "tag": "Alpha", "tracker_queue": "ROBOPARK"}
+    )
+    assert created.status_code == 201
+    assert created.json()["feature_blockers"] is True
+    overview_url = f"/operations/overview?park_id={created.json()['id']}"
+    missing = client.get(overview_url)
+    assert missing.status_code == 503
+    assert missing.json()["detail"] == "tracker_token_not_configured"
+    assert received_tokens == []
+
+    one_time_test_token = secrets.token_urlsafe(24)
+    saved = client.put("/admin/settings/tracker-token", json={"token": one_time_test_token})
+    assert saved.status_code == 200
+    assert saved.json()["tracker_token_masked"]
+    assert one_time_test_token not in str(saved.json())
+
+    ready = client.get(overview_url)
+    assert ready.status_code == 200
+    assert ready.json()["tasks"][0]["key"] == "ROBOPARK-1"
+    assert received_tokens == [one_time_test_token]
+
+
 def test_flow_complete_only_when_all_closed_buckets_observed(db_session, seed_park_with_tracker):
     from robopark_api.services.operations import flow_history
 
@@ -638,3 +803,53 @@ def test_flow_complete_only_when_all_closed_buckets_observed(db_session, seed_pa
     assert result.complete is True
     assert result.observed_buckets == 12
     assert len(result.points) == 12
+
+
+@pytest.mark.parametrize("role", ["mechanic", "operator", "admin", "royal"])
+def test_overview_preserves_park_tasks_when_tracker_changes_tag_case(
+    client, db_session, seed_park_with_tracker, source, role
+):
+    account(db_session, seed_park_with_tracker, role)
+    for item in source[0]:
+        item["tags"] = ["ALPHA"]
+    login_as(client, "subject", "secret")
+    response = client.get(f"/operations/overview?park_id={seed_park_with_tracker.id}&status=all")
+    assert response.status_code == 200
+    assert response.json()["tasks_total"] == 5
+
+
+def test_overview_hydrates_and_persists_queue_anchor_without_opening_task(
+    client, db_session, seed_park_with_tracker, source, monkeypatch
+):
+    from concurrent.futures import Future
+
+    from robopark_api.models import TrackerIssueHistoryState
+
+    account(db_session, seed_park_with_tracker, "mechanic")
+    queued = "2026-09-30T06:00:00Z"
+    source[0][:] = [{**issue("ROBOPARK-SLA", "queued"), "status_history": []}]
+    starts = []
+
+    def schedule(**kwargs):
+        starts.append(kwargs["key"])
+        future = Future()
+        future.set_result(
+            [
+                {
+                    "updatedAt": queued,
+                    "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}],
+                }
+            ]
+        )
+        return future, True
+
+    monkeypatch.setattr(tracker_client, "schedule_issue_status_history", schedule)
+    login_as(client, "subject", "secret")
+    first = client.get(f"/operations/overview?park_id={seed_park_with_tracker.id}&status=all")
+    assert first.status_code == 200
+    assert first.json()["task_timing"][0]["queue_started_at"] == queued
+    state = db_session.get(TrackerIssueHistoryState, "ROBOPARK-SLA")
+    assert state.anchor_timezone == "Europe/Moscow"
+    second = client.get(f"/operations/overview?park_id={seed_park_with_tracker.id}&status=all")
+    assert second.json()["task_timing"][0]["queue_started_at"] == queued
+    assert starts == ["ROBOPARK-SLA"]

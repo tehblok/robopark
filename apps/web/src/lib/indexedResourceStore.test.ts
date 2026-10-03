@@ -19,6 +19,15 @@ it('does not read a previous role cache when permissions happen to match', async
   expect(await manager.get('work:list')).toBeUndefined()
 })
 
+it('does not read a prior principals disk cache after a clean install reuses an account id', async () => {
+  const previous = await IndexedResourceStore.open({ account: '7', principal: 'old-owner', role: 'royal', permissions: 'read', park: 'all', schema: 2 })
+  await previous.set('system:summary', { value: 'previous install' })
+  previous.close()
+
+  const current = await IndexedResourceStore.open({ account: '7', principal: 'new-owner', role: 'royal', permissions: 'read', park: 'all', schema: 2 })
+  expect(await current.get('system:summary')).toBeUndefined()
+})
+
 it('survives reopening and purges the scope on authorization failure', async () => {
   const scope = { account: '7', role: 'mechanic', permissions: 'read', park: '3', schema: 2 }
   await (await IndexedResourceStore.open(scope)).set('work:list', ['cached'])

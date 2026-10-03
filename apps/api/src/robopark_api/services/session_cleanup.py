@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from datetime import UTC, datetime
 
 from robopark_api.db import SessionLocal
 from robopark_api.routers.auth import purge_expired_sessions
 from robopark_api.services.ops.maintenance import host_maintenance_active
+from robopark_api.services.terminal.sessions import prune_terminal_history
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,8 @@ def purge_expired_sessions_once() -> int:
         return 0
     with SessionLocal() as db:
         removed = purge_expired_sessions(db)
+        prune_terminal_history(db, now=datetime.now(UTC))
+        db.commit()
     if removed:
         logger.info("Purged %s expired session(s)", removed)
     return removed

@@ -90,12 +90,12 @@ function RobotResourceOwner({ apiClient, resolverClient, checkClient, user, refe
       notifyResolved.current(normalized)
     }, error => {
       if (!current()) return
-      const classified = classifyCheckError(error)
+      const classified = classifyCheckError(error, user)
       if (classified.kind === 'unauthorized' || classified.kind === 'forbidden') onAuthorizationFailure(classified)
       else setFailure(classified)
     })
     return release
-  }, [reference, resolverClient, user.id, canCheck, retry, online, onAuthorizationFailure])
+  }, [reference, resolverClient, user, canCheck, retry, online, onAuthorizationFailure])
 
   const navigate = useNavigate()
   const location = useLocation()

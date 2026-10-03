@@ -1,15 +1,8 @@
 import type { TaskSyncState } from '../../api'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 
-const labels: Record<TaskSyncState, string> = {
-  saved: '',
-  synced: '',
-  pending: 'Отправляется',
-  needs_attention: 'Нужно внимание',
-}
-
 const reasons: Record<string, string> = {
-  task_already_closed: 'Задача уже закрыта в Трекере. Отложенная смена статуса остановлена.',
+  task_already_closed: 'Тикет закрыт в Tracker. Отложенное действие сохранено в системе и не будет отправлено в новый цикл ремонта.',
   tracker_transition_missing: 'В Трекере нет доступного перехода в нужный статус. Администратору нужно проверить процесс очереди.',
   authentication: 'Проверьте токен бота и его доступ к Трекеру.',
   '401': 'Проверьте токен бота и его доступ к Трекеру.',
@@ -18,10 +11,11 @@ const reasons: Record<string, string> = {
   invalid_payload: 'Трекер не принял данные действия. Обратитесь к администратору.',
   prerequisite_failed: 'Предыдущее действие не доставлено. Сначала нужно устранить его ошибку.',
   duplicate_remote_action: 'Найдено несколько совпадающих действий. Нужна проверка администратора.',
+  tracker_operator_assignment_failed: 'Tracker отклонил назначение. Проверьте логин оператора в Tracker и права бота, затем повторите действие.',
+  tracker_error: 'Tracker отклонил действие. Проверьте интеграцию и повторите после устранения причины.',
 }
 
 export function TaskSyncStatus({ state, errorCode }: { state: TaskSyncState; errorCode?: string | null }) {
-  if (state === 'saved' || state === 'synced') return null
-  const tone = state === 'needs_attention' ? 'critical' : state === 'pending' ? 'warning' : 'success'
-  return <span role="status"><StatusBadge tone={tone}>{labels[state]}</StatusBadge>{state === 'needs_attention' && errorCode && reasons[errorCode] ? <span> {reasons[errorCode]}</span> : null}</span>
+  if (state !== 'needs_attention') return null
+  return <span role="status"><StatusBadge tone="critical">Нужно внимание</StatusBadge>{errorCode && reasons[errorCode] ? <span> {reasons[errorCode]}</span> : null}</span>
 }

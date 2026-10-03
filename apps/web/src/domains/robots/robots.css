@@ -99,6 +99,8 @@
   text-decoration: none;
 }
 
+.rp-robots-recent-card small { font-size: var(--rp-font-size-body); }
+
 .rp-robot-resolver :where(button, input, a):focus-visible,
 .rp-robots-recent-card > a:focus-visible {
   outline: 2px solid var(--rp-focus);
@@ -145,10 +147,6 @@
 /* The unified workspace already supplies its two-column layout. */
 .rp-check-workspace[data-unified='true'] .rp-robot-detail {
   grid-template-columns: minmax(0, 1fr);
-}
-.rp-check-workspace[data-unified='true'] .rp-robot-detail__events {
-  grid-column: auto;
-  grid-row: auto;
 }
 
 .rp-robot-detail__identity,
@@ -239,10 +237,6 @@
 @media (min-width: 900px) {
   .rp-robot-detail {
     grid-template-columns: minmax(18rem, 0.8fr) minmax(0, 1.2fr);
-  }
-  .rp-robot-detail__events {
-    grid-column: 2;
-    grid-row: 2;
   }
   .rp-robot-detail__primary {
     grid-column: 1;

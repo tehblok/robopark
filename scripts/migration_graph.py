@@ -45,8 +45,9 @@ class MigrationPolicy:
                 or value["schema"] != 1
                 or not isinstance(value["target_head"], str)
                 or not isinstance(value["known_heads"], list)
-                or not value["known_heads"]
-                or not all(isinstance(item, str) and item for item in value["known_heads"])
+                or not all(
+                    isinstance(item, str) and item for item in value["known_heads"]
+                )
                 or len(value["known_heads"]) != len(set(value["known_heads"]))
                 or type(value["reversible"]) is not bool
                 or value["recovery"] not in {"rollback", "snapshot"}

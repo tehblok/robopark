@@ -13,7 +13,9 @@ import { ScreenshotGuardGate } from './components/ScreenshotGuard/ScreenshotGuar
 import { ThemeProvider } from './design-system/theme/ThemeProvider'
 import { applyInitialTheme } from './design-system/theme/theme'
 import { registerServiceWorker } from './pwa/registerServiceWorker'
+import { captureShareTargetId } from './pwa/shareTargetIntent'
 
+captureShareTargetId()
 applyInitialTheme()
 
 createRoot(document.getElementById('root')!).render(

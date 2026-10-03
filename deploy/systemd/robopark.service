@@ -1,8 +1,8 @@
 [Unit]
 Description=Robopark application stack
-Wants=network-online.target
+Wants=network-online.target robopark-bot.path robopark-terminal-setup.service
 Requires=docker.service
-After=network-online.target docker.service
+After=network-online.target docker.service robopark-terminal-setup.service
 StartLimitIntervalSec=300
 StartLimitBurst=3
 
@@ -15,8 +15,11 @@ Environment=HOST_ENV_FILE=/etc/robopark/host.env
 ExecStartPre=/usr/bin/python3 -I /opt/robopark/host-tools/robopark restore --boot-recover
 ExecStart=/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json up -d --no-build --wait --wait-timeout 180 db api web
 # A worker failure must not take the read-only site offline.
+ExecStartPost=-/usr/bin/python3 -I /opt/robopark/host-tools/robopark-bot-runtime reconcile
+ExecStartPost=-/usr/bin/python3 -I /opt/robopark/host-tools/robopark tuna-start
 ExecStartPost=-/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json up -d --no-build worker
 ExecStop=/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json stop --timeout 30 worker web api
+ExecStopPost=-/usr/bin/python3 -I /opt/robopark/host-tools/robopark-bot-runtime stop
 TimeoutStartSec=3600
 TimeoutStopSec=90
 NoNewPrivileges=true

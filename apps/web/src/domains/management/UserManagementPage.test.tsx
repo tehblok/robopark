@@ -5,7 +5,7 @@ import { api, type AdminRole, type AdminUser } from '../../api'
 import { resourceStore } from '../../lib/resource'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
 
-const north = { id: 7, name: 'Северный', tag: 'north', is_active: true }
+const north = { id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', is_active: true }
 const south = { ...north, id: 8, name: 'Южный', tag: 'south' }
 const roles: AdminRole[] = [
   { id: 1, slug: 'mechanic', name: 'Механик', description: '', is_system: true, is_active: true, user_count: 1, permissions: ['nav.tasks', 'nav.reports', 'reports.create'] },

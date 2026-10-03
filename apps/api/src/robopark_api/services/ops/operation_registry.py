@@ -8,10 +8,10 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from robopark_api.models import HostOperationStatus
+from robopark_api.models import HostOperationStatus, User
 from robopark_api.ops_schemas import public_result
 from robopark_api.services.database_locks import database_idempotency_lock
 from robopark_api.services.ops.jobs import load_job
@@ -180,6 +180,97 @@ def snapshot_current_job(db: Session, ops_dir: Path) -> HostOperationStatus | No
     return update_from_job(db, operation_id=job.id, job=job)
 
 
+def recover_restored_receipt(db: Session, ops_dir: Path, host_root: Path) -> None:
+    """A DB restore may remove its own receipt; root evidence recovers status only."""
+    from robopark_api.services.ops import host_bridge
+
+    job = load_job(ops_dir)
+    if (
+        job is None
+        or job.kind not in {"backup-restore", "rollback", "ota-update"}
+        or not job.extra.get("host_updater")
+        or db.get(HostOperationStatus, job.id) is not None
+    ):
+        return
+    if job.state in {"succeeded", "failed"}:
+        try:
+            finished = datetime.fromisoformat(job.updated_at)
+            if finished.tzinfo is None or datetime.now(UTC) - finished > RETENTION:
+                return
+        except (TypeError, ValueError):
+            return
+    request = job.extra.get("host_request")
+    if not isinstance(request, dict):
+        return
+    actor = request.get("actor_user_id")
+    authorization = request.get("authorization")
+    if (
+        type(actor) is not int
+        or db.get(User, actor) is None
+        or not isinstance(authorization, dict)
+        or authorization.get("consumed") is not True
+        or authorization.get("actor_user_id") != actor
+        or authorization.get("operation_id") != job.id
+        or authorization.get("operation_kind") != job.kind
+    ):
+        return
+    expected = {"job_id": job.id, "kind": job.kind, "actor_user_id": actor}
+    evidence = [
+        host_bridge.read_json(host_root / "public/command-claim.json"),
+        host_bridge.read_json(host_root / "public/command-result.json"),
+    ]
+    if not any(
+        all(item.get(key) == value for key, value in expected.items())
+        and (item.get("active") is True or item.get("state") in {"succeeded", "failed"})
+        for item in evidence
+    ):
+        return
+    payload = {
+        key: value
+        for key, value in request.items()
+        if key not in {"job_id", "actor_user_id", "created_at", "authorization"}
+    }
+    payload["operation_id"] = job.id
+    try:
+        operation = host_bridge._HOST_OPERATION_ADAPTER.validate_python(payload)
+    except ValueError:
+        return
+    try:
+        reserve(
+            db,
+            operation_id=job.id,
+            actor_user_id=actor,
+            kind=job.kind,
+            request_digest=request_digest(operation),
+        )
+    except (OperationRegistryFull, OperationIdentityConflict):
+        return
+    update_from_job(db, operation_id=job.id, job=job)
+
+
+def _pinned_ota_operation_ids() -> set[str] | None:
+    """None means ownership cannot be inspected, so keep OTA receipts."""
+    from robopark_api.config import get_settings
+    from robopark_api.services.ops.context import resolved_ops_dir
+    from robopark_api.services.ops.ota_uploads import OtaUploadError, OtaUploadStore
+
+    settings = get_settings()
+    if not settings.ops_host_root:
+        return set()
+    state = resolved_ops_dir(settings) / "ota-uploads"
+    host = Path(settings.ops_host_root) / "ota-uploads"
+    if not state.exists():
+        return set()
+    if not state.is_dir() or not host.is_dir():
+        return None
+    try:
+        return OtaUploadStore(
+            state, host, max_bytes=settings.ops_max_upload_bytes
+        ).pinned_operation_ids()
+    except (OtaUploadError, OSError, ValueError):
+        return None
+
+
 def prune(
     db: Session,
     *,
@@ -189,12 +280,22 @@ def prune(
     """Delete only expired terminal receipts; live/uncertain receipts are retained."""
     current = now or datetime.now(UTC)
     cutoff = current - RETENTION
+    pinned_ota = _pinned_ota_operation_ids()
+    ota_safe_to_remove = (
+        HostOperationStatus.kind != "ota-update"
+        if pinned_ota is None
+        else or_(
+            HostOperationStatus.kind != "ota-update",
+            HostOperationStatus.operation_id.not_in(pinned_ota),
+        )
+    )
     result = db.execute(
         delete(HostOperationStatus)
         .where(
             HostOperationStatus.receipt_state == "terminal",
             HostOperationStatus.terminal_at.is_not(None),
             HostOperationStatus.terminal_at < cutoff,
+            ota_safe_to_remove,
         )
         .execution_options(synchronize_session=False)
     )

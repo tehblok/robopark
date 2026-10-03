@@ -4,7 +4,7 @@ import { api } from '../../api'
 import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
 import { resourceStore } from '../../lib/resource'
 
-const north = { id: 7, name: 'Северный', tag: 'north', is_active: true }
+const north = { id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', is_active: true }
 
 describe('Management routes', () => {
   beforeEach(() => installMatchMedia())
@@ -159,20 +159,19 @@ describe('Management routes', () => {
 it('Royal tabs move keyboard focus into the system panel and mount operations only when selected', async () => {
   installMatchMedia()
   const health = vi.spyOn(api, 'opsSystemHealth').mockResolvedValue({ version: null, git_sha: null, generated_at: null, overall: 'unknown', checks: [], update: { state: 'unknown', publication: null }, last_backup: { status: 'unknown', completed_at: null } })
-  vi.spyOn(api, 'opsAvailableUpdate').mockResolvedValue({ state: 'disabled', checked_at: null, release: null })
   vi.spyOn(api, 'opsJob').mockRejectedValue(new Error('offline'))
   vi.spyOn(api, 'parks').mockResolvedValue([north])
-  renderApp('/admin/settings?park=7&tab=parks', testUser({ role: 'royal', permissions: ['parks.manage'], parks: [north] }))
-  const parksTab = await screen.findByRole('tab', { name: /Парки/ })
+  renderApp('/admin/settings?park=7', testUser({ role: 'royal', permissions: ['nav.admin', 'parks.manage'], parks: [north] }))
+  const integrationsTab = await screen.findByRole('tab', { name: 'Интеграции' })
   expect(health).not.toHaveBeenCalled()
-  parksTab.focus()
-  fireEvent.keyDown(parksTab, { key: 'End' })
+  integrationsTab.focus()
+  fireEvent.keyDown(integrationsTab, { key: 'End' })
   const opsTab = screen.getByRole('tab', { name: 'Система и обновления' })
   expect(opsTab).toHaveFocus()
   expect(await screen.findByRole('tabpanel', { name: 'Система и обновления' })).toBeVisible()
   expect(await screen.findByRole('heading', { name: 'Здоровье системы' })).toBeVisible()
   fireEvent.keyDown(opsTab, { key: 'Home' })
-  expect(parksTab).toHaveFocus()
+  expect(integrationsTab).toHaveFocus()
   expect(screen.queryByRole('heading', { name: 'Здоровье системы' })).not.toBeInTheDocument()
   vi.restoreAllMocks()
 })

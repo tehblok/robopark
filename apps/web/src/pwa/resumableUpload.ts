@@ -8,9 +8,13 @@ export type UploadSession = {
 }
 export type CompletedUpload = { upload_id: string, media_id: string, completed: true }
 export type ResumableUploadApi = {
-  create(input: { media_id: string, dependent_action_id: string, device_id: string, name: string, mime_type: string, size_bytes: number, sha256: string }): Promise<UploadSession>
-  putChunk(uploadId: string, offset: number, chunk: Blob, sha256: string): Promise<{ received_offset: number }>
-  complete(uploadId: string): Promise<CompletedUpload>
+  create(input: { media_id: string, dependent_action_id: string, device_id: string, name: string, mime_type: string, size_bytes: number, sha256: string }, signal?: AbortSignal): Promise<UploadSession>
+  putChunk(uploadId: string, offset: number, chunk: Blob, sha256: string, signal?: AbortSignal): Promise<{ received_offset: number }>
+  complete(uploadId: string, signal?: AbortSignal): Promise<CompletedUpload>
+}
+
+function checkAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw signal.reason ?? new DOMException('Upload cancelled', 'AbortError')
 }
 
 async function chunkHash(chunk: Blob): Promise<string> {
@@ -21,9 +25,10 @@ async function chunkHash(chunk: Blob): Promise<string> {
 export async function uploadMedia(
   media: UploadableMedia,
   api: ResumableUploadApi,
-  options: { chunkBytes?: number } = {},
+  options: { chunkBytes?: number, signal?: AbortSignal } = {},
 ): Promise<CompletedUpload> {
-  const session = await api.create({
+  checkAborted(options.signal)
+  const input = {
     media_id: media.id,
     dependent_action_id: media.actionId,
     device_id: media.deviceId,
@@ -31,7 +36,9 @@ export async function uploadMedia(
     mime_type: media.mimeType,
     size_bytes: media.blob.size,
     sha256: media.sha256,
-  })
+  }
+  const session = await (options.signal ? api.create(input, options.signal) : api.create(input))
+  checkAborted(options.signal)
   if (session.status === 'completed' && session.completed && session.media_id) {
     return { upload_id: session.upload_id, media_id: session.media_id, completed: true }
   }
@@ -41,10 +48,17 @@ export async function uploadMedia(
   // Tests and very small files still use the requested exact chunk size.
   const boundedChunkBytes = options.chunkBytes != null ? Math.max(1, options.chunkBytes) : chunkBytes
   while (offset < media.blob.size) {
+    checkAborted(options.signal)
     const chunk = media.blob.slice(offset, Math.min(media.blob.size, offset + boundedChunkBytes), media.mimeType)
-    const response = await api.putChunk(session.upload_id, offset, chunk, await chunkHash(chunk))
+    const hash = await chunkHash(chunk)
+    checkAborted(options.signal)
+    const response = await (options.signal
+      ? api.putChunk(session.upload_id, offset, chunk, hash, options.signal)
+      : api.putChunk(session.upload_id, offset, chunk, hash))
+    checkAborted(options.signal)
     if (response.received_offset !== offset + chunk.size) throw new Error('media_offset_mismatch')
     offset = response.received_offset
   }
-  return api.complete(session.upload_id)
+  checkAborted(options.signal)
+  return options.signal ? api.complete(session.upload_id, options.signal) : api.complete(session.upload_id)
 }

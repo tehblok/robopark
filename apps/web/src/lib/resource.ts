@@ -464,8 +464,10 @@ type Options = {
   refreshOnMount?: boolean
   /** Fresh cache avoids repeat loads on mount, focus and timer ticks. */
   staleTimeMs?: number
-  /** Visible/online refresh cadence. Zero disables automatic polling and resume. */
+  /** Visible/online refresh cadence. Zero disables periodic polling. */
   refreshIntervalMs?: number
+  /** Refresh stale data on focus/online even when periodic polling is disabled. */
+  refreshOnResume?: boolean
   /** Set to false to defer loading until a real key is available. */
   enabled?: boolean
   /**
@@ -486,6 +488,8 @@ export type CachedResource<T> = {
   isRevalidating: boolean
   /** Trigger a manual refetch (e.g. after mutations). */
   refresh: () => Promise<void>
+  /** Background refetch that honours connectivity, in-flight work and retry limits. */
+  refreshIfAllowed: () => Promise<void>
 }
 
 export function useCachedResource<T>(
@@ -498,6 +502,7 @@ export function useCachedResource<T>(
   const refreshOnMount = opts.refreshOnMount
   const staleTimeMs = opts.staleTimeMs ?? RESOURCE_REFRESH_MS
   const refreshIntervalMs = opts.refreshIntervalMs ?? RESOURCE_REFRESH_MS
+  const refreshOnResume = opts.refreshOnResume ?? false
   const enabled = opts.enabled ?? true
   const trackProgress = opts.trackProgress ?? true
 
@@ -567,12 +572,16 @@ export function useCachedResource<T>(
       retryRef.current = { failures: 0, after: 0, blocked: false }
       setError(null)
     } catch (loadError) {
+      const status = loadError && typeof loadError === 'object' && 'status' in loadError ? loadError.status : undefined
+      // A query 401/403 may clear every resource before this request rejects.
+      // Keep the current owner's denial visible without accepting late data.
+      const deniedAfterGlobalPurge = (status === 401 || status === 403)
+        && loadGeneration.all !== allLoadsGeneration
       if (
         requestId !== requestIdRef.current ||
         ownerGeneration !== ownerGenerationRef.current ||
-        !isLoadGenerationCurrent(key, loadGeneration)
+        (!isLoadGenerationCurrent(key, loadGeneration) && !deniedAfterGlobalPurge)
       ) return
-      const status = loadError && typeof loadError === 'object' && 'status' in loadError ? loadError.status : undefined
       const failures = retryRef.current.failures + 1
       retryRef.current = {
         failures,
@@ -622,7 +631,7 @@ export function useCachedResource<T>(
     const refreshIfStale = () => {
       // Draft-backed resources opt out of periodic replacement, but a cold
       // mount deferred while offline still needs its first response on return.
-      if (refreshIntervalMs <= 0 && resourceStore.get(key, persist) !== undefined) return
+      if (refreshIntervalMs <= 0 && !refreshOnResume && resourceStore.get(key, persist) !== undefined) return
       if (!canLoadAutomatically() || inflightLoaders.has(key) || !resourceStore.isStale(key, staleTimeMs, persist)) return
       void runLoad(true)
     }
@@ -670,9 +679,13 @@ export function useCachedResource<T>(
       window.removeEventListener('online', availabilityChanged)
       window.removeEventListener('offline', availabilityChanged)
     }
-  }, [enabled, key, refreshIntervalMs, staleTimeMs, runLoad, canLoadAutomatically, canScheduleAutomatically, persist])
+  }, [enabled, key, refreshIntervalMs, refreshOnResume, staleTimeMs, runLoad, canLoadAutomatically, canScheduleAutomatically, persist])
 
   const refresh = useCallback(() => runLoad(), [runLoad])
+  const refreshIfAllowed = useCallback(() => {
+    if (!enabled || !canLoadAutomatically() || inflightLoaders.has(key)) return Promise.resolve()
+    return runLoad(true)
+  }, [canLoadAutomatically, enabled, key, runLoad])
 
   return {
     data,
@@ -681,5 +694,6 @@ export function useCachedResource<T>(
     isRevalidating,
     isLoading: data === undefined && isRevalidating,
     refresh,
+    refreshIfAllowed,
   }
 }

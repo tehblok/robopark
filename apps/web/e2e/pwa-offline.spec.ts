@@ -8,12 +8,12 @@ const repair = { ...issue, claim: { park_id: 7 }, workflow: {
 
 for (const width of [390, 1440]) {
   test(`ordinary browser queues work offline and recovers after reconnect at ${width}px`, async ({ page, context }) => {
-    let syncRequests = 0
+    const submittedActions: string[] = []
     await page.setViewportSize({ width, height: 900 })
     await installOperational(page, { issue: repair, routes: [{
       method: 'POST', path: '/api/sync/batch', handler: async request => {
-        syncRequests += 1
         const body = await request.json() as { actions: { client_action_id: string }[] }
+        submittedActions.push(...body.actions.map(action => action.client_action_id))
         return { json: {
           results: body.actions.map(action => ({ client_action_id: action.client_action_id, state: 'confirmed', code: null, result: {} })),
           deltas: {}, revisions: {}, revoked_scopes: [],
@@ -22,7 +22,7 @@ for (const width of [390, 1440]) {
     }] })
     await page.goto('/work/ROBOPARK-42?park=7')
     expect(await page.evaluate(() => navigator.serviceWorker.controller)).toBeNull()
-    await page.getByRole('tab', { name: 'Чат' }).click()
+    await page.getByRole('button', { name: 'История и сообщения' }).click()
     const composer = page.getByRole('textbox', { name: 'Комментарии', exact: true })
     await expect(composer).toBeVisible()
 
@@ -30,14 +30,16 @@ for (const width of [390, 1440]) {
     await composer.fill('Колесо заменено, крепление проверено')
     await page.getByRole('button', { name: 'Отправить' }).click()
     await expect(page.getByText('Колесо заменено, крепление проверено')).toBeVisible()
-    expect(syncRequests).toBe(0)
+    expect(submittedActions).toEqual([])
 
     await context.setOffline(false)
     await page.evaluate(() => window.dispatchEvent(new Event('online')))
-    await expect.poll(() => syncRequests).toBe(1)
+    // Empty reconciliation batches are allowed; the user's command is sent once.
+    await expect.poll(() => submittedActions.length).toBe(1)
     await page.reload()
-    await page.getByRole('tab', { name: 'Чат' }).click()
+    await page.getByRole('button', { name: 'История и сообщения' }).click()
     await expect(page.getByRole('textbox', { name: 'Комментарии', exact: true })).toBeVisible()
+    expect(submittedActions).toHaveLength(1)
     expect(await page.evaluate(() => navigator.serviceWorker.controller)).toBeNull()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   })

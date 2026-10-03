@@ -32,7 +32,7 @@ const modeShellCss = [readFileSync('src/app/interface/ClassicShell.css', 'utf8')
 const overviewCss = readFileSync('src/domains/shift/overview.css', 'utf8')
 const workCss = readFileSync('src/domains/work/work.css', 'utf8')
 
-const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
+const north = { id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 const operator = testUser({
   permissions: [
     'nav.dashboard',
@@ -131,7 +131,7 @@ function renderShellWithParkScope(
   loadError: string | null = null,
   refreshParks = vi.fn().mockResolvedValue(undefined),
 ) {
-  const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
+  const south = { id: 9, name: 'Южный', timezone: 'Europe/Moscow', tag: 'south', is_active: true }
   const parks = availableParks ?? [north, south]
   const currentUser = testUser({ role, parks, permissions })
   return {
@@ -397,6 +397,13 @@ describe('AppShell', () => {
     await actor.click(within(theme).getByRole('radio', { name: 'Тёмная' }))
     expect(document.documentElement.dataset.theme).toBe('dark')
 
+    const accent = within(dialog).getByRole('radiogroup', { name: 'Акцентный цвет' })
+    await actor.click(within(accent).getByRole('radio', { name: 'Синий' }))
+    expect(document.documentElement.dataset.accent).toBe('blue')
+    expect(localStorage.getItem('robopark-accent')).toBe('blue')
+    await actor.click(within(accent).getByRole('radio', { name: 'Тёплый' }))
+    expect(document.documentElement.dataset.accent).toBe('warm')
+
     const density = within(dialog).getByRole('radiogroup', { name: 'Плотность интерфейса' })
     await actor.click(within(density).getByRole('radio', { name: 'Комфортная' }))
     expect(document.documentElement.dataset.density).toBe('comfortable')
@@ -545,7 +552,7 @@ describe('AppShell', () => {
 
   it('does not move focus for query-only park changes', async () => {
     const actor = userEvent.setup()
-    const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
+    const south = { id: 9, name: 'Южный', timezone: 'Europe/Moscow', tag: 'south', is_active: true }
     renderApp('/overview?park=7', testUser({
       permissions: ['nav.dashboard'],
       parks: [north, south],
@@ -560,7 +567,7 @@ describe('AppShell', () => {
 
   it('retains park-switch trigger focus after keyboard selection', async () => {
     const actor = userEvent.setup()
-    const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
+    const south = { id: 9, name: 'Южный', timezone: 'Europe/Moscow', tag: 'south', is_active: true }
     renderApp('/overview?park=7', testUser({
       permissions: ['nav.dashboard'],
       parks: [north, south],
@@ -617,7 +624,7 @@ describe('AppShell', () => {
 
   it('keeps the operator report badge park-aware and refreshes it on demand and entry', async () => {
     const actor = userEvent.setup()
-    const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
+    const south = { id: 9, name: 'Южный', timezone: 'Europe/Moscow', tag: 'south', is_active: true }
     renderApp('/overview?park=7', testUser({
       permissions: ['nav.dashboard', 'nav.reports'],
       parks: [north, south],
@@ -689,7 +696,7 @@ describe('AppShell', () => {
 
   it('never commits a report badge count under a different operator park key', async () => {
     const snapshots: string[] = []
-    const south = { id: 9, name: 'Южный', tag: 'south', is_active: true }
+    const south = { id: 9, name: 'Южный', timezone: 'Europe/Moscow', tag: 'south', is_active: true }
     let resolveSouth: ((value: { count: number }) => void) | undefined
     const southResponse = new Promise<{ count: number }>((resolve) => {
       resolveSouth = resolve

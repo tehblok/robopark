@@ -1,5 +1,4 @@
-import type { AnalyticsBucket, HistoricalAnalytics } from './domains/analytics/analyticsModel'
-import { interfaceModeStore, trackInterfaceMutation } from './app/interface/interfaceModeStore'
+import type { AnalyticsBucket, AnalyticsTaskKeysGroup, HistoricalAnalytics } from './domains/analytics/analyticsModel'
 import { activateTaskAttachmentCache, clearTaskAttachmentCache } from './pwa/taskAttachmentCache'
 import type {
   InventoryCatalogComponent,
@@ -52,6 +51,7 @@ export type Park = {
   id: number
   name: string
   tag: string
+  timezone: string
   is_active?: boolean
   tracker_queue?: string | null
   tracker_priority?: string | null
@@ -100,10 +100,12 @@ export type ScheduleEntry = {
   created_by_user_id: number; updated_by_user_id: number; created_at: string; updated_at: string
   warnings: string[]
 }
-export type ScheduleCreate = { park_id: number; kind: ScheduleEntry['kind']; start_at: string; end_at: string; owner_user_id?: number; timezone: string }
+export type ScheduleCreate = { park_id: number; kind: ScheduleEntry['kind']; start_at: string; end_at: string; owner_user_id?: number; timezone: string; idempotency_key?: string }
+export type ScheduleUpdate = { kind: ScheduleEntry['kind']; start_at: string; end_at: string; timezone?: string; base_revision: string; idempotency_key: string }
+export type ScheduleDeleteOptions = { base_revision: string; idempotency_key: string }
 export type ScheduleListParams = { parkId: number; ownerUserId?: number; startAt: string; endAt: string; signal?: AbortSignal }
 export type ScheduleParticipant = { id: number; display_name: string; role: 'mechanic' | 'operator' }
-export type SchedulePattern = 'none' | '5/2' | '2/2' | '4/4'
+export type SchedulePattern = 'none' | '5/2' | '4/4' | '3/3' | '2/2'
 export type SchedulePatternCreate = {
   idempotency_key: string; park_id: number; owner_user_ids: number[]; kind: ScheduleEntry['kind']; pattern: SchedulePattern
   start_date: string; end_date: string; start_time: string; end_time: string; timezone: string
@@ -235,15 +237,15 @@ export type OperationsFlow = {
   legacy_buckets: number
   points: { bucket_start: string; arrived_count: number; departed_count: number }[]
 }
-export type OperationsSlaPolicy = { park_id: number; target_hours: number | null }
 export type OperationsOverview = {
   park_id: number
   generated_at: string
-  timezone: 'Europe/Moscow'
+  timezone: string
   status_options: { key: string; label: string }[]
   selected_status: string
   counts: Record<string, number>
   tasks: Blocker[]
+  task_timing?: { issue_key: string; queue_started_at: string | null; sla_deadline: string | null; sla_working_hours: number | null; sla_timezone?: string | null; downtime_hours: number | null }[]
   tasks_total: number
   tasks_truncated: boolean
   flow: OperationsFlow
@@ -381,6 +383,7 @@ export type TrackerIssue = {
   queued_at?: string | null
   sla_deadline?: string | null
   sla_source?: 'status_history' | 'estimated' | null
+  sla_timezone?: string | null
 }
 
 export type Paged<T> = {
@@ -463,7 +466,7 @@ export type TrackerIssueDetail = TrackerIssue & {
   reporter?: TrackerPerson | null
   components?: string[]
   attachments?: TrackerAttachment[]
-  claim?: { park_id: number } | null
+  claim?: { park_id: number, state?: 'pending' | 'active' } | null
   capabilities: TrackerIssueCapabilities
   workflow?: TaskWorkflow
 }
@@ -495,6 +498,7 @@ export type TaskActionResult = TrackerActionResult & { sync_state: TaskSyncState
 export type TaskTimelineItem = {
   id: string; kind: 'user' | 'system' | 'tracker'; author: string; text: string
   created_at: string; sync_state: TaskSyncState; attachments: TrackerAttachment[]
+  delivery_note?: 'previous_cycle_not_sent'
 }
 export type TaskAttachmentStaged = {
   id: string; message_id: string; name: string; mimetype: string; size: number
@@ -559,8 +563,22 @@ export type Report = {
   attachments?: ReportAttachment[]
 }
 
+export type ReportSummary = Pick<Report,
+  'id' | 'kind' | 'status' | 'park_id' | 'tracker_key' | 'title' |
+  'return_comment' | 'created_at' | 'updated_at'
+>
+
 export type ReportBadge = {
   count: number
+}
+
+export type ReportListParams = {
+  limit?: number
+  offset?: number
+  anchorId?: number
+  beforeId?: number
+  afterId?: number
+  status?: 'all' | 'open' | 'returned' | 'done'
 }
 
 export type ReportCreatePayload = {
@@ -653,12 +671,6 @@ export type SystemHealth = {
     publication: 'degraded' | null
   }
   last_backup: { status: 'success' | 'failed' | 'unknown'; completed_at: string | null }
-}
-
-export type AvailableUpdate = {
-  state: 'available' | 'up_to_date' | 'discovery_stale' | 'disabled' | 'manual' | 'approved'
-  checked_at: string | null
-  release: { release_id: number; version: string; git_sha: string; size: number; sha256: string } | null
 }
 
 export type ReleaseStatus = {
@@ -881,6 +893,7 @@ export type AuthFailureScope = 'query' | 'mutation'
 
 type RequestMetadata = {
   authFailureScope?: AuthFailureScope
+  sessionPreserving401Details?: readonly string[]
 }
 
 function defaultAuthFailureScope(init: RequestInit): AuthFailureScope {
@@ -888,14 +901,14 @@ function defaultAuthFailureScope(init: RequestInit): AuthFailureScope {
   return method === 'GET' || method === 'HEAD' ? 'query' : 'mutation'
 }
 
-async function fetchWithTimeout<T>(
+export async function fetchWithTimeout<T>(
   input: RequestInfo | URL,
   init: RequestInit,
   timeoutMs: number,
   consume: (response: Response) => Promise<T>,
   metadata: RequestMetadata = {},
 ): Promise<T> {
-  return trackInterfaceMutation(interfaceModeStore, init.method ?? 'GET', () => consumeWithTimeout(input, init, timeoutMs, consume, metadata))
+  return consumeWithTimeout(input, init, timeoutMs, consume, metadata)
 }
 
 async function consumeWithTimeout<T>(
@@ -919,9 +932,14 @@ async function consumeWithTimeout<T>(
 
   try {
     const response = await fetch(input, { ...init, signal: controller.signal })
-    const authorizationChanged = response.status === 401
+    let authorizationChanged = response.status === 401
       || (response.status === 403
         && (metadata.authFailureScope ?? defaultAuthFailureScope(init)) === 'query')
+    if (response.status === 401 && metadata.sessionPreserving401Details?.length) {
+      const body = await response.clone().json().catch(() => null) as { detail?: unknown } | null
+      if (typeof body?.detail === 'string'
+        && metadata.sessionPreserving401Details.includes(body.detail)) authorizationChanged = false
+    }
     if (authorizationChanged && typeof window !== 'undefined') {
       clearApiValidators()
       window.dispatchEvent(new CustomEvent('robopark:authorization-failure', {
@@ -1395,9 +1413,9 @@ export const api = {
   },
   scheduleParticipants: (parkId: number) => request<ScheduleParticipant[]>(`/schedules/participants?park_id=${parkId}`),
   scheduleCreate: (body: ScheduleCreate) => request<ScheduleEntry>('/schedules', { method: 'POST', body: JSON.stringify(body) }),
-  scheduleUpdate: (id: string, body: Pick<ScheduleCreate, 'kind' | 'start_at' | 'end_at'>) => request<ScheduleEntry>(`/schedules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  scheduleDelete: (id: string) => request<void>(`/schedules/${id}`, { method: 'DELETE' }),
-  scheduleBulk: (body: ScheduleCreate & { owner_user_ids: number[]; repeat_count: number; repeat_every_days: number }) => request<ScheduleEntry[]>('/schedules/bulk', { method: 'POST', body: JSON.stringify(body) }),
+  scheduleUpdate: (id: string, body: ScheduleUpdate) => request<ScheduleEntry>(`/schedules/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  scheduleDelete: (id: string, options: ScheduleDeleteOptions) => request<void>(`/schedules/${encodeURIComponent(id)}?${new URLSearchParams(options)}`, { method: 'DELETE' }),
+  scheduleBulk: (body: Omit<ScheduleCreate, 'idempotency_key'> & { owner_user_ids: number[]; repeat_count: number; repeat_every_days: number }) => request<ScheduleEntry[]>('/schedules/bulk', { method: 'POST', body: JSON.stringify(body) }),
   schedulePattern: (body: SchedulePatternCreate) => request<ScheduleEntry[]>('/schedules/pattern', { method: 'POST', body: JSON.stringify(body) }),
   scheduleCopy: (body: ScheduleCopyCreate) => request<ScheduleEntry[]>('/schedules/copy', { method: 'POST', body: JSON.stringify(body) }),
   notificationInbox: () => request<NotificationEvent[]>('/push/inbox'),
@@ -1499,6 +1517,7 @@ export const api = {
   createPark: (payload: {
     name: string
     tag: string
+    timezone: string
     tracker_queue?: string | null
     tracker_priority?: string | null
     tracker_type?: string | null
@@ -1741,7 +1760,7 @@ export const api = {
     assignee?: string
     untagged?: boolean
     age_hours?: number
-    sort?: 'oldest' | 'newest'
+    sort?: 'oldest' | 'newest' | 'queue_first'
     limit?: number
     offset?: number
     owned_by_me?: boolean
@@ -1788,12 +1807,12 @@ export const api = {
   taskAttachmentContent: (url: string) => requestTaskAttachmentBlob(url),
   taskAttachmentAuthorization: (url: string) => authorizeTaskAttachment(url),
   taskDefectCodes: () => request<DefectCode[]>('/tracker/defect-codes'),
-  createMediaUpload: (value: { media_id: string, issue_key: string, dependent_action_id: string, device_id: string, name: string, mime_type: string, size_bytes: number, sha256: string }) =>
-    request<MediaUploadSession>('/media/uploads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }),
-  putMediaChunk: (uploadId: string, offset: number, chunk: Blob, sha256: string) =>
-    request<{ received_offset: number }>(`/media/uploads/${encodeURIComponent(uploadId)}/chunks/${offset}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'X-Chunk-SHA256': sha256 }, body: chunk }),
-  completeMediaUpload: (uploadId: string) =>
-    request<MediaUploadComplete>(`/media/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST' }),
+  createMediaUpload: (value: { media_id: string, issue_key: string, dependent_action_id: string, device_id: string, name: string, mime_type: string, size_bytes: number, sha256: string }, signal?: AbortSignal) =>
+    request<MediaUploadSession>('/media/uploads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value), signal }),
+  putMediaChunk: (uploadId: string, offset: number, chunk: Blob, sha256: string, signal?: AbortSignal) =>
+    request<{ received_offset: number }>(`/media/uploads/${encodeURIComponent(uploadId)}/chunks/${offset}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'X-Chunk-SHA256': sha256 }, body: chunk, signal }),
+  completeMediaUpload: (uploadId: string, signal?: AbortSignal) =>
+    request<MediaUploadComplete>(`/media/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST', signal }),
   taskMessage: (key: string, text: string, idempotencyKey: string) =>
     request<TaskTimelineItem>(`/tracker/issues/${encodeURIComponent(key)}/messages`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ text }),
@@ -1802,9 +1821,12 @@ export const api = {
     const form = new FormData(); form.append('message_id', messageId); form.append('file', file, file.name)
     return requestForm<TaskAttachmentStaged>(`/tracker/issues/${encodeURIComponent(key)}/message-attachments`, form, { 'Idempotency-Key': idempotencyKey })
   },
-  taskPhoto: (key: string, file: File, idempotencyKey: string) => {
+  taskPhoto: (key: string, file: File, idempotencyKey: string, expectedAccountId?: number) => {
     const form = new FormData(); form.append('file', file, file.name)
-    return requestForm<TaskAttachmentStaged>(`/tracker/issues/${encodeURIComponent(key)}/photos`, form, { 'Idempotency-Key': idempotencyKey })
+    return requestForm<TaskAttachmentStaged>(`/tracker/issues/${encodeURIComponent(key)}/photos`, form, {
+      'Idempotency-Key': idempotencyKey,
+      ...(expectedAccountId === undefined ? {} : { 'X-Expected-Account-Id': String(expectedAccountId) }),
+    })
   },
   taskClaim: (key: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/claim`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } }),
   taskHandoff: (key: string, value: { assignee: string; reason: string; done?: string; remaining?: string; obstacles?: string }, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/handoff`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(value) }),
@@ -1876,16 +1898,18 @@ export const api = {
     request<OperationsOverview>(`/operations/overview?${new URLSearchParams({ park_id: String(parkId), days: String(days), status })}`),
   analytics: (parkId: number, days = 7, bucket: AnalyticsBucket = '1d') =>
     request<HistoricalAnalytics>(`/analytics?${new URLSearchParams({ park_id: String(parkId), days: String(days), bucket })}`),
-  operationsSlaPolicy: (parkId: number) =>
-    request<OperationsSlaPolicy>(`/operations/sla-policy?park_id=${parkId}`),
-  updateOperationsSlaPolicy: (parkId: number, body: { target_hours: number | null }) =>
-    request<OperationsSlaPolicy>(`/operations/sla-policy?park_id=${parkId}`, { method: 'PUT', body: JSON.stringify(body) }),
+  analyticsTaskKeys: (parkId: number, days: number, bucket: AnalyticsBucket, periodEnd: string, group: AnalyticsTaskKeysGroup, key: string | undefined, offset: number, after?: string) =>
+    request<{ task_keys: string[]; total: number; has_more: boolean }>(`/analytics/task-keys?${new URLSearchParams({
+      park_id: String(parkId), days: String(days), bucket, period_end: periodEnd, group,
+      ...(key === undefined ? {} : { key }), offset: String(offset),
+      ...(after === undefined ? {} : { after }),
+    })}`),
   dashboardHistory: (parkId: number, days = 7) =>
     request<DashboardHistory>(
       `/dashboard/history?park_id=${parkId}&days=${days}`,
     ),
-  campaigns: (parkId?: number) =>
-    request<Campaign[]>(parkId == null ? '/campaigns' : `/campaigns?park_id=${parkId}`),
+  campaigns: (parkId?: number, signal?: AbortSignal) =>
+    request<Campaign[]>(parkId == null ? '/campaigns' : `/campaigns?park_id=${parkId}`, { signal }),
   campaign: (id: number) => request<CampaignDetail>(`/campaigns/${id}`),
   refreshCampaign: (id: number) => request<{ snapshot_state: string; snapshot_at: string | null }>(`/campaigns/${id}/refresh`, { method: 'POST' }),
   deleteCampaign: (id: number) => request<{ result: 'deleted' | 'archived' }>(`/campaigns/${id}`, { method: 'DELETE' }),
@@ -1997,13 +2021,28 @@ export const api = {
   updateInventoryPart: (id: number, payload: Partial<Pick<InventoryPart, 'name' | 'article' | 'component_id' | 'location' | 'minimum_quantity' | 'is_active'>>) => inventoryRequest<InventoryPart>(`/inventory/parts/${id}`, { method: 'PATCH', body: inventoryStringify(payload) }),
   moveInventoryStock: (id: number, kind: 'receipt' | 'writeoff' | 'adjustment', quantity: InventoryInt64, note?: string) => inventoryRequest<InventoryMovement>(`/inventory/parts/${id}/movements`, { method: 'POST', body: inventoryStringify({ kind, quantity, note }) }),
   writeoffInventoryForTask: (issueKey: string, partId: number, quantity: InventoryInt64, idempotencyKey: string) => inventoryRequest<InventoryMovement>(`/inventory/tasks/${encodeURIComponent(issueKey)}/writeoff`, { method: 'POST', body: inventoryStringify({ part_id: partId, quantity, idempotency_key: idempotencyKey }) }),
-  reportsMine: () => request<Report[]>('/reports/mine'),
-  reportsInbox: (parkId?: number) =>
-    request<Report[]>(
-      parkId == null
-        ? '/reports/inbox'
-        : `/reports/inbox?park_id=${parkId}`,
-    ),
+  reportsMine: (params: ReportListParams = {}) => {
+    const query = new URLSearchParams()
+    if (params.limit != null) query.set('limit', String(params.limit))
+    if (params.offset != null) query.set('offset', String(params.offset))
+    if (params.anchorId != null) query.set('anchor_id', String(params.anchorId))
+    if (params.beforeId != null) query.set('before_id', String(params.beforeId))
+    if (params.afterId != null) query.set('after_id', String(params.afterId))
+    if (params.status && params.status !== 'all') query.set('status', params.status)
+    const suffix = query.toString()
+    return request<ReportSummary[]>(`/reports/mine${suffix ? `?${suffix}` : ''}`)
+  },
+  reportsInbox: (parkId?: number, params: Pick<ReportListParams, 'limit' | 'offset' | 'anchorId' | 'beforeId' | 'afterId'> = {}) => {
+    const query = new URLSearchParams()
+    if (parkId != null) query.set('park_id', String(parkId))
+    if (params.limit != null) query.set('limit', String(params.limit))
+    if (params.offset != null) query.set('offset', String(params.offset))
+    if (params.anchorId != null) query.set('anchor_id', String(params.anchorId))
+    if (params.beforeId != null) query.set('before_id', String(params.beforeId))
+    if (params.afterId != null) query.set('after_id', String(params.afterId))
+    const suffix = query.toString()
+    return request<ReportSummary[]>(`/reports/inbox${suffix ? `?${suffix}` : ''}`)
+  },
   report: (id: number) => request<Report>(`/reports/${id}`),
   reportDelete: (id: number) => request<void>(`/reports/${id}`, { method: 'DELETE' }),
   reportAttach: (id: number, kind: ReportAttachmentKind, file: File) => {
@@ -2044,8 +2083,6 @@ export const api = {
     ),
   opsSystemHealth: () => request<SystemHealth>('/admin/ops/system-health'),
   opsReleaseStatus: () => request<ReleaseStatus>('/admin/ops/release-status'),
-  opsAvailableUpdate: () => request<AvailableUpdate>('/admin/ops/available-update'),
-  opsDiagnosticArtifact: () => requestBlob('/admin/ops/diagnostic-artifact'),
   opsMaintenance: () => request<OpsMaintenance>('/ops/maintenance'),
   opsJob: () => request<OpsJob>('/admin/ops/job'),
   opsArtifact: () => requestBlob('/admin/ops/artifact'),

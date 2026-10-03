@@ -12,10 +12,13 @@ from fastapi.responses import JSONResponse
 from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.dev_seed import ensure_dev_seed
+from robopark_api.middleware.csrf import BrowserOriginMiddleware
 from robopark_api.middleware.maintenance import MaintenanceGateMiddleware
 from robopark_api.middleware.observations import ObservationMiddleware
 from robopark_api.routers import (
     admin_audit,
+    admin_bot,
+    admin_bot_config,
     admin_diagnostic_rules,
     admin_diagnostic_unknowns,
     admin_emergency,
@@ -27,6 +30,7 @@ from robopark_api.routers import (
     admin_roles,
     admin_settings,
     admin_system,
+    admin_terminal,
     admin_users,
     analytics,
     auth,
@@ -36,6 +40,7 @@ from robopark_api.routers import (
     dashboard,
     emergency,
     health,
+    internal_bot,
     inventory,
     mechanic_emergency,
     mechanic_robots,
@@ -168,6 +173,7 @@ def create_app() -> FastAPI:
     # arbitrary custom headers to every configured origin.
     app.add_middleware(MaintenanceGateMiddleware)
     app.add_middleware(ObservationMiddleware, root=resolved_ops_dir(settings) / "observations")
+    app.add_middleware(BrowserOriginMiddleware, allowed_origins=origins)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
@@ -190,11 +196,14 @@ def create_app() -> FastAPI:
     app.include_router(changes.router)
     app.include_router(client_telemetry.router)
     app.include_router(inventory.router)
+    app.include_router(internal_bot.router)
     app.include_router(health.router)
     app.include_router(parks.router)
     app.include_router(admin_roles.router)
     app.include_router(admin_users.router)
     app.include_router(admin_audit.router)
+    app.include_router(admin_bot.router)
+    app.include_router(admin_bot_config.router)
     app.include_router(admin_diagnostic_rules.router)
     app.include_router(admin_diagnostic_unknowns.router)
     app.include_router(admin_emergency.router)
@@ -205,6 +214,7 @@ def create_app() -> FastAPI:
     app.include_router(privileged_auth.router)
     app.include_router(admin_health.router)
     app.include_router(admin_system.router)
+    app.include_router(admin_terminal.router)
     app.include_router(operator_parks.router)
     app.include_router(operator_blockers.router)
     app.include_router(operator_report.router)
@@ -227,6 +237,7 @@ def create_app() -> FastAPI:
     app.include_router(media_uploads.router)
     app.include_router(schedules.router)
     app.include_router(push.router)
+    app.state.terminal_session_factory = SessionLocal
     app.state.push_service = push.PushService(lambda: SessionLocal())
     return app
 

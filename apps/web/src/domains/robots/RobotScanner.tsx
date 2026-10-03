@@ -295,7 +295,7 @@ export function RobotScanner({
       title="Сканировать робота"
     >
       <div className="rp-robot-scanner">
-        <video muted playsInline ref={videoRef} />
+        <video hidden={!started} muted playsInline ref={videoRef} />
         {!secureContext ? <p role="alert">Для камеры откройте сайт через HTTPS или localhost. Номер робота можно ввести вручную.</p> : error ? <p role="alert">{error}</p> : started ? <p>Наведите камеру на код робота.</p> : <p>Для сканирования потребуется разрешение на камеру. Снимок никуда не отправляется.</p>}
         <div className="rp-robot-scanner__actions">
           {!started && secureContext && mediaDevices?.getUserMedia ? (

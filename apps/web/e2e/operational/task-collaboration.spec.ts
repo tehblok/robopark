@@ -18,9 +18,13 @@ test('mobile handoff disclosure submits one lifecycle command on duplicate activ
   await installOperational(page, { issue: claimed, routes: [
     { method: 'GET', path: '/api/tracker/issues/ROBOPARK-42/timeline', handler: () => ({ json: [] }) },
     { method: 'GET', path: '/api/tracker/defect-codes', handler: () => ({ json: [] }) },
-    { method: 'POST', path: '/api/tracker/issues/ROBOPARK-42/handoff', handler: request => {
-      keys.push(request.headers.get('Idempotency-Key') ?? '')
-      return { json: { key: issue.key, action: 'handoff', status: 'Передано', actor: 'mechanic-e2e', performed_at: '2026-09-15T09:00:00Z', sync_state: 'pending', workflow: claimed.workflow } }
+    { method: 'POST', path: '/api/sync/batch', handler: async request => {
+      const batch = await request.json() as { actions: { client_action_id: string; action: string }[] }
+      keys.push(...batch.actions.filter(action => action.action === 'handoff').map(action => action.client_action_id))
+      return { json: {
+        results: batch.actions.map(action => ({ client_action_id: action.client_action_id, state: 'confirmed', code: null, result: {} })),
+        deltas: {}, revisions: {}, revoked_scopes: [],
+      } }
     } },
   ] })
   await page.goto('/work/ROBOPARK-42?park=7')

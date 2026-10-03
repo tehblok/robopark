@@ -19,7 +19,7 @@ it('catches a change made while the route was unmounted', async () => {
   second()
 })
 
-it('includes request latency in the check cadence', async () => {
+it('spaces lightweight revision checks while a route remains open', async () => {
   vi.useFakeTimers()
   vi.spyOn(Math, 'random').mockReturnValue(0)
   const load = vi.fn(async () => {
@@ -27,7 +27,7 @@ it('includes request latency in the check cadence', async () => {
     return 1
   })
   const stop = startChangeFeed({ scope: 'work', load, onChange: vi.fn() })
-  await vi.advanceTimersByTimeAsync(3_999)
+  await vi.advanceTimersByTimeAsync(19_999)
   expect(load).toHaveBeenCalledTimes(1)
   await vi.advanceTimersByTimeAsync(1)
   expect(load).toHaveBeenCalledTimes(2)
@@ -45,15 +45,15 @@ it('notifies once when a version changes and stops after cleanup', async () => {
   await vi.advanceTimersByTimeAsync(0)
   expect(load).toHaveBeenCalledTimes(1)
   expect(onChange).not.toHaveBeenCalled()
-  await vi.advanceTimersByTimeAsync(5_000)
+  await vi.advanceTimersByTimeAsync(10_000)
   expect(onChange).not.toHaveBeenCalled()
   revision = 4
-  await vi.advanceTimersByTimeAsync(5_000)
+  await vi.advanceTimersByTimeAsync(10_000)
   expect(onChange).toHaveBeenCalledOnce()
 
   stop()
   await vi.advanceTimersByTimeAsync(30_000)
-  expect(load).toHaveBeenCalledTimes(3)
+  expect(load).toHaveBeenCalledTimes(2)
 })
 
 it('does not poll a hidden tab and resumes when it becomes visible', async () => {

@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 ScheduleKind = Literal["shift", "vacation", "sick"]
-SchedulePattern = Literal["none", "5/2", "2/2", "4/4"]
+SchedulePattern = Literal["none", "5/2", "4/4", "3/3", "2/2"]
 
 
 class ScheduleCreate(BaseModel):
@@ -15,6 +15,7 @@ class ScheduleCreate(BaseModel):
     end_at: datetime
     owner_user_id: int | None = None
     timezone: str | None = None
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
     @field_validator("timezone")
     @classmethod
@@ -31,6 +32,7 @@ class ScheduleCreate(BaseModel):
 
 
 class ScheduleBulkCreate(ScheduleCreate):
+    idempotency_key: None = None
     owner_user_id: None = None
     owner_user_ids: list[int] = Field(min_length=1, max_length=100)
     repeat_count: int = Field(default=1, ge=1, le=52)
@@ -66,8 +68,9 @@ class SchedulePatternCreate(BaseModel):
         on_days, cycle_days = {
             "none": (1, day_count),
             "5/2": (5, 7),
-            "2/2": (2, 4),
             "4/4": (4, 8),
+            "3/3": (3, 6),
+            "2/2": (2, 4),
         }[self.pattern]
         generated_days = (
             1
@@ -84,6 +87,8 @@ class ScheduleUpdate(BaseModel):
     start_at: datetime | None = None
     end_at: datetime | None = None
     timezone: str | None = None
+    base_revision: str | None = Field(default=None, max_length=128)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
     @field_validator("timezone")
     @classmethod

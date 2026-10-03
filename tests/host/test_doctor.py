@@ -140,7 +140,9 @@ def test_doctor_publishes_sanitized_services_without_losing_other_public_section
     value = json.loads(public.read_text())
     assert value["capabilities"]["profile"] == "generic-arm"
     assert value["storage"] == {"pressure": False}
-    assert value["services"] == {"docker": "ok", "tuna": "ok", "internet": "ok"}
+    assert value["services"] == {
+        "docker": "ok", "tuna": "ok", "internet": "ok", "wifi": "unknown"
+    }
     assert isinstance(value["services_checked_at"], str)
     assert len(public.read_bytes()) < 65_536
     assert "private-token" not in public.read_text()
@@ -175,8 +177,40 @@ def test_host_service_projection_marks_missing_probe_unknown(host_paths):
     )
     value = json.loads((host_paths.var / "api-ops/host-health.json").read_text())
     assert value["services"] == {
-        "docker": "unknown", "tuna": "unknown", "internet": "unknown"
+        "docker": "unknown", "tuna": "unknown", "internet": "unknown", "wifi": "unknown"
     }
+
+
+def test_wifi_service_reports_link_state_without_network_identifiers(tmp_path):
+    from robopark_host.doctor import _wifi_service_state
+
+    wireless = tmp_path / "wireless"
+    net = tmp_path / "net"
+    (net / "wlan0").mkdir(parents=True)
+    (net / "wlan0" / "operstate").write_text("up\n")
+    wireless.write_text("Inter-| sta\n face | data\n wlan0: 0000 70.  -40.  -256\n")
+
+    assert _wifi_service_state(wireless, net) == "ok"
+    (net / "wlan0" / "operstate").write_text("down\n")
+    assert _wifi_service_state(wireless, net) == "degraded"
+    wireless.write_text("Inter-| sta\n face | data\n")
+    assert _wifi_service_state(wireless, net) == "unknown"
+    (net / "wlan0" / "phy80211").mkdir()
+    assert _wifi_service_state(wireless, net) == "degraded"
+    wireless.unlink()
+    (net / "wlan0" / "operstate").write_text("up\n")
+    assert _wifi_service_state(wireless, net) == "ok"
+
+
+def test_doctor_publishes_wifi_state_as_bounded_service_enum(host_paths, monkeypatch):
+    from robopark_host import doctor
+
+    monkeypatch.setattr(doctor, "_wifi_service_state", lambda: "degraded")
+    doctor.run_doctor(host_paths, DoctorRunner(), ReadyHttp())
+    public = json.loads((host_paths.var / "api-ops/host-health.json").read_text())
+
+    assert public["services"]["wifi"] == "degraded"
+    assert "wlan0" not in json.dumps(public)
 
 
 def test_public_health_section_updates_do_not_lose_concurrent_writer(host_paths, monkeypatch):

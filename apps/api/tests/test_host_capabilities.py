@@ -13,6 +13,7 @@ from robopark_api.models import (
     PrivilegedReauthorization,
     PrivilegedRecoveryCode,
 )
+from robopark_api.ops_schemas import HostOperationKind
 from robopark_api.services.ops import host_bridge
 
 BOOT_ID = "00000000-0000-4000-8000-000000000010"
@@ -29,8 +30,8 @@ UNAVAILABLE_PAYLOADS = [
     {"kind": "package-update", "package": "openssl", "confirmation": "UPDATE PACKAGE openssl"},
     {
         "kind": "service-restart",
-        "service": "robopark-api.service",
-        "confirmation": "RESTART SERVICE robopark-api.service",
+        "service": "robopark.service",
+        "confirmation": "RESTART SERVICE robopark.service",
     },
     {"kind": "reboot", "confirmation": "REBOOT ROBOPARK"},
     {"kind": "backup", "device_uuid": BOOT_ID, "confirmation": "BACKUP ROBOPARK"},
@@ -62,11 +63,7 @@ def capability_bridge(test_settings, tmp_path, monkeypatch):
                 "available": kind in SAFE_KINDS,
                 "unavailable_reason": None if kind in SAFE_KINDS else "capability_unavailable",
             }
-            for kind in (
-                SAFE_KINDS
-                | {"ota-update"}
-                | {item["kind"] for item in UNAVAILABLE_PAYLOADS}
-            )
+            for kind in HostOperationKind
         },
     }
     (root / "public/operation-capabilities.json").write_text(json.dumps(value))

@@ -5,6 +5,7 @@ export type MockResponse = {
   status?: number
   json?: unknown
   body?: string
+  body_base64?: string
   headers?: Record<string, string>
 }
 export type MockRouteHandler = (request: Request) => MockResponse | Promise<MockResponse>
@@ -49,7 +50,7 @@ function fulfill(response: MockResponse) {
   return {
     status: response.status,
     headers: response.headers,
-    body: response.body,
+    body: response.body_base64 === undefined ? response.body : Buffer.from(response.body_base64, 'base64'),
   }
 }
 
@@ -74,7 +75,7 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}): 
       legacy_buckets: 0,
       points: [],
     },
-    sla: { target_hours: null, evaluated_count: 0, unknown_count: 0, at_risk_count: null, overdue_count: null, overdue: [], overdue_truncated: false },
+    sla: { target_hours: 5, evaluated_count: 0, unknown_count: 0, at_risk_count: null, overdue_count: null, overdue: [], overdue_truncated: false },
     workload: null,
     operators: null,
   }
@@ -83,6 +84,7 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}): 
       ? { json: options.user }
       : { status: 401, json: { detail: 'Unauthorized' } },
     '/api/ops/maintenance': { json: { active: false, kind: null, operator: false } },
+    '/api/presence/heartbeat': { status: 204 },
     '/api/reports/badge': { json: { count: 0 } },
     '/api/parks': { json: options.parks ?? [] },
     '/api/dashboard/summary': {

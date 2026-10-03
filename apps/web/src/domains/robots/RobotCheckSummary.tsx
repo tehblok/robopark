@@ -6,14 +6,19 @@ import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { leadingDiagnosticEvent } from './diagnosticPresentation'
 import { buildRobotDetailModel } from './robotDetailModel'
 import { RobotQrButton } from './RobotQrButton'
+import { assessRobotReturn } from './robotReturnAssessment'
 
-export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh, onShowDiagnostic }: { snapshot: EmergencySnapshot; online: boolean; failed: boolean; pending: boolean; onRefresh: () => void; onShowDiagnostic: () => void }) {
-  const [now, setNow] = useState(() => new Date())
+export function RobotCheckSummary({ snapshot, online, failed, pending, retryDeferred = false, now: sharedNow, onRefresh, onShowDiagnostic }: { snapshot: EmergencySnapshot; online: boolean; failed: boolean; pending: boolean; retryDeferred?: boolean; now?: Date; onRefresh: () => void; onShowDiagnostic: () => void }) {
+  const [localNow, setLocalNow] = useState(() => new Date())
+  const now = sharedNow ?? localNow
+  const hasSharedClock = sharedNow != null
   useEffect(() => {
-    const clock = globalThis.setInterval(() => setNow(new Date()), 30_000)
+    if (hasSharedClock) return
+    const clock = globalThis.setInterval(() => setLocalNow(new Date()), 30_000)
     return () => globalThis.clearInterval(clock)
-  }, [])
+  }, [hasSharedClock])
   const model = buildRobotDetailModel(snapshot, online, now)
+  const assessment = assessRobotReturn(snapshot, { browserOnline: online, failed, now })
   const diagnosticEvents = snapshot.diagnostic_events ?? []
   const leading = leadingDiagnosticEvent(diagnosticEvents)
   const hasDiagnosticEvents = diagnosticEvents.length > 0
@@ -25,9 +30,12 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
   const date = Number.isNaN(observed.getTime()) ? 'Дата неизвестна' : new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(observed).replace(/\s*г\.$/, '')
   const time = Number.isNaN(observed.getTime()) ? '' : new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(observed)
   const retry = !online || failed
-  const battery = (connected: boolean | null | undefined, percent: number | null) => connected === false
-    ? 'Не подключена'
-    : percent == null ? 'Нет данных' : `${percent} %`
+  const battery = (connected: boolean | null | undefined, percent: number | null) => {
+    if (connected === false) return 'Не подключена'
+    const charge = percent != null && Number.isFinite(percent) && percent >= 0 && percent <= 100 ? `${percent} %` : null
+    if (connected !== true) return charge ? `Подключение не подтверждено · ${charge}` : 'Подключение не подтверждено'
+    return charge ?? 'Заряд не измерен'
+  }
   return <section className="rp-check-summary" aria-label="Состояние робота" aria-busy={pending}>
     <header className="rp-check-summary-header">
       <h2>Робот {model.shortNumber}</h2>
@@ -47,6 +55,11 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
         </ul></dd>
       </div>
     </dl>
+    <div className="rp-check-assessment" data-state={assessment.state} role="status">
+      <strong>{assessment.state === 'checks_passed' ? 'Проверки пройдены' : assessment.state === 'attention' ? 'Требуется внимание' : 'Проверка не подтверждена'}</strong>
+      {assessment.reasons.length ? <ul>{assessment.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul> : null}
+      <p>Решение о закрытии принимает оператор</p>
+    </div>
     {leading ? <div className="rp-check-leading-diagnostic">
       <strong>{leading.title}</strong>
       <p>{leading.description}</p>
@@ -56,7 +69,7 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
     {!leading && hasDiagnosticEvents && !model.criticalReason
       ? <p role="status">Обнаружены активные ошибки. Откройте раздел «Ошибки».</p>
       : null}
-    {canAssertClean && !leading && !hasDiagnosticEvents && !model.criticalReason
+    {canAssertClean && snapshot.diagnostic_events != null && !leading && !hasDiagnosticEvents && !model.criticalReason
       ? <p role="status">Активных ошибок нет</p>
       : null}
     <details className="rp-check-supplementary"><summary>VIN и координаты</summary>
@@ -65,6 +78,6 @@ export function RobotCheckSummary({ snapshot, online, failed, pending, onRefresh
       <p>{snapshot.lat != null && snapshot.lon != null ? `${snapshot.lat}, ${snapshot.lon}` : 'Координаты не получены'}</p>
       <RobotQrButton vin={snapshot.vin} />
     </details>
-    {retry ? <Button onClick={onRefresh}>Повторить проверку</Button> : null}
+    {retry && !retryDeferred ? <Button onClick={onRefresh}>Повторить проверку</Button> : null}
   </section>
 }

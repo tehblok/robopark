@@ -1,5 +1,6 @@
 import asyncio
 import json
+import secrets
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -161,7 +162,7 @@ def test_concurrent_external_closure_writes_one_event_and_does_not_raise(
                 db.scalars(
                     select(TaskMessage).where(
                         TaskMessage.issue_key == key,
-                        TaskMessage.external_id == "tracker-external-close",
+                        TaskMessage.external_id.like("tracker-external-close:%"),
                     )
                 ).all()
             )
@@ -379,6 +380,50 @@ def _seed_cursor(db_session, created: str = "2026-09-20T18:00:00+00:00", key: st
     db_session.commit()
 
 
+def test_poller_without_tracker_configuration_does_not_claim_a_successful_check(db_engine):
+    assert (
+        poll_tracker_notifications(
+            _factory(db_engine), lambda **_event: None, page_size=10, owner_id="worker-local"
+        )
+        == 0
+    )
+    with Session(db_engine) as db:
+        cursor = db.get(TrackerNotificationCursor, "new-tasks")
+        assert cursor is None or cursor.last_success_at is None
+
+
+def test_poller_bootstrap_is_not_a_verified_tracker_request(
+    db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    del seed_park_with_tracker
+    platform_settings.set_setting(
+        db_session, platform_settings.TRACKER_TOKEN_KEY, secrets.token_urlsafe(24)
+    )
+    monkeypatch.setattr(tracker_cache, "search_issue_page", lambda **_kwargs: [])
+    factory = _factory(db_engine)
+
+    assert (
+        poll_tracker_notifications(
+            factory, lambda **_event: None, page_size=10, owner_id="worker-a"
+        )
+        == 0
+    )
+    with Session(db_engine) as db:
+        cursor = db.get(TrackerNotificationCursor, "new-tasks")
+        assert cursor is not None and cursor.cursor_value is not None
+        assert cursor.last_success_at is None
+
+    assert (
+        poll_tracker_notifications(
+            factory, lambda **_event: None, page_size=10, owner_id="worker-b"
+        )
+        == 0
+    )
+    with Session(db_engine) as db:
+        cursor = db.get(TrackerNotificationCursor, "new-tasks")
+        assert cursor is not None and cursor.last_success_at is not None
+
+
 def test_poller_bootstraps_without_emitting_historical_tasks(
     db_engine, db_session, seed_park_with_tracker, monkeypatch
 ):
@@ -525,14 +570,16 @@ def test_tracker_page_limit_counts_rows_filtered_locally(monkeypatch):
     assert yielded == ["ROBOPARK-CLOSED", "ROBOPARK-OPEN"]
 
 
-def test_poller_query_keeps_queue_and_cursor_boundary():
+def test_poller_query_uses_tracker_local_datetime_and_keeps_cursor_boundary(monkeypatch):
+    monkeypatch.setenv("TRACKER_QUERY_TIMEZONE", "Europe/Moscow")
     query = tracker_notifications._search_query(
         ["ROBOPARK"],
-        (datetime(2026, 9, 20, 18, 30, tzinfo=UTC), "ROBOPARK-50"),
+        (datetime(2026, 9, 20, 18, 30, 12, 345000, tzinfo=UTC), "ROBOPARK-50"),
     )
 
     assert "Queue: ROBOPARK" in query
-    assert 'Created: > "2026-09-20T18:30:00Z"' in query
+    assert 'Created: > "2026-09-20 21:30:12"' in query
+    assert "T18:30" not in query
     assert 'Key: > "ROBOPARK-50"' in query
 
 

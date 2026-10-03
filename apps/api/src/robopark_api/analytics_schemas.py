@@ -26,11 +26,26 @@ class AnalyticsMetric(AnalyticsCoverage):
     value: float | None
     sample_count: int = 0
     task_keys: list[str] = Field(default_factory=list)
+    task_keys_count: int = 0
 
 
 class AnalyticsSeries(AnalyticsMetric):
     aggregation: Literal["sum", "mean", "ratio"]
     points: list[AnalyticsMetric]
+
+
+class VerifiedClosureSummary(BaseModel):
+    count: int | None
+    task_keys: list[str] = Field(default_factory=list)
+    source: Literal["tracker_status_history"] = "tracker_status_history"
+    complete: bool = False
+    sla_on_time_count: int | None = None
+    sla_late_count: int | None = None
+    sla_unknown_count: int | None = None
+    sla_on_time_percent: float | None = None
+    downtime_sample_count: int = 0
+    median_downtime_hours: float | None = None
+    p90_downtime_hours: float | None = None
 
 
 class AnalyticsOut(BaseModel):
@@ -47,4 +62,12 @@ class AnalyticsOut(BaseModel):
     workload: list[AnalyticsSeries]
     coverage: dict[str, AnalyticsCoverage]
     drilldown_task_keys: list[str]
+    drilldown_task_keys_count: int = 0
+    verified_closures: VerifiedClosureSummary
     warnings: list[str]
+
+
+class AnalyticsTaskKeysPage(BaseModel):
+    task_keys: list[str]
+    total: int
+    has_more: bool

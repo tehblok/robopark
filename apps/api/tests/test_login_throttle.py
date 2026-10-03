@@ -123,6 +123,81 @@ def test_login_is_rate_limited(client, seed_royal, test_settings, monkeypatch):
     assert login_as(client, "royal", "secret").status_code == 429
 
 
+def test_login_rotating_usernames_reaches_shared_ip_limit(client, test_settings, monkeypatch):
+    monkeypatch.setitem(test_settings.__dict__, "login_ip_max_attempts", 3)
+    for index in range(3):
+        assert login_as(client, f"unknown-{index}", "wrong").status_code == 401
+    response = login_as(client, "another-unknown", "wrong")
+    assert response.status_code == 429
+    assert int(response.headers["Retry-After"]) > 0
+
+
+def test_success_does_not_reset_failures_from_other_usernames(
+    client, seed_royal, test_settings, monkeypatch
+):
+    monkeypatch.setitem(test_settings.__dict__, "login_ip_max_attempts", 3)
+    assert login_as(client, "unknown-one", "wrong").status_code == 401
+    assert login_as(client, "royal", "secret").status_code == 204
+    assert login_as(client, "unknown-two", "wrong").status_code == 401
+    assert login_as(client, "unknown-three", "wrong").status_code == 401
+    assert login_as(client, "unknown-four", "wrong").status_code == 429
+
+
+def test_unknown_and_inactive_users_still_verify_a_password_hash(
+    client, seed_royal, db_session, monkeypatch
+):
+    from robopark_api.routers import auth
+
+    hashes = []
+    monkeypatch.setattr(
+        auth, "verify_password", lambda _password, encoded: hashes.append(encoded) or False
+    )
+    assert login_as(client, "royal", "wrong").status_code == 401
+    assert login_as(client, "unknown-user", "wrong").status_code == 401
+    seed_royal.is_active = False
+    db_session.commit()
+    assert login_as(client, "royal", "wrong").status_code == 401
+    assert len(hashes) == 3
+    assert all(value.startswith("$argon2id$") for value in hashes)
+    assert hashes[1] == hashes[2]
+
+
+def test_login_rejects_excess_concurrent_password_work_and_recovers(client, seed_royal):
+    from robopark_api.routers import auth
+
+    slots = auth._password_verification_slots
+    for _ in range(4):
+        assert slots.acquire(blocking=False)
+    try:
+        response = login_as(client, "royal", "secret")
+        assert response.status_code == 429
+        assert response.headers["Retry-After"] == "1"
+    finally:
+        for _ in range(4):
+            slots.release()
+    assert login_as(client, "royal", "secret").status_code == 204
+
+
+def test_password_verification_exception_releases_concurrency_slot(client, seed_royal, monkeypatch):
+    from robopark_api.routers import auth
+
+    def fail(*_args):
+        raise RuntimeError("verification failed")
+
+    monkeypatch.setattr(auth, "verify_password", fail)
+    with pytest.raises(RuntimeError, match="verification failed"):
+        login_as(client, "royal", "secret")
+    slots = auth._password_verification_slots
+    acquired = 0
+    try:
+        for _ in range(4):
+            assert slots.acquire(blocking=False)
+            acquired += 1
+    finally:
+        for _ in range(acquired):
+            slots.release()
+
+
 def test_successful_login_clears_counter(client, seed_royal, test_settings, monkeypatch):
     monkeypatch.setattr(test_settings, "login_max_attempts", 3)
 

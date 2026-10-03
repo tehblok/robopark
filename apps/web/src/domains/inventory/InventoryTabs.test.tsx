@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -8,7 +8,7 @@ import { ParkScopeContext } from '../../app/park/parkScope'
 import { InventoryPage } from './InventoryPage'
 import { resourceStore } from '../../lib/resource'
 
-const park: Park = { id: 7, name: 'Север', tag: 'North', is_active: true }
+const park: Park = { id: 7, name: 'Север', timezone: 'Europe/Moscow', tag: 'North', is_active: true }
 const overview: InventoryOverview = {
   park_id: 7,
   component_count: 3,
@@ -91,7 +91,7 @@ describe('inventory URL tabs', () => {
     expect(await screen.findByRole('tabpanel')).toHaveTextContent('Поставки')
     expect(screen.getByRole('tablist', { name: 'Разделы склада' })).toBeVisible()
     expect(inventory).toHaveBeenCalledWith(7)
-    expect(screen.queryByText('Сервис временно недоступен')).not.toBeInTheDocument()
+    expect(within(screen.getByRole('tabpanel')).queryByText('Сервис временно недоступен')).not.toBeInTheDocument()
   })
 
   it('keeps parts loading failures inside the active panel while tabs stay usable', async () => {

@@ -1,15 +1,29 @@
 {
-  "migration_head": "0050_media_action_dependency",
+  "migration_head": "0056_host_terminal",
   "migration_compatibility": {
-    "from_heads": ["0036_audit_remediation_state", "0037_claim_workflow_visibility", "0038_inventory_photo_cleanup"],
-    "reversible": true
+    "from_heads": [
+      "0055_media_upload_park"
+    ],
+    "reversible": false
   },
-  "compatible_from_versions": ["0.2.0-rc.7", "0.2.0-rc.6"],
+  "compatible_from_versions": [
+    "0.2.0-rc.20.dev11411368079194000089"
+  ],
   "requirements": {
     "python": ">=3.10",
-    "systems": ["armbian", "ubuntu"],
-    "architectures": ["aarch64", "x86_64"],
-    "memory_profiles_mb": [8192, 32768, 65536]
+    "systems": [
+      "armbian",
+      "ubuntu"
+    ],
+    "architectures": [
+      "aarch64",
+      "x86_64"
+    ],
+    "memory_profiles_mb": [
+      8192,
+      32768,
+      65536
+    ]
   },
-  "update_notes": "Кандидат 0.2.0-rc.8: чистая установка запускает production Compose с рабочим host bridge и системной автоматикой; локальное USB-обновление применяет hash-only OTA; Tuna настраивается скрытым вводом; унифицированы отступы, панели и перенос текста в интерфейсе."
+  "update_notes": "Исправлено определение IP клиента за Tuna: лимиты входа получают адрес клиента вместо общего loopback-адреса. Список доверенных прокси не расширен. Сохранены данные, терминал с отдельным TOTP для root, формат OTA и миграция 0056."
 }

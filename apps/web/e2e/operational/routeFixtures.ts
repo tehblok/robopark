@@ -88,6 +88,7 @@ function routeMockRoutes(): MockRoute[] {
     { method: 'GET', path: '/api/reports/inbox', handler: () => ({ json: [routeReport] }) },
     { method: 'GET', path: '/api/reports/1', handler: () => ({ json: routeReport }) },
     { method: 'GET', path: '/api/reports/badge', handler: () => ({ json: { count: 1 } }) },
+    { method: 'GET', path: '/api/push/inbox', handler: () => ({ json: [] }) },
     { method: 'GET', path: '/api/admin/users', handler: () => ({ json: routeUsers }) },
     { method: 'GET', path: '/api/admin/roles', handler: () => ({ json: routeRoles }) },
     { method: 'GET', path: '/api/admin/roles/permissions/catalog', handler: () => ({ json: routeCatalog }) },
@@ -111,9 +112,22 @@ function routeMockRoutes(): MockRoute[] {
     { method: 'GET', path: '/api/admin/system/summary', handler: () => ({ json: routeSystemSummary }) },
     { method: 'GET', path: '/api/admin/system/history', handler: () => ({ json: { active_users: [{ date: '2026-09-02', users: 4 }], metrics: [] } }) },
     { method: 'GET', path: '/api/admin/ops/capabilities', handler: () => ({ json: { state: 'ready', generated_at: '2026-09-02T09:00:00Z', expires_at: '2099-09-02T09:05:00Z', revision: 'a'.repeat(64), operations: Object.fromEntries(routeSystemKinds.map(kind => [kind, { available: routeSystemSafe.has(kind), unavailable_reason: routeSystemSafe.has(kind) ? null : 'capability_unavailable' }])) } }) },
-    { method: 'GET', path: '/api/admin/ops/job', handler: () => ({ json: { id: '', state: 'idle' } }) },
+    { method: 'GET', path: '/api/admin/ops/operations', handler: () => ({ json: { items: [] } }) },
+    { method: 'GET', path: '/api/admin/ops/operation-context', handler: () => ({ json: {
+      generated_at: '2026-09-02T09:00:00Z', expires_at: '2099-09-02T09:05:00Z',
+      rollback_release: null, selected_device_uuid: null, packages: [], services: [], devices: [], backups: [],
+    } }) },
+    { method: 'GET', path: '/api/admin/bot', handler: () => ({ json: {
+      desired_enabled: false, runtime_state: 'stopped', token_configured: false,
+      token_masked: null, token_updated_at: null, token_encrypted: false,
+    } }) },
+    { method: 'GET', path: '/api/admin/bot/config', handler: () => ({ json: { sections: Object.fromEntries(Object.entries({
+      roles: { roles: [] }, users: { users: [] }, locations: { locations: {} },
+      schedules: { jobs: [], send_window: { start_hour: 9, end_hour: 21, enabled: true } },
+      broadcasts: { campaigns: [] }, campaigns: { campaigns: [] }, auxiliary_tracker_queues: [],
+      profile: 'prod', dispatcher_pause: false, send_pause: false,
+    }).map(([key, value]) => [key, { revision: 'a'.repeat(64), value }])) } }) },
     { method: 'GET', path: '/api/admin/ops/system-health', handler: () => ({ json: { generated_at: '2026-09-02T09:00:00Z', services: [] } }) },
-    { method: 'GET', path: '/api/admin/ops/available-update', handler: () => ({ json: { state: 'disabled', checked_at: null, release: null } }) },
   ]
 }
 
@@ -180,11 +194,13 @@ export async function assertRouteSemanticContracts(page: Page, routeId: AppRoute
       await expect(tab).toHaveAttribute('aria-selected', 'true')
       await expect(detail.getByRole('tabpanel', { name: tabName, exact: true })).toBeVisible()
     }
-    await detail.getByRole('tab', { name: 'Чат', exact: true }).click()
-    const chat = detail.getByRole('tabpanel', { name: 'Чат', exact: true })
-    await expect(chat.getByRole('button', { name: /Проверить робота/ })).toHaveCount(0)
-    await expect(chat.getByText('Запчасти', { exact: true })).toHaveCount(0)
-    await expect(chat.getByText('Что было сделано', { exact: true })).toHaveCount(0)
+    await detail.getByRole('tab', { name: 'Задача', exact: true }).click()
+    await expect(detail.getByRole('tab', { name: 'Чат', exact: true })).toHaveCount(0)
+    const conversation = detail.getByRole('button', { name: 'История и сообщения', exact: true })
+    await conversation.click()
+    await expect(conversation).toHaveAttribute('aria-expanded', 'true')
+    await expect(detail.getByRole('region', { name: 'Чат задачи' })).toBeVisible()
+    await conversation.click()
   }
 
   if (routeId === 'campaigns') {
@@ -232,10 +248,10 @@ export async function assertShellIdentity(page: Page, user: User, expectedRole: 
 
 function routeReadyMarker(page: Page, routeId: AppRouteId) {
   switch (routeId) {
-    case 'overview': return page.getByRole('heading', { name: 'Очередь внимания' })
+    case 'overview': return page.getByRole('heading', { name: 'Очередь решений' })
     case 'operator-parks': return page.locator('.park-card-title', { hasText: 'Северный парк' })
     case 'work': return page.locator('.rp-work-entities').first()
-    case 'work-issue': return page.getByRole('heading', { name: 'Задача ROBOPARK-42', exact: true })
+    case 'work-issue': return page.getByRole('heading', { name: 'Детали задачи', exact: true })
     case 'robots': return page.locator('.rp-robots-search-panel')
     case 'robot-detail': return page.getByRole('heading', { name: /^\u0420\u043e\u0431\u043e\u0442 (?:447|YASADR00000000447)$/ })
     case 'robot-check': return page.getByRole('tabpanel', { name: 'Состояние' })
@@ -248,7 +264,7 @@ function routeReadyMarker(page: Page, routeId: AppRouteId) {
     case 'report-detail': return page.getByText(routeReport.body, { exact: true })
     case 'schedule': return page.locator('.rp-page-layout.rp-schedule')
     case 'analytics': return page.locator('.rp-analytics-park .rp-analytics-value').filter({ hasText: '2 задач' }).first()
-    case 'system': return page.getByRole('img', { name: 'Активные пользователи за 7 дней' })
+    case 'system': return page.getByRole('region', { name: 'Пользователи' })
     case 'admin': return page.getByRole('heading', { name: 'Управление', exact: true, level: 1 })
     case 'admin-settings': return page.getByText('Tracker OAuth', { exact: true })
     case 'admin-users': return page.getByRole('button', { name: 'Открыть аккаунт route-admin', exact: true })
@@ -282,6 +298,8 @@ export async function assertResponsiveContracts(page: Page, _width: number): Pro
   const violations = await page.evaluate(() => {
     const failures: string[] = []
     const visible = (element: Element) => {
+      const closedDetails = element.closest('details:not([open])')
+      if (closedDetails && !closedDetails.querySelector(':scope > summary')?.contains(element)) return false
       const style = getComputedStyle(element)
       const box = element.getBoundingClientRect()
       return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0'
@@ -398,20 +416,39 @@ export async function assertResponsiveContracts(page: Page, _width: number): Pro
           }
         }
         if (right <= left || bottom <= top) continue
-        const inset = Math.min(left - containerBox.left, containerBox.right - right, top - containerBox.top, containerBox.bottom - bottom)
+        // A fieldset legend sits on its border by design; its horizontal gutter still matters.
+        const inset = parent.closest('legend') && nearestBorder.matches('fieldset')
+          ? Math.min(left - containerBox.left, containerBox.right - right)
+          : Math.min(left - containerBox.left, containerBox.right - right, top - containerBox.top, containerBox.bottom - bottom)
         if (inset < 7.99) failures.push(`text inset ${inset}: ${name(nearestBorder)} text=${node.textContent.trim().slice(0, 70)}`)
       }
     }
 
+    const visibleControlBox = (element: Element) => {
+      const box = element.getBoundingClientRect()
+      let left = box.left; let right = box.right; let top = box.top; let bottom = box.bottom
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent)
+        const clip = parent.getBoundingClientRect()
+        if (['auto', 'clip', 'hidden', 'scroll'].includes(style.overflowX)) { left = Math.max(left, clip.left); right = Math.min(right, clip.right) }
+        if (['auto', 'clip', 'hidden', 'scroll'].includes(style.overflowY)) { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom) }
+      }
+      left = Math.max(left, 0); right = Math.min(right, window.innerWidth)
+      top = Math.max(top, 0); bottom = Math.min(bottom, window.innerHeight)
+      return right > left && bottom > top ? { left, right, top, bottom } : null
+    }
     for (let left = 0; left < controls.length; left += 1) {
       const first = controls[left]
-      const firstBox = first.getBoundingClientRect()
+      const firstBox = visibleControlBox(first)
+      if (!firstBox) continue
       for (let right = left + 1; right < controls.length; right += 1) {
         const second = controls[right]
         if (first.contains(second) || second.contains(first)) continue
         if (first.closest('.rp-shell__bottom-nav') || second.closest('.rp-shell__bottom-nav')) continue
+        if (window.scrollY > 0 && Boolean(first.closest('.rp-shell__topbar')) !== Boolean(second.closest('.rp-shell__topbar'))) continue
         if (first.closest('.password-field') != null && first.closest('.password-field') === second.closest('.password-field')) continue
-        const secondBox = second.getBoundingClientRect()
+        const secondBox = visibleControlBox(second)
+        if (!secondBox) continue
         const overlapWidth = Math.min(firstBox.right, secondBox.right) - Math.max(firstBox.left, secondBox.left)
         const overlapHeight = Math.min(firstBox.bottom, secondBox.bottom) - Math.max(firstBox.top, secondBox.top)
         if (overlapWidth > 1 && overlapHeight > 1) failures.push(`overlap ${name(first)} <> ${name(second)}`)

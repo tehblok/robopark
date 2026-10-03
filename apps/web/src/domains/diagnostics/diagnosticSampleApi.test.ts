@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { ApiError, ApiTimeoutError, type DiagnosticRuleCreate } from '../../api'
 import { testDiagnosticSamples } from './diagnosticSampleApi'
-import { emptyDraft } from './DiagnosticRuleEditor'
+import { emptyDraft } from './diagnosticRuleDraft'
 const rule: DiagnosticRuleCreate = { ...emptyDraft, pattern: 'SECRET-SIGNAL' }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 

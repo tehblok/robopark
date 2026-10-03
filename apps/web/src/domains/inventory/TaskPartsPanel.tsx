@@ -148,8 +148,7 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
     if (typeof payload.quantity === 'string') setQuantity(payload.quantity)
   }, [activeQueuedAction, currentData])
   useEffect(() => {
-    if (pending) setReceipt('Списание ожидает синхронизации')
-    else if (queueFailed) setReceipt('')
+    if (pending || queueFailed) setReceipt('')
   }, [pending, queueFailed])
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -182,7 +181,7 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
       }
       if (!mounted.current) return
       if (enqueueAction) {
-        setReceipt('Списание ожидает синхронизации')
+        setReceipt('')
         return
       }
       idempotencyKey.current = null

@@ -1,312 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { DashboardSummary, OperationsOverview, Park, TrackerIssue } from '../../api'
-import type { OverviewPayload } from './overviewData'
+import type { OperationsOverview } from '../../api'
 import { buildOverviewModel } from './overviewModel'
-
-const park: Park = { id: 7, name: 'Север', tag: 'Alpha', tracker_queue: 'ROBOPARK' }
-const summary: DashboardSummary = {
-  park_id: 7,
-  generated_at: '2026-09-02T09:00:00Z',
-  arrived: 2,
-  done: 4,
-  queued: 3,
-  in_transit: 1,
-  moving: [{ key: 'ROBOPARK-42', summary: 'Робот 447 остановился' }],
-}
-const issue: TrackerIssue = {
-  key: 'ROBOPARK-99',
-  summary: 'Проверить колесо',
-  status: 'Open',
-  robot: '448',
-  url: 'https://st.yandex-team.ru/ROBOPARK-99',
-}
-const now = new Date('2026-09-02T09:03:00Z')
-
-function parkPayload(overrides: Partial<DashboardSummary> = {}): OverviewPayload {
-  return { kind: 'park', park, summary: { ...summary, ...overrides }, issues: [] }
-}
-
-describe('buildOverviewModel', () => {
-  it.each([
-    ['mechanic', 'Что требует внимания в смене', 'Открыть задачу ROBOPARK-42'],
-    ['operator', 'Что мешает работе парка', 'Разобрать ROBOPARK-42'],
-    ['admin', 'Готовность людей и системы', 'Открыть работу'],
-    ['field_lead', 'Что требует внимания сейчас', 'Открыть ROBOPARK-42'],
-    ['constructor', 'Что требует внимания сейчас', 'Открыть ROBOPARK-42'],
-    ['__proto__', 'Что требует внимания сейчас', 'Открыть ROBOPARK-42'],
-  ])('builds a guarded %s hierarchy with a canonical action', (role, title, label) => {
-    const model = buildOverviewModel({
-      role,
-      payload: parkPayload(),
-      parkId: 7,
-      canOpenAdministration: false,
-    }, now)
-
-    expect(model.scope).toBe('Парк: Север')
-    expect(model.state.title).toBe(title)
-    expect(model.primaryAction).toEqual({
-      label,
-      href: '/work/ROBOPARK-42?park=7&queue=ROBOPARK&status=all',
-      icon: 'work',
-    })
-    expect(model.updatedAt).toBe('2026-09-02T09:00:00Z')
-    expect(model.freshness).toBe('fresh')
-  })
-
-  it('gives the driver a robot-first path without invented data or freshness', () => {
-    const model = buildOverviewModel({
-      role: 'driver',
-      payload: { kind: 'driver' },
-      parkId: null,
-      canOpenAdministration: false,
-    }, now)
-
-    expect(model.scope).toContain('проверка конкретного робота')
-    expect(model.state.title).toBe('Можно ли безопасно продолжать работу')
-    expect(model.updatedAt).toBeNull()
-    expect(model.freshness).toBeNull()
-    expect(model.risk).toBeNull()
-    expect(model.queue).toEqual([])
-    expect(model.metrics).toEqual([])
-    expect(model.primaryAction).toEqual({
-      label: 'Найти или сканировать робота',
-      href: '/robots',
-      icon: 'scan',
-    })
-  })
-
-  it.each([
-    ['2026-09-02T09:00:30.000Z', 'live'],
-    ['2026-09-02T09:00:30.001Z', 'fresh'],
-    ['2026-09-02T09:05:00.000Z', 'fresh'],
-    ['2026-09-02T09:05:00.001Z', 'stale'],
-  ] as const)('classifies the exact freshness boundary at %s as %s', (timestamp, expected) => {
-    const model = buildOverviewModel({
-      role: 'operator',
-      payload: parkPayload(),
-      parkId: 7,
-      canOpenAdministration: false,
-    }, new Date(timestamp))
-
-    expect(model.freshness).toBe(expected)
-  })
-
-  it('does not invent a timestamp or freshness for malformed observation metadata', () => {
-    const model = buildOverviewModel({
-      role: 'operator',
-      payload: parkPayload({ generated_at: 'not-a-date' }),
-      parkId: 7,
-      canOpenAdministration: false,
-    }, now)
-
-    expect(model.updatedAt).toBeNull()
-    expect(model.freshness).toBeNull()
-  })
-
-  it('prefers the moving issue while keeping the supplied operational queue and current metrics', () => {
-    const model = buildOverviewModel({
-      role: 'mechanic',
-      payload: { kind: 'park', park, summary, issues: [issue] },
-      parkId: 999,
-      canOpenAdministration: false,
-    }, now)
-
-    expect(model.primaryAction?.href).toBe('/work/ROBOPARK-42?park=7&queue=ROBOPARK&status=all')
-    expect(model.risk?.issueKey).toBe('ROBOPARK-42')
-    expect(model.queue).toEqual([{
-      key: 'ROBOPARK-99',
-      summary: 'Проверить колесо',
-      robot: '448',
-      href: '/work/ROBOPARK-99?park=7&queue=ROBOPARK&status=all',
-    }])
-    expect(model.metrics).toEqual([
-      { label: 'Пришли', value: 2 },
-      { label: 'Завершены', value: 4 },
-      { label: 'В очереди', value: 3 },
-      { label: 'В пути', value: 1 },
-    ])
-  })
-
-  it('uses the first queue issue when no moving issue is available', () => {
-    const model = buildOverviewModel({
-      role: 'operator',
-      payload: { kind: 'park', park, summary: { ...summary, moving: [] }, issues: [issue] },
-      parkId: 7,
-      canOpenAdministration: false,
-    }, now)
-
-    expect(model.primaryAction).toEqual({
-      label: 'Разобрать ROBOPARK-99',
-      href: '/work/ROBOPARK-99?park=7&queue=ROBOPARK&status=all',
-      icon: 'work',
-    })
-    expect(model.risk?.issueKey).toBe('ROBOPARK-99')
-  })
-
-  it('keeps non-zero counts informational when there is no actionable issue', () => {
-    const model = buildOverviewModel({
-      role: 'admin',
-      payload: parkPayload({ moving: [] }),
-      parkId: 999,
-      canOpenAdministration: true,
-    }, now)
-
-    expect(model.state.tone).toBe('neutral')
-    expect(model.risk).toBeNull()
-    expect(model.primaryAction).toEqual({
-      label: 'Открыть работу',
-      href: '/work?park=7&queue=ROBOPARK&status=all',
-      icon: 'work',
-    })
-  })
-
-  it('encodes issue keys and trims the Tracker queue without replacing the numeric park', () => {
-    const model = buildOverviewModel({
-      role: 'field_lead',
-      payload: {
-        kind: 'park',
-        park: { ...park, tracker_queue: ' TEAM & OPS ' },
-        summary: { ...summary, moving: [] },
-        issues: [{ ...issue, key: 'Q/42 ?#' }],
-      },
-      parkId: 999,
-      canOpenAdministration: false,
-    }, now)
-
-    expect(model.primaryAction?.href).toBe('/work/Q%2F42%20%3F%23?park=7&queue=TEAM+%26+OPS&status=all')
-    expect(model.queue[0]?.href).toBe('/work/Q%2F42%20%3F%23?park=7&queue=TEAM+%26+OPS&status=all')
-  })
-
-  it.each([
-    { tracker_queue: undefined },
-    { tracker_queue: null },
-    { tracker_queue: '' },
-    { tracker_queue: '   ' },
-    { tag: '' },
-    { tag: '   ' },
-  ])('shows text-only readiness guidance for missing Tracker config %j', (config) => {
-    const model = buildOverviewModel({
-      role: 'admin',
-      payload: { kind: 'park', park: { ...park, ...config }, summary, issues: [] },
-      parkId: 7,
-      canOpenAdministration: false,
-    }, now)
-
-    expect(model.risk).toMatchObject({
-      tone: 'warning',
-      title: 'Парк не готов к работе с Tracker',
-    })
-    expect(model.risk?.description).toMatch(/администратор/i)
-    expect(model.primaryAction).toBeNull()
-  })
-
-  it('offers Administration only from the explicit capability, including a custom role', () => {
-    const model = buildOverviewModel({
-      role: 'field_lead',
-      payload: { kind: 'park', park: { ...park, tracker_queue: null }, summary, issues: [] },
-      parkId: 7,
-      canOpenAdministration: true,
-    }, now)
-
-    expect(model.primaryAction).toEqual({
-      label: 'Настроить парк',
-      href: '/admin',
-      icon: 'settings',
-    })
-  })
-
-  it('uses the oldest fleet observation and highest current queue without changing the payload', () => {
-    const south: Park = { ...park, id: 8, name: 'Юг', tag: 'Beta' }
-    const payload: OverviewPayload = {
-      kind: 'fleet',
-      summaries: [
-        { park, summary: { ...summary, generated_at: '2026-09-02T08:59:00Z' } },
-        {
-          park: south,
-          summary: {
-            ...summary,
-            park_id: 8,
-            generated_at: '2026-09-02T11:57:59+03:00',
-            queued: 9,
-            moving: [{ key: 'ROBOPARK-88', summary: 'Робот в пути' }],
-          },
-        },
-      ],
-    }
-    const original = structuredClone(payload)
-    Object.freeze(payload.summaries)
-
-    const model = buildOverviewModel({
-      role: 'royal',
-      payload,
-      parkId: 7,
-      canOpenAdministration: true,
-    }, now)
-
-    expect(model.scope).toBe('Все доступные активные парки · 2')
-    expect(model.state.title).toBe('Главный риск доступных парков')
-    expect(model.updatedAt).toBe('2026-09-02T11:57:59+03:00')
-    expect(model.freshness).toBe('stale')
-    expect(model.risk).toMatchObject({
-      title: 'Наибольшая текущая очередь: Юг · 9',
-      tone: 'info',
-    })
-    expect(model.primaryAction?.href).toBe('/work?park=8&status=all')
-    expect(model.metrics).toEqual([
-      { label: 'Пришли', value: 4 },
-      { label: 'Завершены', value: 8 },
-      { label: 'В очереди', value: 12 },
-      { label: 'В пути', value: 2 },
-    ])
-    expect(model.queue).toEqual([
-      {
-        key: 'ROBOPARK-42',
-        summary: 'Робот 447 остановился',
-        href: '/work/ROBOPARK-42?park=7&queue=ROBOPARK&status=all',
-      },
-      {
-        key: 'ROBOPARK-88',
-        summary: 'Робот в пути',
-        href: '/work/ROBOPARK-88?park=8&queue=ROBOPARK&status=all',
-      },
-    ])
-    expect(payload).toEqual(original)
-  })
-
-  it('keeps the first accessible park as the deterministic tie-breaker for equal fleet queues', () => {
-    const model = buildOverviewModel({
-      role: 'royal',
-      payload: {
-        kind: 'fleet',
-        summaries: [
-          { park: { ...park, id: 8, name: 'Юг' }, summary: { ...summary, park_id: 8 } },
-          { park, summary },
-        ],
-      },
-      parkId: 7,
-      canOpenAdministration: true,
-    }, now)
-
-    expect(model.primaryAction?.href).toBe('/work?park=8&status=all')
-  })
-
-  it('keeps an empty fleet truthful without fabricated metrics, freshness or a park action', () => {
-    const model = buildOverviewModel({
-      role: 'royal',
-      payload: { kind: 'fleet', summaries: [] },
-      parkId: 7,
-      canOpenAdministration: true,
-    }, now)
-
-    expect(model.scope).toBe('Все доступные активные парки · 0')
-    expect(model.updatedAt).toBeNull()
-    expect(model.freshness).toBeNull()
-    expect(model.risk).toBeNull()
-    expect(model.primaryAction).toBeNull()
-    expect(model.queue).toEqual([])
-    expect(model.metrics).toEqual([])
-  })
-})
 
 const operationsSnapshot: OperationsOverview = {
   park_id: 7,
@@ -342,12 +36,12 @@ const operationsSnapshot: OperationsOverview = {
     ],
   },
   sla: {
-    target_hours: 8,
+    target_hours: 5,
     evaluated_count: 2,
     unknown_count: 0,
     at_risk_count: 1,
     overdue_count: 1,
-    overdue: [{ key: 'RP-OVERDUE', summary: 'Просроченная задача', status: 'Новая', bucket: 'new', robot: '448', created_at: '2026-09-01T00:00:00Z', hours_created: '33', url: '', age_hours: 33, overdue_hours: 25 }],
+    overdue: [{ key: 'RP-OVERDUE', summary: 'Просроченная задача', status: 'Новая', bucket: 'new', robot: '448', created_at: '2026-09-01T00:00:00Z', hours_created: '33', url: '', age_hours: 33, overdue_hours: 28 }],
     overdue_truncated: false,
   },
   workload: [{ login: 'operator', display: 'Оператор смены', open_count: 2, overdue_count: 1, oldest_hours: 33 }],
@@ -355,6 +49,48 @@ const operationsSnapshot: OperationsOverview = {
 }
 
 describe('role-aware operational overview', () => {
+  it('advances the SLA locally in the confirmed anchor timezone and freezes overnight', () => {
+    const data: OperationsOverview = { ...operationsSnapshot, timezone: 'Asia/Yekaterinburg',
+      sla: { ...operationsSnapshot.sla, overdue: [] },
+      task_timing: [{ issue_key: 'RP-RECENT', queue_started_at: '2026-09-02T17:00:00Z',
+        sla_deadline: '2026-09-03T10:00:00Z', sla_timezone: 'Europe/Moscow', sla_working_hours: 1, downtime_hours: 1 }],
+    }
+    expect(buildOverviewModel(data, 'mechanic', Date.parse('2026-09-02T19:00:00Z')).attentionQueue[0].slaWorkingHours).toBe(1)
+    expect(buildOverviewModel(data, 'mechanic', Date.parse('2026-09-03T05:00:00Z')).attentionQueue[0].slaWorkingHours).toBe(1)
+    expect(buildOverviewModel(data, 'mechanic', Date.parse('2026-09-03T07:00:00Z')).attentionQueue[0].slaWorkingHours).toBe(2)
+    expect(buildOverviewModel(data, 'mechanic', Date.parse('2026-09-03T10:01:00Z')).attentionQueue[0].kind).toBe('overdue')
+  })
+  it('builds a compact shift summary from the existing scoped response', () => {
+    const model = buildOverviewModel(operationsSnapshot, 'operator')
+    expect(model.headline).toEqual({
+      active: operationsSnapshot.counts.all,
+      overdue: 1,
+      atRisk: 1,
+      unknownSla: 0,
+    })
+  })
+
+  it('keeps unavailable headline measures unknown', () => {
+    const model = buildOverviewModel({
+      ...operationsSnapshot,
+      counts: {},
+      sla: { ...operationsSnapshot.sla, overdue_count: null, at_risk_count: null, unknown_count: 2 },
+    }, 'mechanic')
+    expect(model.headline).toEqual({ active: null, overdue: null, atRisk: null, unknownSla: 2 })
+  })
+
+  it('describes missing SLA data without suggesting that the fixed five-hour policy is configurable', () => {
+    const model = buildOverviewModel({
+      ...operationsSnapshot,
+      sla: { ...operationsSnapshot.sla, target_hours: null, overdue_count: null, at_risk_count: null, overdue: [] },
+    }, 'operator')
+
+    expect(model.alerts).toContainEqual(expect.objectContaining({
+      title: 'Данные SLA недоступны',
+    }))
+    expect(model.alerts.some(alert => alert.description.includes('задан норматив'))).toBe(false)
+  })
+
   it('shows drivers only new and moving status monitoring', () => {
     const model = buildOverviewModel(operationsSnapshot, 'driver')
 
@@ -379,6 +115,126 @@ describe('role-aware operational overview', () => {
 
     expect(model.attentionQueue.map((item) => item.key)).toEqual(['RP-OVERDUE', 'RP-OLD', 'RP-RECENT'])
     expect(model.alerts[0]).toMatchObject({ tone: 'critical', taskCount: 1 })
+  })
+
+  it('does not present a truncated overdue list as the total overdue count', () => {
+    const model = buildOverviewModel({
+      ...operationsSnapshot,
+      sla: {
+        ...operationsSnapshot.sla,
+        overdue_count: 8,
+        overdue_truncated: true,
+      },
+    }, 'operator')
+
+    expect(model.headline.overdue).toBe(8)
+    expect(model.attentionQueue.filter(item => item.kind === 'overdue')).toHaveLength(1)
+    expect(model.alerts[0].title).toContain('Показано просроченных: 1')
+    expect(model.alerts[0].description).toContain('неполный')
+  })
+
+  it('keeps unknown queue times in source order instead of sorting by ticket creation age', () => {
+    const base = operationsSnapshot.tasks[0]
+    const data = {
+      ...operationsSnapshot,
+      sla: { ...operationsSnapshot.sla, overdue: [], overdue_count: 0 },
+      tasks: [
+        { ...base, key: 'RP-UNKNOWN-NEW', hours_created: '1' },
+        { ...base, key: 'RP-KNOWN', hours_created: '2' },
+        { ...base, key: 'RP-UNKNOWN-OLD', hours_created: '500' },
+      ],
+      task_timing: [{ issue_key: 'RP-KNOWN', queue_started_at: '2026-09-01T08:00:00Z', sla_deadline: '2026-09-01T13:00:00Z', sla_working_hours: 2, downtime_hours: 4 }],
+    }
+    expect(buildOverviewModel(data, 'operator').attentionQueue.map(item => item.key)).toEqual([
+      'RP-KNOWN', 'RP-UNKNOWN-NEW', 'RP-UNKNOWN-OLD',
+    ])
+  })
+
+  it('prioritizes confirmed SLA risk over longer calendar downtime', () => {
+    const base = operationsSnapshot.tasks[0]
+    const data = {
+      ...operationsSnapshot,
+      sla: { ...operationsSnapshot.sla, overdue: [], overdue_count: 0 },
+      tasks: [
+        { ...base, key: 'RP-ROUTINE' },
+        { ...base, key: 'RP-RISK' },
+      ],
+      task_timing: [
+        { issue_key: 'RP-ROUTINE', queue_started_at: '2026-08-31T00:00:00Z', sla_deadline: '2026-09-03T00:00:00Z', sla_working_hours: 2, downtime_hours: 48 },
+        { issue_key: 'RP-RISK', queue_started_at: '2026-09-02T05:00:00Z', sla_deadline: '2026-09-02T10:00:00Z', sla_working_hours: 4, downtime_hours: 4 },
+      ],
+    }
+    const queue = buildOverviewModel(data, 'operator').attentionQueue
+    expect(queue.map(item => item.key)).toEqual(['RP-RISK', 'RP-ROUTINE'])
+    expect(queue[0].kind).toBe('at_risk')
+  })
+
+  it('keeps a measured overdue task urgent when the backend overdue list is truncated', () => {
+    const data = {
+      ...operationsSnapshot,
+      sla: { ...operationsSnapshot.sla, overdue: [], overdue_truncated: true },
+      tasks: [{ ...operationsSnapshot.tasks[0], key: 'RP-LATE' }],
+      task_timing: [{ issue_key: 'RP-LATE', queue_started_at: '2026-09-01T00:00:00Z', sla_deadline: '2026-09-01T11:00:00Z', sla_working_hours: 6, downtime_hours: 30 }],
+    }
+
+    const model = buildOverviewModel(data, 'operator')
+    expect(model.attentionQueue[0]).toMatchObject({
+      key: 'RP-LATE', kind: 'overdue', overdueHours: 1,
+    })
+    expect(model.alerts[0].title).toBe('Показано просроченных: 1')
+  })
+
+  it('keeps a 21:00 deadline urgent overnight when the backend overdue list is truncated', () => {
+    const data = {
+      ...operationsSnapshot,
+      generated_at: '2026-09-18T18:01:00Z',
+      sla: { ...operationsSnapshot.sla, overdue: [], overdue_count: 1, overdue_truncated: true },
+      tasks: [{ ...operationsSnapshot.tasks[0], key: 'RP-NIGHT' }],
+      task_timing: [{ issue_key: 'RP-NIGHT', queue_started_at: '2026-09-18T13:00:00Z', sla_deadline: '2026-09-18T18:00:00Z', sla_working_hours: 5, downtime_hours: 5.02 }],
+    }
+
+    expect(buildOverviewModel(data, 'operator').attentionQueue[0]).toMatchObject({
+      key: 'RP-NIGHT', kind: 'overdue', overdueHours: 0,
+    })
+  })
+
+  it('shows verified queue downtime and working SLA separately without using task creation age', () => {
+    const model = buildOverviewModel({
+      ...operationsSnapshot,
+      task_timing: [
+        { issue_key: 'RP-OVERDUE', queue_started_at: '2026-09-01T00:00:00Z', sla_deadline: '2026-09-01T11:00:00Z', sla_working_hours: 6, downtime_hours: 33 },
+        { issue_key: 'RP-RECENT', queue_started_at: '2026-09-02T08:00:00Z', sla_deadline: '2026-09-02T13:00:00Z', sla_working_hours: 1, downtime_hours: 1 },
+      ],
+    }, 'operator')
+
+    expect(model.attentionQueue.find((item) => item.key === 'RP-OVERDUE')).toMatchObject({
+      downtimeHours: 33, slaWorkingHours: 6,
+    })
+    expect(model.attentionQueue.find((item) => item.key === 'RP-OLD')).toMatchObject({
+      downtimeHours: null, slaWorkingHours: null,
+    })
+  })
+
+  it('carries a verified park-time deadline and current assignee into the queue', () => {
+    const data = {
+      ...operationsSnapshot,
+      tasks: [{ ...operationsSnapshot.tasks[0], assignee: { display: 'Механик А', login: 'mech-a' } }, operationsSnapshot.tasks[1]],
+      task_timing: [{ issue_key: 'RP-OLD', queue_started_at: '2026-09-01T08:00:00Z', sla_deadline: '2026-09-01T13:00:00Z', sla_working_hours: 2, downtime_hours: 4 }],
+    }
+    const model = buildOverviewModel(data, 'operator')
+    expect(model.timezone).toBe(operationsSnapshot.timezone)
+    expect(model.attentionQueue.find(item => item.key === 'RP-OLD')).toMatchObject({
+      assignee: 'Механик А', slaDeadline: '2026-09-01T13:00:00Z',
+    })
+    expect(model.attentionQueue.find(item => item.key === 'RP-RECENT')).toMatchObject({
+      assignee: null, slaDeadline: null,
+    })
+  })
+
+  it('keeps the selected park and status when opening the paginated work queue', () => {
+    expect(buildOverviewModel(operationsSnapshot, 'operator').fullQueueHref).toBe('/work?park=7&status=all')
+    expect(buildOverviewModel({ ...operationsSnapshot, selected_status: 'diagnostics' }, 'operator').fullQueueHref)
+      .toBe('/work?park=7&status=diagnostics')
   })
 
   it('does not leak an overdue task from another selected status into attention', () => {

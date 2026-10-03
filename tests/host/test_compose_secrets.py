@@ -55,13 +55,17 @@ def test_direct_compose_secret_bootstrap_creates_private_external_files(
 
     password = tmp_path / "etc-robopark/postgres-password"
     pgpass = tmp_path / "etc-robopark/pgpass"
+    bot_bridge_key = tmp_path / "etc-robopark/bot-bridge-key"
     assert stat.S_IMODE(password.stat().st_mode) == 0o600
     assert stat.S_IMODE(pgpass.stat().st_mode) == 0o600
+    assert stat.S_IMODE(bot_bridge_key.stat().st_mode) == 0o600
     assert (0, 0) in file_ownership
     assert (10001, 10001) in file_ownership
     env_text = env_file.read_text()
     assert str(password) in env_text and str(pgpass) in env_text
     assert password.read_text().strip() not in env_text
+    assert bot_bridge_key.read_text().strip() not in env_text
+    assert f"ROBOPARK_BOT_BRIDGE_KEY_FILE={bot_bridge_key}" in env_text
     snapshot_config = tmp_path / "etc-robopark/snapshot.env"
     assert stat.S_IMODE(snapshot_config.stat().st_mode) == 0o600
     assert (10001, 10001) in file_ownership

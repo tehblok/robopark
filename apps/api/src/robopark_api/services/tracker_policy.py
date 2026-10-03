@@ -81,6 +81,20 @@ def issue_tags(issue: dict) -> set[str]:
     return {str(tag).strip() for tag in raw if str(tag).strip()}
 
 
+def park_tag_identity(tag: str) -> str:
+    return tag.strip().casefold()
+
+
+def park_tag_matches(tag: str, tags) -> bool:
+    identity = park_tag_identity(tag)
+    return bool(identity) and any(park_tag_identity(value) == identity for value in tags)
+
+
+def _scope_tags(tags: set[str] | frozenset[str]) -> set[str]:
+    """Normalize Tracker tag identity without changing values used in QL."""
+    return {park_tag_identity(tag) for tag in tags}
+
+
 def issue_authorization_status(issue: dict) -> str | None:
     """Canonical workflow status for access decisions; no UI/relocation hints."""
     return status_bucket(str(issue.get("status_key") or ""), str(issue.get("status") or ""))
@@ -160,13 +174,16 @@ def _check_issue_scope(
     # 2. Park scope by tag.
     allowed_tags = scope.allowed_tags if scope is not None else allowed_park_tags_for_user(db, user)
     tags = issue_tags(issue)
+    normalized_allowed_tags = _scope_tags(allowed_tags)
+    normalized_tags = _scope_tags(tags)
 
-    if tags & allowed_tags:
+    if normalized_tags & normalized_allowed_tags:
         return
 
     # Tags belonging to a different park are always out of scope.
     park_tags = scope.park_tags if scope is not None else all_park_tags(db)
-    if tags & (park_tags - allowed_tags):
+    normalized_park_tags = _scope_tags(park_tags)
+    if normalized_tags & (normalized_park_tags - normalized_allowed_tags):
         _deny()
 
     # No park tag at all (or only non-park tags like "donor"): this is an

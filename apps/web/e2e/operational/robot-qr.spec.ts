@@ -4,7 +4,7 @@ import { installOperational, snapshot } from './fixtures'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 
 for (const width of [320, 1440]) {
-  test(`QR contains the exact VIN and prints isolated labels at ${width}px`, async ({ page, context }, info) => {
+  test(`QR contains the exact VIN and prints isolated labels at ${width}px`, async ({ page, context, browserName }, info) => {
     await page.setViewportSize({ width, height: 900 })
     await installOperational(page, { role: 'mechanic' })
     await context.addInitScript(() => { window.print = () => { document.documentElement.dataset.printed = 'yes' } })
@@ -39,9 +39,12 @@ for (const width of [320, 1440]) {
     await expect(popup.locator('nav, button, script')).toHaveCount(0)
     await expect(popup.locator('html')).toHaveAttribute('data-printed', 'yes')
     await popup.emulateMedia({ media: 'print' })
-    const pdf = await popup.pdf({ path: info.outputPath(width === 320 ? 'label-40x30.pdf' : 'labels-a4.pdf'), preferCSSPageSize: true })
-    // Chromium writes page dictionaries outside compressed content streams.
-    expect(pdf.toString('latin1').match(/\/Type \/Page\b/g)).toHaveLength(2)
+    // All engines exercise the print document; Playwright's PDF export is a
+    // Chromium-only API (it is not the user's print dialog).
+    if (browserName === 'chromium') {
+      const pdf = await popup.pdf({ path: info.outputPath(width === 320 ? 'label-40x30.pdf' : 'labels-a4.pdf'), preferCSSPageSize: true })
+      expect(pdf.toString('latin1').match(/\/Type \/Page\b/g)).toHaveLength(2)
+    }
     await popup.close()
   })
 }

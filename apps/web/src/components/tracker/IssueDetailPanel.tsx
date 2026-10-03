@@ -17,6 +17,7 @@ import {
   formatFileSize,
   initials,
   isStale,
+  issueTypeLabel,
   personName,
   priorityLabel,
   priorityTone,
@@ -240,7 +241,7 @@ function IssueDetailPanelContent({
           </span>
         </Field>
         <Field label={ru.tracker.fields.reporter}>{personName(issue.reporter)}</Field>
-        {issue.type && <Field label={ru.tracker.fields.type}>{issue.type}</Field>}
+        {issue.type && <Field label={ru.tracker.fields.type}>{issueTypeLabel(issue.type)}</Field>}
         <Field label={ru.tracker.fields.queue}>
           {issue.queue || ru.tracker.fields.empty}
         </Field>

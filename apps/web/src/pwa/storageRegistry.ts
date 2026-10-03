@@ -13,10 +13,13 @@ export type StorageNamespace = {
 
 // Prefix names in this inventory include every key written below that prefix.
 const namespaces: readonly StorageNamespace[] = [
+  { name: 'robopark:local-signout:v1', kind: 'localStorage', owner: 'auth', schema: 1, retention: 'until next successful login; cleanup ownership scope only, no content or credentials', scope: 'device' },
+  { name: 'robopark:offline-identity:v1', kind: 'localStorage', owner: 'auth', schema: 1, retention: '72h from online verification; purge on logout or denial', scope: 'account' },
   { name: 'robopark-offline', kind: 'indexedDB', owner: 'pwa', schema: 2, retention: '14d projections; pending until acknowledged', scope: 'account-role-permissions-park' },
   { name: 'robopark-resource-cache', kind: 'indexedDB', owner: 'resources', schema: 1, retention: 'cache policy', scope: 'account-role-permissions-park' },
   { name: 'robopark-task-attachment-cache', kind: 'indexedDB', owner: 'tracker', schema: 1, retention: '5m; 32MiB', scope: 'account' },
-  { name: 'robopark-share-inbox', kind: 'indexedDB', owner: 'pwa', schema: 1, retention: '24h; 10 drafts; purge on logout', scope: 'ephemeral-global' },
+  { name: 'robopark-share-inbox', kind: 'indexedDB', owner: 'pwa', schema: 1, retention: 'legacy; not imported', scope: 'ephemeral-global' },
+  { name: 'robopark-share-inbox-v2', kind: 'indexedDB', owner: 'pwa', schema: 1, retention: '24h; 10 drafts per account; owner purge on logout', scope: 'account' },
   { name: 'robopark-report-drafts-v1', kind: 'indexedDB', owner: 'reports', schema: 2, retention: 'until submitted; quarantined on access change', scope: 'account-role-permissions-park' },
   { name: 'robopark:res:', kind: 'localStorage', owner: 'resources', schema: 1, retention: 'legacy; removed at bootstrap', scope: 'account-role-permissions-park' },
   { name: 'robopark:report-draft:', kind: 'localStorage', owner: 'reports', schema: 1, retention: 'until submitted', scope: 'account-park' },
@@ -26,14 +29,43 @@ const namespaces: readonly StorageNamespace[] = [
   { name: 'robopark.recentRobots.v2.', kind: 'localStorage', owner: 'robots', schema: 2, retention: 'until logout', scope: 'account' },
   { name: 'robopark.recentRobots', kind: 'localStorage', owner: 'robots', schema: 1, retention: 'legacy; purge on auth transition', scope: 'ephemeral-global' },
   { name: 'robopark:interface:', kind: 'localStorage', owner: 'interface', schema: 1, retention: 'legacy', scope: 'account' },
+  { name: 'robopark:legacy-share-inbox-retired-at', kind: 'localStorage', owner: 'pwa', schema: 1, retention: 'until legacy database is reclaimed', scope: 'device' },
   { name: 'robopark:system-operation:', kind: 'localStorage', owner: 'system', schema: 1, retention: 'until terminal acknowledgement or logout', scope: 'account' },
   { name: 'robopark:panel:', kind: 'localStorage', owner: 'layout', schema: 1, retention: 'until reset', scope: 'device' },
   { name: 'robopark-theme', kind: 'localStorage', owner: 'theme', schema: 1, retention: 'until reset', scope: 'device' },
+  { name: 'robopark-accent', kind: 'localStorage', owner: 'theme', schema: 1, retention: 'until reset', scope: 'device' },
   { name: 'robopark-density', kind: 'localStorage', owner: 'theme', schema: 1, retention: 'until reset', scope: 'device' },
   { name: 'robopark.lastUsername', kind: 'localStorage', owner: 'login', schema: 1, retention: 'until reset', scope: 'device' },
 ] as const
 
 const RETIRED_PREFIX = 'robopark:retired-draft:'
+const LEGACY_SHARE_INBOX = 'robopark-share-inbox'
+const LEGACY_SHARE_RETIREMENT_KEY = 'robopark:legacy-share-inbox-retired-at'
+const LEGACY_SHARE_GRACE_MS = 24 * 60 * 60 * 1000
+
+export async function reclaimLegacyShareInbox(now = Date.now()): Promise<boolean> {
+  const target = storage()
+  if (!target || typeof indexedDB === 'undefined' || !Number.isFinite(now)) return false
+  try {
+    const recorded = target.getItem(LEGACY_SHARE_RETIREMENT_KEY)
+    if (recorded === 'done') return false
+    const retiredAt = Number(recorded)
+    if (recorded === null || !Number.isFinite(retiredAt) || retiredAt > now) {
+      target.setItem(LEGACY_SHARE_RETIREMENT_KEY, String(now))
+      return false
+    }
+    if (now - retiredAt < LEGACY_SHARE_GRACE_MS) return false
+    return await new Promise<boolean>(resolve => {
+      const request = indexedDB.deleteDatabase(LEGACY_SHARE_INBOX)
+      request.onsuccess = () => {
+        try { target.setItem(LEGACY_SHARE_RETIREMENT_KEY, 'done') } catch { /* Retry on next launch. */ }
+        resolve(true)
+      }
+      request.onerror = () => resolve(false)
+      request.onblocked = () => resolve(false)
+    })
+  } catch { return false }
+}
 
 function scopeToken(scope: OfflineScope): string {
   return encodeURIComponent(JSON.stringify([scope.account, scope.principal ?? null, scope.role, scope.permissions, scope.park, scope.parkAccess ?? null, scope.schema]))
@@ -101,7 +133,11 @@ function restoreDrafts(scope: OfflineScope): void {
 export const storageRegistry = {
   inventory(): StorageNamespace[] { return namespaces.map(item => ({ ...item })) },
   isRetired(scope: OfflineScope): boolean { return isOfflineScopeRetired(scope) },
-  activateScope(scope: OfflineScope): void { restoreDrafts(scope); void restoreReportPhotoDraftsForScope(scope).catch(() => {}) },
+  activateScope(scope: OfflineScope): void {
+    restoreDrafts(scope)
+    void restoreReportPhotoDraftsForScope(scope).catch(() => {})
+    void reclaimLegacyShareInbox()
+  },
   async purgeScope(scope: OfflineScope): Promise<'retired'> {
     quarantineDrafts(scope)
     retireOfflineScope(scope)

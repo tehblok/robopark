@@ -2,8 +2,9 @@ import { expect, it } from 'vitest'
 import { buildRobotCheckSearch, checkTabs, parseRobotCheckTab } from './robotCheckUrl'
 const sections = [{ id: 'wheels', title: 'Колёса' }, { id: 'power', title: 'Питание' }]
 it('deduplicates reserved and dynamic ids and restores only valid tabs', () => {
-  expect(checkTabs([...sections, sections[0], { id: 'map', title: 'Другая' }]).map(t => t.id)).toEqual(['map', 'state', 'errors', 'telemetry', 'tasks', 'history', 'scheme', 'wheels', 'power'])
+  expect(checkTabs([...sections, sections[0], { id: 'map', title: 'Другая' }, { id: 'history', title: 'Старый раздел' }]).map(t => t.id)).toEqual(['map', 'state', 'errors', 'telemetry', 'tasks', 'scheme', 'wheels', 'power'])
   expect(parseRobotCheckTab(new URLSearchParams('tab=wheels'), sections)).toBe('wheels')
+  expect(parseRobotCheckTab(new URLSearchParams('tab=history'), sections)).toBe('map')
   expect(parseRobotCheckTab(new URLSearchParams('tab=secret'), sections)).toBe('map')
 })
 it('preserves only numeric park and nondefault tab', () => {

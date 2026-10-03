@@ -44,14 +44,8 @@ class FakeHostEffects:
         self.calls.append(("reconcile", operation.operation_id, operation.kind.value))
         return self.reconciliation
 
-    def release_update(self, operation_id, release_id):
-        return self._effect("release_update", operation_id, release_id)
-
     def ota_update(self, operation_id, upload_id, sha256, version):
         return self._effect("ota_update", operation_id, upload_id, sha256, version)
-
-    def reinstall(self, operation_id):
-        return self._effect("reinstall", operation_id)
 
     def rollback(self, operation_id, release):
         return self._effect("rollback", operation_id, release)
@@ -82,14 +76,26 @@ class FakeHostEffects:
     def backup_verify(self, operation_id, backup_id):
         return self._effect("backup_verify", operation_id, backup_id)
 
-    def backup_restore(self, operation_id, backup_id):
-        return self._effect("backup_restore", operation_id, backup_id)
+    def backup_restore(self, operation_id, backup_id, actor_user_id):
+        return self._effect("backup_restore", operation_id, backup_id, actor_user_id)
 
     def cleanup_preview(self, operation_id, categories):
         return self._effect("cleanup_preview", operation_id, *categories)
 
     def cleanup_execute(self, operation_id, plan_id):
         return self._effect("cleanup_execute", operation_id, plan_id)
+
+    def docker_image_preview(self, operation_id):
+        return self._effect("docker_image_preview", operation_id)
+
+    def docker_image_execute(self, operation_id, plan_id):
+        return self._effect("docker_image_execute", operation_id, plan_id)
+
+    def builder_cache_preview(self, operation_id):
+        return self._effect("builder_cache_preview", operation_id)
+
+    def builder_cache_execute(self, operation_id, plan_id):
+        return self._effect("builder_cache_execute", operation_id, plan_id)
 
     def diagnostics(self, operation_id):
         return self._effect("diagnostics", operation_id)
@@ -171,18 +177,20 @@ def publish_test_capabilities(paths, effects, monkeypatch):
     ("payload", "effect"),
     [
         ({"kind": "ota-update", "upload_id": _DEVICE_UUID, "sha256": "a" * 64, "version": "0.2.0-rc.7", "confirmation": "UPDATE ROBOPARK"}, "ota_update"),
-        ({"kind": "release-update", "release_id": 7, "confirmation": "UPDATE ROBOPARK"}, "release_update"),
-        ({"kind": "reinstall", "confirmation": "REINSTALL ROBOPARK"}, "reinstall"),
         ({"kind": "rollback", "release": "release-a", "confirmation": "ROLLBACK ROBOPARK"}, "rollback"),
         ({"kind": "package-inspect", "package": "openssl", "confirmation": "ЗАПУСТИТЬ PACKAGE-INSPECT"}, "package_inspect"),
         ({"kind": "package-update", "package": "openssl", "confirmation": "UPDATE PACKAGE openssl"}, "package_update"),
-        ({"kind": "service-restart", "service": "robopark-api.service", "confirmation": "RESTART SERVICE robopark-api.service"}, "service_restart"),
+        ({"kind": "service-restart", "service": "robopark.service", "confirmation": "RESTART SERVICE robopark.service"}, "service_restart"),
         ({"kind": "reboot", "confirmation": "REBOOT ROBOPARK"}, "reboot"),
         ({"kind": "backup", "device_uuid": _DEVICE_UUID, "confirmation": "BACKUP ROBOPARK"}, "backup"),
         ({"kind": "backup-verify", "backup_id": _BACKUP_UUID, "confirmation": "ЗАПУСТИТЬ BACKUP-VERIFY"}, "backup_verify"),
         ({"kind": "backup-restore", "backup_id": _BACKUP_UUID, "confirmation": "RESTORE ROBOPARK BACKUP"}, "backup_restore"),
         ({"kind": "cleanup-preview", "categories": ["backups", "releases"], "confirmation": "ЗАПУСТИТЬ CLEANUP-PREVIEW"}, "cleanup_preview"),
         ({"kind": "cleanup-execute", "plan_id": _PLAN_UUID, "confirmation": "CLEAN ROBOPARK"}, "cleanup_execute"),
+        ({"kind": "docker-image-preview", "confirmation": "ЗАПУСТИТЬ DOCKER-IMAGE-PREVIEW"}, "docker_image_preview"),
+        ({"kind": "docker-image-execute", "plan_id": _PLAN_UUID, "confirmation": "CLEAN ROBOPARK IMAGES"}, "docker_image_execute"),
+        ({"kind": "builder-cache-preview", "confirmation": "ЗАПУСТИТЬ BUILDER-CACHE-PREVIEW"}, "builder_cache_preview"),
+        ({"kind": "builder-cache-execute", "plan_id": _PLAN_UUID, "confirmation": "CLEAN ROBOPARK BUILD CACHE"}, "builder_cache_execute"),
         ({"kind": "diagnostics", "confirmation": "ЗАПУСТИТЬ DIAGNOSTICS"}, "diagnostics"),
         ({"kind": "usb-discover", "confirmation": "ЗАПУСТИТЬ USB-DISCOVER"}, "usb_discover"),
         ({"kind": "usb-format", "device_uuid": _DEVICE_UUID, "confirmation": f"FORMAT USB {_DEVICE_UUID}", "confirmation_repeat": f"FORMAT USB {_DEVICE_UUID}"}, "usb_format"),
@@ -258,7 +266,7 @@ def test_api_bridge_to_real_consumer_dispatches_every_typed_kind(
             "reboot",
             {"confirmation": "REBOOT ROBOPARK"},
             "failed",
-            "capability_unavailable",
+            "host_operation_failed",
         ),
     ],
 )
@@ -317,6 +325,26 @@ def test_default_cli_consumer_uses_safe_production_adapter(
         assert result["detail"]["devices"] == [
             {"device_uuid": _DEVICE_UUID, "mounted": False, "removable": True}
         ]
+
+
+def test_web_ota_consumer_preserves_first_failed_command_output(host_paths):
+    import sys
+
+    from robopark_host.cli import _production_typed_effects
+    from robopark_host.release import ReleaseError
+
+    effects = _production_typed_effects(host_paths)
+    runner = effects.ota_effects.engine.runtime.runner
+    for message in ("first build failure", "later cleanup failure"):
+        with pytest.raises(ReleaseError):
+            runner.run(
+                [sys.executable, "-c", "import sys; print(sys.argv[1]); sys.exit(1)", message],
+                timeout=5,
+            )
+    log = host_paths.root / "var/log/robopark/ota-update.log"
+    assert log.is_file(), "web OTA must persist the failing build output too"
+    assert log.read_text() == "first build failure\n"
+    assert log.stat().st_mode & 0o777 == 0o600
 
 
 def test_default_cli_consumer_verifies_backup_with_external_runtime_key(host_paths):
@@ -405,6 +433,7 @@ def _production_backup_verify_fixture(host_paths):
         mounted=True,
         mount_point="/mnt/usb",
     )
+    host_paths.state.mkdir(parents=True, exist_ok=True)
     adapter = SafeProductionTypedHostEffects(
         host_paths, device_provider=lambda: (device,)
     )
@@ -631,8 +660,8 @@ def test_device_bound_receipt_cannot_bypass_production_restore_guard(host_paths,
     target = host_paths.root / "must-not-restore"
     with pytest.raises(ReleaseError, match="device_bound_restore_unavailable"):
         restore_encrypted_backup(artifact, target, recovery_key=b"c" * 32, verified=receipt)
-    with pytest.raises(ReleaseError, match="capability_unavailable"):
-        adapter.backup_restore(str(uuid4()), _BACKUP_UUID)
+    with pytest.raises(ReleaseError, match="unsafe_usb_device"):
+        adapter.backup_restore(str(uuid4()), _BACKUP_UUID, 7)
     assert not target.exists()
 
 
@@ -698,17 +727,389 @@ def test_safe_production_adapter_declares_exact_fail_closed_kinds():
 
     assert SafeProductionTypedHostEffects.unsupported_kinds() == {
         OperationKind.OTA_UPDATE,
-        OperationKind.RELEASE_UPDATE,
-        OperationKind.REINSTALL,
-        OperationKind.ROLLBACK,
-        OperationKind.PACKAGE_UPDATE,
-        OperationKind.SERVICE_RESTART,
-        OperationKind.REBOOT,
-        OperationKind.BACKUP,
-        OperationKind.BACKUP_RESTORE,
-        OperationKind.CLEANUP_EXECUTE,
-        OperationKind.USB_FORMAT,
     }
+
+
+class _ProductionActionRunner:
+    def __init__(self):
+        from robopark_host.checks import CommandResult
+
+        self.calls = []
+        self.result = CommandResult()
+
+    def __call__(self, argv, *, timeout, max_output):
+        self.calls.append((list(argv), timeout, max_output))
+        return self.result
+
+
+def test_production_package_update_uses_fixed_apt_contract(host_paths):
+    from robopark_host.commands import SafeProductionTypedHostEffects
+
+    status = host_paths.root / "var/lib/dpkg/status"
+    status.parent.mkdir(parents=True)
+    status.write_text("Package: openssl\nStatus: install ok installed\nVersion: 3.0.0\n")
+    runner = _ProductionActionRunner()
+    adapter = SafeProductionTypedHostEffects(host_paths, runner=runner)
+    operation_id = str(uuid4())
+
+    assert adapter.package_update(operation_id, "openssl") == {
+        "package": "openssl",
+        "updated": True,
+        "version": "3.0.0",
+    }
+    assert [call[0] for call in runner.calls] == [
+        [
+            "systemd-run", "--wait", "--collect", "--pipe", "--quiet",
+            "--service-type=exec", "--setenv=DEBIAN_FRONTEND=noninteractive",
+            "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin", "--unit",
+            f"robopark-operation-{operation_id}-apt-update",
+            "/usr/bin/apt-get", "update",
+        ],
+        [
+            "systemd-run", "--wait", "--collect", "--pipe", "--quiet",
+            "--service-type=exec", "--setenv=DEBIAN_FRONTEND=noninteractive",
+            "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin", "--unit",
+            f"robopark-operation-{operation_id}-apt-upgrade",
+            "/usr/bin/apt-get", "install", "-y", "--no-remove",
+            "--only-upgrade", "--no-install-recommends", "openssl",
+        ],
+    ]
+
+
+def test_docker_package_update_restores_application_and_tuna(host_paths):
+    from robopark_host.commands import SafeProductionTypedHostEffects
+
+    status = host_paths.root / "var/lib/dpkg/status"
+    status.parent.mkdir(parents=True)
+    status.write_text(
+        "Package: docker-ce\nStatus: install ok installed\nVersion: 28.0.0\n"
+    )
+    runner = _ProductionActionRunner()
+
+    class Http:
+        def get(self, _url, *, timeout):
+            assert timeout == 10
+            return type("Response", (), {"status": 200})()
+
+    adapter = SafeProductionTypedHostEffects(host_paths, runner=runner, http=Http())
+
+    assert adapter.package_update(str(uuid4()), "docker-ce")["updated"] is True
+    commands = [call[0] for call in runner.calls]
+    assert ["systemctl", "restart", "docker.service"] in commands
+    assert ["systemctl", "restart", "robopark.service"] in commands
+    assert ["systemctl", "restart", "robopark-tuna.service"] in commands
+
+
+def test_production_service_restart_targets_real_units_only(host_paths):
+    from robopark_host.commands import SafeProductionTypedHostEffects
+
+    runner = _ProductionActionRunner()
+    class Http:
+        def get(self, url, *, timeout):
+            assert url == "http://127.0.0.1:8080/api/health/ready"
+            assert timeout == 10
+            return type("Response", (), {"status": 200})()
+
+    adapter = SafeProductionTypedHostEffects(host_paths, runner=runner, http=Http())
+
+    assert adapter.service_restart(str(uuid4()), "robopark.service") == {
+        "service": "robopark.service",
+        "restarted": True,
+    }
+    assert [call[0] for call in runner.calls] == [
+        ["systemctl", "restart", "robopark.service"],
+        ["systemctl", "is-active", "--quiet", "robopark.service"],
+        ["systemctl", "is-enabled", "--quiet", "robopark-tuna.service"],
+        ["systemctl", "restart", "robopark-tuna.service"],
+        ["systemctl", "is-active", "--quiet", "robopark-tuna.service"],
+    ]
+
+
+def test_production_reboot_is_delayed_until_result_can_be_persisted(host_paths):
+    from robopark_host.commands import SafeProductionTypedHostEffects
+
+    runner = _ProductionActionRunner()
+    adapter = SafeProductionTypedHostEffects(host_paths, runner=runner)
+    operation_id = str(uuid4())
+    host_paths.state.mkdir(parents=True, exist_ok=True)
+
+    assert adapter.reboot(operation_id) == {"reboot_scheduled": True}
+    assert runner.calls[0][0] == [
+        "systemd-run", "--unit", f"robopark-reboot-{operation_id}",
+        "--on-active=5s", "/usr/bin/systemctl", "reboot", "--no-wall",
+    ]
+
+
+def test_reboot_reconciliation_does_not_schedule_again_after_boot_changed(host_paths):
+    from types import SimpleNamespace
+    from robopark_host.commands import SafeProductionTypedHostEffects
+
+    runner = _ProductionActionRunner()
+    adapter = SafeProductionTypedHostEffects(host_paths, runner=runner)
+    operation_id = str(uuid4())
+    host_paths.state.mkdir(parents=True, exist_ok=True)
+    adapter._write_private_json("action-receipts", f"{operation_id}.json", {
+        "schema": 1, "kind": "reboot", "state": "scheduling", "boot_id": TEST_BOOT_ID,
+    })
+    (host_paths.root / "proc/sys/kernel/random/boot_id").write_text(str(uuid4()) + "\n")
+    result = adapter.reconcile(SimpleNamespace(kind=OperationKind.REBOOT, operation_id=operation_id))
+    assert result == {"state": "succeeded", "detail": {"reboot_scheduled": True}, "error": None}
+    assert runner.calls == []
+
+
+def test_production_usb_format_revalidates_and_preserves_device_uuid(host_paths):
+    from robopark_host.commands import BlockDevice, SafeProductionTypedHostEffects
+
+    device = BlockDevice(_DEVICE_UUID, "/dev/fake-usb", removable=True)
+    target = host_paths.root / "dev/fake-usb"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"fake block device")
+    runner = _ProductionActionRunner()
+    adapter = SafeProductionTypedHostEffects(
+        host_paths, runner=runner, device_provider=lambda: (device,)
+    )
+    operation_id = str(uuid4())
+    pinned = f"/proc/{os.getpid()}/fd/"
+
+    assert adapter.usb_format(operation_id, device) == {
+        "device_uuid": _DEVICE_UUID,
+        "formatted": True,
+    }
+    assert [call[0] for call in runner.calls] == [
+        [
+            "systemd-run", "--wait", "--collect", "--pipe", "--quiet",
+            "--service-type=exec", "--setenv=DEBIAN_FRONTEND=noninteractive",
+            "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin", "--unit",
+            f"robopark-operation-{operation_id}-wipefs",
+            "/usr/sbin/wipefs", "--all", runner.calls[0][0][-1],
+        ],
+        [
+            "systemd-run", "--wait", "--collect", "--pipe", "--quiet",
+            "--service-type=exec", "--setenv=DEBIAN_FRONTEND=noninteractive",
+            "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin", "--unit",
+            f"robopark-operation-{operation_id}-mkfs",
+            "/usr/sbin/mkfs.ext4", "-F", "-L", "ROBOPARK", "-U",
+            _DEVICE_UUID, runner.calls[1][0][-1],
+        ],
+    ]
+    assert runner.calls[0][0][-1].startswith(pinned)
+    assert runner.calls[1][0][-1] == runner.calls[0][0][-1]
+
+
+def test_production_diagnostics_publishes_exact_downloadable_artifact(
+    host_paths, monkeypatch
+):
+    from robopark_host import commands
+    from robopark_host.commands import SafeProductionTypedHostEffects
+
+    report = DiagnosticReport([CheckResult("api", "ok", "API ready")])
+    monkeypatch.setattr(commands, "run_doctor", lambda *args: report)
+    runner = _ProductionActionRunner()
+    adapter = SafeProductionTypedHostEffects(
+        host_paths, runner=runner, http=object()
+    )
+    operation_id = str(uuid4())
+
+    result = adapter.diagnostics(operation_id)
+
+    assert result == {
+        "artifact": f"{operation_id}.zip",
+        "completed": True,
+    }
+    artifact = host_paths.ops / "public/artifacts" / result["artifact"]
+    assert artifact.is_file()
+    assert artifact.stat().st_mode & 0o777 == 0o644
+    with zipfile.ZipFile(artifact) as archive:
+        assert archive.testzip() is None
+
+
+def test_backup_recovery_key_is_migrated_once_from_runtime_context(host_paths):
+    from robopark_host.commands import ensure_backup_recovery_key
+
+    runtime = host_paths.root / "run/robopark/recovery.key"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(b"r" * 32)
+    runtime.chmod(0o600)
+
+    target = ensure_backup_recovery_key(host_paths)
+
+    assert target == host_paths.etc / "backup-recovery.key"
+    assert target.read_bytes() == b"r" * 32
+    assert target.stat().st_mode & 0o777 == 0o600
+    runtime.write_bytes(b"x" * 32)
+    assert ensure_backup_recovery_key(host_paths).read_bytes() == b"r" * 32
+
+
+def test_backup_recovery_key_generation_is_private_and_stable(host_paths):
+    from robopark_host.commands import ensure_backup_recovery_key
+
+    first = ensure_backup_recovery_key(host_paths).read_bytes()
+    second = ensure_backup_recovery_key(host_paths).read_bytes()
+
+    assert len(first) == 32
+    assert first == second
+
+
+def test_production_rollback_requires_exact_advertised_previous_release(host_paths):
+    from robopark_host.commands import SafeProductionTypedHostEffects
+    from robopark_host.release import ReleaseError
+
+    current = host_paths.releases / ("0.2.0-" + _DEVICE_UUID)
+    previous = host_paths.releases / "0.1.9-release"
+    current.mkdir(parents=True)
+    previous.mkdir()
+    host_paths.current.symlink_to(current)
+    host_paths.previous.symlink_to(previous)
+    metadata = host_paths.state / "ota-runtime" / f"{_DEVICE_UUID}.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(json.dumps({
+        "schema": 1,
+        "operation_id": _DEVICE_UUID,
+        "candidate": current.name,
+        "current": previous.name,
+    }))
+    (host_paths.ops / "rollbacks" / _DEVICE_UUID).mkdir(parents=True)
+
+    class Ota:
+        def __init__(self):
+            self.calls = []
+
+        def manual_rollback(self, operation_id, release):
+            self.calls.append((operation_id, release))
+            return {"release": release, "rolled_back": True}
+
+    ota = Ota()
+    adapter = SafeProductionTypedHostEffects(host_paths, ota_effects=ota)
+    operation_id = str(uuid4())
+
+    assert adapter.rollback(operation_id, previous.name) == {
+        "release": previous.name,
+        "rolled_back": True,
+    }
+    assert ota.calls == [(operation_id, previous.name)]
+    with pytest.raises(ReleaseError, match="rollback_release_changed"):
+        adapter.rollback(str(uuid4()), "some-other-release")
+
+
+def test_production_backup_creates_and_verifies_selected_usb_artifact(
+    host_paths, monkeypatch
+):
+    from robopark_host.commands import BlockDevice, SafeProductionTypedHostEffects
+
+    release = host_paths.releases / "0.2.0-release"
+    release.mkdir(parents=True)
+    (release / "manifest.json").write_text(json.dumps({
+        "app_version": "0.2.0", "migration_head": "0050_media_action_dependency",
+    }))
+    host_paths.current.symlink_to(release)
+    key = host_paths.etc / "backup-recovery.key"
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_bytes(b"b" * 32)
+    key.chmod(0o600)
+    local = host_paths.root / "var/backups/robopark/robopark-current.zip"
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b"verified snapshot bytes")
+    mount = host_paths.root / "mnt/usb"
+    mount.mkdir(parents=True)
+    device = BlockDevice(
+        _DEVICE_UUID, "/dev/fake-usb", removable=True, mounted=True,
+        mount_point="/mnt/usb",
+    )
+    host_paths.state.mkdir(parents=True, exist_ok=True)
+    adapter = SafeProductionTypedHostEffects(
+        host_paths, device_provider=lambda: (device,)
+    )
+    adapter.usb_select(str(uuid4()), device)
+    monkeypatch.setattr(
+        "robopark_host.scheduled_backup.create_scheduled_backup",
+        lambda paths, *, parent_operation_id: local,
+    )
+    backup_id = str(uuid4())
+
+    result = adapter.backup(backup_id, device.uuid)
+
+    assert result["backup_id"] == backup_id
+    assert result["device_uuid"] == device.uuid
+    assert result["verified"] is True
+    assert result["bytes"] > len(local.read_bytes())
+    artifact = mount / "robopark-backups" / f"backup-{backup_id}.rpb"
+    assert artifact.is_file()
+    assert artifact.stat().st_mode & 0o777 == 0o600
+    assert adapter.verified_backup_receipt(backup_id)["verified"] is True
+
+
+def test_production_backup_restore_bridges_verified_snapshot_to_crash_safe_restore(
+    host_paths, monkeypatch
+):
+    adapter, mount, create = _production_backup_verify_fixture(host_paths)
+    source = host_paths.root / "confinement-source"
+    (source / "data").unlink()
+    (source / "snapshot.zip").write_bytes(b"snapshot archive")
+    create(mount / "robopark-backups")
+    adapter.backup_verify(str(uuid4()), _BACKUP_UUID)
+    seen = []
+
+    def restore(paths, request, runner):
+        del runner
+        seen.append(request)
+        assert (paths.ops / "artifacts" / request["artifact"]).read_bytes() == b"snapshot archive"
+        return {"state": "succeeded", "error": None}
+
+    monkeypatch.setattr("robopark_host.restore.run_restore", restore)
+    operation_id = str(uuid4())
+
+    assert adapter.backup_restore(operation_id, _BACKUP_UUID, 7) == {
+        "backup_id": _BACKUP_UUID,
+        "restored": True,
+    }
+    assert seen[0]["job_id"] == operation_id
+    assert seen[0]["actor_user_id"] == 7
+
+
+def test_production_backup_restore_reconciles_existing_restore_journal(
+    host_paths, monkeypatch
+):
+    from robopark_host.commands import (
+        SafeProductionTypedHostEffects,
+        validate_typed_operation,
+    )
+
+    adapter = SafeProductionTypedHostEffects(host_paths)
+    operation_id = str(uuid4())
+    legacy_request = {
+        "kind": "restore",
+        "job_id": operation_id,
+        "artifact": f"restore-{operation_id}.zip",
+        "sha256": "a" * 64,
+        "actor_user_id": 7,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    monkeypatch.setattr(
+        "robopark_host.restore._load",
+        lambda paths: {"request": legacy_request},
+    )
+    seen = []
+
+    def restore(paths, request, runner):
+        del paths, runner
+        seen.append(request)
+        return {"state": "succeeded", "error": None}
+
+    monkeypatch.setattr("robopark_host.restore.run_restore", restore)
+    command = typed_request(
+        "backup-restore",
+        backup_id=_BACKUP_UUID,
+        confirmation="RESTORE ROBOPARK BACKUP",
+    )
+    command["job_id"] = operation_id
+    command["authorization"] = authorization(command)
+
+    assert adapter.reconcile(validate_typed_operation(command)) == {
+        "state": "succeeded",
+        "detail": {"backup_id": _BACKUP_UUID, "restored": True},
+        "error": None,
+    }
+    assert seen == [legacy_request]
 
 
 def test_typed_schema_is_closed_and_has_no_execution_escape():
@@ -792,6 +1193,64 @@ def test_api_typed_union_and_bridge_revalidate_consumed_authorization(tmp_path, 
         "consumed": True,
         "validated_at": job.created_at,
     }
+
+
+def test_docker_image_preview_dispatches_as_read_only_typed_operation(host_paths):
+    from robopark_host.commands import execute_typed_operation
+
+    command = typed_request("docker-image-preview")
+    effects = FakeHostEffects()
+
+    result = execute_typed_operation(host_paths, command, effects)
+
+    assert result["state"] == "succeeded"
+    assert effects.calls == [("docker_image_preview", command["job_id"])]
+
+
+def test_typed_image_cleanup_preserves_exact_partial_result(host_paths):
+    from robopark_host.commands import execute_typed_operation
+    from robopark_host.image_retention import ImageCleanupPartialError
+
+    tag = "robopark-api:11111111-1111-4111-8111-111111111111"
+
+    class PartialImages(FakeHostEffects):
+        def docker_image_execute(self, operation_id, plan_id):
+            del operation_id, plan_id
+            raise ImageCleanupPartialError(
+                [{"tag": tag, "reported_bytes": 4096}],
+                {"tag": "robopark-web:11111111-1111-4111-8111-111111111111", "reported_bytes": 4096},
+            )
+
+    command = typed_request(
+        "docker-image-execute", plan_id=_PLAN_UUID,
+        confirmation="CLEAN ROBOPARK IMAGES",
+    )
+    result = execute_typed_operation(host_paths, command, PartialImages())
+
+    assert result["state"] == "failed"
+    assert result["error"] == "image_cleanup_partial"
+    assert result["detail"]["deleted"] == [{"tag": tag, "reported_bytes": 4096}]
+
+
+def test_typed_builder_cleanup_preserves_uncertain_exact_record(host_paths):
+    from robopark_host.builder_cleanup import BuilderCleanupPartialError
+    from robopark_host.commands import execute_typed_operation
+
+    class PartialBuilder(FakeHostEffects):
+        def builder_cache_execute(self, operation_id, plan_id):
+            del operation_id, plan_id
+            raise BuilderCleanupPartialError({"id": "private", "reported_bytes": 8192})
+
+    command = typed_request(
+        "builder-cache-execute", plan_id=_PLAN_UUID,
+        confirmation="CLEAN ROBOPARK BUILD CACHE",
+    )
+    result = execute_typed_operation(host_paths, command, PartialBuilder())
+
+    assert result["state"] == "failed"
+    assert result["error"] == "builder_cleanup_partial"
+    assert result["detail"]["deleted_count"] == 0
+    assert result["detail"]["uncertain_target"] == {"id": "private", "reported_bytes": 8192}
 
 
 def test_usb_format_requires_uuid_safe_removable_device_and_double_confirmation(
@@ -1283,62 +1742,25 @@ def test_path_trigger_runs_bounded_root_consumer():
     assert service["Service"]["ProtectSystem"] == "strict"
 
 
-def test_update_consumer_calls_launcher_once_without_doctor(host_paths, monkeypatch):
+def test_host_self_test_accepts_current_ota_protocol():
+    from robopark_host.cli import main
+
+    assert main(["--self-test"]) == 0
+
+
+def test_legacy_update_command_is_rejected_before_launch(host_paths, monkeypatch):
     from robopark_host import commands
-    from robopark_host.state import atomic_write_json
 
-    command = request(host_paths, "update", artifact="update-test.zip")
-    calls = []
-
-    def launcher(paths, path, runner):
-        calls.append(json.loads(path.read_text()))
-        atomic_write_json(
-            paths.ops / "public/rebuild.result",
-            {"job_id": command["job_id"], "ok": True, "error": None},
-            mode=0o644,
-        )
-        path.unlink()
-        return 0
-
-    monkeypatch.setattr("robopark_host.launcher.launch_update", launcher)
+    request(host_paths, "update", artifact="old-update.zip")
     monkeypatch.setattr(
-        commands, "run_doctor", lambda *args: pytest.fail("update consumed as diagnostics")
+        "robopark_host.launcher.launch_update",
+        lambda *args: pytest.fail("legacy update reached launcher"),
     )
-    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 0
-    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 0
-    assert calls == [command]
 
-
-def test_fresh_update_is_not_superseded_by_previous_success(host_paths, monkeypatch):
-    from robopark_host import commands
-    from robopark_host.state import atomic_write_json
-
-    previous = str(uuid4())
-    atomic_write_json(
-        host_paths.state / "updater-journal.json",
-        {"job_id": previous, "phase": "succeeded"},
-    )
-    atomic_write_json(
-        host_paths.ops / "public/rebuild.result",
-        {"job_id": previous, "ok": True, "error": None},
-        mode=0o644,
-    )
-    command = request(host_paths, "update", artifact="update-next.zip")
-    launched = []
-
-    def launcher(paths, path, runner):
-        launched.append(json.loads(path.read_text()))
-        atomic_write_json(
-            paths.ops / "public/rebuild.result",
-            {"job_id": command["job_id"], "ok": True, "error": None},
-            mode=0o644,
-        )
-        return 0
-
-    monkeypatch.setattr("robopark_host.launcher.launch_update", launcher)
-
-    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 0
-    assert launched == [command]
+    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 1
+    assert not (host_paths.ops / "inbox/approved.json").exists()
+    assert not (host_paths.state / "command-request.json").exists()
+    assert not (host_paths.state / "update-worker-request.json").exists()
 
 
 def test_repair_does_not_reexecute_claimed_command_after_crash(host_paths, monkeypatch):
@@ -1547,135 +1969,6 @@ def test_installer_enables_and_starts_approved_command_trigger(tmp_path):
     assert any(line[0] == "start" and "robopark-commands.path" in line for line in commands)
 
 
-def test_expired_claimed_update_recovers_then_publishes_bounded_rejection(host_paths, monkeypatch):
-    from types import SimpleNamespace
-
-    from robopark_host import commands
-    from robopark_host.state import atomic_write_json
-
-    command = request(
-        host_paths, "update", artifact="update-approved.zip", created_at="2020-01-01T00:00:00+00:00"
-    )
-    atomic_write_json(host_paths.state / "command-request.json", command)
-    recovered = []
-    monkeypatch.setattr(
-        "robopark_host.updater.recover_interrupted_update",
-        lambda *args: recovered.append(True) or SimpleNamespace(state="idle"),
-    )
-    monkeypatch.setattr(
-        "robopark_host.launcher.launch_update",
-        lambda *args: pytest.fail("expired request executed"),
-    )
-    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 1
-    assert recovered == [True]
-    result = json.loads((host_paths.ops / "public/rebuild.result").read_text())
-    assert result == {"job_id": command["job_id"], "ok": False, "error": "request_expired"}
-    assert not (host_paths.state / "command-request.json").exists()
-    assert not (host_paths.ops / "inbox/approved.json").exists()
-
-
-def test_successful_newer_local_update_retires_superseded_host_request(host_paths, monkeypatch):
-    from robopark_host import commands
-    from robopark_host.state import atomic_write_json
-
-    command = request(
-        host_paths,
-        "update",
-        artifact="update-old.zip",
-        created_at=(datetime.now(UTC) - timedelta(seconds=30)).isoformat(),
-    )
-    atomic_write_json(host_paths.state / "command-request.json", command)
-    atomic_write_json(
-        host_paths.ops / "public/command-claim.json",
-        {**{key: command[key] for key in ("job_id", "kind", "actor_user_id")}, "active": True},
-        mode=0o644,
-    )
-    successor = str(uuid4())
-    candidate = host_paths.releases / ("0.1.35-" + successor)
-    candidate.mkdir(parents=True)
-    host_paths.current.symlink_to(candidate)
-    atomic_write_json(
-        host_paths.state / "updater-journal.json",
-        {"job_id": successor, "candidate": candidate.name, "phase": "succeeded"},
-    )
-    atomic_write_json(
-        host_paths.ops / "public/rebuild.result",
-        {"job_id": successor, "ok": True, "error": None},
-        mode=0o644,
-    )
-    monkeypatch.setattr(
-        "robopark_host.updater.recover_interrupted_update",
-        lambda *args: pytest.fail("superseded request entered update recovery"),
-    )
-    monkeypatch.setattr(
-        "robopark_host.launcher.launch_update",
-        lambda *args: pytest.fail("superseded update relaunched"),
-    )
-
-    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 1
-
-    result = json.loads((host_paths.ops / "public/rebuild.result").read_text())
-    assert result == {"job_id": command["job_id"], "ok": False, "error": "request_superseded"}
-    assert not (host_paths.state / "command-request.json").exists()
-    assert json.loads((host_paths.ops / "public/command-claim.json").read_text())["active"] is False
-
-
-def test_resumed_update_after_previous_success_is_not_superseded(host_paths, monkeypatch):
-    from types import SimpleNamespace
-
-    from robopark_host import commands
-    from robopark_host.state import atomic_write_json
-
-    previous = str(uuid4())
-    candidate = host_paths.releases / ("0.1.33-" + previous)
-    candidate.mkdir(parents=True)
-    host_paths.current.symlink_to(candidate)
-    journal_path = host_paths.state / "updater-journal.json"
-    atomic_write_json(
-        journal_path,
-        {"job_id": previous, "candidate": candidate.name, "phase": "succeeded"},
-    )
-    atomic_write_json(
-        host_paths.ops / "public/rebuild.result",
-        {"job_id": previous, "ok": True, "error": None},
-        mode=0o644,
-    )
-    command = request(
-        host_paths,
-        "update",
-        artifact="update-next.zip",
-        created_at=(
-            datetime.fromtimestamp(host_paths.current.lstat().st_mtime, UTC) + timedelta(seconds=1)
-        ).isoformat(),
-    )
-    atomic_write_json(host_paths.state / "command-request.json", command)
-    # Reconciliation may rewrite the already-successful journal after this request.
-    later = datetime.fromisoformat(command["created_at"]).timestamp() + 1
-    os.utime(journal_path, (later, later))
-    monkeypatch.setattr(
-        "robopark_host.updater.recover_interrupted_update",
-        lambda *args: SimpleNamespace(state="idle"),
-    )
-
-    def launcher(paths, path, runner):
-        atomic_write_json(
-            paths.ops / "public/rebuild.result",
-            {"job_id": command["job_id"], "ok": True, "error": None},
-            mode=0o644,
-        )
-        return 0
-
-    monkeypatch.setattr("robopark_host.launcher.launch_update", launcher)
-
-    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 0
-    assert json.loads((host_paths.ops / "public/rebuild.result").read_text()) == {
-        "job_id": command["job_id"],
-        "ok": True,
-        "error": None,
-    }
-    assert not (host_paths.state / "command-request.json").exists()
-
-
 def test_expired_approved_diagnostics_publishes_failure_without_work(host_paths, monkeypatch):
     from robopark_host import commands
 
@@ -1708,35 +2001,6 @@ def test_trigger_does_not_rate_limit_four_successful_commands(host_paths, monkey
             json.loads((host_paths.ops / "public/command-result.json").read_text())["job_id"]
             == command["job_id"]
         )
-
-
-def test_crash_retry_budget_is_per_command_and_survives_process_restarts(host_paths, monkeypatch):
-    from types import SimpleNamespace
-
-    from robopark_host import commands
-
-    request(host_paths, "update", artifact="update-test.zip")
-    monkeypatch.setattr(
-        "robopark_host.updater.recover_interrupted_update",
-        lambda *args: SimpleNamespace(state="idle"),
-    )
-    launches = []
-
-    def crash(*args):
-        launches.append(True)
-        raise SystemExit("crash")
-
-    monkeypatch.setattr("robopark_host.launcher.launch_update", crash)
-    for _ in range(3):
-        with pytest.raises(SystemExit):
-            commands.consume_commands(host_paths, None, None, update_runner=object())
-    assert commands.consume_commands(host_paths, None, None, update_runner=object()) == 0
-    assert len(launches) == 3
-    assert json.loads((host_paths.ops / "public/maintenance.json").read_text())["enabled"] is True
-    assert (
-        json.loads((host_paths.ops / "public/host-status.json").read_text())["error"]
-        == "manual_recovery_required"
-    )
 
 
 def test_deeply_nested_inbox_is_rejected_and_removed(host_paths, monkeypatch):
@@ -1773,3 +2037,42 @@ def test_resumed_legacy_typed_request_fails_before_effect(host_paths):
     effects = FakeHostEffects()
     assert commands.consume_commands(host_paths, None, None, typed_effects=effects) == 1
     assert effects.calls == []
+
+
+def test_production_backup_verify_rejects_snapshot_above_restore_limit(host_paths, monkeypatch):
+    from robopark_host import restore
+    from robopark_host.release import ReleaseError
+    adapter, mount, create = _production_backup_verify_fixture(host_paths)
+    source = host_paths.root / "confinement-source"
+    (source / "data").unlink()
+    (source / "snapshot.zip").write_bytes(b"snapshot archive")
+    create(mount / "robopark-backups")
+    monkeypatch.setattr(restore, "MAX_ARCHIVE", 4)
+    with pytest.raises(ReleaseError, match="backup_archive_limit"):
+        adapter.backup_verify(str(uuid4()), _BACKUP_UUID)
+    assert not (host_paths.state / "backup-receipts" / f"{_BACKUP_UUID}.json").exists()
+
+
+def test_reboot_reconciliation_fails_closed_on_unknown_systemd_state(host_paths):
+    from robopark_host.commands import SafeProductionTypedHostEffects, validate_typed_operation
+    from robopark_host.state import atomic_write_json
+    class Runner:
+        def __init__(self):
+            self.calls = []
+        def __call__(self, command, **kwargs):
+            self.calls.append(command)
+            return CommandResult(returncode=1)
+    operation = validate_typed_operation(typed_request("reboot", confirmation="REBOOT ROBOPARK"))
+    host_paths.state.mkdir(parents=True, exist_ok=True)
+    folder = host_paths.state / "action-receipts"
+    folder.mkdir(mode=0o700)
+    atomic_write_json(folder / f"{operation.operation_id}.json", {
+        "schema": 1, "kind": "reboot", "state": "scheduling", "boot_id": TEST_BOOT_ID,
+    })
+    runner = Runner()
+    adapter = SafeProductionTypedHostEffects(host_paths, runner=runner)
+    result = adapter.reconcile(operation)
+    assert result["state"] == "failed"
+    assert result["error"] == "manual_recovery_required"
+    assert len(runner.calls) == 1
+    assert runner.calls[0][0:2] == ["systemctl", "show"]

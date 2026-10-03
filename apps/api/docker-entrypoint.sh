@@ -13,4 +13,5 @@ if [ "$workers" -lt 1 ]; then
 fi
 alembic upgrade head
 exec uvicorn robopark_api.main:app --host 0.0.0.0 --port 8000 --workers "$workers" \
-  --backlog 512 --timeout-graceful-shutdown 30
+  --backlog 512 --timeout-graceful-shutdown 30 \
+  --ws-max-size 16384 --ws-max-queue 4 --ws-per-message-deflate false

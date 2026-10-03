@@ -8,7 +8,7 @@ from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.models import AccessStatus, AuthSession, Park, Role, User, UserPark
 from robopark_api.security import hash_session_token
-from robopark_api.services import ip_location, rbac, user_activity
+from robopark_api.services import ip_location, user_activity
 from robopark_api.services.login_throttle import client_ip
 from robopark_api.services.ops.maintenance import host_maintenance_active
 
@@ -95,6 +95,12 @@ def require_user(
             detail="must_change_password",
         )
     return user
+
+
+# RBAC dependency wrappers import require_user, so load their module only after
+# the function is defined. The dedicated worker imports routers in a fresh
+# process, without the API application's import order to mask that cycle.
+from robopark_api.services import rbac  # noqa: E402
 
 
 def require_admin(user: User = Depends(require_user), db: Session = Depends(get_db)) -> User:

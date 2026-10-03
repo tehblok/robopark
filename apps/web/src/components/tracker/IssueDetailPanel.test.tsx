@@ -49,6 +49,16 @@ afterEach(() => {
 })
 
 describe('IssueDetailPanel', () => {
+  it('shows a readable known Tracker type while keeping an unknown type verbatim', () => {
+    const view = render(<MemoryRouter><IssueDetailPanel comments={[]} issue={{ ...issue, type: 'task' }} /></MemoryRouter>)
+    const typeField = screen.getByText(ru.tracker.fields.type, { selector: 'dt' }).parentElement
+    expect(typeField).toHaveTextContent('Задача')
+    expect(typeField).not.toHaveTextContent('task')
+
+    view.rerender(<MemoryRouter><IssueDetailPanel comments={[]} issue={{ ...issue, type: 'custom-kind' }} /></MemoryRouter>)
+    expect(screen.getByText(ru.tracker.fields.type, { selector: 'dt' }).parentElement).toHaveTextContent('custom-kind')
+  })
+
   it('keeps long issue identity and status chips in the card flow', () => {
     render(
       <MemoryRouter>

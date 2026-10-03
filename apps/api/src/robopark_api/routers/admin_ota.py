@@ -37,14 +37,23 @@ def upload_store(settings: Settings) -> OtaUploadStore:
 def _error(error: OtaUploadError) -> HTTPException:
     detail = str(error)
     code = (
-        404 if detail == "ota_upload_not_found"
-        else 403 if detail == "ota_upload_forbidden"
-        else 409 if detail in {
-            "ota_offset_mismatch", "ota_upload_expired", "ota_upload_finalized",
-            "ota_upload_incomplete", "ota_upload_quota",
+        404
+        if detail == "ota_upload_not_found"
+        else 403
+        if detail == "ota_upload_forbidden"
+        else 409
+        if detail
+        in {
+            "ota_offset_mismatch",
+            "ota_upload_expired",
+            "ota_upload_finalized",
+            "ota_upload_incomplete",
+            "ota_upload_quota",
         }
-        else 413 if detail in {"ota_package_too_large", "ota_chunk_too_large"}
-        else 507 if detail == "ota_insufficient_space"
+        else 413
+        if detail in {"ota_package_too_large", "ota_chunk_too_large"}
+        else 507
+        if detail == "ota_insufficient_space"
         else 400
     )
     return HTTPException(status_code=code, detail=detail)
@@ -56,6 +65,21 @@ def _public(record) -> dict:
     value["changes"] = list(record.changes)
     value["compatible_from"] = list(record.compatible_from)
     return value
+
+
+@router.get("/uploads")
+def list_uploads(
+    royal: User = Depends(require_royal),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        return {
+            "items": [
+                _public(record) for record in upload_store(settings).list_owned(actor_id=royal.id)
+            ]
+        }
+    except OtaUploadError as exc:
+        raise _error(exc) from exc
 
 
 @router.post("/uploads", status_code=status.HTTP_201_CREATED)
@@ -98,7 +122,10 @@ async def append_upload(
     royal: User = Depends(require_royal),
     settings: Settings = Depends(get_settings),
 ):
-    if request.headers.get("content-type", "").split(";", 1)[0] != "application/offset+octet-stream":
+    if (
+        request.headers.get("content-type", "").split(";", 1)[0]
+        != "application/offset+octet-stream"
+    ):
         raise HTTPException(status_code=415, detail="ota_content_type_required")
     try:
         offset = int(request.headers.get("upload-offset", ""))
@@ -111,9 +138,7 @@ async def append_upload(
         if len(chunk) > store.chunk_bytes:
             raise HTTPException(status_code=413, detail="ota_chunk_too_large")
     try:
-        new_offset = store.append(
-            upload_id, actor_id=royal.id, offset=offset, chunk=bytes(chunk)
-        )
+        new_offset = store.append(upload_id, actor_id=royal.id, offset=offset, chunk=bytes(chunk))
     except OtaUploadError as exc:
         raise _error(exc) from exc
     return {"offset": new_offset}

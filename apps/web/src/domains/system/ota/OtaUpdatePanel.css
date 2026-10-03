@@ -1,9 +1,8 @@
 .rp-ota { margin-top: var(--space-4); }
 .rp-ota .panel-body { display: grid; gap: var(--space-4); }
 .rp-ota-drop { padding: var(--space-5); border: 1px dashed var(--rp-border-strong, var(--rp-border)); border-radius: var(--rp-radius-md); background: var(--rp-surface-raised); }
-.rp-ota-drop label { display: grid; gap: var(--space-2); cursor: pointer; }
-.rp-ota-drop span { color: var(--rp-text-muted); font-size: .875rem; }
-.rp-ota-drop input { max-width: 100%; }
+.rp-ota-drop__content { display: grid; gap: var(--space-2); min-width: 0; }
+.rp-ota-drop__content > span { color: var(--rp-text-muted); font-size: .875rem; }
 .rp-ota-progress, .rp-ota-job { display: grid; gap: var(--space-2); }
 .rp-ota-progress progress, .rp-ota-job progress { width: 100%; }
 .rp-ota-preview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
@@ -19,4 +18,16 @@
   .rp-ota-wide { grid-column: auto; }
   .rp-ota-drop { padding: var(--space-3); }
   .rp-ota-confirm .rp-button { width: 100%; }
+}
+.rp-ota-upload-list {
+  display: grid;
+  gap: var(--rp-space-3);
+  padding-inline-start: var(--rp-space-4);
+}
+
+.rp-ota-upload-list li {
+  display: grid;
+  gap: var(--rp-space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }

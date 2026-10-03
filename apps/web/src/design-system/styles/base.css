@@ -29,6 +29,7 @@ textarea,
 
 input[type='checkbox'],
 input[type='radio'] {
+  accent-color: var(--rp-action);
   min-width: 18px;
   min-height: 18px;
   width: 18px;

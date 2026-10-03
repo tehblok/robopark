@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import {
   api,
   ApiError,
+  type EmergencyDiscoveredField,
   type EmergencyReading,
   type EmergencyReadingDraft,
   type User,
@@ -180,6 +181,40 @@ it('keeps the editor available when Emergency rejects an integration cookie', as
   expect(await screen.findByText('Проверьте подключение к Emergency.')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Новое показание' })).toBeVisible()
   expect(screen.queryByText('Нет доступа к настройке показаний.')).not.toBeInTheDocument()
+})
+
+it('discards a late discovery for a previous robot before selecting fields for the new robot', async () => {
+  let finishFirst!: (fields: EmergencyDiscoveredField[]) => void
+  let finishSecond!: (fields: EmergencyDiscoveredField[]) => void
+  vi.mocked(api.discoverEmergencyReadings)
+    .mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve }))
+    .mockImplementationOnce(() => new Promise(resolve => { finishSecond = resolve }))
+  render(tree())
+  const robot = await screen.findByLabelText('Номер робота для примера')
+  fireEvent.change(robot, { target: { value: 'R-107' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Найти показания' }))
+  await waitFor(() => expect(api.discoverEmergencyReadings).toHaveBeenCalledWith('R-107', expect.any(AbortSignal)))
+
+  fireEvent.change(robot, { target: { value: 'R-108' } })
+  expect(screen.queryByRole('button', { name: 'Выбрать parktronics.lt' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Найти показания' }))
+  await waitFor(() => expect(api.discoverEmergencyReadings).toHaveBeenCalledWith('R-108', expect.any(AbortSignal)))
+  await act(async () => finishSecond([{ path: 'battery.charge', value_type: 'number', example: '92' }]))
+  expect(await screen.findByRole('button', { name: 'Выбрать battery.charge' })).toBeVisible()
+  await act(async () => finishFirst([{ path: 'parktronics.lt', value_type: 'number', example: '320' }]))
+  expect(screen.getByRole('button', { name: 'Выбрать battery.charge' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Выбрать parktronics.lt' })).not.toBeInTheDocument()
+})
+
+it('explains an empty successful robot discovery and clears it for the next robot', async () => {
+  vi.mocked(api.discoverEmergencyReadings).mockResolvedValueOnce([])
+  render(tree())
+  const robot = await screen.findByLabelText('Номер робота для примера')
+  fireEvent.change(robot, { target: { value: 'R-107' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Найти показания' }))
+  expect(await screen.findByText('Поля не найдены')).toBeVisible()
+  fireEvent.change(robot, { target: { value: 'R-108' } })
+  expect(screen.queryByText('Поля не найдены')).not.toBeInTheDocument()
 })
 
 it.each([

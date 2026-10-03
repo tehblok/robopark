@@ -1,8 +1,9 @@
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError, type IntegrationSettings, type Park } from '../api'
 import { resourceStore } from '../lib/resource'
+import { snapshot } from '../domains/insights/operations.test-support'
 import { installMatchMedia, renderApp, testUser } from '../test/renderApp'
 
 function deferred<T>() {
@@ -27,7 +28,7 @@ function settings(validation: Partial<IntegrationSettings> = {}): IntegrationSet
   }
 }
 
-function setup(validation: Partial<IntegrationSettings> = {}, parks: Park[] = [], permissions = ['nav.admin'], route = '/admin/settings') {
+function setup(validation: Partial<IntegrationSettings> = {}, parks: Park[] = [], permissions = ['nav.admin'], route = '/admin/settings', role: 'admin' | 'royal' = 'admin', configure?: () => void) {
   vi.spyOn(api, 'parks').mockResolvedValue(parks)
   vi.spyOn(api, 'adminParkRequests').mockResolvedValue([])
   vi.spyOn(api, 'integrationSettings').mockResolvedValue(settings(validation))
@@ -41,8 +42,8 @@ function setup(validation: Partial<IntegrationSettings> = {}, parks: Park[] = []
     operator: false, mechanic: false, admin: false, royal: false, driver: false,
   })
   vi.spyOn(api, 'adminUsers').mockResolvedValue([])
-  vi.spyOn(api, 'operationsSlaPolicy').mockResolvedValue({ park_id: 7, target_hours: 4 })
-  return renderApp(route, testUser({ role: 'admin', permissions, parks }))
+  configure?.()
+  return renderApp(route, testUser({ role, permissions, parks }))
 }
 
 describe('Admin Emergency cookie validation', () => {
@@ -51,8 +52,18 @@ describe('Admin Emergency cookie validation', () => {
   })
 
   afterEach(() => {
+    cleanup()
     resourceStore.clearAll()
     vi.restoreAllMocks()
+  })
+
+  it('describes a configured registration password without showing its masked API value', async () => {
+    vi.spyOn(api, 'registrationPasswordSettings').mockResolvedValue({ configured: true, password_masked: 'set', updated_at: null })
+    setup({}, [], ['nav.admin'], '/admin/settings', 'royal')
+
+    const status = await screen.findByText('Текущий пароль')
+    expect(status.parentElement).toHaveTextContent('Установлен')
+    expect(status.parentElement).not.toHaveTextContent('set')
   })
 
   it('offers collapse controls for substantial administration panels but not navigation links', async () => {
@@ -61,6 +72,84 @@ describe('Admin Emergency cookie validation', () => {
     expect(await screen.findByRole('button', { name: 'Свернуть: Секреты' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Свернуть: Политика Tracker' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Свернуть: Быстрые переходы' })).not.toBeInTheDocument()
+  })
+
+  it('does not fetch the pending user list while opening integration settings', async () => {
+    setup()
+
+    expect(await screen.findByRole('button', { name: 'Свернуть: Секреты' })).toBeVisible()
+    expect(api.adminUsers).not.toHaveBeenCalled()
+  })
+
+  it('keeps available integration settings when Tracker policy fails temporarily', async () => {
+    setup({ tracker_token_masked: 'configured' }, [], ['nav.admin'], '/admin/settings', 'admin', () => {
+      vi.mocked(api.trackerPolicy).mockRejectedValue(new ApiError(503, 'upstream_unavailable'))
+    })
+
+    expect(await screen.findByText('Tracker OAuth')).toBeVisible()
+    expect(screen.getByText('работает')).toBeVisible()
+    expect(await screen.findByText(/Не удалось загрузить: Политика Tracker/)).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Политика Tracker' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('checkbox', { name: 'Запрет скриншотов — Оператор' })).toBeEnabled()
+  })
+
+  it('keeps park settings when park requests fail temporarily', async () => {
+    setup({}, [{ id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'], '/admin/settings?tab=parks', 'admin', () => {
+      vi.mocked(api.adminParkRequests).mockRejectedValue(new ApiError(503, 'upstream_unavailable'))
+    })
+
+    expect(await screen.findByRole('button', { name: 'Открыть парк Северный' })).toBeVisible()
+    expect(screen.getByText(/Не удалось загрузить: Заявки на парки/)).toBeVisible()
+  })
+
+  it('loads only park data on the parks route and fetches integrations when settings opens', async () => {
+    const actor = userEvent.setup()
+    setup({}, [{ id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'], '/admin/settings?tab=parks')
+    vi.mocked(api.integrationSettings).mockRejectedValue(new ApiError(503, 'upstream_unavailable'))
+    vi.mocked(api.trackerPolicy).mockRejectedValue(new ApiError(503, 'upstream_unavailable'))
+
+    expect(await screen.findByRole('button', { name: 'Открыть парк Северный' })).toBeVisible()
+    expect(api.adminParkRequests).toHaveBeenCalled()
+    expect(api.integrationSettings).not.toHaveBeenCalled()
+    expect(api.trackerPolicy).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Не удалось загрузить: Интеграции/)).not.toBeInTheDocument()
+
+    await actor.click(screen.getByRole('link', { name: /^Настройки$/ }))
+    await waitFor(() => expect(api.integrationSettings).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText(/Не удалось загрузить: Интеграции/)).toBeVisible()
+  })
+
+  it('keeps the last confirmed integration status when its revalidation fails', async () => {
+    const first = setup({ tracker_token_masked: 'configured' })
+    await screen.findByText('работает')
+    first.unmount()
+    vi.mocked(api.integrationSettings).mockRejectedValue(new ApiError(503, 'upstream_unavailable'))
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001)
+
+    renderApp('/admin/settings', testUser({ role: 'admin', permissions: ['nav.admin'] }))
+    await screen.findByText(/Не удалось загрузить: Интеграции/)
+    expect(screen.getByText('работает')).toBeVisible()
+  })
+
+  it('drops protected settings when one bootstrap request is denied', async () => {
+    setup({ tracker_token_masked: 'configured' }, [], ['nav.admin'], '/admin/settings', 'admin', () => {
+      vi.mocked(api.trackerPolicy).mockRejectedValue(new ApiError(403, 'forbidden'))
+    })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Недостаточно прав')
+    expect(screen.queryByText('работает')).not.toBeInTheDocument()
+  })
+
+  it('drops a cached integration status after revalidation is denied', async () => {
+    const first = setup({ tracker_token_masked: 'configured' })
+    await screen.findByText('работает')
+    first.unmount()
+    vi.mocked(api.trackerPolicy).mockRejectedValue(new ApiError(403, 'forbidden'))
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001)
+
+    renderApp('/admin/settings', testUser({ role: 'admin', permissions: ['nav.admin'] }))
+    await screen.findByRole('alert')
+    expect(screen.queryByText('работает')).not.toBeInTheDocument()
   })
 
   it('links directly to error mapping and ignoring from administration', async () => {
@@ -79,7 +168,7 @@ describe('Admin Emergency cookie validation', () => {
   })
 
   it('keeps the new-park form behind an explicit disclosure', async () => {
-    setup({}, [{ id: 7, name: 'Северный', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
+    setup({}, [{ id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
     const create = await screen.findByRole('button', { name: 'Добавить парк' })
     expect(screen.queryByRole('heading', { name: 'Новый парк' })).not.toBeInTheDocument()
     fireEvent.click(create)
@@ -87,17 +176,119 @@ describe('Admin Emergency cookie validation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Открыть парк Северный' }))
     expect(screen.queryByRole('heading', { name: 'Новый парк' })).not.toBeInTheDocument()
     expect(screen.getByLabelText('Очередь Tracker')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Настроить SLA' }))
-    expect(screen.queryByLabelText('Очередь Tracker')).not.toBeInTheDocument()
-    expect(await screen.findByRole('heading', { name: 'Норматив SLA' })).toBeVisible()
+    expect(screen.getByText(/SLA — 5 рабочих часов/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Настроить SLA' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Добавить парк' }))
-    expect(screen.queryByRole('heading', { name: 'Норматив SLA' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Новый парк' })).toBeVisible()
+  })
+
+  it('shows parks in their own management section rather than a duplicate settings tab', async () => {
+    setup({}, [{ id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'], '/admin/settings?tab=parks')
+    await waitFor(() => expect(within(screen.getByRole('region', { name: 'Парки' })).getByRole('button', { name: 'Открыть парк Северный' })).toBeVisible())
+    expect(screen.queryByRole('tablist', { name: 'Разделы настроек' })).not.toBeInTheDocument()
+  })
+
+  it('configures the Tracker queue while creating the first park', async () => {
+    setup({}, [], ['nav.admin', 'parks.manage'], '/admin/settings?tab=parks')
+    const create = vi.spyOn(api, 'createPark').mockResolvedValue({
+      id: 7, name: 'Северный', tag: 'north', timezone: 'Europe/Moscow',
+      tracker_queue: 'SDCFLEETOPS', is_active: true,
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Добавить парк' }))
+    fireEvent.change(screen.getByLabelText('Название'), { target: { value: 'Северный' } })
+    fireEvent.change(screen.getByLabelText('Тег'), { target: { value: 'north' } })
+    fireEvent.change(screen.getByLabelText(/Очередь Tracker/), { target: { value: 'SDCFLEETOPS' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Создать' }))
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'Северный', tag: 'north', timezone: 'Europe/Moscow', tracker_queue: 'SDCFLEETOPS',
+    })))
+  })
+
+  it('closes the new-park form after a successful creation', async () => {
+    const existing: Park = { id: 7, name: 'Северный', tag: 'north', timezone: 'Europe/Moscow', is_active: true }
+    const created: Park = { id: 8, name: 'Тестовый парк', tag: 'demo-third', timezone: 'Europe/Moscow', is_active: true }
+    let available = [existing]
+    setup({}, available, ['nav.admin', 'parks.manage'], '/admin/settings?tab=parks')
+    vi.mocked(api.parks).mockImplementation(async () => available)
+    vi.spyOn(api, 'createPark').mockImplementation(async () => {
+      available = [existing, created]
+      return created
+    })
+
+    await screen.findByRole('button', { name: 'Открыть парк Северный' })
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить парк' }))
+    fireEvent.change(screen.getByLabelText('Название'), { target: { value: created.name } })
+    fireEvent.change(screen.getByLabelText('Тег'), { target: { value: created.tag } })
+    fireEvent.click(screen.getByRole('button', { name: 'Создать' }))
+
+    await screen.findByText('Парк создан')
+    expect(await screen.findByRole('button', { name: 'Открыть парк Тестовый парк' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Новый парк' })).not.toBeInTheDocument()
+  })
+
+  it('opens the new park in the overview immediately after the first creation', async () => {
+    const created: Park = { id: 7, name: 'Северный', tag: 'north', timezone: 'Europe/Moscow', is_active: true }
+    let available: Park[] = []
+    setup({}, [], ['nav.admin', 'parks.manage', 'nav.dashboard', 'tracker.read'], '/admin/settings?tab=parks')
+    vi.mocked(api.parks).mockImplementation(async () => available)
+    vi.spyOn(api, 'createPark').mockImplementation(async () => {
+      available = [created]
+      return created
+    })
+    const overview = vi.spyOn(api, 'operationsOverview').mockResolvedValue(snapshot())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Добавить парк' }))
+    fireEvent.change(screen.getByLabelText('Название'), { target: { value: 'Северный' } })
+    fireEvent.change(screen.getByLabelText('Тег'), { target: { value: 'north' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Создать' }))
+    await screen.findByText('Парк создан')
+    fireEvent.click(screen.getAllByRole('link', { name: 'Обзор' })[0])
+
+    await waitFor(() => expect(overview).toHaveBeenCalledWith(7, 7, 'all'))
+  })
+
+  it('uses the updated park name across the shell and overview without reloading', async () => {
+    const north: Park = { id: 7, name: 'Северный', tag: 'north', timezone: 'Europe/Moscow', is_active: true }
+    let available = [north]
+    setup({}, [north], ['nav.admin', 'parks.manage', 'nav.dashboard', 'tracker.read'], '/admin/settings?tab=parks')
+    vi.mocked(api.parks).mockImplementation(async () => available)
+    vi.spyOn(api, 'updatePark').mockImplementation(async () => {
+      const updated = { ...north, name: 'Южный' }
+      available = [updated]
+      return updated
+    })
+    vi.spyOn(api, 'operationsOverview').mockResolvedValue(snapshot())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Открыть парк Северный' }))
+    fireEvent.change(screen.getByLabelText('Название'), { target: { value: 'Южный' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+    await screen.findByRole('button', { name: 'Открыть парк Южный' })
+    fireEvent.click(screen.getAllByRole('link', { name: 'Обзор' })[0])
+
+    expect(await screen.findByRole('region', { name: 'Южный' })).toBeVisible()
+  })
+
+  it('blocks an invalid park time zone before creating or updating SLA settings', async () => {
+    const park: Park = { id: 7, name: 'Северный', tag: 'north', timezone: 'Europe/Moscow', is_active: true }
+    setup({}, [park], ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
+    const create = vi.spyOn(api, 'createPark').mockResolvedValue(park)
+    const update = vi.spyOn(api, 'updatePark').mockResolvedValue(park)
+    fireEvent.click(await screen.findByRole('button', { name: 'Добавить парк' }))
+    fireEvent.change(screen.getByLabelText(/Часовой пояс парка/), { target: { value: 'Mars/Olympus' } })
+    expect(screen.getByRole('button', { name: 'Создать' })).toBeDisabled()
+    expect(screen.getByText(/Укажите действительный часовой пояс IANA/)).toBeVisible()
+    expect(create).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть парк Северный' }))
+    fireEvent.change(screen.getByLabelText(/Часовой пояс парка/), { target: { value: 'Mars/Olympus' } })
+    expect(screen.getByRole('button', { name: 'Сохранить' })).toBeDisabled()
+    expect(update).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText(/Часовой пояс парка/), { target: { value: 'Asia/Yekaterinburg' } })
+    expect(screen.getByRole('button', { name: 'Сохранить' })).toBeEnabled()
   })
 
   it('shows the park search and identities before opening any park editor at 390px', async () => {
     installMatchMedia({ width: 390 })
-    setup({}, [{ id: 7, name: 'Северный', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
+    setup({}, [{ id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
     await screen.findByRole('searchbox', { name: 'Поиск парков' })
     expect(screen.getByRole('searchbox', { name: 'Поиск парков' })).toBeVisible()
     expect(await screen.findByRole('button', { name: 'Открыть парк Северный' })).toBeVisible()
@@ -107,8 +298,16 @@ describe('Admin Emergency cookie validation', () => {
     expect(screen.getByLabelText('Очередь Tracker')).toBeVisible()
   })
 
+  it('does not expose removed park coordinate controls', async () => {
+    const park: Park = { id: 7, name: 'Северный', tag: 'north', timezone: 'Europe/Moscow', is_active: true }
+    setup({}, [park], ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
+    fireEvent.click(await screen.findByRole('button', { name: 'Открыть парк Северный' }))
+    expect(screen.queryByLabelText('Широта парка')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Долгота парка')).not.toBeInTheDocument()
+  })
+
   it('keeps an unsaved park draft when stale data could otherwise reload on focus', async () => {
-    const parks = [{ id: 7, name: 'Северный', tag: 'north', is_active: true }]
+    const parks = [{ id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', is_active: true }]
     setup({}, parks, ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
     fireEvent.click(await screen.findByRole('button', { name: 'Открыть парк Северный' }))
     const input = await screen.findByDisplayValue('Северный')
@@ -191,26 +390,28 @@ describe('Admin Emergency cookie validation', () => {
 
   it('publishes a successful integration mutation after a cold bootstrap failure without reloading', async () => {
     const actor = userEvent.setup()
-    setup()
-    vi.mocked(api.integrationSettings).mockRejectedValue(new Error('bootstrap offline'))
-    vi.spyOn(api, 'checkEmergencyCookie').mockResolvedValue(settings({
-      emergency_cookie_status: 'valid', emergency_cookie_valid: true,
-      emergency_cookie_checked_robot: '447',
-    }))
-    await screen.findByRole('alert')
+    setup({}, [], ['nav.admin'], '/admin/settings', 'admin', () => {
+      vi.mocked(api.integrationSettings).mockRejectedValue(new Error('bootstrap offline'))
+      vi.spyOn(api, 'checkEmergencyCookie').mockResolvedValue(settings({
+        emergency_cookie_status: 'valid', emergency_cookie_valid: true,
+        emergency_cookie_checked_robot: '447',
+      }))
+    })
+    await screen.findByText(/Не удалось загрузить: Интеграции/)
     await actor.click(screen.getByRole('button', { name: 'Проверить текущую' }))
     expect(await screen.findByText('Текущая cookie проверена')).toBeVisible()
     expect(screen.getByText('Действительна')).toBeVisible()
     expect(screen.getByText(/робот 447/)).toBeVisible()
+    expect(screen.queryByText(/Не удалось загрузить: Интеграции/)).not.toBeInTheDocument()
     expect(api.integrationSettings).toHaveBeenCalledTimes(1)
   })
 
-  it.each(['bootstrap', 'screenshot-guard'])('does not turn unknown protection into editable false after %s failure', async failure => {
+  it('does not turn unknown protection into editable false after screenshot-guard failure', async () => {
     const actor = userEvent.setup()
-    setup()
     const authoritative = settings({ emergency_cookie_status: 'valid', emergency_cookie_valid: true })
-    if (failure === 'bootstrap') vi.mocked(api.integrationSettings).mockRejectedValue(new Error('bootstrap offline'))
-    else vi.mocked(api.screenshotGuardSettings).mockRejectedValue(new Error('protection offline'))
+    setup({}, [], ['nav.admin'], '/admin/settings', 'admin', () => {
+      vi.mocked(api.screenshotGuardSettings).mockRejectedValue(new Error('protection offline'))
+    })
     const mutate = vi.spyOn(api, 'updateScreenshotGuardSettings')
     vi.spyOn(api, 'checkEmergencyCookie').mockResolvedValue(authoritative)
     const heading = await screen.findByRole('heading', { name: 'Защита от скриншотов' })
@@ -289,8 +490,8 @@ describe('Admin Emergency cookie validation', () => {
     await screen.findByText('Действительна')
     first.unmount()
     const parks = [
-      { id: 7, name: 'Северный', tag: 'north', is_active: true },
-      { id: 9, name: 'Южный', tag: 'south', is_active: true },
+      { id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', is_active: true },
+      { id: 9, name: 'Южный', timezone: 'Europe/Moscow', tag: 'south', is_active: true },
     ]
     vi.mocked(api.parks).mockResolvedValue(parks)
     renderApp('/admin/settings?park=7', testUser({ role: 'admin', permissions: ['nav.admin'], parks }))
@@ -322,10 +523,10 @@ describe('Admin Emergency cookie validation', () => {
     const actor = userEvent.setup()
     const pending = deferred<IntegrationSettings>()
     vi.spyOn(api, 'checkEmergencyCookie').mockReturnValue(pending.promise)
-    setup({}, [{ id: 7, name: 'Северный', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'])
+    setup({}, [{ id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', is_active: true }], ['nav.admin', 'parks.manage'])
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('park=7'))
     await actor.click(await screen.findByRole('button', { name: 'Проверить текущую' }))
-    await actor.click(screen.getByRole('tab', { name: 'Парки' }))
+    await actor.click(screen.getByRole('link', { name: 'Парки' }))
     await actor.click(await screen.findByRole('button', { name: 'Открыть парк Северный' }))
     const name = screen.getAllByLabelText('Название').at(-1)!
     await actor.clear(name)

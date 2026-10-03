@@ -9,6 +9,8 @@ export default defineConfig({
   testDir: './e2e-production',
   testMatch: '**/*.spec.ts',
   fullyParallel: false,
+  // The fixture serves one mutable v1/v2 release pointer for all projects.
+  workers: 1,
   retries: process.env.CI ? 1 : 0,
   use: {
     baseURL,
@@ -25,6 +27,14 @@ export default defineConfig({
     {
       name: 'chromium-pwa',
       use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'firefox-pwa',
+      use: { ...devices['Desktop Firefox'] },
+    },
+    {
+      name: 'webkit-pwa',
+      use: { ...devices['Desktop Safari'] },
     },
   ],
 })

@@ -4,12 +4,16 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from sqlalchemy import select
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from conftest import login_as
-from robopark_api.models import User
-from robopark_api.services import media_uploads
+from conftest import login_as, role_id_for
+from robopark_api.collaboration_models import TrackerClaim
+from robopark_api.models import AccessStatus, Park, User, UserPark
+from robopark_api.security import hash_password
+from robopark_api.services import media_uploads, platform_settings, rbac, tracker_cache
 from robopark_api.task_workflow_models import MediaUploadSession
 
 
@@ -38,6 +42,618 @@ def _start(
         "/media/uploads",
         json=payload,
     )
+
+
+@pytest.fixture(autouse=True)
+def configured_upload_issue(db_session, monkeypatch):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **kwargs: {
+            "key": kwargs["key"],
+            "queue": "ROBOPARK",
+            "tags": ["Alpha"],
+            "status": "Open",
+            "status_key": "open",
+        },
+    )
+
+
+def _service_payload(media_id: str, size_bytes: int = 1) -> media_uploads.MediaUploadCreateIn:
+    return media_uploads.MediaUploadCreateIn(
+        media_id=media_id,
+        issue_key="ROBOPARK-51",
+        name="robot.jpg",
+        mime_type="image/jpeg",
+        size_bytes=size_bytes,
+        sha256=hashlib.sha256(b"x" * size_bytes).hexdigest(),
+    )
+
+
+def test_upload_start_requires_attach_permission(client, db_session, seed_park_with_tracker):
+    driver = User(
+        username="media-driver",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "driver"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(driver)
+    db_session.flush()
+    db_session.add(UserPark(user_id=driver.id, park_id=seed_park_with_tracker.id))
+    db_session.commit()
+    login_as(client, driver.username, "secret")
+
+    response = _start(client, b"\xff\xd8\xffdriver", media_id="driver-media-1234")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "tracker_attach_disabled"
+    assert db_session.scalar(select(func.count()).select_from(MediaUploadSession)) == 0
+
+
+def test_upload_start_rejects_issue_outside_assigned_parks(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    restricted = User(
+        username="media-restricted",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "mechanic"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(restricted)
+    db_session.flush()
+    db_session.add(UserPark(user_id=restricted.id, park_id=seed_park_with_tracker.id))
+    rbac.set_user_effective_permissions(
+        db_session,
+        restricted,
+        [rbac.PERMISSION_TRACKER_READ, rbac.PERMISSION_TRACKER_ATTACH],
+    )
+    db_session.add(
+        Park(
+            name="Beta",
+            tag="Beta",
+            is_active=True,
+            tracker_queue="ROBOPARK",
+            feature_blockers=True,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **kwargs: {
+            "key": kwargs["key"],
+            "queue": "ROBOPARK",
+            "tags": ["Beta"],
+            "status": "Open",
+            "status_key": "open",
+        },
+    )
+    login_as(client, restricted.username, "secret")
+
+    response = _start(client, b"\xff\xd8\xffforeign", media_id="foreign-media-1234")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "tracker_issue_out_of_scope"
+    assert db_session.scalar(select(func.count()).select_from(MediaUploadSession)) == 0
+
+
+def test_upload_start_rejects_ambiguous_casefolded_park_tag(client, db_session, seed_mechanic):
+    db_session.add(
+        Park(
+            name="Ambiguous Alpha",
+            tag="alpha",
+            is_active=True,
+            tracker_queue="ROBOPARK",
+            feature_blockers=True,
+        )
+    )
+    db_session.commit()
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = _start(client, b"\xff\xd8\xffambiguous", media_id="ambiguous-media-1")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "tracker_issue_park_required"
+    assert db_session.scalar(select(func.count()).select_from(MediaUploadSession)) == 0
+
+
+def test_upload_operations_recheck_current_account_permission_and_park_scope(
+    client, db_session, seed_mechanic, seed_park_with_tracker
+):
+    content = b"\xff\xd8\xffrevocation"
+    login_as(client, seed_mechanic.username, "secret")
+    started = _start(client, content, media_id="revocation-media-1")
+    assert started.status_code == 201
+    upload_id = started.json()["upload_id"]
+    row = db_session.get(MediaUploadSession, upload_id)
+    assert row.park_id == seed_park_with_tracker.id
+
+    seed_mechanic.access_status = AccessStatus.pending.value
+    db_session.commit()
+    assert _start(client, content, media_id="revocation-media-1").status_code == 403
+
+    seed_mechanic.access_status = AccessStatus.approved.value
+    rbac.set_user_effective_permissions(
+        db_session,
+        seed_mechanic,
+        [rbac.PERMISSION_TRACKER_READ],
+    )
+    db_session.commit()
+    chunk = client.put(
+        f"/media/uploads/{upload_id}/chunks/0",
+        content=content,
+        headers={"X-Chunk-SHA256": hashlib.sha256(content).hexdigest()},
+    )
+    assert chunk.status_code == 403
+    assert chunk.json()["detail"] == "tracker_attach_disabled"
+
+    rbac.set_user_effective_permissions(
+        db_session,
+        seed_mechanic,
+        [rbac.PERMISSION_TRACKER_READ, rbac.PERMISSION_TRACKER_ATTACH],
+    )
+    db_session.commit()
+    assert (
+        client.put(
+            f"/media/uploads/{upload_id}/chunks/0",
+            content=content,
+            headers={"X-Chunk-SHA256": hashlib.sha256(content).hexdigest()},
+        ).status_code
+        == 200
+    )
+    membership = db_session.scalar(
+        select(UserPark).where(
+            UserPark.user_id == seed_mechanic.id,
+            UserPark.park_id == seed_park_with_tracker.id,
+        )
+    )
+    db_session.delete(membership)
+    db_session.commit()
+    completed = client.post(f"/media/uploads/{upload_id}/complete")
+    assert completed.status_code == 403
+    assert completed.json()["detail"] == "tracker_issue_out_of_scope"
+
+
+def test_legacy_upload_backfills_park_from_canonical_local_claim(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    content = b"\xff\xd8\xfflegacy-claim"
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        park_id=None,
+        media_id="legacy-claim-media",
+        issue_key="ROBOPARK-51",
+        original_name="robot.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        received_offset=0,
+        blob_name="legacy-claim.part",
+        completed=False,
+        created_at=now,
+        updated_at=now,
+        expires_at=now + 86400,
+    )
+    db_session.add_all(
+        [
+            row,
+            TrackerClaim(
+                issue_key=row.issue_key,
+                park_id=seed_park_with_tracker.id,
+                owner_user_id=seed_mechanic.id,
+                updated_by_user_id=seed_mechanic.id,
+                state="active",
+                updated_at=now,
+            ),
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Tracker request")),
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    replay = _start(client, content, media_id=row.media_id)
+
+    assert replay.status_code == 201
+    db_session.refresh(row)
+    assert row.park_id == seed_park_with_tracker.id
+
+
+def test_legacy_replay_cannot_rebind_scope_with_a_different_issue(
+    client, db_session, seed_mechanic, monkeypatch
+):
+    content = b"\xff\xd8\xfflegacy-scope"
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        park_id=None,
+        media_id="legacy-scope-media",
+        issue_key="ROBOPARK-51",
+        original_name="robot.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        received_offset=0,
+        blob_name="legacy-scope.part",
+        completed=False,
+        created_at=now,
+        updated_at=now,
+        expires_at=now + 86400,
+    )
+    db_session.add(row)
+    db_session.commit()
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **kwargs: {
+            "key": kwargs["key"],
+            "queue": "ROBOPARK",
+            "tags": ["Alpha"],
+            "status": "Open",
+            "status_key": "open",
+        },
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    replay = _start(
+        client,
+        content,
+        media_id=row.media_id,
+        issue_key="ROBOPARK-99",
+    )
+
+    assert replay.status_code == 409
+    assert replay.json()["detail"] == "media_upload_payload_conflict"
+    db_session.refresh(row)
+    assert row.park_id is None
+
+
+def test_legacy_completed_upload_survives_temporary_scope_resolution_failure(
+    client, db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    content = b"\xff\xd8\xfflegacy-ready"
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        park_id=None,
+        media_id="legacy-ready-media",
+        issue_key="ROBOPARK-51",
+        original_name="robot.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        received_offset=len(content),
+        blob_name="legacy-ready.ready",
+        completed=True,
+        created_at=now,
+        updated_at=now,
+        expires_at=now + 86400,
+        completed_at=now,
+    )
+    db_session.add(row)
+    db_session.commit()
+    path = tmp_path / row.blob_name
+    path.write_bytes(content)
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            media_uploads.tracker_client.TrackerError("temporary")
+        ),
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    replay = _start(client, content, media_id=row.media_id)
+
+    assert replay.status_code == 502
+    db_session.refresh(row)
+    assert row.park_id is None
+    assert row.completed is True
+    assert path.read_bytes() == content
+
+
+def test_legacy_chunk_without_local_claim_requires_scope_refresh(
+    client, db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    content = b"\xff\xd8\xfflegacy-part"
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        park_id=None,
+        media_id="legacy-direct-chunk",
+        issue_key="ROBOPARK-51",
+        original_name="robot.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        received_offset=0,
+        blob_name="legacy-direct.part",
+        completed=False,
+        created_at=now,
+        updated_at=now,
+        expires_at=now + 86400,
+    )
+    db_session.add(row)
+    db_session.commit()
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.put(
+        f"/media/uploads/{row.id}/chunks/0",
+        content=content,
+        headers={"X-Chunk-SHA256": hashlib.sha256(content).hexdigest()},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "media_upload_scope_refresh_required"
+    assert not (tmp_path / row.blob_name).exists()
+
+
+def test_concurrent_upload_starts_reserve_user_session_quota_atomically(
+    db_engine, seed_mechanic, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    monkeypatch.setattr(media_uploads, "MAX_UNCONSUMED_SESSIONS_PER_USER", 1)
+    start = threading.Barrier(3)
+
+    def reserve(media_id: str):
+        start.wait(timeout=1)
+        with Session(db_engine) as db:
+            user = db.get(User, seed_mechanic.id)
+            try:
+                return media_uploads.start(db, user, _service_payload(media_id)).status
+            except HTTPException as exc:
+                return exc.status_code, exc.detail
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(reserve, "quota-race-media-1")
+        second = executor.submit(reserve, "quota-race-media-2")
+        start.wait(timeout=1)
+        results = [first.result(timeout=3), second.result(timeout=3)]
+
+    assert sorted(results, key=str) == sorted(
+        ["active", (429, "media_upload_user_quota_exceeded")], key=str
+    )
+    with Session(db_engine) as db:
+        assert db.scalar(select(func.count()).select_from(MediaUploadSession)) == 1
+
+
+def test_concurrent_users_reserve_global_session_quota_atomically(
+    db_engine, seed_mechanic, seed_admin, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    monkeypatch.setattr(media_uploads, "MAX_UNCONSUMED_SESSIONS_GLOBAL", 1)
+    start = threading.Barrier(3)
+
+    def reserve(user_id: int, media_id: str):
+        start.wait(timeout=1)
+        with Session(db_engine) as db:
+            user = db.get(User, user_id)
+            try:
+                return media_uploads.start(db, user, _service_payload(media_id)).status
+            except HTTPException as exc:
+                return exc.status_code, exc.detail
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(reserve, seed_mechanic.id, "global-race-media-1")
+        second = executor.submit(reserve, seed_admin.id, "global-race-media-2")
+        start.wait(timeout=1)
+        results = [first.result(timeout=3), second.result(timeout=3)]
+
+    assert sorted(results, key=str) == sorted(
+        ["active", (429, "media_upload_global_quota_exceeded")], key=str
+    )
+    with Session(db_engine) as db:
+        assert db.scalar(select(func.count()).select_from(MediaUploadSession)) == 1
+
+
+def test_retained_completed_upload_still_consumes_quota(
+    db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    monkeypatch.setattr(media_uploads, "MAX_UNCONSUMED_SESSIONS_PER_USER", 1)
+    content = b"\xff\xd8\xffretained"
+    first_payload = media_uploads.MediaUploadCreateIn(
+        media_id="retained-media-1",
+        issue_key="ROBOPARK-51",
+        name="robot.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+    first = media_uploads.start(db_session, seed_mechanic, first_payload)
+    media_uploads.append_chunk(
+        db_session,
+        seed_mechanic,
+        first.row.id,
+        0,
+        content,
+        hashlib.sha256(content).hexdigest(),
+    )
+    media_uploads.complete(db_session, seed_mechanic, first.row.id)
+
+    replay = media_uploads.start(db_session, seed_mechanic, first_payload)
+    assert replay.status == "completed"
+    with pytest.raises(HTTPException) as caught:
+        media_uploads.start(db_session, seed_mechanic, _service_payload("retained-media-2"))
+    assert (caught.value.status_code, caught.value.detail) == (
+        429,
+        "media_upload_user_quota_exceeded",
+    )
+    assert caught.value.headers == {"Retry-After": str(media_uploads.QUOTA_RETRY_AFTER_SECONDS)}
+
+
+def test_consumed_upload_releases_session_slot_but_remains_in_byte_usage(
+    db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    monkeypatch.setattr(media_uploads, "MAX_UNCONSUMED_SESSIONS_PER_USER", 1)
+    content = b"\xff\xd8\xffconsumed"
+    first_payload = media_uploads.MediaUploadCreateIn(
+        media_id="consumed-media-1",
+        issue_key="ROBOPARK-51",
+        name="robot.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+    first = media_uploads.start(db_session, seed_mechanic, first_payload)
+    media_uploads.append_chunk(
+        db_session,
+        seed_mechanic,
+        first.row.id,
+        0,
+        content,
+        hashlib.sha256(content).hexdigest(),
+    )
+    media_uploads.complete(db_session, seed_mechanic, first.row.id)
+    first.row.dependency_terminal_at = time.time()
+    db_session.commit()
+
+    assert media_uploads._retained_usage(db_session, actor_user_id=seed_mechanic.id) == (
+        0,
+        len(content),
+    )
+    assert (
+        media_uploads.start(
+            db_session,
+            seed_mechanic,
+            _service_payload("consumed-media-2"),
+        ).status
+        == "active"
+    )
+
+
+def test_expired_incomplete_reservation_restarts_same_media_without_leaking_partial_file(
+    db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    payload = _service_payload("expired-media-1234", 4)
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        media_id=payload.media_id,
+        issue_key=payload.issue_key,
+        original_name=payload.name,
+        mime_type=payload.mime_type,
+        size_bytes=payload.size_bytes,
+        sha256=payload.sha256,
+        received_offset=2,
+        blob_name="expired.part",
+        completed=False,
+        created_at=now - media_uploads.SESSION_TTL_SECONDS - 10,
+        updated_at=now - 10,
+        expires_at=now - 1,
+    )
+    db_session.add(row)
+    db_session.commit()
+    old_path = tmp_path / row.blob_name
+    old_path.write_bytes(b"xx")
+
+    restarted = media_uploads.start(db_session, seed_mechanic, payload)
+
+    assert restarted.status == "reinitialized"
+    assert restarted.row.id == row.id
+    assert restarted.row.received_offset == 0
+    assert restarted.row.expires_at - restarted.row.updated_at == media_uploads.SESSION_TTL_SECONDS
+    assert restarted.row.blob_name != "expired.part"
+    assert not old_path.exists()
+
+
+def test_retained_upload_byte_quotas_apply_per_user_and_globally(
+    db_session, seed_mechanic, seed_admin, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    monkeypatch.setattr(media_uploads, "MAX_RETAINED_BYTES_PER_USER", 5)
+    monkeypatch.setattr(media_uploads, "MAX_RETAINED_BYTES_GLOBAL", 8)
+    media_uploads.start(db_session, seed_mechanic, _service_payload("byte-quota-media-1", 5))
+
+    with pytest.raises(HTTPException) as per_user:
+        media_uploads.start(db_session, seed_mechanic, _service_payload("byte-quota-media-2", 1))
+    assert (per_user.value.status_code, per_user.value.detail) == (
+        429,
+        "media_upload_user_quota_exceeded",
+    )
+
+    with pytest.raises(HTTPException) as global_quota:
+        media_uploads.start(db_session, seed_admin, _service_payload("byte-quota-media-3", 4))
+    assert (global_quota.value.status_code, global_quota.value.detail) == (
+        429,
+        "media_upload_global_quota_exceeded",
+    )
+
+
+def test_upload_reservation_preserves_disk_headroom(
+    db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    class Filesystem:
+        f_bavail = media_uploads.MIN_FREE_BYTES_AFTER_RESERVATION
+        f_frsize = 1
+
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    monkeypatch.setattr(media_uploads.os, "statvfs", lambda _path: Filesystem())
+
+    with pytest.raises(HTTPException) as caught:
+        media_uploads.start(db_session, seed_mechanic, _service_payload("disk-headroom-1"))
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        507,
+        "media_storage_capacity_exceeded",
+    )
+    assert db_session.scalar(select(func.count()).select_from(MediaUploadSession)) == 0
+
+
+def test_disk_headroom_includes_unwritten_bytes_from_existing_reservations(
+    db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    class Filesystem:
+        f_bavail = media_uploads.MIN_FREE_BYTES_AFTER_RESERVATION + 5
+        f_frsize = 1
+
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    media_uploads.start(
+        db_session,
+        seed_mechanic,
+        _service_payload("reserved-disk-headroom-1", 5),
+    )
+    monkeypatch.setattr(media_uploads.os, "statvfs", lambda _path: Filesystem())
+
+    with pytest.raises(HTTPException) as caught:
+        media_uploads.start(
+            db_session,
+            seed_mechanic,
+            _service_payload("reserved-disk-headroom-2"),
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        507,
+        "media_storage_capacity_exceeded",
+    )
+
+
+def test_upload_schema_rejects_more_than_fifteen_mebibytes(client, seed_mechanic):
+    login_as(client, seed_mechanic.username, "secret")
+    response = client.post(
+        "/media/uploads",
+        json={
+            "media_id": "oversized-media-1",
+            "issue_key": "ROBOPARK-51",
+            "name": "robot.jpg",
+            "mime_type": "image/jpeg",
+            "size_bytes": 15 * 1024 * 1024 + 1,
+            "sha256": "a" * 64,
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_resumable_upload_validates_offsets_checksums_and_replays(
@@ -109,6 +725,7 @@ def test_upload_creation_persists_exact_action_dependency_before_content(
     assert row.dependent_action_id == "review-action-1234"
     assert row.dependent_device_id == "account-42"
     assert row.dependency_bound_at is not None
+    assert row.expires_at - row.created_at == media_uploads.SESSION_TTL_SECONDS
 
     replay = _start(
         client,
@@ -399,6 +1016,242 @@ def test_cleanup_removes_abandoned_and_old_completed_uploads(
     assert media_uploads.cleanup_expired(db_session, now=now) == 2
     assert not (tmp_path / "abandoned.part").exists()
     assert not (tmp_path / "completed.ready").exists()
+
+
+def test_cleanup_serializes_eligibility_with_expired_upload_reinitialization(
+    db_engine, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    now = time.time()
+    content = b"\xff\xd8\xffrace"
+    with Session(db_engine) as db:
+        row = MediaUploadSession(
+            actor_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            media_id="cleanup-reinit-race",
+            issue_key="ROBOPARK-51",
+            original_name="robot.jpg",
+            mime_type="image/jpeg",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            received_offset=1,
+            blob_name="cleanup-reinit.part",
+            completed=False,
+            created_at=now - 86401,
+            updated_at=now - 10,
+            expires_at=now - 1,
+        )
+        db.add(row)
+        db.commit()
+        row_id = row.id
+    (tmp_path / "cleanup-reinit.part").write_bytes(b"x")
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    original_capacity_check = media_uploads._ensure_disk_capacity
+    reinit_in_lock = threading.Event()
+    allow_reinit = threading.Event()
+    cleanup_done = threading.Event()
+
+    def hold_reinit(db, size_bytes, *, exclude_session_id=None):
+        reinit_in_lock.set()
+        assert allow_reinit.wait(timeout=2)
+        return original_capacity_check(
+            db,
+            size_bytes,
+            exclude_session_id=exclude_session_id,
+        )
+
+    monkeypatch.setattr(media_uploads, "_ensure_disk_capacity", hold_reinit)
+
+    def restart():
+        with Session(db_engine) as db:
+            actor = db.get(User, seed_mechanic.id)
+            return media_uploads.start(
+                db,
+                actor,
+                media_uploads.MediaUploadCreateIn(
+                    media_id="cleanup-reinit-race",
+                    issue_key="ROBOPARK-51",
+                    name="robot.jpg",
+                    mime_type="image/jpeg",
+                    size_bytes=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                ),
+            ).status
+
+    def cleanup():
+        try:
+            with Session(db_engine) as db:
+                return media_uploads.cleanup_expired(db, now=now)
+        finally:
+            cleanup_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        restart_future = executor.submit(restart)
+        assert reinit_in_lock.wait(timeout=1)
+        cleanup_future = executor.submit(cleanup)
+        cleanup_ran_during_reinit = cleanup_done.wait(timeout=0.2)
+        allow_reinit.set()
+        restart_result = restart_future.result(timeout=2)
+        cleanup_result = cleanup_future.result(timeout=2)
+
+    assert cleanup_ran_during_reinit is False
+    assert restart_result == "reinitialized"
+    assert cleanup_result == 0
+    with Session(db_engine) as db:
+        persisted = db.get(MediaUploadSession, row_id)
+        assert persisted is not None
+        assert persisted.expires_at > now
+
+
+def test_cleanup_cannot_delete_session_while_chunk_is_writing(
+    db_engine, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    now = time.time()
+    content = b"chunk-race"
+    with Session(db_engine) as db:
+        row = MediaUploadSession(
+            actor_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            media_id="cleanup-chunk-race",
+            issue_key="ROBOPARK-51",
+            original_name="robot.jpg",
+            mime_type="image/jpeg",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            received_offset=0,
+            blob_name="cleanup-chunk.part",
+            completed=False,
+            created_at=now,
+            updated_at=now,
+            expires_at=now + 60,
+        )
+        db.add(row)
+        db.commit()
+        upload_id = row.id
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    original_open = media_uploads.os.open
+    write_started = threading.Event()
+    allow_write = threading.Event()
+    cleanup_done = threading.Event()
+
+    def hold_open(path, flags, mode=0o777):
+        if Path(path).name == "cleanup-chunk.part":
+            write_started.set()
+            assert allow_write.wait(timeout=2)
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(media_uploads.os, "open", hold_open)
+
+    def append():
+        with Session(db_engine) as db:
+            actor = db.get(User, seed_mechanic.id)
+            return media_uploads.append_chunk(
+                db,
+                actor,
+                upload_id,
+                0,
+                content,
+                hashlib.sha256(content).hexdigest(),
+            )
+
+    def cleanup():
+        try:
+            with Session(db_engine) as db:
+                return media_uploads.cleanup_expired(db, now=now + 61)
+        finally:
+            cleanup_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        append_future = executor.submit(append)
+        assert write_started.wait(timeout=1)
+        cleanup_future = executor.submit(cleanup)
+        cleanup_ran_during_write = cleanup_done.wait(timeout=0.2)
+        allow_write.set()
+        try:
+            append_result = append_future.result(timeout=2)
+        except Exception:
+            append_result = None
+        cleanup_result = cleanup_future.result(timeout=2)
+
+    assert cleanup_ran_during_write is False
+    assert append_result == len(content)
+    assert cleanup_result == 1
+    assert not (tmp_path / "cleanup-chunk.part").exists()
+    with Session(db_engine) as db:
+        assert db.get(MediaUploadSession, upload_id) is None
+
+
+def test_cleanup_cannot_delete_session_while_upload_is_completing(
+    db_engine, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    now = time.time()
+    content = b"\xff\xd8\xffcomplete-race"
+    with Session(db_engine) as db:
+        row = MediaUploadSession(
+            actor_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            media_id="cleanup-complete-race",
+            issue_key="ROBOPARK-51",
+            original_name="robot.jpg",
+            mime_type="image/jpeg",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            received_offset=len(content),
+            blob_name="cleanup-complete.part",
+            completed=False,
+            created_at=now,
+            updated_at=now,
+            expires_at=now + 60,
+        )
+        db.add(row)
+        db.commit()
+        upload_id = row.id
+    source = tmp_path / "cleanup-complete.part"
+    source.write_bytes(content)
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    original_replace = Path.replace
+    rename_started = threading.Event()
+    allow_rename = threading.Event()
+    cleanup_done = threading.Event()
+
+    def hold_replace(path: Path, target: Path):
+        if path.name == "cleanup-complete.part":
+            rename_started.set()
+            assert allow_rename.wait(timeout=2)
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", hold_replace)
+
+    def complete():
+        with Session(db_engine) as db:
+            actor = db.get(User, seed_mechanic.id)
+            return media_uploads.complete(db, actor, upload_id).completed
+
+    def cleanup():
+        try:
+            with Session(db_engine) as db:
+                return media_uploads.cleanup_expired(db, now=now + 61)
+        finally:
+            cleanup_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        complete_future = executor.submit(complete)
+        assert rename_started.wait(timeout=1)
+        cleanup_future = executor.submit(cleanup)
+        cleanup_ran_during_rename = cleanup_done.wait(timeout=0.2)
+        allow_rename.set()
+        try:
+            complete_result = complete_future.result(timeout=2)
+        except Exception:
+            complete_result = None
+        cleanup_result = cleanup_future.result(timeout=2)
+
+    assert cleanup_ran_during_rename is False
+    assert complete_result is True
+    assert cleanup_result == 0
+    assert not source.exists()
+    assert (tmp_path / f"{upload_id}.ready").read_bytes() == content
+    with Session(db_engine) as db:
+        assert db.get(MediaUploadSession, upload_id).completed is True
 
 
 def test_cleanup_retains_completed_upload_while_dependent_action_is_pending(

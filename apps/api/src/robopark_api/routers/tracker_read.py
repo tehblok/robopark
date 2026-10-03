@@ -3,9 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import time
-from concurrent.futures import Future, wait
 from datetime import UTC, datetime, timedelta
+from math import isfinite
 from typing import Any, Literal
 
 from fastapi import (
@@ -44,6 +43,7 @@ from robopark_api.services import (
     tracker_cache,
     tracker_client,
     tracker_filters,
+    tracker_history,
 )
 from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services.rbac import RoleSlug
@@ -62,17 +62,33 @@ from robopark_api.services.tracker_policy import (
     can_write_tracker,
     enforce_issue_scope,
     is_issue_in_scope,
+    issue_tags,
     load_issue_scope,
+    park_tag_identity,
+    park_tag_matches,
 )
 from robopark_api.task_workflow_models import ReliableAction, TaskReview
 
 MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 50
+MAX_OWNED_QUERY_KEYS = 20
 WORK_HISTORY_REQUEST_BUDGET_SECONDS = 0.25
 WORK_HISTORY_STARTS_PER_REQUEST = 2
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tracker", tags=["tracker-read"])
+
+
+def _issue_key_batches(keys: set[str]) -> list[list[str]]:
+    ordered = sorted(keys)
+    return [
+        ordered[start : start + MAX_OWNED_QUERY_KEYS]
+        for start in range(0, len(ordered), MAX_OWNED_QUERY_KEYS)
+    ]
+
+
+def _issue_key_clause(keys: list[str]) -> str:
+    return "(" + " OR ".join(f"Key: {tracker_client.ql_token(key)}" for key in keys) + ")"
 
 
 def _conditional_private_json(request: Request, response: Response, value: Any) -> Any:
@@ -118,13 +134,17 @@ def _issue_out(
     *,
     db: Session | None = None,
     assignee_override: dict[str, str] | None = None,
+    timezone: str | None = None,
 ) -> TrackerIssueOut:
     assignee = assignee_override
     if assignee is None and db is not None:
         assignee = local_assignee(db, issue)
     elif assignee is None and db is None:
         assignee = issue.get("assignee")
-    sla = tracker_client.repair_sla_fields(issue)
+    anchor_timezone = (
+        issue.get("sla_anchor_timezone") if "sla_anchor_timezone" in issue else timezone
+    )
+    sla = tracker_client.repair_sla_fields(issue, timezone=str(anchor_timezone or ""))
     return TrackerIssueOut(
         key=str(issue.get("key") or ""),
         summary=str(issue.get("summary") or ""),
@@ -140,14 +160,45 @@ def _issue_out(
         priority=str(issue.get("priority") or ""),
         type=str(issue.get("type") or ""),
         assignee=_person_out(assignee),
+        sla_timezone=str(anchor_timezone) if anchor_timezone else None,
         **sla,
     )
 
 
-def _ordered_by_queue(items: list[dict], *, newest: bool) -> list[dict]:
+def _issue_park(issue: dict, parks: list[Park], selected_tag: str | None = None) -> Park | None:
+    tags = issue_tags(issue)
+    matches = [
+        park
+        for park in parks
+        if park_tag_matches(park.tag, tags) and park.tracker_queue == issue.get("queue")
+    ]
+    if selected_tag:
+        matches = [
+            park
+            for park in matches
+            if park_tag_identity(park.tag) == park_tag_identity(selected_tag)
+        ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _issue_park_timezone(
+    issue: dict, parks: list[Park], selected_tag: str | None = None
+) -> str | None:
+    park = _issue_park(issue, parks, selected_tag)
+    return park.timezone if park is not None else None
+
+
+def _ordered_by_queue(items: list[dict], *, newest: bool, queue_first: bool = False) -> list[dict]:
     def timestamp(issue: dict) -> float | None:
-        # Creation time is only a stable ordering fallback, never an SLA start.
-        raw = tracker_client.repair_sla_fields(issue)["queued_at"] or issue.get("created")
+        fields = tracker_client.repair_sla_fields(issue)
+        verified = fields["queued_at"] if fields["sla_source"] == "status_history" else None
+        # A queued task without a proven transition has unknown queue age.
+        # Creation time may still order other statuses, but cannot prioritize it.
+        raw = verified or (
+            None
+            if queue_first and tracker_filters.issue_status_bucket(issue) == "queued"
+            else issue.get("created")
+        )
         try:
             return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
         except (TypeError, ValueError):
@@ -159,6 +210,9 @@ def _ordered_by_queue(items: list[dict], *, newest: bool) -> list[dict]:
         for issue, _index, _timestamp in sorted(
             indexed,
             key=lambda item: (
+                0
+                if not queue_first or tracker_filters.issue_status_bucket(item[0]) == "queued"
+                else 1,
                 item[2] is None,
                 -(item[2] or 0) if newest else (item[2] or 0),
                 item[1],
@@ -167,10 +221,15 @@ def _ordered_by_queue(items: list[dict], *, newest: bool) -> list[dict]:
     ]
 
 
-def _work_issue_sla(*, token: str, issue: dict) -> dict:
+def _work_issue_sla(
+    *, token: str, issue: dict, db: Session | None = None, park: Park | None = None
+) -> dict:
     embedded = tracker_client.repair_sla_fields(issue)
-    if embedded["sla_source"] == "status_history":
+    if embedded["sla_source"] == "status_history" and (db is None or park is None):
         return {**issue, **embedded}
+    verified = tracker_history.attach_verified_history(db, [issue])[0] if db else issue
+    if verified.get("sla_source") == "status_history" and verified.get("sla_anchor_timezone"):
+        return verified
     try:
         history = tracker_client.get_issue_status_history(
             token=token,
@@ -178,53 +237,34 @@ def _work_issue_sla(*, token: str, issue: dict) -> dict:
             issue=issue,
         )
     except tracker_client.TrackerError:
-        history = []
+        return verified if verified is not issue else {**issue, **embedded}
+    if db is not None and park is not None:
+        tracker_history.ingest_status_history(
+            db,
+            issue_key=str(issue.get("key") or ""),
+            park=park,
+            history=history,
+            current_tags=issue_tags(issue),
+        )
+        return tracker_history.attach_verified_history(db, [issue])[0]
     return {
         **issue,
         **tracker_client.repair_sla_fields(issue, status_history=history),
     }
 
 
-def _work_page_sla(*, token: str, issues: list[dict]) -> list[dict]:
-    deadline = time.monotonic() + WORK_HISTORY_REQUEST_BUDGET_SECONDS
-    pending: list[tuple[dict, Future[list[object]]]] = []
-    starts = 0
-    for issue in issues:
-        embedded = tracker_client.repair_sla_fields(issue)
-        if embedded["sla_source"] == "status_history":
-            continue
-        future, started = tracker_client.schedule_issue_status_history(
-            token=token,
-            key=str(issue.get("key") or ""),
-            issue=issue,
-            allow_start=starts < WORK_HISTORY_STARTS_PER_REQUEST,
-        )
-        starts += int(started)
-        if future is not None:
-            pending.append((issue, future))
-
-    remaining = max(0.0, deadline - time.monotonic())
-    ready, _ = (
-        wait(
-            {future for _issue, future in pending},
-            timeout=remaining,
-        )
-        if pending
-        else (set(), set())
+def _work_page_sla(
+    *, token: str, issues: list[dict], db: Session, parks: list[Park], selected_tag=None
+) -> list[dict]:
+    return tracker_history.hydrate_visible_history(
+        db,
+        token=token,
+        issues=issues,
+        parks=parks,
+        selected_tag=selected_tag,
+        budget_seconds=WORK_HISTORY_REQUEST_BUDGET_SECONDS,
+        max_starts=WORK_HISTORY_STARTS_PER_REQUEST,
     )
-    histories = {id(issue): future.result() for issue, future in pending if future in ready}
-    return [
-        {
-            **issue,
-            **tracker_client.repair_sla_fields(
-                issue,
-                status_history=histories[id(issue)],
-            ),
-        }
-        if id(issue) in histories
-        else {**issue, **tracker_client.repair_sla_fields(issue)}
-        for issue in issues
-    ]
 
 
 def _normalized_robot_number(raw: object) -> str | None:
@@ -238,7 +278,7 @@ def _normalized_robot_number(raw: object) -> str | None:
 
 
 def _detail_out(
-    issue: dict, *, db: Session, user: User, include_hidden: bool = False
+    issue: dict, *, db: Session, user: User, timezone: str | None, include_hidden: bool = False
 ) -> TrackerIssueDetailOut:
     task_lifecycle.reconcile_external_closure(db, issue)
     attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
@@ -252,13 +292,15 @@ def _detail_out(
         include_hidden=include_hidden,
     )
     return TrackerIssueDetailOut(
-        **_issue_out(issue, db=db).model_dump(),
+        **_issue_out(issue, db=db, timezone=timezone).model_dump(),
         resolution=str(issue.get("resolution") or ""),
         description=str(issue.get("description") or ""),
         reporter=_person_out(issue.get("reporter")),
         components=[str(item) for item in (issue.get("components") or [])],
         attachments=attachments,
-        claim=TrackerIssueClaimOut(park_id=claim.park_id) if claim is not None else None,
+        claim=TrackerIssueClaimOut(park_id=claim.park_id, state=claim.state)
+        if claim is not None
+        else None,
         capabilities=TrackerIssueCapabilitiesOut(
             comment=writable,
             assign=False,
@@ -373,7 +415,9 @@ def _build_query(
 
     if park:
         allowed_tags = allowed_park_tags_for_user(db, user)
-        if user.role not in {RoleSlug.ADMIN, RoleSlug.ROYAL} and park not in allowed_tags:
+        if user.role not in {RoleSlug.ADMIN, RoleSlug.ROYAL} and not park_tag_matches(
+            park, allowed_tags
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="tracker_park_forbidden",
@@ -413,7 +457,7 @@ def list_issues(
     assignee: str | None = Query(default=None, max_length=128),
     untagged: bool = Query(default=False),
     age_hours: int | None = Query(default=None, ge=1),
-    sort_order: Literal["oldest", "newest"] = Query(default="oldest", alias="sort"),
+    sort_order: Literal["oldest", "newest", "queue_first"] = Query(default="oldest", alias="sort"),
     limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     offset: int = Query(default=0, ge=0),
     include_hidden: bool = Query(default=False),
@@ -488,29 +532,49 @@ def list_issues(
         if operator_owned
         else set()
     )
+    owned_parks = (
+        None if rbac.is_admin_or_royal(user) else {park.id for park in get_user_parks(db, user)}
+    )
     try:
-        if pending_review_keys:
-            review_query = (
-                "("
-                + " OR ".join(
-                    f"Key: {tracker_client.ql_token(key)}" for key in sorted(pending_review_keys)
-                )
-                + ")"
-            )
+        for keys in _issue_key_batches(pending_review_keys):
             review_issues = tracker_cache.search_issues(
                 token=token,
-                query=review_query,
+                query=_issue_key_clause(keys),
                 filter_open=False,
                 order=["createdAt"],
             )
             for review_issue in review_issues:
                 task_lifecycle.reconcile_external_closure(db, review_issue)
-        items = tracker_cache.search_issues(
-            token=token,
-            query=query_text,
-            filter_open=owned_by_me or open_only or not bool(status_filter),
-            order=["createdAt"],
+        candidate_owned_keys = (
+            set(
+                db.scalars(
+                    select(TaskReview.issue_key).where(
+                        TaskReview.reviewer_user_id == user.id,
+                        TaskReview.state == "pending",
+                    )
+                ).all()
+            )
+            if operator_owned
+            else owned_issue_keys(db, user, park_ids=owned_parks)
+            if owned_by_me
+            else set()
         )
+        items: list[dict] = []
+        key_batches = _issue_key_batches(candidate_owned_keys) if owned_by_me else [None]
+        base_query = query_text
+        for keys in key_batches:
+            scoped_query = base_query
+            if keys is not None:
+                scoped_query = tracker_client.join_query(base_query, _issue_key_clause(keys))
+            query_text = scoped_query
+            items.extend(
+                tracker_cache.search_issues(
+                    token=token,
+                    query=scoped_query,
+                    filter_open=owned_by_me or open_only or not bool(status_filter),
+                    order=["createdAt"],
+                )
+            )
     except tracker_client.TrackerError as exc:
         logger.exception("tracker search failed query=%r", query_text)
         raise HTTPException(
@@ -524,15 +588,14 @@ def list_issues(
         if sort_order == "newest":
             ordered.reverse()
     else:
-        ordered = _ordered_by_queue(items, newest=sort_order == "newest")
+        ordered = _ordered_by_queue(
+            items, newest=sort_order == "newest", queue_first=sort_order == "queue_first"
+        )
 
     excluded_key = (exclude_key or "").strip()
     scoped_raw: list[dict] = []
     seen_keys: set[str] = set()
     hidden_keys = task_lifecycle.hidden_issue_keys(db)
-    owned_parks = (
-        None if rbac.is_admin_or_royal(user) else {park.id for park in get_user_parks(db, user)}
-    )
     if operator_owned:
         owned_keys = set(
             db.scalars(
@@ -574,12 +637,13 @@ def list_issues(
             continue
         if key == excluded_key or key in seen_keys:
             continue
-        if age_hours and issue.get("hours_created"):
+        if age_hours is not None:
             try:
-                if float(issue["hours_created"]) < age_hours:
-                    continue
+                issue_age = float(issue.get("hours_created"))
             except (TypeError, ValueError):
-                pass
+                continue
+            if not isfinite(issue_age) or issue_age < age_hours:
+                continue
         seen_keys.add(key)
         scoped_raw.append(issue)
 
@@ -596,17 +660,47 @@ def list_issues(
             issue for issue in scoped_raw if str(issue.get("key") or "").strip() in attention_keys
         ]
 
+    queue_age_order = not related_repairs and (
+        sort_order == "queue_first"
+        or (
+            sort_order == "oldest"
+            and tracker_filters.status_bucket(status_filter or "") == "queued"
+        )
+    )
+    if queue_age_order:
+        # The local ledger already knows some first queue transitions. Read it
+        # in batches before pagination; this adds no Tracker requests.
+        scoped_raw = _ordered_by_queue(
+            tracker_history.attach_verified_history(db, scoped_raw),
+            newest=False,
+            queue_first=True,
+        )
+
     total = len(scoped_raw)
-    page_raw = _work_page_sla(token=token, issues=scoped_raw[offset : offset + limit])
+    parks_for_sla = list(db.scalars(select(Park).where(Park.is_active.is_(True))).all())
+    page_raw = _work_page_sla(
+        token=token,
+        db=db,
+        parks=parks_for_sla,
+        selected_tag=park,
+        issues=(
+            scoped_raw[offset : offset + limit]
+            if queue_age_order
+            else tracker_history.attach_verified_history(db, scoped_raw[offset : offset + limit])
+        ),
+    )
     if not related_repairs:
-        page_raw = _ordered_by_queue(page_raw, newest=sort_order == "newest")
+        page_raw = _ordered_by_queue(
+            page_raw, newest=sort_order == "newest", queue_first=queue_age_order
+        )
     assignments = local_assignees(db, [str(issue.get("key") or "") for issue in page_raw])
     page = [
         _issue_out(
             {
                 **issue,
                 "assignee": assignments.get(str(issue.get("key") or "")),
-            }
+            },
+            timezone=_issue_park_timezone(issue, parks_for_sla, park),
         )
         for issue in page_raw
     ]
@@ -662,8 +756,15 @@ def get_issue(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     enforce_issue_scope(db, user, issue)
     _enforce_mechanic_claim(db, user, issue)
-    issue = _work_issue_sla(token=token, issue=issue)
-    return _detail_out(issue, db=db, user=user, include_hidden=include_hidden)
+    parks_for_sla = list(db.scalars(select(Park).where(Park.is_active.is_(True))).all())
+    issue = _work_issue_sla(token=token, issue=issue, db=db, park=_issue_park(issue, parks_for_sla))
+    return _detail_out(
+        issue,
+        db=db,
+        user=user,
+        timezone=_issue_park_timezone(issue, parks_for_sla),
+        include_hidden=include_hidden,
+    )
 
 
 @router.get("/issues/{key}/comments", response_model=list[TrackerCommentOut])

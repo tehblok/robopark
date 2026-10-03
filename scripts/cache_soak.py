@@ -11,6 +11,7 @@ import os
 import subprocess
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,9 +23,9 @@ COUNT_FIELDS = (
     "media_track_count",
     "db_pool_checked_out",
 )
-BYTE_FIELDS = ("rss_bytes", "cache_bytes", "storage_bytes")
+BYTE_FIELDS = ("browser_rss_bytes", "cache_bytes", "storage_bytes")
 SAMPLE_FIELDS = {
-    "rss_bytes",
+    "browser_rss_bytes",
     "fd_count",
     "timer_count",
     "subscription_count",
@@ -41,10 +42,10 @@ REQUIRED_OPERATIONS = {
     "mode_switch",
     "task",
     "robot",
-    "photo",
-    "camera",
     "cache",
     "background",
+    "camera",
+    "photo",
 }
 UTC = timezone.utc
 
@@ -107,7 +108,7 @@ def _monotonic_growth(values: list[int | float]) -> bool:
         len(values) >= 3
         and values[-1] > values[0]
         and all(
-            after >= before for before, after in zip(values, values[1:], strict=False)
+            after >= before for before, after in zip(values, values[1:])
         )
     )
 
@@ -126,24 +127,26 @@ def evaluate_samples(samples: list[dict], *, warmup_samples: int) -> dict:
         for field in (*BYTE_FIELDS, *COUNT_FIELDS)
     }
     monotonic = []
+    excessive = []
     for field in (*BYTE_FIELDS, *COUNT_FIELDS):
         values = [sample[field] for sample in settled]
-        if not _monotonic_growth(values):
-            continue
         allowance = (
             max(16 * 1024 * 1024, int(values[0] * 0.10))
-            if field == "rss_bytes"
+            if field == "browser_rss_bytes"
             else max(1024 * 1024, int(values[0] * 0.05))
             if field in {"cache_bytes", "storage_bytes"}
             else 0
         )
         if growth[field] > allowance:
-            monotonic.append(field)
+            excessive.append(field)
+            if _monotonic_growth(values):
+                monotonic.append(field)
     errors = sum(sample.get("errors", 0) for sample in samples)
     return {
-        "passed": not monotonic and errors == 0,
+        "passed": not excessive and errors == 0,
         "growth": growth,
         "monotonic_growth": monotonic,
+        "excessive_growth": excessive,
         "errors": errors,
         "warmup_samples": warmup_samples,
     }
@@ -165,6 +168,41 @@ def _validate_sample(value: dict) -> dict:
     return value
 
 
+def validate_continuous_report(
+    value: dict, *, duration_seconds: int, run_token: str
+) -> dict:
+    """Validate evidence produced by one uninterrupted browser/context run."""
+    if (
+        not isinstance(value, dict)
+        or set(value) != {
+            "format",
+            "run_token",
+            "target_seconds",
+            "elapsed_seconds",
+            "continuous_contexts",
+            "samples",
+        }
+        or value["format"] != 2
+        or value["run_token"] != run_token
+        or value["target_seconds"] != duration_seconds
+        or value["elapsed_seconds"] != duration_seconds
+        or value["continuous_contexts"] != 1
+        or not isinstance(value["samples"], list)
+        or not value["samples"]
+    ):
+        raise ValueError("soak_continuous")
+    elapsed = 0
+    for sample in value["samples"]:
+        _validate_sample(sample)
+        sample_elapsed = sample.get("elapsed_seconds")
+        if type(sample_elapsed) is not int or not elapsed < sample_elapsed <= duration_seconds:
+            raise ValueError("soak_continuous")
+        elapsed = sample_elapsed
+    if elapsed != duration_seconds:
+        raise ValueError("soak_continuous")
+    return value
+
+
 def run_chunk(command: list[str], seconds: int, output: Path) -> dict:
     env = {
         **os.environ,
@@ -178,6 +216,32 @@ def run_chunk(command: list[str], seconds: int, output: Path) -> dict:
     return _validate_sample(json.loads(output.read_text()))
 
 
+def run_continuous(
+    command: list[str], *, duration_seconds: int, output: Path, run_token: str
+) -> dict:
+    """Run the producer once so samples share one browser and one context."""
+    env = {
+        **os.environ,
+        "ROBOPARK_SOAK_DURATION_SECONDS": str(duration_seconds),
+        "ROBOPARK_SOAK_OUTPUT": str(output),
+        "ROBOPARK_SOAK_RUN_TOKEN": run_token,
+    }
+    output.unlink(missing_ok=True)
+    began = time.monotonic()
+    result = subprocess.run(command, check=False, env=env)
+    real_elapsed = time.monotonic() - began
+    if result.returncode != 0 or not output.is_file() or output.is_symlink():
+        raise ValueError("soak_continuous")
+    validated = validate_continuous_report(
+        json.loads(output.read_text()),
+        duration_seconds=duration_seconds,
+        run_token=run_token,
+    )
+    if real_elapsed + 1 < duration_seconds:
+        raise ValueError("soak_duration_not_real")
+    return {**validated, "producer_wall_seconds": real_elapsed}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -186,11 +250,45 @@ def main() -> int:
     parser.add_argument("--duration-seconds", type=int, default=28_800)
     parser.add_argument("--chunk-seconds", type=int, default=300)
     parser.add_argument("--warmup-samples", type=int, default=2)
+    parser.add_argument(
+        "--continuous",
+        action="store_true",
+        help="require one long-running producer with in-process samples",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
         if not args.command:
             raise ValueError("soak_command")
+        if args.continuous:
+            if args.checkpoint.exists() or args.report.exists():
+                raise ValueError("soak_continuous")
+            run_token = uuid.uuid4().hex
+            continuous = run_continuous(
+                args.command,
+                duration_seconds=args.duration_seconds,
+                output=args.checkpoint,
+                run_token=run_token,
+            )
+            samples = continuous["samples"]
+            evaluation = evaluate_samples(samples, warmup_samples=args.warmup_samples)
+            report = {
+                "format": 2,
+                "passed": (
+                    args.duration_seconds >= 28_800
+                    and continuous["elapsed_seconds"] >= 28_800
+                    and evaluation["passed"]
+                ),
+                "target_seconds": args.duration_seconds,
+                "elapsed_seconds": continuous["elapsed_seconds"],
+                "producer_wall_seconds": continuous["producer_wall_seconds"],
+                "source_tree_sha256": args.source_tree_sha256,
+                "continuous_contexts": continuous["continuous_contexts"],
+                "evaluation": evaluation,
+                "samples": samples,
+            }
+            write_checkpoint(args.report, report)
+            return 0 if report["passed"] else 2
         if args.checkpoint.exists():
             state = read_checkpoint(args.checkpoint)
             expected = (

@@ -72,6 +72,7 @@ export function Panel({
   collapsible = false,
   storageKey,
   defaultCollapsed = false,
+  density,
 }: {
   title?: string
   hint?: string
@@ -80,8 +81,10 @@ export function Panel({
   collapsible?: boolean
   storageKey?: string
   defaultCollapsed?: boolean
+  density?: 'default' | 'dense'
 }) {
   const contentId = useId()
+  const headingId = useId()
   if (import.meta.env.DEV && collapsible && (!title?.trim() || !storageKey?.trim())) {
     throw new Error('A collapsible Panel requires a nonempty title and storageKey.')
   }
@@ -108,11 +111,15 @@ export function Panel({
     }
   }
   return (
-    <section className={`panel${canCollapse && collapsed ? ' panel-collapsed' : ''}`}>
+    <section
+      aria-labelledby={title ? headingId : undefined}
+      className={`panel${canCollapse && collapsed ? ' panel-collapsed' : ''}`}
+      data-density={density}
+    >
       {(title || hint || actions) && (
         <div className="panel-head">
           <div>
-            {title && <h2>{title}</h2>}
+            {title && <h2 id={headingId}>{title}</h2>}
             {hint && <p className="panel-hint">{hint}</p>}
           </div>
           {(actions || canCollapse) && <div className="panel-actions">

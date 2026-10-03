@@ -25,8 +25,10 @@
   padding: var(--rp-card-padding);
 }
 
+.rp-master-detail__list,
 .rp-master-detail__detail {
   display: grid;
+  align-content: start;
   gap: var(--rp-form-gap);
 }
 
@@ -40,9 +42,12 @@
 
 .rp-metric-card {
   display: grid;
+  align-content: start;
   gap: var(--rp-space-1);
+  grid-template-columns: minmax(0, 1fr);
   margin: 0;
-  padding: var(--rp-card-padding);
+  min-inline-size: 0;
+  padding: var(--rp-compact-row-padding);
 }
 
 .rp-metric-card__label,
@@ -52,18 +57,40 @@
   line-height: var(--rp-line-height-body);
 }
 
+.rp-metric-card__label { overflow-wrap: anywhere; }
+
 .rp-metric-card__value {
   color: var(--rp-text);
   font-size: var(--rp-font-size-title);
   font-weight: var(--rp-font-weight-bold);
   line-height: var(--rp-line-height-compact);
+  margin: 0;
 }
 
 .rp-metric-card__delta {
   font-size: var(--rp-font-size-body);
   font-weight: var(--rp-font-weight-medium);
   line-height: var(--rp-line-height-body);
+  margin: 0;
 }
+
+.rp-metric-card[data-variant='prominent'] {
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--rp-space-2);
+  min-block-size: 6.75rem;
+  padding: var(--rp-space-3);
+}
+
+.rp-metric-card[data-variant='prominent'] .rp-metric-card__value {
+  align-self: center;
+  font-size: clamp(1.65rem, 2.5vw, 2.15rem);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.035em;
+  text-align: center;
+}
+
+.rp-metric-card[data-variant='prominent'][data-tone='critical'] .rp-metric-card__value { color: var(--rp-critical); }
+.rp-metric-card[data-variant='prominent'][data-tone='warning'] .rp-metric-card__value { color: var(--rp-warning); }
 
 .rp-metric-card[data-tone='neutral'] .rp-metric-card__delta {
   color: var(--rp-text-muted);
@@ -122,11 +149,13 @@
   min-inline-size: var(--rp-control-min-size);
 }
 
-@media (max-width: 899px) {
+@media (max-width: 1199px) {
   .rp-master-detail {
     grid-template-columns: minmax(0, 1fr);
   }
+}
 
+@media (max-width: 899px) {
   .rp-master-detail[data-detail-open='true'] .rp-master-detail__list {
     display: none;
   }
@@ -151,15 +180,15 @@
   }
 
   .rp-entity-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .rp-entity-row__status {
-    grid-column: 1;
+    grid-column: 1 / -1;
   }
 
   .rp-entity-row__actions {
-    grid-column: 2;
-    grid-row: 1 / span 2;
+    flex-wrap: wrap;
+    grid-column: 1 / -1;
   }
 }

@@ -23,12 +23,13 @@ export function ScheduleViewControls({ view, onViewChange }: { view: ScheduleVie
   </div>
 }
 
-function EntryCard({ item, onEdit, onDelete }: { item: ScheduleEntry; onEdit?: (item: ScheduleEntry) => void; onDelete?: (item: ScheduleEntry) => void }) {
+function EntryCard({ item, onEdit, onDelete, pending }: { item: ScheduleEntry; onEdit?: (item: ScheduleEntry) => void; onDelete?: (item: ScheduleEntry) => void; pending?: boolean }) {
   return <article className={`rp-schedule-entry${item.warnings.includes('overlap') ? ' is-warning' : ''}`}>
     <strong>{personalKindLabel[item.kind]}</strong>
     <span>{periodLabel.format(new Date(item.start_at))} — {periodLabel.format(new Date(item.end_at))}</span>
     {item.warnings.includes('overlap') ? <em>Пересечение</em> : null}
-    {onEdit || onDelete ? <div className="rp-schedule-entry__actions">
+    {pending ? <span className="rp-schedule-entry__pending">Ожидает синхронизации</span> : null}
+    {!pending && (onEdit || onDelete) ? <div className="rp-schedule-entry__actions">
       {onEdit ? <Button onClick={() => onEdit(item)} size="compact" variant="secondary">Изменить</Button> : null}
       {onDelete ? <Button onClick={() => onDelete(item)} size="compact" variant="ghost">Удалить</Button> : null}
     </div> : null}
@@ -44,6 +45,7 @@ export function ScheduleCalendar({
   onViewChange,
   onEdit,
   onDelete,
+  pendingIds,
 }: {
   days: Date[]
   items: ScheduleEntry[]
@@ -53,6 +55,7 @@ export function ScheduleCalendar({
   onViewChange: (view: ScheduleView) => void
   onEdit?: (item: ScheduleEntry) => void
   onDelete?: (item: ScheduleEntry) => void
+  pendingIds?: Set<string>
 }) {
   const projected = useMemo(() => projectSchedule(items.filter(item => item.owner_user_id === ownerUserId), days), [days, items, ownerUserId])
   const fallbackKey = formatDayKey(days[0] ?? selectedDate)
@@ -78,8 +81,9 @@ export function ScheduleCalendar({
         </button>
       })}
     </div>
+    <span className="rp-schedule-calendar__scroll-hint">Листайте дни →</span>
     <section aria-label={`Периоды на ${selectedKey}`} className="rp-schedule-day-cards" data-testid="schedule-day-cards">
-      {selectedItems.length ? selectedItems.map(item => <EntryCard item={item} key={item.id} onDelete={onDelete} onEdit={onEdit} />) : <p>На выбранный день периодов нет</p>}
+      {selectedItems.length ? selectedItems.map(item => <EntryCard item={item} key={item.id} onDelete={onDelete} onEdit={onEdit} pending={pendingIds?.has(item.id)} />) : <p>На выбранный день периодов нет</p>}
     </section>
   </div>
 }

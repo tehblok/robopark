@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, type InventoryCatalogSearchItem, type InventoryPageEnvelope, type InventorySearchParams, type InventoryStockFilter, type InventoryStockView } from '../../api'
 import { Button } from '../../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
@@ -77,10 +77,14 @@ export function InventoryPartsView({ apiClient = api, canManage = true, canPrint
   const activeParkId = useRef(parkId)
   useEffect(() => { activeParkId.current = parkId }, [parkId])
   const selectedId = selectedCatalogPartId === undefined ? internalSelectedId : selectedCatalogPartId
-  const select = (id: number | null) => {
-    if (selectedCatalogPartId === undefined) setInternalSelectedId(id)
-    onSelectedCatalogPartIdChange?.(id)
-  }
+  const selection = useRef({ controlled: selectedCatalogPartId !== undefined, onChange: onSelectedCatalogPartIdChange })
+  useLayoutEffect(() => {
+    selection.current = { controlled: selectedCatalogPartId !== undefined, onChange: onSelectedCatalogPartIdChange }
+  }, [onSelectedCatalogPartIdChange, selectedCatalogPartId])
+  const select = useCallback((id: number | null) => {
+    if (!selection.current.controlled) setInternalSelectedId(id)
+    selection.current.onChange?.(id)
+  }, [])
   const params: InventorySearchParams = useMemo(() => ({ parkId, query: query.trim() || undefined, componentId, stockFilter, limit: 25, offset }), [componentId, offset, parkId, query, stockFilter])
 
   useEffect(() => {
@@ -112,7 +116,7 @@ export function InventoryPartsView({ apiClient = api, canManage = true, canPrint
       })
     }, query ? debounceMs : 0)
     return () => { globalThis.clearTimeout(timer); generation.current += 1 }
-  }, [apiClient, debounceMs, params, query, refreshVersion])
+  }, [apiClient, debounceMs, params, query, refreshVersion, select])
 
   useEffect(() => {
     const requestedParkId = parkId
@@ -135,8 +139,7 @@ export function InventoryPartsView({ apiClient = api, canManage = true, canPrint
     setWorkflow(null)
     select(null)
   // A park change starts a fresh, unselected catalog.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parkId])
+  }, [parkId, select])
 
   const failure = error ? classifyApiError(error, 'Не удалось загрузить запчасти.') : null
   const updateLocalStock = (stock: InventoryStockView, requestedParkId: number) => {

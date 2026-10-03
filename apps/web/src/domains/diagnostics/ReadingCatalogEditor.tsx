@@ -102,6 +102,7 @@ export function ReadingCatalogEditor() {
   const [example, setExample] = useState('')
   const [vin, setVin] = useState('')
   const [discovered, setDiscovered] = useState<EmergencyDiscoveredField[]>([])
+  const [searchedVin, setSearchedVin] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [discovering, setDiscovering] = useState(false)
@@ -113,6 +114,8 @@ export function ReadingCatalogEditor() {
   const mounted = useRef(true)
   const viewRevision = useRef(0)
   const draftOwner = useRef(0)
+  const discoveryRevision = useRef(0)
+  const discoveryController = useRef<AbortController | null>(null)
 
   const deny = useCallback((failure: unknown) => {
     if (failure instanceof ApiError && (failure.status === 401 || (failure.status === 403 && failure.detail !== 'emergency_cookie_invalid'))) {
@@ -147,7 +150,7 @@ export function ReadingCatalogEditor() {
     mounted.current = true
     const controller = new AbortController()
     void reload(controller.signal)
-    return () => { mounted.current = false; controller.abort() }
+    return () => { mounted.current = false; controller.abort(); discoveryController.current?.abort() }
   }, [reload, user])
 
   if (!user || user.access_status !== 'approved' || (user.role !== 'admin' && user.role !== 'royal')) return null
@@ -209,17 +212,30 @@ export function ReadingCatalogEditor() {
 
   const discover = async () => {
     if (!vin.trim() || discovering) return
+    const requestedVin = vin.trim()
+    const revision = ++discoveryRevision.current
     const controller = new AbortController()
+    discoveryController.current?.abort()
+    discoveryController.current = controller
     setDiscovering(true)
+    setDiscovered([])
+    setSearchedVin(null)
     setError('')
     setNotice('')
     try {
-      setDiscovered(await api.discoverEmergencyReadings(vin, controller.signal))
+      const fields = await api.discoverEmergencyReadings(requestedVin, controller.signal)
+      if (mounted.current && discoveryRevision.current === revision) {
+        setDiscovered(fields)
+        setSearchedVin(requestedVin)
+      }
     } catch (failure) {
-      deny(failure)
-      setError(readingError(failure))
+      if (mounted.current && discoveryRevision.current === revision) {
+        deny(failure)
+        setError(readingError(failure))
+      }
     } finally {
-      setDiscovering(false)
+      if (mounted.current && discoveryRevision.current === revision) setDiscovering(false)
+      if (discoveryController.current === controller) discoveryController.current = null
     }
   }
 
@@ -359,7 +375,15 @@ export function ReadingCatalogEditor() {
       </div>
       <section className="rp-reading-discovery" aria-label="Поиск поля в примере робота">
         <FormField id="reading-sample-vin" label="Номер робота для примера" hint="Нужен только для безопасного поиска доступных скалярных полей.">
-          <input maxLength={64} value={vin} onChange={event => setVin(event.target.value)} placeholder="R-107" />
+          <input maxLength={64} value={vin} onChange={event => {
+            discoveryRevision.current += 1
+            discoveryController.current?.abort()
+            discoveryController.current = null
+            setVin(event.target.value)
+            setDiscovered([])
+            setSearchedVin(null)
+            setDiscovering(false)
+          }} placeholder="R-107" />
         </FormField>
         <Button type="button" variant="secondary" busy={discovering} disabled={!vin.trim()} onClick={() => void discover()}>Найти показания</Button>
         {discovered.length ? <>
@@ -372,6 +396,7 @@ export function ReadingCatalogEditor() {
             </button>
           </li>)}</ul>
         </> : null}
+        {searchedVin && !discovered.length ? <EmptyState title="Поля не найдены" description="В ответе этого робота нет поддерживаемых скалярных полей. Проверьте номер или попробуйте другого робота." /> : null}
       </section>
       {!catalog.readings.length ? <EmptyState title="Показаний пока нет" description="Найдите поле в примере робота и создайте первое показание." /> : <ol className="rp-diagnostic-list">
         {catalog.readings.map((item, index) => <li key={item.id} data-selected={selected === item.id}>

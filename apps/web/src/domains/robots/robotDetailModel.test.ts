@@ -26,6 +26,7 @@ describe('robot detail model', () => {
   it.each([
     ['2026-09-02T09:04:30Z', 'live'], ['2026-09-02T09:04:29Z', 'fresh'],
     ['2026-09-02T09:00:00Z', 'fresh'], ['2026-09-02T08:59:59Z', 'stale'], ['invalid', 'stale'],
+    ['2026-09-02T09:05:01Z', 'live'], ['2026-09-02T09:06:01Z', 'stale'],
   ] as const)('ages observation %s as %s', (observed_at, expected) => {
     expect(buildRobotDetailModel(snapshot({ observed_at }), true, now).freshness).toBe(expected)
   })

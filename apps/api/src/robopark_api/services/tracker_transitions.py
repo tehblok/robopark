@@ -49,6 +49,11 @@ _ALIASES: dict[TransitionPurpose, tuple[str, ...]] = {
     ),
 }
 
+# Some Tracker queues cannot move directly from inspection back to "В работе".
+# Returning to their queue is the available nonterminal path for the same
+# mechanic-owned repair cycle. Prefer a direct return when it exists.
+_RETURN_QUEUE_ALIASES = ("queued", "queue", "в очереди", "очередь")
+
 _TARGET_STATUS_ALIASES: dict[TransitionPurpose, tuple[str, ...]] = {
     "start": ("in progress", "inprogress", "в работе"),
     "review": (
@@ -59,7 +64,15 @@ _TARGET_STATUS_ALIASES: dict[TransitionPurpose, tuple[str, ...]] = {
         "на проверке",
     ),
     "diagnostics": ("diagnostics", "diagnostic", "диагностика", "на диагностике"),
-    "return": ("in progress", "inprogress", "в работе"),
+    "return": (
+        "in progress",
+        "inprogress",
+        "в работе",
+        "queued",
+        "queue",
+        "в очереди",
+        "очередь",
+    ),
     "close": (
         "close",
         "closed",
@@ -94,23 +107,27 @@ def _score(value: object, aliases: tuple[str, ...]) -> int:
 
 def resolve_transition(transitions: list[dict], purpose: TransitionPurpose) -> str | None:
     """Return the only best semantic match, never an arbitrary transition."""
-    aliases = _ALIASES[purpose]
-    ranked: list[tuple[int, str]] = []
-    for transition in transitions:
-        transition_id = str(transition.get("id") or "").strip()
-        if not transition_id:
-            continue
-        score = max(
-            _score(transition_id, aliases),
-            _score(transition.get("display"), aliases),
-        )
-        if score:
-            ranked.append((score, transition_id))
-    if not ranked:
-        return None
-    best_score = max(score for score, _ in ranked)
-    best = {transition_id for score, transition_id in ranked if score == best_score}
-    return next(iter(best)) if len(best) == 1 else None
+    alias_groups = (
+        (_ALIASES[purpose], _RETURN_QUEUE_ALIASES) if purpose == "return" else (_ALIASES[purpose],)
+    )
+    for aliases in alias_groups:
+        exact_only = purpose == "return" and aliases == _RETURN_QUEUE_ALIASES
+        ranked: list[tuple[int, str]] = []
+        for transition in transitions:
+            transition_id = str(transition.get("id") or "").strip()
+            if not transition_id:
+                continue
+            score = max(
+                _score(transition_id, aliases),
+                _score(transition.get("display"), aliases),
+            )
+            if score and (not exact_only or score == 100):
+                ranked.append((score, transition_id))
+        if ranked:
+            best_score = max(score for score, _ in ranked)
+            best = {transition_id for score, transition_id in ranked if score == best_score}
+            return next(iter(best)) if len(best) == 1 else None
+    return None
 
 
 def target_status_reached(issue: dict, purpose: TransitionPurpose) -> bool:

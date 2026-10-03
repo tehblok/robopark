@@ -30,6 +30,26 @@ describe('uploadMedia', () => {
     expect(complete).not.toHaveBeenCalled()
   })
 
+  it('stops before sending another chunk when the account session is disposed', async () => {
+    const controller = new AbortController()
+    const putChunk = vi.fn(async (_id: string, offset: number, chunk: Blob) => {
+      controller.abort(new Error('session_changed'))
+      return { received_offset: offset + chunk.size }
+    })
+    const complete = vi.fn()
+    await expect(uploadMedia(
+      { id: 'media-abort', actionId: 'review-abort', deviceId: 'account-7', blob: new Blob(['abcdef']), mimeType: 'image/jpeg', sha256: 'hash', name: 'robot.jpg' },
+      {
+        create: vi.fn(async () => ({ upload_id: 'upload-abort', received_offset: 0, completed: false, status: 'active' as const })),
+        putChunk,
+        complete,
+      },
+      { chunkBytes: 3, signal: controller.signal },
+    )).rejects.toThrow('session_changed')
+    expect(putChunk).toHaveBeenCalledTimes(1)
+    expect(complete).not.toHaveBeenCalled()
+  })
+
   it('uploads again when the server explicitly reinitializes a stale completed row', async () => {
     const blob = new Blob(['abcdef'], { type: 'image/jpeg' })
     const putChunk = vi.fn(async (_id: string, offset: number, chunk: Blob) => ({ received_offset: offset + chunk.size }))

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import inspect, select
+from sqlalchemy import delete, inspect, select
 from sqlalchemy.orm import sessionmaker
 from starlette.background import BackgroundTasks
 
@@ -71,6 +71,164 @@ def test_emit_persists_web_push_work_before_any_network_attempt(
     assert len(rows) == 2
     assert {row.channel for row in rows} == {"in_app", "web_push"}
     assert {row.state for row in rows} == {"delivered", "pending"}
+
+
+def test_pending_device_push_is_cancelled_after_park_access_is_revoked(
+    db_engine, db_session, seed_park_with_tracker
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    _subscribe(db_session, operator.id)
+    factory = sessionmaker(bind=db_engine, future=True)
+    PushService(factory).emit(
+        event_type="report",
+        park_id=seed_park_with_tracker.id,
+        protected_text="Данные бывшего парка",
+        event_key="revoked:park",
+    )
+    db_session.execute(
+        delete(UserPark).where(
+            UserPark.user_id == operator.id,
+            UserPark.park_id == seed_park_with_tracker.id,
+        )
+    )
+    db_session.commit()
+
+    sent = []
+    assert (
+        notification_delivery.process_due(
+            factory, owner_id="worker", send_web_push=lambda **_payload: sent.append(True)
+        )
+        == 1
+    )
+    assert sent == []
+    assert (
+        db_session.scalar(
+            select(NotificationDelivery.state).where(NotificationDelivery.channel == "web_push")
+        )
+        == "cancelled"
+    )
+
+
+def test_device_push_rechecks_access_after_payload_preparation(
+    db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    _subscribe(db_session, operator.id)
+    factory = sessionmaker(bind=db_engine, future=True)
+    PushService(factory).emit(
+        event_type="report",
+        park_id=seed_park_with_tracker.id,
+        protected_text="private",
+        event_key="revoked:during-preparation",
+    )
+    real_decrypt = notification_delivery.decrypt_secret
+    revoked = [False]
+
+    def revoke_during_decrypt(*args):
+        if not revoked[0]:
+            with factory() as revoke_db:
+                revoke_db.execute(
+                    delete(UserPark).where(
+                        UserPark.user_id == operator.id,
+                        UserPark.park_id == seed_park_with_tracker.id,
+                    )
+                )
+                revoke_db.commit()
+            revoked[0] = True
+        return real_decrypt(*args)
+
+    monkeypatch.setattr(notification_delivery, "decrypt_secret", revoke_during_decrypt)
+    sent = []
+    assert (
+        notification_delivery.process_due(
+            factory, owner_id="worker", send_web_push=lambda **_payload: sent.append(True)
+        )
+        == 1
+    )
+    assert revoked[0]
+    assert len(sent) == 0
+    assert (
+        db_session.scalar(
+            select(NotificationDelivery.state).where(NotificationDelivery.channel == "web_push")
+        )
+        == "cancelled"
+    )
+
+
+def test_device_push_rechecks_subscription_after_payload_preparation(
+    db_engine, db_session, seed_park_with_tracker, monkeypatch
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    _subscribe(db_session, operator.id)
+    factory = sessionmaker(bind=db_engine, future=True)
+    PushService(factory).emit(
+        event_type="report",
+        park_id=seed_park_with_tracker.id,
+        protected_text="private",
+        event_key="unsubscribed:during-preparation",
+    )
+    real_decrypt = notification_delivery.decrypt_secret
+    unsubscribed = [False]
+
+    def unsubscribe_during_decrypt(*args):
+        if not unsubscribed[0]:
+            with factory() as unsubscribe_db:
+                unsubscribe_db.execute(
+                    delete(PushSubscription).where(PushSubscription.user_id == operator.id)
+                )
+                unsubscribe_db.commit()
+            unsubscribed[0] = True
+        return real_decrypt(*args)
+
+    monkeypatch.setattr(notification_delivery, "decrypt_secret", unsubscribe_during_decrypt)
+    sent = []
+    assert (
+        notification_delivery.process_due(
+            factory, owner_id="worker", send_web_push=lambda **_payload: sent.append(True)
+        )
+        == 1
+    )
+    assert unsubscribed[0]
+    assert len(sent) == 0
+    assert (
+        db_session.scalar(
+            select(NotificationDelivery.state).where(NotificationDelivery.channel == "web_push")
+        )
+        == "cancelled"
+    )
+
+
+def test_expired_subscription_is_not_delivered_before_cleanup(
+    db_engine, db_session, seed_park_with_tracker
+):
+    operator = _operator(db_session, seed_park_with_tracker.id)
+    _subscribe(db_session, operator.id)
+    db_session.scalar(select(PushSubscription)).expires_at = datetime.now(UTC) - timedelta(
+        seconds=1
+    )
+    db_session.commit()
+    factory = sessionmaker(bind=db_engine, future=True)
+    PushService(factory).emit(
+        event_type="report",
+        park_id=seed_park_with_tracker.id,
+        protected_text="private",
+        event_key="subscription:expired",
+    )
+
+    sent = []
+    assert (
+        notification_delivery.process_due(
+            factory, owner_id="worker", send_web_push=lambda **_payload: sent.append(True)
+        )
+        == 1
+    )
+    assert len(sent) == 0
+    assert (
+        db_session.scalar(
+            select(NotificationDelivery.state).where(NotificationDelivery.channel == "web_push")
+        )
+        == "cancelled"
+    )
 
 
 def test_report_mutation_commits_notification_even_when_response_callbacks_never_run(

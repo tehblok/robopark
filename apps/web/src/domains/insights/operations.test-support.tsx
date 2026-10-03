@@ -1,13 +1,6 @@
-/* eslint-disable react/only-export-components */
-import { Profiler, StrictMode } from 'react'
-import { MemoryRouter, useLocation } from 'react-router-dom'
-import { vi } from 'vitest'
 import type { OperationsOverview, Park, User } from '../../api'
-import { AuthContext } from '../../auth-context'
-import { ParkScopeContext } from '../../app/park/parkScope'
-import { InsightsPage } from './InsightsPage'
 
-export const park: Park = { id: 7, name: 'Север', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
+export const park: Park = { id: 7, name: 'Север', tag: 'north', timezone: 'Europe/Moscow', tracker_queue: 'ROBOPARK', is_active: true }
 export const otherPark: Park = { ...park, id: 8, name: 'Юг', tag: 'south' }
 export function makeUser(overrides: Partial<User> = {}): User {
   return { id: 3, username: 'operator', role: 'operator', access_status: 'approved', parks: [park, otherPark], permissions: ['nav.dashboard', 'nav.analytics', 'nav.tasks', 'tracker.read'], ...overrides }
@@ -20,20 +13,4 @@ export function deferred<T>() {
   let reject!: (reason: unknown) => void
   const promise = new Promise<T>((a, b) => { resolve = a; reject = b })
   return { promise, resolve, reject }
-}
-function Location() { return <output aria-label="URL">{useLocation().search}</output> }
-type TreeOptions = {
-  user?: User
-  selectedPark?: Park | null
-  client?: { operationsOverview: (parkId: number, days: number, status: string) => Promise<OperationsOverview> }
-  refreshUser?: () => Promise<User>
-  url?: string
-  onRender?: () => void
-  mode?: 'overview' | 'analytics'
-  strict?: boolean
-}
-
-export function tree({ user = makeUser(), selectedPark = park as Park | null, client = { operationsOverview: vi.fn(async () => snapshot()) }, refreshUser = vi.fn(async () => user), url = '/overview?park=7', onRender = () => {}, mode = 'overview', strict = false }: TreeOptions = {}) {
-  const content = <MemoryRouter initialEntries={[url]}><AuthContext.Provider value={{ user, loading: false, login: async () => user, refreshUser, logout: async () => {} }}><ParkScopeContext.Provider value={{ selectedPark, parkId: selectedPark?.id ?? null, parks: user.parks, loading: false, locked: false, setParkId: vi.fn(), refreshParks: async () => {} }}><Profiler id="insights" onRender={onRender}><InsightsPage apiClient={client} mode={mode} /></Profiler><Location /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
-  return strict ? <StrictMode>{content}</StrictMode> : content
 }

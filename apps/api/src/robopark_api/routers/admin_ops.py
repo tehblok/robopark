@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import (
@@ -13,8 +14,9 @@ from fastapi import (
     Request,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings, get_settings
@@ -26,6 +28,7 @@ from robopark_api.ops_schemas import (
     HostOperationIn,
     HostOperationKind,
     HostResultOut,
+    OperationContextOut,
     ReleaseStatusOut,
     SystemHealthOut,
     public_result,
@@ -47,15 +50,31 @@ from robopark_api.services.ops.reconcile import reconcile_pending_rebuild
 from robopark_api.services.ops.runner import (
     RESTORE_PHRASE,
     UPDATE_PHRASE,
-    artifact_path,
 )
 from robopark_api.services.release_status import release_status
+from robopark_api.services.terminal.authorization import (
+    TerminalError,
+)
+from robopark_api.services.terminal.authorization import (
+    capabilities as terminal_capabilities,
+)
 
 ACTION_OPS_SNAPSHOT = "admin.ops.snapshot"
 ACTION_OPS_RESTORE = "admin.ops.restore"
 ACTION_OPS_UPDATE = "admin.ops.update"
 
 router = APIRouter(tags=["ops"])
+
+
+def _require_no_active_terminal(settings: Settings) -> None:
+    try:
+        active = terminal_capabilities(settings)["active_sessions"]
+    except TerminalError:
+        # The host lock and broker watcher remain authoritative when the
+        # optional terminal capability snapshot is absent or unavailable.
+        return
+    if active:
+        raise HTTPException(status_code=409, detail="terminal_active")
 
 
 class MaintenanceOut(BaseModel):
@@ -91,6 +110,9 @@ class ExactOperationStatusOut(BaseModel):
     error: str | None
     host_result: HostResultOut | None = None
     progress_percent: int | None = None
+    artifact_ready: bool = False
+    created_at: datetime
+    updated_at: datetime
 
 
 def _operation_out(row: HostOperationStatus) -> ExactOperationStatusOut:
@@ -107,6 +129,16 @@ def _operation_out(row: HostOperationStatus) -> ExactOperationStatusOut:
         error=row.error,
         host_result=projected,
         progress_percent=row.progress_percent,
+        artifact_ready=row.kind == "diagnostics"
+        and row.state == "succeeded"
+        and projected is not None
+        and projected.diagnostics_ready,
+        created_at=row.created_at.replace(tzinfo=UTC)
+        if row.created_at.tzinfo is None
+        else row.created_at,
+        updated_at=row.updated_at.replace(tzinfo=UTC)
+        if row.updated_at.tzinfo is None
+        else row.updated_at,
     )
 
 
@@ -158,6 +190,11 @@ def _typed_operation_required() -> None:
 def _reconcile_if_needed(settings: Settings, db: Session | None = None) -> None:
     """Finalize Docker cutover when ops-agent writes rebuild.result after API boot."""
     ops_dir = resolved_ops_dir(settings)
+    if db is not None and settings.ops_host_root:
+        with suppress(host_bridge.BridgeError):
+            operation_registry.recover_restored_receipt(
+                db, ops_dir, host_bridge.host_root(settings)
+            )
     if db is not None:
         operation_registry.snapshot_current_job(db, ops_dir)
     if settings.ops_host_root:
@@ -238,6 +275,83 @@ def get_job(
     return _job_out(job, progress=progress)
 
 
+class OperationHistoryOut(BaseModel):
+    items: list[ExactOperationStatusOut]
+
+
+@router.get("/admin/ops/operation-context", response_model=OperationContextOut)
+def get_operation_context(
+    _royal: User = Depends(require_royal),
+    settings: Settings = Depends(get_settings),
+) -> OperationContextOut:
+    try:
+        return host_bridge.operation_context(_bridge_root(settings))
+    except host_bridge.BridgeError as exc:
+        raise HTTPException(status_code=503, detail="operation_context_unavailable") from exc
+
+
+@router.get("/admin/ops/operations", response_model=OperationHistoryOut)
+def get_operation_history(
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> OperationHistoryOut:
+    _reconcile_if_needed(settings, db)
+    rows = db.scalars(
+        select(HostOperationStatus)
+        .where(
+            HostOperationStatus.actor_user_id == royal.id,
+        )
+        .order_by(HostOperationStatus.created_at.desc(), HostOperationStatus.operation_id.desc())
+        .limit(20)
+    )
+    return OperationHistoryOut(items=[_operation_out(row) for row in rows])
+
+
+@router.get("/admin/ops/operations/{operation_id}/artifact")
+def download_operation_artifact(
+    operation_id: UUID,
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    _reconcile_if_needed(settings, db)
+    row = db.get(HostOperationStatus, str(operation_id))
+    if row is None or row.actor_user_id != royal.id:
+        raise HTTPException(status_code=404, detail="artifact_missing")
+    stream = host_bridge.open_operation_artifact(_bridge_root(settings), row)
+    if stream is None:
+        raise HTTPException(status_code=404, detail="artifact_missing")
+    try:
+        audit.record(
+            db,
+            action="admin.ops.diagnostics.download",
+            actor=royal,
+            outcome=audit.OUTCOME_SUCCESS,
+            detail="download",
+        )
+    except Exception:
+        stream.close()
+        raise
+
+    def chunks():
+        try:
+            while data := stream.read(256 * 1024):
+                yield data
+        finally:
+            stream.close()
+
+    return StreamingResponse(
+        chunks(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="robopark-diagnostics-{operation_id}.zip"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/admin/ops/operations/{operation_id}", response_model=ExactOperationStatusOut)
 def get_exact_operation(
     operation_id: UUID,
@@ -278,13 +392,7 @@ def download_artifact(
     _royal: User = Depends(require_royal),
     settings: Settings = Depends(get_settings),
 ):
-    job = load_job(resolved_ops_dir(settings))
-    if job is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no_job")
-    path = artifact_path(resolved_ops_dir(settings), job)
-    if path is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="artifact_missing")
-    return FileResponse(path, filename=path.name, media_type="application/zip")
+    _typed_operation_required()
 
 
 @router.post("/admin/ops/abort", response_model=OpsJobOut)
@@ -361,13 +469,29 @@ def post_host_operation(
     settings: Settings = Depends(get_settings),
 ):
     identity = str(payload.operation_id)
+    prior = db.get(HostOperationStatus, identity)
+    if prior is not None:
+        if (
+            prior.actor_user_id != royal.id
+            or prior.kind != payload.kind.value
+            or prior.request_digest != operation_registry.request_digest(payload)
+        ):
+            raise HTTPException(status_code=409, detail="duplicate_operation_id")
+        operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
+        db.refresh(prior)
+        if prior.receipt_state != "received":
+            return _operation_out(prior)
+    _require_no_active_terminal(settings)
+    ota_store = None
     if payload.kind is HostOperationKind.OTA_UPDATE:
         try:
             bridge = _bridge_root(settings)
-            upload = OtaUploadStore(
-                resolved_ops_dir(settings) / "ota-uploads", bridge / "ota-uploads",
+            ota_store = OtaUploadStore(
+                resolved_ops_dir(settings) / "ota-uploads",
+                bridge / "ota-uploads",
                 max_bytes=settings.ops_max_upload_bytes,
-            ).status(payload.upload_id, actor_id=royal.id)
+            )
+            upload = ota_store.check_install_capacity(payload.upload_id, actor_id=royal.id)
             if (
                 upload.state != "verified"
                 or upload.sha256 != payload.sha256
@@ -375,7 +499,10 @@ def post_host_operation(
             ):
                 raise OtaUploadError("ota_upload_not_verified")
         except OtaUploadError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=507 if str(exc) == "ota_insufficient_space" else 409,
+                detail=str(exc),
+            ) from exc
     try:
         receipt = operation_registry.reserve(
             db,
@@ -403,6 +530,26 @@ def post_host_operation(
             identity,
             payload.capability_revision,
         )
+        if ota_store is not None:
+            try:
+
+                def reassignable(previous_id: UUID) -> bool:
+                    previous = db.get(HostOperationStatus, str(previous_id))
+                    return (
+                        previous is not None
+                        and previous.actor_user_id == royal.id
+                        and previous.receipt_state == "terminal"
+                        and previous.error != "ota_rollback_failed"
+                    )
+
+                ota_store.pin_for_operation(
+                    payload.upload_id,
+                    actor_id=royal.id,
+                    operation_id=payload.operation_id,
+                    reassignable=reassignable,
+                )
+            except OtaUploadError as exc:
+                raise host_bridge.BridgeError(str(exc)) from exc
         return {
             "operation_id": str(payload.operation_id),
             "operation_kind": payload.kind.value,
@@ -482,16 +629,4 @@ def download_diagnostic_artifact(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    root = _bridge_root(settings)
-    job = host_bridge.reconcile_host_job(resolved_ops_dir(settings), root)
-    path = host_bridge.diagnostic_artifact(root, job)
-    audit.record(
-        db,
-        action="admin.ops.diagnostics.download",
-        actor=royal,
-        outcome=audit.OUTCOME_SUCCESS if path else audit.OUTCOME_FAILURE,
-        detail="download" if path else "artifact_missing",
-    )
-    if path is None:
-        raise HTTPException(status_code=404, detail="artifact_missing")
-    return FileResponse(path, filename=path.name, media_type="application/zip")
+    _typed_operation_required()

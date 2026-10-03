@@ -1,0 +1,20 @@
+[Unit]
+Description=Prepare Robopark host terminal account and directories
+Before=robopark-terminal-broker.service
+
+[Service]
+Type=oneshot
+RuntimeDirectory=robopark-terminal robopark-terminal-workers
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+RemainAfterExit=yes
+# System services default to root. Explicit User=root with seccomp on systemd
+# 255 drops CAP_SETUID, which the runuser readiness checks require.
+ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark terminal-setup
+TimeoutStartSec=90
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+LimitCORE=0

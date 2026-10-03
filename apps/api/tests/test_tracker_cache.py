@@ -118,10 +118,21 @@ def test_shared_issue_keeps_public_sla_equal_without_sdk_resource(monkeypatch, t
 
     assert follower_sla == leader_sla
     assert follower_sla["queued_at"] == "2026-09-19T07:00:00Z"
-    assert (
-        tracker_client._load_work_status_history(token="t", key="SD-RESOURCE", issue=follower_issue)
-        == history
-    )
+    assert tracker_client._load_work_status_history(
+        token="t", key="SD-RESOURCE", issue=follower_issue
+    ) == [
+        {
+            "id": "",
+            "updatedAt": "2026-09-19T07:00:00Z",
+            "fields": [
+                {
+                    "field": {"id": "status"},
+                    "to": {"key": "queued", "display": "В очереди"},
+                    "from": {"key": "", "display": ""},
+                }
+            ],
+        }
+    ]
 
 
 def test_status_history_projection_is_shared_across_workers(monkeypatch, tmp_path):
@@ -168,11 +179,13 @@ def test_status_history_projection_is_shared_across_workers(monkeypatch, tmp_pat
     assert follower == leader
     assert follower == [
         {
+            "id": "",
             "updatedAt": "2026-09-19T07:00:00Z",
             "fields": [
                 {
                     "field": {"id": "status"},
                     "to": {"key": "queued", "display": "В очереди"},
+                    "from": {"key": "", "display": ""},
                 }
             ],
         }

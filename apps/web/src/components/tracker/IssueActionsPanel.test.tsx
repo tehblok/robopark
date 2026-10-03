@@ -15,10 +15,10 @@ function declaredStyles(element: Element, mediaCondition?: string): Record<strin
 
   const sheet = style.sheet as CSSStyleSheet
   const rules = mediaCondition
-    ? Array.from(sheet.cssRules).find(
+    ? Array.from(sheet.cssRules).filter(
         (rule): rule is CSSMediaRule =>
           'conditionText' in rule && rule.conditionText === mediaCondition,
-      )?.cssRules ?? []
+      ).flatMap(rule => Array.from(rule.cssRules))
     : sheet.cssRules
   const declarations: Record<string, string> = {}
 
@@ -91,7 +91,7 @@ describe('IssueActionsPanel', () => {
     expect(approve).toHaveBeenCalledOnce()
     expect(action).toBeDisabled()
     release?.()
-    expect(await screen.findByRole('alert')).toHaveTextContent('Tracker не настроен')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Сервис временно недоступен')
 
     fireEvent.click(action)
     await waitFor(() => expect(approve).toHaveBeenCalledTimes(2))

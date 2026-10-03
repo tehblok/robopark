@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import threading
@@ -45,9 +46,12 @@ from robopark_api.services.login_throttle import LoginThrottle
 from robopark_api.services.ops.snapshot import restore_snapshot_tree
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
-from robopark_api.task_workflow_models import ReliableAction, TaskMessage
+from robopark_api.task_workflow_models import MediaUploadSession, ReliableAction, TaskMessage
 
 pytestmark = pytest.mark.postgres
+RELEASE_METADATA = json.loads(
+    (Path(__file__).resolve().parents[4] / "deploy/release-metadata.json").read_text()
+)
 
 
 @pytest.fixture(scope="module")
@@ -150,8 +154,9 @@ def test_postgresql_17_upgrades_operator_inventory_grants_to_read_only(
 
         command.upgrade(config, "head")
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0036_audit_remediation_state"
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == RELEASE_METADATA["migration_head"]
             )
             assert (
                 connection.scalar(
@@ -316,7 +321,7 @@ def test_postgresql_http_concurrent_media_completion_returns_one_stable_result(
 ) -> None:
     import hashlib
 
-    from robopark_api.services import media_uploads
+    from robopark_api.services import media_uploads, platform_settings, tracker_cache
 
     upload_root = tmp_path / "uploaded-media"
     monkeypatch.setattr(media_uploads, "uploads_root", lambda: upload_root)
@@ -332,7 +337,23 @@ def test_postgresql_http_concurrent_media_completion_returns_one_stable_result(
 
     monkeypatch.setattr(Path, "replace", hold_replace)
     with _postgres_http_client(migrated_engine, tmp_path, monkeypatch) as (client, factory):
-        _user_id, _park_id, username = _seed_http_mechanic(factory)
+        _user_id, park_id, username = _seed_http_mechanic(factory)
+        with factory() as db:
+            platform_settings.set_setting(db, platform_settings.TRACKER_TOKEN_KEY, "token")
+            park = db.get(Park, park_id)
+            tracker_queue = park.tracker_queue
+            park_tag = park.tag
+        monkeypatch.setattr(
+            tracker_cache,
+            "get_issue",
+            lambda **kwargs: {
+                "key": kwargs["key"],
+                "queue": tracker_queue,
+                "tags": [park_tag],
+                "status": "Open",
+                "status_key": "open",
+            },
+        )
         assert (
             client.post(
                 "/auth/login", json={"username": username, "password": "secret"}
@@ -353,6 +374,8 @@ def test_postgresql_http_concurrent_media_completion_returns_one_stable_result(
         )
         assert started.status_code == 201
         upload_id = started.json()["upload_id"]
+        with factory() as db:
+            assert db.get(MediaUploadSession, upload_id).park_id == park_id
         assert (
             client.put(
                 f"/media/uploads/{upload_id}/chunks/0",
@@ -490,7 +513,7 @@ def test_stock_postgres_17_accepts_configured_user_restore_command(
         capture_output=True,
         text=True,
     ).stdout.strip()
-    assert head == "0036_audit_remediation_state"
+    assert head == RELEASE_METADATA["migration_head"]
 
 
 def _seed_inventory(engine: Engine) -> tuple[int, int, int]:

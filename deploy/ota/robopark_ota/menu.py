@@ -6,7 +6,7 @@ from enum import Enum
 from typing import TextIO
 
 
-class Action(str, Enum):  # noqa: UP042 -- StrEnum is unavailable on Python 3.10
+class Action(str, Enum):  # StrEnum is unavailable on host Python 3.10.
     CLEAN_INSTALL = "clean-install"
     UPDATE = "update"
     DIAGNOSE = "diagnose"
@@ -23,7 +23,7 @@ _CHOICES = {
 }
 _MENU = """\
 Robopark OTA
-1. Чистая установка
+1. Чистая установка (только пустой хост)
 2. Обычное обновление
 3. Диагностика
 4. Полное удаление

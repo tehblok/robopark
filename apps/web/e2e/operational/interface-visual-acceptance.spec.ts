@@ -3,9 +3,11 @@ import { openRouteFixture, assertResponsiveContracts, assertRouteSemanticContrac
 import { userForRole, settlePage } from './fixtures'
 import { assertNoSeriousA11yViolations } from '../support/assertA11y'
 
-const screens = ['overview', 'operator-parks', 'work', 'work-issue', 'robots', 'robot-detail', 'robot-check', 'inventory', 'reports', 'reports-new', 'report-detail', 'campaigns', 'campaign-detail', 'analytics', 'admin', 'admin-users', 'admin-roles', 'admin-settings', 'admin-robot-check'] as const
+const screens = ['overview', 'operator-parks', 'work', 'work-issue', 'robots', 'robot-detail', 'robot-check', 'inventory', 'reports', 'reports-new', 'report-detail', 'campaigns', 'campaign-detail', 'schedule', 'analytics', 'system', 'admin', 'admin-users', 'admin-roles', 'admin-settings', 'admin-robot-check'] as const
 const roleFor = (route: typeof screens[number]) => route === 'operator-parks' || route === 'reports' || route === 'report-detail'
   ? 'operator' as const
+  : route === 'schedule'
+    ? 'driver' as const
   : route === 'work' || route === 'work-issue' || route === 'robots' || route === 'robot-detail' || route === 'robot-check' || route === 'inventory'
     ? 'mechanic' as const
     : 'royal' as const
@@ -20,6 +22,7 @@ for (const theme of ['light', 'dark'] as const)
     await settlePage(page)
     await assertResponsiveContracts(page, width)
     await assertRouteSemanticContracts(page, route)
+    if (route === 'work-issue') await page.getByRole('tab', { name: 'Задача', exact: true }).click()
     await assertNoSeriousA11yViolations(page)
     await page.evaluate(async () => {
       (document.activeElement as HTMLElement | null)?.blur()

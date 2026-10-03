@@ -20,6 +20,11 @@ const entries: ScheduleEntry[] = [
 ]
 
 describe('ScheduleCalendar', () => {
+  it('explains that more days can be reached by horizontal scrolling', () => {
+    const range = visibleRange(new Date('2026-09-21T12:00:00+03:00'), 'week')
+    render(<ScheduleCalendar days={range.days} items={entries} ownerUserId={7} selectedDate={range.days[0]} view="week" onViewChange={vi.fn()} />)
+    expect(screen.getByText('Листайте дни →')).toBeInTheDocument()
+  })
   it('switches the selected day card without showing another day entries', () => {
     const range = visibleRange(new Date('2026-09-21T12:00:00+03:00'), 'week')
     render(<ScheduleCalendar days={range.days} items={entries} ownerUserId={7} selectedDate={range.days[0]} view="week" onViewChange={vi.fn()} />)
@@ -33,6 +38,15 @@ describe('ScheduleCalendar', () => {
     expect(within(cards).getByText('Мой отпуск')).toBeInTheDocument()
     expect(within(cards).getByText('Пересечение')).toBeInTheDocument()
     expect(within(cards).queryByText('Моя смена')).not.toBeInTheDocument()
+  })
+
+  it('labels a pending period and keeps its edit actions unavailable', () => {
+    const range = visibleRange(new Date('2026-09-21T12:00:00+03:00'), 'week')
+    render(<ScheduleCalendar days={range.days} items={entries} ownerUserId={7} pendingIds={new Set(['shift-one'])} selectedDate={range.days[0]} view="week" onDelete={vi.fn()} onEdit={vi.fn()} onViewChange={vi.fn()} />)
+
+    expect(screen.getByText('Ожидает синхронизации')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Изменить' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Удалить' })).not.toBeInTheDocument()
   })
 
   it('exposes week and month controls through the shared callback', () => {

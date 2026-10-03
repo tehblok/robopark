@@ -15,7 +15,7 @@ from robopark_api.db import get_engine
 from robopark_api.services.ops.runner import OpsContext
 
 _REPO_ROOT = _API_ROOT.parent.parent
-APP_VERSION = "0.2.0-rc.8"
+APP_VERSION = "0.2.0-rc.21.dev13181400260723547202"
 
 
 def _migration_head() -> str:
@@ -85,11 +85,11 @@ def build_ops_context(settings: Settings | None = None) -> OpsContext:
 
     host = host_root(settings) if settings.ops_host_root else None
     url = make_url(settings.database_url)
-    data_dir = (
-        Path(url.database).resolve().parent
-        if url.drivername.startswith("sqlite") and url.database
-        else Path(settings.report_attachments_dir).resolve().parent
-    )
+    data_dir = None
+    if url.drivername.startswith("sqlite") and url.database:
+        data_dir = Path(url.database).resolve().parent
+    elif settings.report_attachments_dir:
+        data_dir = Path(settings.report_attachments_dir).resolve().parent
     return OpsContext(
         ops_dir=resolved_ops_dir(settings),
         database_url=settings.database_url,

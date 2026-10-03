@@ -1,4 +1,5 @@
 import logging
+import threading
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
@@ -18,6 +19,7 @@ from robopark_api.schemas import (
     UserOut,
 )
 from robopark_api.security import (
+    DUMMY_PASSWORD_HASH,
     PasswordPolicyError,
     hash_password,
     hash_session_token,
@@ -30,13 +32,16 @@ from robopark_api.services import audit, ip_location, rbac, user_activity
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.login_throttle import (
     client_ip,
+    get_login_ip_throttle,
     get_login_throttle,
     get_register_throttle,
 )
 from robopark_api.services.rbac import RoleSlug
+from robopark_api.services.terminal.sessions import revoke_sessions as revoke_terminal_sessions
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
+_password_verification_slots = threading.BoundedSemaphore(4)
 
 
 def _too_many_requests(retry_after: int) -> HTTPException:
@@ -187,9 +192,15 @@ def login(
     settings: Settings = Depends(get_settings),
 ) -> None:
     throttle = get_login_throttle(settings)
-    # Keyed by username *and* address: neither a single account nor a single
-    # host can be hammered, and one attacker cannot lock out every user.
-    throttle_key = f"login|{credentials.username.lower()}|{client_ip(request)}"
+    ip_throttle = get_login_ip_throttle(settings)
+    request_ip = client_ip(request)
+    ip_key = f"login-ip|{request_ip}"
+    # Check the shared address budget before creating per-username state or
+    # doing expensive password work. Correct logins do not clear this budget.
+    ip_retry_after = ip_throttle.retry_after(ip_key, db=db)
+    if ip_retry_after:
+        raise _too_many_requests(ip_retry_after)
+    throttle_key = f"login|{credentials.username.lower()}|{request_ip}"
     retry_after = throttle.retry_after(throttle_key, db=db)
     if retry_after:
         audit.record(
@@ -203,12 +214,18 @@ def login(
         raise _too_many_requests(retry_after)
 
     user = db.scalar(select(User).where(User.username == credentials.username))
-    if (
-        user is None
-        or not user.is_active
-        or not verify_password(credentials.password, user.password_hash)
-    ):
+    if not _password_verification_slots.acquire(blocking=False):
+        raise _too_many_requests(1)
+    try:
+        password_valid = verify_password(
+            credentials.password,
+            user.password_hash if user is not None and user.is_active else DUMMY_PASSWORD_HASH,
+        )
+    finally:
+        _password_verification_slots.release()
+    if user is None or not user.is_active or not password_valid:
         throttle.register_failure(throttle_key, db=db)
+        ip_throttle.register_failure(ip_key, db=db)
         logger.info("Failed login for %r from %s", credentials.username, client_ip(request))
         audit.record(
             db,
@@ -267,6 +284,9 @@ def logout(
 ) -> None:
     raw_token = request.cookies.get(settings.session_cookie_name)
     if raw_token:
+        revoke_terminal_sessions(
+            db, auth_session_hash=hash_session_token(raw_token), reason="logout"
+        )
         db.execute(
             delete(AuthSession).where(AuthSession.token_hash == hash_session_token(raw_token))
         )
@@ -286,7 +306,13 @@ def me(
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> UserOut:
-    parks = db.scalars(select(Park).join(UserPark).where(UserPark.user_id == user.id)).all()
+    parks = (
+        db.scalars(
+            select(Park).join(UserPark).where(UserPark.user_id == user.id, Park.is_active.is_(True))
+        ).all()
+        if user.access_status == AccessStatus.approved.value
+        else []
+    )
     return UserOut(
         id=user.id,
         username=user.username,
@@ -311,6 +337,7 @@ def change_password(
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     _enforce_password_policy(payload.new_password, settings, username=user.username)
+    revoke_terminal_sessions(db, owner_id=user.id, reason="password_changed")
     user.password_hash = hash_password(payload.new_password)
     user.must_change_password = False
     # Drop other sessions so a stolen cookie does not survive the change.

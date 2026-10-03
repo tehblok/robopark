@@ -50,11 +50,11 @@ function LifecycleHandoffForm({ canWrite, onHandoff }: { canWrite: boolean; onHa
 
 const empty: Handoff = { revision: 0, done: '', remaining: '', obstacles: '', author: null, updated_at: null }
 
-function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure, onSaved }: {
-  issueKey: string; owner: string; active: boolean; canWrite: boolean; onAuthorizationFailure?: (error: unknown) => void; onSaved?: () => void
+function Content({ issueKey, owner, active, canWrite, embedded = false, onAuthorizationFailure, onSaved }: {
+  issueKey: string; owner: string; active: boolean; canWrite: boolean; embedded?: boolean; onAuthorizationFailure?: (error: unknown) => void; onSaved?: () => void
 }) {
   const [people, setPeople] = useState<string[]>([])
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(embedded)
   const [value, setValue] = useState<Handoff>(empty)
   const [fresh, setFresh] = useState<Handoff | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -203,10 +203,7 @@ function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure, on
 
   if (denied) return <section className="issue-collaboration"><p role="alert">Доступ к совместной работе с задачей ограничен. Данные скрыты.</p></section>
 
-  return <section className="issue-collaboration">
-    {people.length > 0 && <p role="status">Сейчас в задаче: {people.join(', ')}. Это подсказка, задача доступна для работы.</p>}
-    <details open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-      <summary>Передача смены</summary>
+  const content = <>
       {error && <p role="alert">{error}</p>}
       {!loaded && loadError ? <div><p role="alert">{loadError}</p><Button onClick={() => setLoadRequest(current => current + 1)} type="button" variant="secondary">Повторить загрузку</Button></div>
         : !loaded ? <p>Загружаем передачу смены…</p> : <>
@@ -222,7 +219,13 @@ function Content({ issueKey, owner, active, canWrite, onAuthorizationFailure, on
         </div>}
         {canWrite && <Button type="button" disabled={busy || Boolean(fresh)} onClick={() => void save()}>{busy ? 'Сохраняем…' : 'Сохранить передачу смены'}</Button>}
       </>}
-    </details>
+    </>
+  return <section className="issue-collaboration">
+    {people.length > 0 && <p role="status">Сейчас в задаче: {people.join(', ')}. Это подсказка, задача доступна для работы.</p>}
+    {embedded ? content : <details open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+      <summary>Передача смены</summary>
+      {content}
+    </details>}
   </section>
 }
 

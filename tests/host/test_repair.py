@@ -1,7 +1,5 @@
-import os
-
 from robopark_host.checks import CheckResult, CommandResult, DiagnosticReport
-from robopark_host.repair import DEFAULT_REPAIRS, cleanup_retained, run_repairs
+from robopark_host.repair import DEFAULT_REPAIRS, run_repairs
 
 
 class RepairRunner:
@@ -48,24 +46,3 @@ def test_repair_rejects_volume_pruning_even_when_the_caller_supplies_it():
     assert result.performed == []
     assert result.skipped == ["space"]
     assert runner.commands == []
-
-
-def test_cleanup_removes_only_expired_diagnostic_and_staging_artifacts(host_paths):
-    staging = host_paths.ops / "staging"
-    diagnostics = host_paths.var / "diagnostics"
-    staging.mkdir(parents=True)
-    diagnostics.mkdir(parents=True)
-    expired = staging / "expired"
-    fresh = diagnostics / "fresh.json"
-    expired.mkdir()
-    (expired / "candidate.txt").write_text("staging")
-    fresh.write_text("keep")
-    old_timestamp = 1_000.0
-    os.utime(expired, (old_timestamp, old_timestamp))
-    os.utime(fresh, (9_999.0, 9_999.0))
-
-    deleted = cleanup_retained(host_paths, now=10_000.0, retention_seconds=500)
-
-    assert deleted == [expired]
-    assert not expired.exists()
-    assert fresh.exists()

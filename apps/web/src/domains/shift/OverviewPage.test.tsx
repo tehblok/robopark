@@ -23,6 +23,8 @@ type TreeOptions = {
   user?: User
   selectedPark?: Park | null
   parks?: Park[]
+  loadError?: string | null
+  refreshParks?: () => Promise<void>
   client?: { operationsOverview: (parkId: number, days: number, status: string) => Promise<OperationsOverview> }
   refreshUser?: () => Promise<User>
   url?: string
@@ -32,15 +34,75 @@ function tree({
   user = makeUser(),
   selectedPark = park as Park | null,
   parks = user.parks,
+  loadError = null,
+  refreshParks = async () => {},
   client = { operationsOverview: vi.fn(async () => snapshot()) },
   refreshUser = vi.fn(async () => user),
   url = '/overview?park=7',
 }: TreeOptions = {}) {
-  return <MemoryRouter initialEntries={[url]}><AuthContext.Provider value={{ user, loading: false, login: async () => user, refreshUser, logout: async () => {} }}><ParkScopeContext.Provider value={{ parkId: selectedPark?.id ?? null, selectedPark, parks, loading: false, locked: false, setParkId: vi.fn(), refreshParks: async () => {} }}><OverviewPage apiClient={client} /><Location /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
+  return <MemoryRouter initialEntries={[url]}><AuthContext.Provider value={{ user, loading: false, login: async () => user, refreshUser, logout: async () => {} }}><ParkScopeContext.Provider value={{ parkId: selectedPark?.id ?? null, selectedPark, parks, loading: false, loadError, locked: false, setParkId: vi.fn(), refreshParks }}><OverviewPage apiClient={client} /><Location /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
 }
 
 beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0); installMatchMedia() })
 afterEach(() => { resourceStore.clearAll(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+it('guides the first owner to create a park instead of leaving an unexplained empty overview', () => {
+  const user = makeUser({ role: 'royal', parks: [], permissions: ['nav.dashboard', 'parks.manage', 'tracker.read'] })
+  const client = { operationsOverview: vi.fn(async () => snapshot()) }
+  render(tree({ user, selectedPark: null, parks: [], client, url: '/overview' }))
+
+  expect(screen.getByRole('heading', { name: 'Парков пока нет' })).toBeVisible()
+  expect(screen.getByRole('link', { name: 'Создать первый парк' })).toHaveAttribute('href', '/admin/settings?tab=parks')
+  expect(client.operationsOverview).not.toHaveBeenCalled()
+})
+
+it('guides an owner with integration access from a missing Tracker token to its settings', async () => {
+  const user = makeUser({ role: 'royal', permissions: ['nav.dashboard', 'nav.admin', 'tracker.read'] })
+  const client = { operationsOverview: vi.fn(async () => { throw new ApiError(503, 'tracker_token_not_configured') }) }
+  render(tree({ user, client }))
+
+  expect(await screen.findByRole('heading', { name: 'Требуется настройка' })).toBeVisible()
+  expect(screen.getByRole('link', { name: 'Настроить Tracker' })).toHaveAttribute('href', '/admin/settings?park=7&tab=integrations#tracker-token')
+})
+
+it('guides the owner to configure a park without a Tracker queue', async () => {
+  const user = makeUser({ role: 'royal', permissions: ['nav.dashboard', 'nav.admin', 'parks.manage', 'tracker.read'] })
+  const client = { operationsOverview: vi.fn(async () => { throw new ApiError(409, 'blockers_disabled_for_park') }) }
+  render(tree({ user, client }))
+
+  expect(await screen.findByRole('heading', { name: 'Требуется настройка' })).toBeVisible()
+  expect(screen.getByRole('link', { name: 'Настроить парк' })).toHaveAttribute('href', '/admin/settings?park=7&tab=parks')
+  expect(screen.queryByText('Данные изменились')).not.toBeInTheDocument()
+})
+
+it('does not offer integration settings to a mechanic without management access', async () => {
+  const user = makeUser({ role: 'mechanic', permissions: ['nav.dashboard', 'tracker.read'] })
+  const client = { operationsOverview: vi.fn(async () => { throw new ApiError(503, 'tracker_token_not_configured') }) }
+  render(tree({ user, client }))
+
+  expect(await screen.findByRole('heading', { name: 'Требуется настройка' })).toBeVisible()
+  expect(screen.queryByRole('link', { name: 'Настроить Tracker' })).not.toBeInTheDocument()
+})
+
+it('shows park-load failure and a retry instead of reporting that no park was selected', async () => {
+  const user = makeUser({ role: 'royal', parks: [], permissions: ['nav.dashboard', 'parks.manage', 'tracker.read'] })
+  const refreshParks = vi.fn(async () => {})
+  render(tree({ user, selectedPark: null, parks: [], loadError: 'Не удалось загрузить парки.', refreshParks, url: '/overview' }))
+
+  expect(screen.getByRole('alert')).toHaveTextContent('Не удалось загрузить парки.')
+  expect(screen.queryByRole('heading', { name: 'Парков пока нет' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
+  await waitFor(() => expect(refreshParks).toHaveBeenCalledTimes(1))
+})
+
+it('keeps the last authorized park overview visible when refreshing the park list fails', async () => {
+  const client = { operationsOverview: vi.fn(async () => snapshot()) }
+  render(tree({ loadError: 'Не удалось обновить парки.', client }))
+
+  expect(await screen.findByRole('link', { name: 'Открыть задачу RP-1' })).toBeVisible()
+  expect(screen.getByText('Не удалось обновить парки.').closest('[role="alert"]')).toBeTruthy()
+  expect(client.operationsOverview).toHaveBeenCalledTimes(1)
+})
 
 it('composes the role-aware operational surfaces from the current overview response', async () => {
   const user = makeUser({ role: 'operator' })
@@ -50,22 +112,155 @@ it('composes the role-aware operational surfaces from the current overview respo
   expect(apiClient.operationsOverview).toHaveBeenCalledWith(7, 7, 'all')
   expect(screen.getByRole('heading', { name: 'Статусы задач' })).toBeVisible()
   expect(screen.getByRole('heading', { name: 'Поток задач: пришло / ушло' })).toBeVisible()
-  expect(screen.getByRole('heading', { name: 'Очередь внимания' })).toBeVisible()
+  expect(screen.getByRole('heading', { name: 'Очередь решений' })).toBeVisible()
   expect(screen.getByText(/Пробелы не считаются нулями/)).toBeVisible()
 })
 
-it('places the attention queue before secondary operational KPIs', async () => {
+it('shows the shift dashboard before the detailed queue with no extra request', async () => {
+  const client = { operationsOverview: vi.fn(async () => snapshot()) }
+  render(tree({ client }))
+  const dashboard = await screen.findByRole('region', { name: 'Сводка смены' })
+  expect(within(dashboard).getByText('Активные задачи')).toBeVisible()
+  expect(within(dashboard).getByText('Просрочено SLA')).toBeVisible()
+  expect(within(dashboard).getByText('Риск SLA')).toBeVisible()
+  expect(within(dashboard).getByText('SLA не определён')).toBeVisible()
+  expect(client.operationsOverview).toHaveBeenCalledTimes(1)
+  expect(dashboard.compareDocumentPosition(screen.getByRole('heading', { name: 'Очередь решений' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+})
+
+it('uses the selected A layout with immediate priorities and a side attention area from one snapshot', async () => {
+  const client = { operationsOverview: vi.fn(async () => snapshot()) }
+  render(tree({ client }))
+
+  expect(screen.getByRole('heading', { name: 'Что требует решения сейчас' })).toBeVisible()
+  const summary = await screen.findByRole('region', { name: 'Сводка смены' })
+  expect(summary).toHaveClass('rp-overview-headline')
+  expect(summary.closest('.rp-panel')).toBeNull()
+  expect(summary.querySelectorAll('.rp-metric-card__value')).toHaveLength(4)
+  expect(summary.querySelectorAll('.rp-metric-card[data-variant="prominent"]')).toHaveLength(4)
+  expect(summary.querySelectorAll('.rp-metric-card__delta')).toHaveLength(0)
+  expect(summary.querySelectorAll('.rp-metric-card__value[title="Не измерено"]')).toHaveLength(3)
+  const primary = screen.getByTestId('overview-primary')
+  expect(within(primary).getByRole('heading', { name: 'Очередь решений' })).toBeVisible()
+  expect(within(primary).getByRole('heading', { name: 'Что требует внимания' })).toBeVisible()
+  expect(client.operationsOverview).toHaveBeenCalledTimes(1)
+})
+
+it('prioritizes remaining SLA without a downtime column', async () => {
+  const client = { operationsOverview: vi.fn(async () => snapshot({
+    task_timing: [{ issue_key: 'RP-1', queue_started_at: '2026-09-01T09:00:00Z', sla_deadline: '2026-09-01T14:00:00Z', sla_working_hours: 4, downtime_hours: 12 }],
+  })) }
+  render(tree({ client }))
+  const queue = await screen.findByTestId('overview-attention-queue')
+  expect(queue).not.toHaveTextContent('Простой')
+  expect(queue).toHaveTextContent('SLA: 1:00')
+  expect(queue).not.toHaveTextContent('Возраст')
+})
+
+it('shows a task table with assignee, deadline in park time and accessible action', async () => {
+  const client = { operationsOverview: vi.fn(async () => snapshot({
+    tasks: [{ ...snapshot().tasks[0], assignee: { display: 'Механик А', login: 'mech-a' } }],
+    task_timing: [{ issue_key: 'RP-1', queue_started_at: '2026-09-03T08:00:00Z', sla_deadline: '2026-09-03T13:00:00Z', sla_working_hours: 2, downtime_hours: 3 }],
+  })) }
+  render(tree({ client }))
+  const table = await screen.findByRole('table', { name: 'Задачи смены' })
+  expect(within(table).getAllByRole('columnheader')).toHaveLength(3)
+  expect(within(table).getByRole('columnheader', { name: 'Этап и исполнитель' })).toBeVisible()
+  const row = within(table).getByRole('row', { name: /RP-1/ })
+  expect(within(row).getByText('Механик А')).toBeVisible()
+  expect(within(row).getByText(/03\.09.*16:00/)).toBeVisible()
+  expect(within(row).getByRole('link', { name: 'Открыть задачу RP-1' })).toHaveAttribute('href', '/work/RP-1?park=7')
+  expect(client.operationsOverview).toHaveBeenCalledTimes(1)
+})
+
+it('opens the paginated work queue from a truncated status slice', async () => {
+  const client = { operationsOverview: vi.fn(async () => snapshot({
+    selected_status: 'diagnostics',
+    tasks_truncated: true,
+  })) }
+  render(tree({ client, url: '/overview?park=7&status=diagnostics' }))
+
+  const queue = await screen.findByRole('region', { name: 'Очередь решений' })
+  expect(within(queue).getByRole('link', { name: 'Вся очередь в «Работе»' }))
+    .toHaveAttribute('href', '/work?park=7&status=diagnostics')
+  expect(queue).toHaveTextContent('Список задач ограничен данными текущего ответа.')
+  expect(client.operationsOverview).toHaveBeenCalledTimes(1)
+})
+
+it('keeps the Tracker stage visible when a task is overdue', async () => {
+  const issue = { ...snapshot().tasks[0], status: 'В работе', bucket: 'diagnostics' }
+  const client = { operationsOverview: vi.fn(async () => snapshot({
+    tasks: [issue],
+    sla: {
+      target_hours: 5,
+      evaluated_count: 1,
+      unknown_count: 0,
+      at_risk_count: 0,
+      overdue_count: 1,
+      overdue: [{ ...issue, age_hours: 6, overdue_hours: 1 }],
+      overdue_truncated: false,
+    },
+  })) }
+  render(tree({ client }))
+
+  const row = await screen.findByRole('row', { name: /RP-1/ })
+  expect(within(row).getByText('В работе')).toBeVisible()
+  expect(row).toHaveTextContent('Просрочено SLA')
+})
+
+it('shows a passed closing-time deadline without zero-hour overdue text', async () => {
+  const issue = snapshot().tasks[0]
+  const client = { operationsOverview: vi.fn(async () => snapshot({
+    tasks: [issue],
+    sla: {
+      target_hours: 5,
+      evaluated_count: 1,
+      unknown_count: 0,
+      at_risk_count: 0,
+      overdue_count: 1,
+      overdue: [{ ...issue, age_hours: 5, overdue_hours: 0 }],
+      overdue_truncated: false,
+    },
+  })) }
+  render(tree({ client }))
+
+  const row = await screen.findByRole('row', { name: /RP-1/ })
+  expect(row).toHaveTextContent('Срок SLA истёк')
+  expect(row).not.toHaveTextContent('Просрочено на 0.0 ч')
+})
+
+it('shows confirmed SLA risk without replacing the Tracker stage', async () => {
+  render(tree({ client: { operationsOverview: vi.fn(async () => snapshot({
+    sla: { ...snapshot().sla, target_hours: 5 },
+    task_timing: [{ issue_key: 'RP-1', queue_started_at: '2026-09-03T08:00:00Z', sla_deadline: '2026-09-03T13:00:00Z', sla_working_hours: 4, downtime_hours: 4 }],
+  })) } }))
+
+  const row = await screen.findByRole('row', { name: /RP-1/ })
+  expect(row).toHaveTextContent('Риск SLA')
+  expect(row).toHaveTextContent('Новый')
+})
+
+it('keeps absent assignment and queue timing visibly unknown', async () => {
   render(tree())
-  await screen.findByRole('heading', { name: 'Очередь внимания' })
+  const row = await screen.findByRole('row', { name: /RP-1/ })
+  expect(within(row).getByText('Не назначен')).toBeVisible()
+  expect(within(row).getByText('Срок: Неизвестен')).toBeVisible()
+  expect(row).toHaveTextContent('SLA: —')
+  expect(row).not.toHaveTextContent('Простой')
+})
+
+it('shows the attention queue before the status breakdown and secondary KPIs', async () => {
+  render(tree())
+  await screen.findByRole('heading', { name: 'Очередь решений' })
   const headings = screen.getAllByRole('heading').map((node) => node.textContent)
-  expect(headings.indexOf('Статусы задач')).toBeLessThan(headings.indexOf('Очередь внимания'))
-  expect(headings.indexOf('Очередь внимания')).toBeLessThan(headings.indexOf('Поток задач: пришло / ушло'))
+  expect(headings.indexOf('Очередь решений')).toBeLessThan(headings.indexOf('Статусы задач'))
+  expect(headings.indexOf('Очередь решений')).toBeLessThan(headings.indexOf('Поток задач: пришло / ушло'))
 })
 
 it('collapses secondary operational KPIs behind one phone disclosure', async () => {
   installMatchMedia(390)
   render(tree())
-  await screen.findByRole('heading', { name: 'Очередь внимания' })
+  await screen.findByRole('heading', { name: 'Очередь решений' })
   expect(screen.getByRole('button', { name: 'Дополнительные показатели' })).toHaveAttribute('aria-expanded', 'false')
   expect(screen.queryByRole('heading', { name: 'Поток задач: пришло / ушло' })).not.toBeInTheDocument()
 })
@@ -102,36 +297,51 @@ it('keeps privileged status selection and clears a selected status back to all p
   fireEvent.click(await screen.findByRole('link', { name: 'Перемещение: 2 задач' }))
   await waitFor(() => expect(client.operationsOverview).toHaveBeenLastCalledWith(7, 7, 'moving'))
   fireEvent.click(await screen.findByRole('link', { name: 'Все разрешённые задачи' }))
-  expect(client.operationsOverview).toHaveBeenCalledTimes(2)
+  await waitFor(() => expect(client.operationsOverview).toHaveBeenLastCalledWith(7, 7, 'all'))
+  expect(client.operationsOverview).toHaveBeenCalledTimes(3)
   expect(await screen.findByRole('link', { name: 'Открыть задачу RP-1' })).toBeVisible()
   expect(screen.getByLabelText('URL')).toHaveTextContent('?park=7')
 })
 
-it('retains cached overview content and offers retry after deferred offline revalidation', async () => {
+it('revalidates on reopening while retaining cached overview content after a network failure', async () => {
   const revalidation = deferred<OperationsOverview>()
   const client = { operationsOverview: vi.fn().mockResolvedValueOnce(snapshot()).mockImplementationOnce(() => revalidation.promise).mockResolvedValue(snapshot({ tasks: [] })) }
-  render(tree({ client }))
+  const view = render(tree({ client }))
 
   await screen.findByRole('link', { name: 'Открыть задачу RP-1' })
-  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001)
-  fireEvent.focus(window)
+  view.unmount()
+  render(tree({ client }))
   await waitFor(() => expect(client.operationsOverview).toHaveBeenCalledTimes(2))
   await act(async () => revalidation.reject(new TypeError('offline')))
-  expect(await screen.findByText('Нет сети')).toBeVisible()
+  await waitFor(() => expect(document.querySelector('.rp-overview-warning')).toHaveTextContent('Нет сети'))
   expect(screen.getByRole('link', { name: 'Открыть задачу RP-1' })).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
+  fireEvent.click(within(document.querySelector('.rp-overview-warning') as HTMLElement).getByRole('button', { name: 'Повторить' }))
   await screen.findByText('Нет задач в очереди внимания')
 })
 
-it.each([401, 403])('clears cached protected overview data and refreshes auth after %s revalidation', async (status) => {
+it('loads on opening without polling Tracker while the overview remains open', async () => {
+  vi.useFakeTimers()
+  try {
+    const client = { operationsOverview: vi.fn(async () => snapshot()) }
+    render(tree({ client }))
+    await act(async () => {})
+    expect(client.operationsOverview).toHaveBeenCalledTimes(1)
+    await act(() => vi.advanceTimersByTimeAsync(120_000))
+    expect(client.operationsOverview).toHaveBeenCalledTimes(1)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it.each([401, 403])('clears cached protected overview data and refreshes auth after %s on reopening', async (status) => {
   const user = makeUser()
   const refreshUser = vi.fn(async () => user)
   const client = { operationsOverview: vi.fn().mockResolvedValueOnce(snapshot()).mockRejectedValue(new ApiError(status, null, 'denied')) }
-  render(tree({ user, refreshUser, client }))
+  const view = render(tree({ user, refreshUser, client }))
 
   await screen.findByRole('link', { name: 'Открыть задачу RP-1' })
-  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001)
-  fireEvent.focus(window)
+  view.unmount()
+  render(tree({ user, refreshUser, client }))
   expect(await screen.findByRole('heading', { name: status === 403 ? 'Нет доступа' : 'Сессия истекла' })).toBeVisible()
   expect(screen.queryByRole('link', { name: 'Открыть задачу RP-1' })).not.toBeInTheDocument()
   expect(refreshUser).toHaveBeenCalledTimes(1)

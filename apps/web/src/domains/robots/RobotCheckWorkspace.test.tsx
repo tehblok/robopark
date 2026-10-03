@@ -44,6 +44,19 @@ it('shows decision data before the active dynamic section and automatically refr
   vi.advanceTimersByTime(10_000); fireEvent(document, new Event('visibilitychange'))
   await waitFor(() => expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2))
 })
+it('offers a direct jump from the mobile decision summary to diagnostic sections', async () => {
+  const scrollIntoView = vi.fn()
+  const original = HTMLElement.prototype.scrollIntoView
+  HTMLElement.prototype.scrollIntoView = scrollIntoView
+  try {
+    render(tree(client(), 'state'))
+    await screen.findByRole('heading', { name: 'Робот 447' })
+    fireEvent.click(screen.getByRole('button', { name: 'К разделам проверки' }))
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' })
+  } finally {
+    HTMLElement.prototype.scrollIntoView = original
+  }
+})
 it('summarizes charge and the leading diagnostic and opens it on the scheme', async () => {
   const onTabChange = vi.fn()
   const apiClient = client({ emergencySnapshot: vi.fn(async () => snapshot({
@@ -83,7 +96,7 @@ it('renders the five decision values independently, including zero and a disconn
 
   const summary = await screen.findByRole('region', { name: 'Состояние робота' })
   expect(within(summary).getByText('АКБ 1').parentElement).toHaveTextContent('Не подключена')
-  expect(within(summary).getByText('АКБ 2').parentElement).toHaveTextContent('Нет данных')
+  expect(within(summary).getByText('АКБ 2').parentElement).toHaveTextContent('Заряд не измерен')
   expect(within(summary).getByText('Скорость').parentElement).toHaveTextContent('0 м/с')
   expect(within(summary).getByText('Диск').parentElement).toHaveTextContent('0 %')
   expect(within(summary).getByText('LTE').parentElement).toHaveTextContent('Робот на связи')
@@ -196,6 +209,71 @@ it('keeps successful snapshot while a section fails and exposes section retry', 
   const panel = screen.getByRole('tabpanel')
   expect(within(panel).getByText(/section-id/)).toBeInTheDocument()
   expect(within(panel).getByRole('button', { name: 'Повторить' })).toBeInTheDocument()
+})
+
+it('does not report an empty error list when the robot snapshot failed', async () => {
+  render(tree(client({ emergencySnapshot: vi.fn().mockRejectedValue(new ApiError(503, 'robot_unavailable', 'robot-id')) }), 'errors'))
+
+  expect(await screen.findByText(/robot-id/)).toBeInTheDocument()
+  const panel = screen.getByRole('tabpanel', { name: 'Ошибки' })
+  expect(within(panel).getByText('Данные диагностики не получены')).toBeVisible()
+  expect(within(panel).queryByText('Сообщения об ошибках не получены.')).not.toBeInTheDocument()
+  expect(within(panel).queryByText('Данные о неисправностях колёс не сообщены.')).not.toBeInTheDocument()
+})
+
+it('explains a server rate limit without offering a retry that cannot run yet', async () => {
+  render(tree(client({ emergencySnapshot: vi.fn().mockRejectedValue(new ApiError(429, 'rate_limited', 'robot-rate', 120_000)) }), 'errors'))
+
+  expect(await screen.findByText('Сервер ограничил частоту запросов. Проверка повторится автоматически.')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Повторить' })).not.toBeInTheDocument()
+})
+
+it('does not certify an empty error list from a stale robot snapshot', async () => {
+  render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({ stale: true, diagnostic_events: [] })) }), 'errors'))
+
+  await screen.findByRole('heading', { name: 'Робот 447' })
+  const panel = screen.getByRole('tabpanel', { name: 'Ошибки' })
+  expect(within(panel).getByText('Данные диагностики устарели; отсутствие ошибок не подтверждено.')).toBeVisible()
+  expect(within(panel).queryByText('Сообщения об ошибках не получены.')).not.toBeInTheDocument()
+  expect(within(panel).queryByText('Данные о неисправностях колёс не сообщены.')).not.toBeInTheDocument()
+})
+it('withdraws an empty-error claim when a snapshot ages past five minutes without a new response', async () => {
+  vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
+  const first = snapshot({ observed_at: '2026-09-02T09:05:00Z', diagnostic_events: [] })
+  const apiClient = client({ emergencySnapshot: vi.fn().mockResolvedValueOnce(first).mockImplementation(() => new Promise(() => undefined)) })
+  render(tree(apiClient, 'errors'))
+
+  await act(async () => undefined)
+  expect(screen.getByRole('heading', { name: 'Робот 447' })).toBeVisible()
+  const panel = screen.getByRole('tabpanel', { name: 'Ошибки' })
+  expect(within(panel).getByText('Сообщения об ошибках не получены.')).toBeVisible()
+  await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+  expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2)
+  expect(within(panel).getByText('Сообщения об ошибках не получены.')).toBeVisible()
+  await act(async () => { await vi.advanceTimersByTimeAsync(280_000) })
+  expect(within(panel).getByText('Сообщения об ошибках не получены.')).toBeVisible()
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(within(panel).getByText('Данные диагностики устарели; отсутствие ошибок не подтверждено.')).toBeVisible()
+  expect(within(panel).queryByText('Сообщения об ошибках не получены.')).not.toBeInTheDocument()
+  expect(apiClient.emergencySnapshot).toHaveBeenCalledTimes(2)
+})
+it.each([
+  ['2026-09-02T09:05:01Z', true],
+  ['2026-09-02T09:06:01Z', false],
+] as const)('uses the same clock skew rule for diagnostics at %s', async (observedAt, fresh) => {
+  render(tree(client({ emergencySnapshot: vi.fn(async () => snapshot({
+    observed_at: observedAt, battery1_percent: 90, battery2_percent: 90, diagnostic_events: [],
+  })) }), 'errors'))
+
+  await screen.findByRole('heading', { name: 'Робот 447' })
+  const panel = screen.getByRole('tabpanel', { name: 'Ошибки' })
+  if (fresh) {
+    expect(within(panel).getByText('Сообщения об ошибках не получены.')).toBeVisible()
+    expect(within(panel).queryByText('Данные диагностики устарели; отсутствие ошибок не подтверждено.')).not.toBeInTheDocument()
+  } else {
+    expect(within(panel).getByText('Данные диагностики устарели; отсутствие ошибок не подтверждено.')).toBeVisible()
+    expect(within(panel).queryByText('Сообщения об ошибках не получены.')).not.toBeInTheDocument()
+  }
 })
 it.each([401, 403])('clears protected data immediately on %s even when sibling hangs', async status => {
   const section = deferred<EmergencySectionDetail>()
@@ -393,6 +471,12 @@ it('shows unknown raw errors safely in the errors list with no invented marker a
   const list = await screen.findByRole('list', { name: 'Диагностические события' })
   expect(list).toHaveTextContent('Неизвестная ошибка'); expect(list).toHaveTextContent('Без локализации')
   expect(list).toHaveTextContent('<script>unsafe()</script>'); expect(list.querySelector('script')).toBeNull()
+  const unknownItem = within(list).getByRole('heading', { name: unknown.title }).closest('li')!
+  const rawSignal = within(unknownItem).getByText('Сигнал Emergency').closest('details')
+  expect(rawSignal).not.toBeNull()
+  expect(rawSignal).not.toHaveAttribute('open')
+  fireEvent.click(within(unknownItem).getByText('Сигнал Emergency'))
+  expect(rawSignal).toHaveAttribute('open')
   expect(screen.queryByText('Сообщения об ошибках не получены.')).not.toBeInTheDocument()
   const item = within(list).getByRole('heading', { name: battery.title }).closest('li')!
   fireEvent.click(within(item).getByRole('button', { name: 'Посмотреть на схеме' }))

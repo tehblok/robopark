@@ -51,7 +51,25 @@ export function InventoryCountsView({ apiClient = api, parkId, onInventoryChange
     setListError('')
     apiClient.inventoryCounts(parkId, { query: query.trim() || undefined, limit: pageSize, offset }).then(value => {
       if (generation === listGeneration.current) setPage(value)
-    }).catch(reason => { if (generation === listGeneration.current) { setPage(null); setListError(classifyApiError(reason, 'Не удалось загрузить акты.').description) } })
+    }).catch(reason => {
+      if (generation !== listGeneration.current) return
+      const failure = classifyApiError(reason, 'Не удалось загрузить акты.')
+      setPage(null)
+      setListError(failure.description)
+      if (failure.kind === 'unauthorized' || failure.kind === 'forbidden') {
+        documentGeneration.current += 1
+        pending.current = false
+        setBusy(false)
+        setSelected(null)
+        setCreating(false)
+        setName('')
+        setActual({})
+        setConflicts([])
+        setAction(null)
+        setDeleteTarget(null)
+        setNotice('')
+      }
+    })
   }, [apiClient, offset, parkId, query])
   useEffect(() => { load(); return () => { listGeneration.current += 1 } }, [load, refreshVersion])
   useEffect(() => {

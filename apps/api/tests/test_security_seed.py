@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -111,6 +113,7 @@ def test_app_lifespan_ensures_seed_user(monkeypatch):
             return None
 
     monkeypatch.setattr(main, "SessionLocal", SessionContext, raising=False)
+    monkeypatch.setattr(bootstrap, "_startup_seed_lock", lambda _db: nullcontext())
     monkeypatch.setattr(bootstrap, "ensure_rbac_catalog", lambda _db: None)
     monkeypatch.setattr(bootstrap, "ensure_default_section_roles", lambda _db: None)
     monkeypatch.setattr(main, "ensure_dev_seed", lambda _db, _settings: None)

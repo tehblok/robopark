@@ -1,6 +1,6 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { storageRegistry } from './storageRegistry'
+import { reclaimLegacyShareInbox, storageRegistry } from './storageRegistry'
 import { clearReportPhotoDrafts, readReportPhotoDraft, writeReportPhotoDraft } from '../domains/reports/reportPhotoDrafts'
 
 beforeEach(async () => {
@@ -10,6 +10,22 @@ beforeEach(async () => {
 })
 
 describe('storage registry', () => {
+  it('reclaims the inaccessible legacy share inbox only after its grace period', async () => {
+    const opened = indexedDB.open('robopark-share-inbox', 1)
+    const legacy = await new Promise<IDBDatabase>((resolve, reject) => {
+      opened.onsuccess = () => resolve(opened.result)
+      opened.onerror = () => reject(opened.error)
+    })
+    legacy.close()
+    const start = 1_000
+
+    expect(await reclaimLegacyShareInbox(start)).toBe(false)
+    expect(await indexedDB.databases()).toContainEqual(expect.objectContaining({ name: 'robopark-share-inbox' }))
+    expect(await reclaimLegacyShareInbox(start + 24 * 60 * 60 * 1000 - 1)).toBe(false)
+    expect(await reclaimLegacyShareInbox(start + 24 * 60 * 60 * 1000)).toBe(true)
+    expect(await indexedDB.databases()).not.toContainEqual(expect.objectContaining({ name: 'robopark-share-inbox' }))
+  })
+
   it('inventories the product namespaces with ownership, schema and retention', () => {
     const entries = storageRegistry.inventory()
     expect(entries.find(entry => entry.name === 'robopark-offline')).toMatchObject({
@@ -20,6 +36,9 @@ describe('storage registry', () => {
     })
     expect(entries.find(entry => entry.name === 'robopark:system-operation:')).toMatchObject({
       kind: 'localStorage', owner: 'system', scope: 'account',
+    })
+    expect(entries.find(entry => entry.name === 'robopark-accent')).toMatchObject({
+      kind: 'localStorage', owner: 'theme', scope: 'device',
     })
     expect(entries.every(entry => entry.retention && entry.owner && entry.scope)).toBe(true)
   })

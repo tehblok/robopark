@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from fastapi import (
     APIRouter,
@@ -26,6 +26,7 @@ from robopark_api.schemas import (
     ReportOut,
     ReportResubmitIn,
     ReportReturnIn,
+    ReportSummaryOut,
 )
 from robopark_api.services import rbac
 from robopark_api.services import report_attachments as att_svc
@@ -52,6 +53,10 @@ def _require_report_author(
 
 def _report_out(report: Report) -> ReportOut:
     return ReportOut.model_validate(report)
+
+
+def _report_summary_out(report: Report) -> ReportSummaryOut:
+    return ReportSummaryOut.model_validate(report)
 
 
 def _run_svc(fn: Callable[[], T]) -> T:
@@ -102,23 +107,60 @@ def create_report(
     return _report_out(report)
 
 
-@router.get("/inbox", response_model=list[ReportOut])
+@router.get("/inbox", response_model=list[ReportSummaryOut])
 def list_inbox(
     park_id: int | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=101),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
+    anchor_id: int | None = Query(default=None, gt=0),
+    before_id: int | None = Query(default=None, gt=0),
+    after_id: int | None = Query(default=None, gt=0),
     user: User = Depends(_require_inbox_viewer),
     db: Session = Depends(get_db),
-) -> list[ReportOut]:
-    reports = _run_svc(lambda: reports_svc.list_inbox(db, user, park_id=park_id))
-    return [_report_out(report) for report in reports]
+) -> list[ReportSummaryOut]:
+    if before_id is not None and after_id is not None:
+        raise HTTPException(status_code=422, detail="report_cursor_ambiguous")
+    reports = _run_svc(
+        lambda: reports_svc.list_inbox(
+            db,
+            user,
+            park_id=park_id,
+            limit=limit,
+            offset=offset,
+            anchor_id=anchor_id,
+            before_id=before_id,
+            after_id=after_id,
+        )
+    )
+    return [_report_summary_out(report) for report in reports]
 
 
-@router.get("/mine", response_model=list[ReportOut])
+@router.get("/mine", response_model=list[ReportSummaryOut])
 def list_mine(
+    limit: int = Query(default=50, ge=1, le=101),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
+    status: Literal["all", "open", "returned", "done"] = "all",
+    anchor_id: int | None = Query(default=None, gt=0),
+    before_id: int | None = Query(default=None, gt=0),
+    after_id: int | None = Query(default=None, gt=0),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
-) -> list[ReportOut]:
-    reports = _run_svc(lambda: reports_svc.list_mine(db, user))
-    return [_report_out(report) for report in reports]
+) -> list[ReportSummaryOut]:
+    if before_id is not None and after_id is not None:
+        raise HTTPException(status_code=422, detail="report_cursor_ambiguous")
+    reports = _run_svc(
+        lambda: reports_svc.list_mine(
+            db,
+            user,
+            limit=limit,
+            offset=offset,
+            status=status,
+            anchor_id=anchor_id,
+            before_id=before_id,
+            after_id=after_id,
+        )
+    )
+    return [_report_summary_out(report) for report in reports]
 
 
 @router.get("/badge", response_model=ReportBadgeOut)

@@ -62,7 +62,7 @@ async function waitForStableAudit(page: import('@playwright/test').Page) {
     const finiteAnimations = document.getAnimations().filter((animation) => (
       animation.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY
     ))
-    await Promise.all(finiteAnimations.map((animation) => animation.finished))
+    await Promise.allSettled(finiteAnimations.map((animation) => animation.finished))
   })
 }
 
@@ -140,7 +140,7 @@ test('system theme is applied before paint and follows live OS changes without l
   await expect(page.getByLabel('Номер или VIN робота')).toHaveValue('447')
 })
 
-test('desktop compact density becomes comfortable on phone and restores without losing context', async ({ page }) => {
+test('compact density keeps touch targets and search context on phone and desktop', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.addInitScript(() => {
     localStorage.setItem('robopark-theme', 'light')
@@ -152,7 +152,9 @@ test('desktop compact density becomes comfortable on phone and restores without 
   await expect(page.locator('html')).toHaveAttribute('data-density', 'compact')
 
   await page.setViewportSize({ width: 390, height: 844 })
-  await expect(page.locator('html')).toHaveAttribute('data-density', 'comfortable')
+  await expect(page.locator('html')).toHaveAttribute('data-density', 'compact')
+  const searchBox = await page.getByLabel('Номер или VIN робота').boundingBox()
+  expect(searchBox!.height).toBeGreaterThanOrEqual(44)
   await expect(page.getByLabel('Номер или VIN робота')).toHaveValue('447')
   await expect(page).toHaveURL(/\/robots\?park=7&q=447$/)
 

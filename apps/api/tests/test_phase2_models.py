@@ -46,6 +46,9 @@ def test_phase2_models_have_required_columns_and_foreign_keys():
         "feature_blockers",
         "feature_sla_repair",
         "feature_backlog_alerts",
+        "latitude",
+        "longitude",
+        "timezone",
     }
     assert set(UserPark.__table__.columns.keys()) == {"user_id", "park_id"}
     assert set(ParkRequest.__table__.columns.keys()) == {

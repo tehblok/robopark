@@ -9,12 +9,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings, get_settings
+from robopark_api.crypto import SecretDecryptionError
 from robopark_api.db import get_db
 from robopark_api.deps import require_builtin_admin_or_royal, require_user
 from robopark_api.models import User
+from robopark_api.ops_schemas import ReleaseStatusOut
+from robopark_api.schedule_models import TrackerNotificationCursor
+from robopark_api.services import platform_settings
+from robopark_api.services.ops import host_bridge
 from robopark_api.services.ops.context import resolved_ops_dir
 from robopark_api.services.release_status import release_status
-from robopark_api.services.sync_health import sync_health
+from robopark_api.services.sync_health import WORKER_SCOPE, sync_health
 from robopark_api.services.system_observability import (
     MetricRaw,
     active_user_history,
@@ -23,6 +28,7 @@ from robopark_api.services.system_observability import (
     online_counts,
     push_health,
 )
+from robopark_api.worker_healthcheck import MAX_METRIC_FUTURE_SKEW, assess_worker_sample
 
 router = APIRouter(tags=["system"])
 
@@ -57,20 +63,62 @@ def system_summary(
     settings: Settings = Depends(get_settings),
 ) -> dict:
     response.headers["Cache-Control"] = "no-store"
+    if settings.ops_host_root:
+        try:
+            release = release_status(host_bridge.host_root(settings))
+        except host_bridge.BridgeError:
+            # A configured but unavailable host bridge cannot be replaced by the
+            # API container's local metadata: it may describe a different build.
+            release = ReleaseStatusOut()
+    else:
+        release = release_status(resolved_ops_dir(settings))
+    now = datetime.now(UTC)
     latest = db.scalar(
         select(MetricRaw).order_by(MetricRaw.sampled_at.desc(), MetricRaw.id.desc()).limit(1)
     )
+    sampled_at = latest.sampled_at if latest is not None else None
+    if sampled_at is not None:
+        sampled_at = (
+            sampled_at.replace(tzinfo=UTC)
+            if sampled_at.tzinfo is None
+            else sampled_at.astimezone(UTC)
+        )
+    sync = sync_health(db, now=now, resource_type="tracker_issue")
+    worker_health = assess_worker_sample(
+        db.get(TrackerNotificationCursor, WORKER_SCOPE),
+        latest.sampled_at if latest is not None else None,
+        now=now,
+    )
+    try:
+        stored_tracker = platform_settings.get_setting(db, platform_settings.TRACKER_TOKEN_KEY)
+        tracker_token = (
+            platform_settings.get_tracker_token(db) if stored_tracker is not None else None
+        )
+        tracker_state = (
+            "configured"
+            if tracker_token
+            else (
+                "credential_unavailable"
+                if stored_tracker is not None and stored_tracker.value
+                else "not_configured"
+            )
+        )
+    except SecretDecryptionError:
+        tracker_state = "credential_unavailable"
     return {
-        "sampled_at": (
-            latest.sampled_at.replace(tzinfo=UTC).isoformat() if latest is not None else None
+        "sampled_at": sampled_at.isoformat() if sampled_at is not None else None,
+        "metrics_stale": (
+            sampled_at is None
+            or now - sampled_at > timedelta(minutes=2)
+            or sampled_at > now + MAX_METRIC_FUTURE_SKEW
         ),
-        "metrics_stale": latest is None
-        or datetime.now(UTC) - latest.sampled_at.replace(tzinfo=UTC) > timedelta(minutes=2),
         "online": online_counts(db, actor=actor),
-        "sync": sync_health(db, resource_type="tracker_issue").model_dump(mode="json"),
+        "sync": sync.model_dump(mode="json"),
+        "tracker": {"state": tracker_state},
+        "worker_health": worker_health.reason,
         "push": push_health(db),
         "metrics": latest.data if latest is not None else None,
-        "release": release_status(resolved_ops_dir(settings)).model_dump(mode="json"),
+        "release": release.model_dump(mode="json"),
     }
 
 

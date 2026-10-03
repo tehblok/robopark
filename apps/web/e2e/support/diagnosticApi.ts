@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import type { MockResponse, MockRoute } from './mockApi'
@@ -10,10 +11,19 @@ type Call = { method?: string; path?: string; body?: string; headers?: Record<st
 export async function startDiagnosticApi(actor: Actor = 'admin') {
   const apiRoot = fileURLToPath(new URL('../../../api/', import.meta.url))
   const python = process.env.DIAGNOSTIC_E2E_PYTHON ?? `${apiRoot}.venv/bin/python`
+  const password = randomBytes(24).toString('hex')
+  const secretKey = randomBytes(48).toString('hex')
   const child = spawn(python, ['-u', 'tests/browser_diagnostic_bridge.py'], {
     cwd: apiRoot, stdio: ['pipe', 'pipe', 'pipe'],
     // Fixture configuration cannot inherit an operator's integration credentials.
-    env: { PATH: process.env.PATH, PYTHONDONTWRITEBYTECODE: '1', DIAGNOSTIC_E2E_MUTATION: process.env.DIAGNOSTIC_E2E_MUTATION },
+    env: {
+      PATH: process.env.PATH,
+      PYTHONDONTWRITEBYTECODE: '1',
+      DIAGNOSTIC_E2E_MUTATION: process.env.DIAGNOSTIC_E2E_MUTATION,
+      ROBOPARK_BROWSER_PASSWORD: password,
+      ROBOPARK_BROWSER_SECRET_KEY: secretKey,
+      ROBOPARK_BROWSER_ORIGIN: `http://127.0.0.1:${Number(process.env.PLAYWRIGHT_PORT ?? 4173)}`,
+    },
   })
   // Subscribe at spawn time: exitCode remains null for a signal-terminated child.
   let resolveExit!: () => void
@@ -34,7 +44,9 @@ export async function startDiagnosticApi(actor: Actor = 'admin') {
   const onStderr = (chunk: Buffer) => { stderr += chunk.toString() }
   child.stderr.on('data', onStderr)
   const fail = (error: Error) => { failed(error); for (const call of pending.values()) call.reject(error); pending.clear() }
-  const onExit = (code: number | null, signal: NodeJS.Signals | null) => fail(new Error(`Diagnostic API bridge exited ${signal ?? code}: ${stderr}`))
+  const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (!closing) fail(new Error(`Diagnostic API bridge exited ${signal ?? code}: ${stderr}`))
+  }
   child.on('error', fail)
   child.once('exit', onExit)
   const waitForExit = async () => {
@@ -81,5 +93,5 @@ export async function startDiagnosticApi(actor: Actor = 'admin') {
     }
   }
   const routes: MockRoute[] = (['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const).map(method => ({ method, path: /^\/api\/(?:admin\/(?:diagnostic-rules|diagnostic-unknowns|emergency-readings|emergency)(?:\/.*)?|auth\/me|emergency\/(?:resolve|[^/]+\/snapshot))$/, handler: forward }))
-  return { call, routes, close }
+  return { call, routes, close, password }
 }

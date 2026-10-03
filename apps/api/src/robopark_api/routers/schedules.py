@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from robopark_api.db import get_db
-from robopark_api.deps import require_user
+from robopark_api.deps import require_approved
 from robopark_api.models import User
 from robopark_api.schedule_schemas import (
     ScheduleBulkCreate,
@@ -43,7 +43,7 @@ def list_schedules(
     ),
     after_start_at: datetime | None = Query(default=None),
     after_id: str | None = Query(default=None, min_length=1, max_length=64),
-    user: User = Depends(require_user),
+    user: User = Depends(require_approved),
     db: Session = Depends(get_db),
 ):
     page = _run(
@@ -69,7 +69,7 @@ def list_schedules(
 @router.get("/participants", response_model=list[ScheduleParticipantOut])
 def list_schedule_participants(
     park_id: int,
-    user: User = Depends(require_user),
+    user: User = Depends(require_approved),
     db: Session = Depends(get_db),
 ):
     return _run(lambda: schedules.list_participants(db, user, park_id=park_id))
@@ -77,21 +77,23 @@ def list_schedule_participants(
 
 @router.post("", response_model=ScheduleOut, status_code=status.HTTP_201_CREATED)
 def create_schedule(
-    payload: ScheduleCreate, user: User = Depends(require_user), db: Session = Depends(get_db)
+    payload: ScheduleCreate, user: User = Depends(require_approved), db: Session = Depends(get_db)
 ):
     return _run(lambda: schedules.create_entry(db, user, payload))
 
 
 @router.post("/bulk", response_model=list[ScheduleOut], status_code=status.HTTP_201_CREATED)
 def create_schedule_bulk(
-    payload: ScheduleBulkCreate, user: User = Depends(require_user), db: Session = Depends(get_db)
+    payload: ScheduleBulkCreate,
+    user: User = Depends(require_approved),
+    db: Session = Depends(get_db),
 ):
     return _run(lambda: schedules.create_bulk(db, user, payload))
 
 
 @router.post("/copy", response_model=list[ScheduleOut], status_code=status.HTTP_201_CREATED)
 def copy_schedule(
-    payload: ScheduleCopy, user: User = Depends(require_user), db: Session = Depends(get_db)
+    payload: ScheduleCopy, user: User = Depends(require_approved), db: Session = Depends(get_db)
 ):
     return _run(lambda: schedules.copy_period(db, user, payload))
 
@@ -99,7 +101,7 @@ def copy_schedule(
 @router.post("/pattern", response_model=list[ScheduleOut], status_code=status.HTTP_201_CREATED)
 def create_schedule_pattern(
     payload: SchedulePatternCreate,
-    user: User = Depends(require_user),
+    user: User = Depends(require_approved),
     db: Session = Depends(get_db),
 ):
     return _run(lambda: schedules.create_pattern(db, user, payload))
@@ -107,7 +109,7 @@ def create_schedule_pattern(
 
 @router.delete("/series/{series_id}")
 def delete_schedule_series(
-    series_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)
+    series_id: str, user: User = Depends(require_approved), db: Session = Depends(get_db)
 ):
     return {"deleted": _run(lambda: schedules.delete_series(db, user, series_id))}
 
@@ -116,7 +118,7 @@ def delete_schedule_series(
 def update_schedule(
     entry_id: str,
     payload: ScheduleUpdate,
-    user: User = Depends(require_user),
+    user: User = Depends(require_approved),
     db: Session = Depends(get_db),
 ):
     return _run(lambda: schedules.update_entry(db, user, entry_id, payload))
@@ -124,6 +126,18 @@ def update_schedule(
 
 @router.delete("/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_schedule(
-    entry_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)
+    entry_id: str,
+    base_revision: str | None = Query(default=None, max_length=128),
+    idempotency_key: str | None = Query(default=None, min_length=8, max_length=128),
+    user: User = Depends(require_approved),
+    db: Session = Depends(get_db),
 ):
-    _run(lambda: schedules.delete_entry(db, user, entry_id))
+    _run(
+        lambda: schedules.delete_entry(
+            db,
+            user,
+            entry_id,
+            base_revision=base_revision,
+            idempotency_key=idempotency_key,
+        )
+    )

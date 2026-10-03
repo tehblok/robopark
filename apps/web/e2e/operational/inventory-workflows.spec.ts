@@ -14,6 +14,14 @@ async function assertInventoryPage(page: Page, width: number) {
   await assertNoSeriousA11yViolations(page)
 }
 
+async function selectInventoryView(page: Page, label: string, width: number) {
+  if (width <= 899) {
+    await page.getByRole('combobox', { name: 'Раздел склада' }).selectOption({ label })
+  } else {
+    await page.getByRole('tab', { name: label, exact: true }).click()
+  }
+}
+
 async function assertOpenDocumentEditor(page: Page, width: number) {
   const editor = page.locator('.inventory-document-editor:visible')
   const list = page.locator('.inventory-document-list')
@@ -29,7 +37,7 @@ async function assertOpenDocumentEditor(page: Page, width: number) {
 }
 
 async function postReceipt(page: Page, article: string, quantity: string, width: number) {
-  await page.getByRole('tab', { name: 'Поставки' }).click()
+  await selectInventoryView(page, 'Поставки', width)
   await page.getByRole('button', { name: 'Новая поставка' }).click()
   await assertOpenDocumentEditor(page, width)
   await page.getByRole('searchbox', { name: 'Найти запчасть для поставки' }).fill(article)
@@ -44,7 +52,7 @@ async function postReceipt(page: Page, article: string, quantity: string, width:
 }
 
 async function postCount(page: Page, article: string, quantity: string, width: number) {
-  await page.getByRole('tab', { name: 'Инвентаризация' }).click()
+  await selectInventoryView(page, 'Инвентаризация', width)
   await page.getByRole('button', { name: 'Новая инвентаризация' }).click()
   await assertOpenDocumentEditor(page, width)
   await page.getByRole('textbox', { name: 'Название акта' }).fill('Контрольный пересчёт')
@@ -58,23 +66,25 @@ async function postCount(page: Page, article: string, quantity: string, width: n
   await expect(page.getByRole('status')).toContainText('Акт проведён')
 }
 
-test('mechanic completes the park stock cycle on phone', async ({ page }) => {
+test('mechanic completes the park stock cycle on phone', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await openAs(page, 'mechanic', '/inventory?park=7')
   await page.getByRole('searchbox', { name: 'Найти запчасть' }).fill('ABC-1')
   await expect(page.getByText('Полка A-1', { exact: true })).toBeVisible()
   await postReceipt(page, 'ABC-1', '5', 390)
-  await page.getByRole('tab', { name: 'Запчасти' }).click()
+  await selectInventoryView(page, 'Запчасти', 390)
   await expect(page.getByText('5 шт.', { exact: true })).toBeVisible()
   const duplicateStatus = await page.evaluate(async () => (await fetch('/api/inventory/parks/7/receipts/1/post', { method: 'POST' })).status)
   expect(duplicateStatus).toBe(200)
   await page.reload()
-  await page.getByRole('tab', { name: 'Запчасти' }).click()
+  await selectInventoryView(page, 'Запчасти', 390)
   await expect(page.getByText('5 шт.', { exact: true })).toBeVisible()
   await postCount(page, 'ABC-1', '4', 390)
-  await page.getByRole('tab', { name: 'Запчасти' }).click()
+  await selectInventoryView(page, 'Запчасти', 390)
   await expect(page.getByText('4 шт.', { exact: true })).toBeVisible()
   await assertInventoryPage(page, 390)
+  await page.evaluate(() => { window.scrollTo(0, 0); (document.activeElement as HTMLElement | null)?.blur() })
+  await page.screenshot({ path: testInfo.outputPath('inventory-mechanic-phone.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('mechanic cannot broaden inventory to a foreign park at 320px', async ({ page }) => {
@@ -90,13 +100,14 @@ test('mechanic cannot broaden inventory to a foreign park at 320px', async ({ pa
   await postCount(page, 'ABC-1', '0', 320)
 })
 
-test('mechanic switches inventory workflows with the keyboard at 768px', async ({ page }) => {
+test('mechanic selects inventory workflows with a focusable control at 768px', async ({ page }) => {
   await page.setViewportSize({ width: 768, height: 900 })
   await openAs(page, 'mechanic', '/inventory?park=7')
-  const parts = page.getByRole('tab', { name: 'Запчасти' })
-  await parts.focus()
-  await parts.press('ArrowRight')
-  await expect(page.getByRole('tab', { name: 'Поставки' })).toHaveAttribute('aria-selected', 'true')
+  const views = page.getByRole('combobox', { name: 'Раздел склада' })
+  await views.focus()
+  await expect(views).toBeFocused()
+  await views.selectOption('receipts')
+  await expect(views).toHaveValue('receipts')
   await expect(page).toHaveURL(/view=receipts/)
   await expect(page.getByRole('heading', { name: 'Поставки', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Новая поставка' }).click()
@@ -117,7 +128,7 @@ test('stock settings remain isolated between parks', async ({ page }) => {
   await expect(page.getByRole('textbox', { name: 'Минимум' })).toHaveValue('2')
 })
 
-test('admin opens a global catalog workflow at 1024px', async ({ page }) => {
+test('admin opens a global catalog workflow at 1024px', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1024, height: 900 })
   await openAs(page, 'admin', '/inventory?park=7&view=manage')
   await expect(page.getByRole('heading', { name: 'Глобальный каталог', exact: true })).toBeVisible()
@@ -125,6 +136,7 @@ test('admin opens a global catalog workflow at 1024px', async ({ page }) => {
   await page.getByRole('button', { name: 'Добавить позицию' }).click()
   await expect(page.getByRole('form', { name: 'Новая позиция' })).toBeVisible()
   await assertInventoryPage(page, 1024)
+  await page.screenshot({ path: testInfo.outputPath('inventory-admin-desktop.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('royal exports all parks at 1440px', async ({ page }) => {

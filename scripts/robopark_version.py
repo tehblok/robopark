@@ -40,6 +40,14 @@ class ReleaseVersion:
         return "stable" if self.prerelease is None else "rc"
 
     @property
+    def python_version(self) -> str:
+        """PEP 440 spelling emitted by uv for our RC/snapshot version scheme."""
+        match = re.fullmatch(r"rc\.([0-9]+)(\.dev[0-9]+)?", self.prerelease or "")
+        if match is None:
+            return self.raw
+        return f"{self.major}.{self.minor}.{self.patch}rc{match[1]}{match[2] or ''}"
+
+    @property
     def precedence(self) -> tuple[int, int, int, tuple[tuple[int, int | str], ...]]:
         if self.prerelease is None:
             suffix = ((2, ""),)

@@ -27,7 +27,7 @@ REQUIRED_GATES = (
 )
 REQUIRED_PROMOTION_GATES = frozenset((*REQUIRED_GATES, "platform"))
 MAX_REPORT_BYTES = 64 * 1024 * 1024
-RELEASE_PREFIXES = ("apps/api/", "apps/web/", "deploy/", "scripts/")
+RELEASE_PREFIXES = ("apps/api/", "apps/bot/", "apps/web/", "deploy/", "scripts/")
 RELEASE_ROOT_FILES = {
     "README.md",
     "VERSION",
@@ -35,6 +35,20 @@ RELEASE_ROOT_FILES = {
     ".gitignore",
     ".github/workflows/ci.yml",
 }
+# Keep release payload exclusions aligned with scripts/build_ota.py. Acceptance
+# also sees untracked source, so explicitly omit the web test artifact directory.
+RELEASE_EXCLUDED_PARTS = {
+    ".git",
+    ".pnpm-store",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    "output",
+}
+RELEASE_EXCLUDED_SUFFIXES = (".ota", ".pem", ".pyc", ".log")
+RELEASE_ARTIFACT_PREFIXES = ("apps/web/tmp/",)
 
 
 def _safe_relative(value: str) -> Path:
@@ -203,7 +217,21 @@ def validate_promotion_evidence(
 
 def is_release_source(relative: str) -> bool:
     """Limit the digest to product/release inputs, never worktree bookkeeping."""
-    return relative in RELEASE_ROOT_FILES or relative.startswith(RELEASE_PREFIXES)
+    path = PurePosixPath(relative)
+    name = path.name
+    env_secret = name == ".env" or (
+        (name.startswith(".env.") or name.endswith(".env"))
+        and not name.endswith(".env.example")
+    )
+    return (
+        not path.is_absolute()
+        and all(part not in {"", ".", ".."} for part in path.parts)
+        and (relative in RELEASE_ROOT_FILES or relative.startswith(RELEASE_PREFIXES))
+        and not env_secret
+        and not any(part in RELEASE_EXCLUDED_PARTS for part in path.parts)
+        and not relative.endswith(RELEASE_EXCLUDED_SUFFIXES)
+        and not relative.startswith(RELEASE_ARTIFACT_PREFIXES)
+    )
 
 
 def tracked_source_paths(root: Path, excludes: set[str]) -> list[str]:
@@ -213,12 +241,21 @@ def tracked_source_paths(root: Path, excludes: set[str]) -> list[str]:
         check=True,
         capture_output=True,
     )
+    deleted_result = subprocess.run(
+        ["git", "ls-files", "--deleted", "-z"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    deleted = {
+        raw.decode("utf-8") for raw in deleted_result.stdout.split(b"\0") if raw
+    }
     paths = []
     for raw in result.stdout.split(b"\0"):
         if not raw:
             continue
         relative = raw.decode("utf-8")
-        if relative in excludes or not is_release_source(relative):
+        if relative in deleted or relative in excludes or not is_release_source(relative):
             continue
         paths.append(relative)
     return sorted(set(paths))

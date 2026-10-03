@@ -38,7 +38,7 @@ const managedUser: AdminUser = {
   role_id: 1,
   access_status: 'approved',
   is_active: true,
-  parks: [{ id: 2, name: 'Архив', tag: 'archive', is_active: false }],
+  parks: [{ id: 2, name: 'Архив', timezone: 'Europe/Moscow', tag: 'archive', is_active: false }],
   permissions: ['reports.create'],
   role_permissions: ['reports.create'],
   last_seen_at: '2026-09-19T06:30:00Z',
@@ -50,6 +50,37 @@ const managedUser: AdminUser = {
 }
 
 afterEach(() => { vi.restoreAllMocks(); resourceStore.clearAll() })
+
+it('does not append a timezone to an unavailable activity timestamp', async () => {
+  vi.spyOn(api, 'adminUsers').mockResolvedValue([{ ...managedUser, last_seen_at: null }])
+  vi.spyOn(api, 'adminRoles').mockResolvedValue(roles)
+  vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([])
+
+  render(
+    <AuthContext.Provider value={{ user: actor, loading: false, login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>
+      <AdminUsersPanel parks={[]} />
+    </AuthContext.Provider>,
+  )
+
+  expect(await screen.findByText('Последняя активность · Нет данных')).toBeVisible()
+  fireEvent.click(screen.getByText('Последняя активность · Нет данных'))
+  expect(within(screen.getByLabelText('Последняя активность')).getByText('IP: 203.0.113.11')).toBeVisible()
+  expect(within(screen.getByLabelText('Последняя активность')).queryByText('Нет данных МСК')).not.toBeInTheDocument()
+})
+
+it('does not show empty permission categories in a sparse user catalog', async () => {
+  vi.spyOn(api, 'adminUsers').mockResolvedValue([managedUser])
+  vi.spyOn(api, 'adminRoles').mockResolvedValue(roles)
+  vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([{ key: 'nav.inventory', category: 'nav', label: 'Склад', sort_order: 1 }])
+  render(
+    <AuthContext.Provider value={{ user: actor, loading: false, login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>
+      <AdminUsersPanel parks={[]} />
+    </AuthContext.Provider>,
+  )
+
+  expect(await screen.findByRole('heading', { name: 'Разделы меню' })).toBeVisible()
+  expect(screen.queryByRole('heading', { name: 'Действия' })).not.toBeInTheDocument()
+})
 
 it('hides custom privileged roles and locks an existing privileged identity for a non-owner', async () => {
   vi.spyOn(api, 'adminUsers').mockResolvedValue([privilegedUser])
@@ -86,17 +117,18 @@ it('updates a user with the controlled park selection without changing the park_
   render(
     <AuthContext.Provider value={{ user: actor, loading: false, login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}>
       <AdminUsersPanel parks={[
-        { id: 1, name: 'Север', tag: 'north', is_active: true },
-        { id: 2, name: 'Архив', tag: 'archive', is_active: false },
+        { id: 1, name: 'Север', timezone: 'Europe/Moscow', tag: 'north', is_active: true },
+        { id: 2, name: 'Архив', timezone: 'Europe/Moscow', tag: 'archive', is_active: false },
       ]} />
     </AuthContext.Provider>,
   )
 
-  fireEvent.click(await screen.findByRole('button', { name: /Парки.*Выбрано: 1/ }))
+  fireEvent.click(await screen.findByText(/^Последняя активность ·/))
   expect(screen.getByText('IP: 203.0.113.11')).toBeVisible()
   expect(screen.getByText('Устройство: Android · Chrome')).toBeVisible()
   expect(screen.getByText('Примерное местоположение по IP: Москва, Москва, Россия')).toBeVisible()
   expect(screen.getByText('Источник: ipwho.is')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: /Парки.*Выбрано: 1/ }))
   fireEvent.click(screen.getByRole('checkbox', { name: 'Север' }))
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
 
@@ -120,7 +152,8 @@ it('distinguishes disabled IP geolocation from an unavailable result', async () 
     </AuthContext.Provider>,
   )
 
-  expect(await screen.findByText('Примерное местоположение: определение отключено')).toBeVisible()
+  fireEvent.click(await screen.findByText(/^Последняя активность ·/))
+  expect(screen.getByText('Примерное местоположение: определение отключено')).toBeVisible()
   expect(screen.getByText('Источник: отключён')).toBeVisible()
   expect(screen.queryByText(/Примерное местоположение по IP: Недоступно/)).not.toBeInTheDocument()
 })

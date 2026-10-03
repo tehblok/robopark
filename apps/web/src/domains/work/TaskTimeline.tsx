@@ -61,6 +61,7 @@ export function TaskTimeline({ items }: { items: readonly TaskTimelineItem[] }) 
             {item.attachments.map(attachment => <div key={attachment.id}><Attachment attachment={attachment} /></div>)}
           </div> : null}
           <TaskSyncStatus state={item.sync_state} />
+          {item.delivery_note === 'previous_cycle_not_sent' ? <p className="issue-muted">Сообщение предыдущего цикла не отправлено в Tracker. Оно сохранено здесь; повторная отправка в новый ремонт отключена.</p> : null}
         </div>
       </li>)}
     </ol>}

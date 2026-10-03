@@ -79,6 +79,35 @@ def test_tracker_read_list_issues(client, db_session, seed_park_with_tracker, mo
     assert unchanged.content == b""
 
 
+def test_age_filter_excludes_tasks_without_a_known_numeric_age_before_pagination(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(
+        db_session, platform_settings.TRACKER_TOKEN_KEY, "test-placeholder"
+    )
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [
+            {**_scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"), "hours_created": None},
+            {**_scoped_issue("ROBOPARK-2", "2026-01-02T00:00:00Z"), "hours_created": "bad"},
+            {**_scoped_issue("ROBOPARK-3", "2026-01-03T00:00:00Z"), "hours_created": "1"},
+            {**_scoped_issue("ROBOPARK-4", "2026-01-04T00:00:00Z"), "hours_created": "3"},
+            {**_scoped_issue("ROBOPARK-5", "2026-01-05T00:00:00Z"), "hours_created": "nan"},
+        ],
+    )
+    login_as(client, "op2", "secret")
+
+    response = client.get("/tracker/issues?age_hours=2&limit=1")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert [item["key"] for item in response.json()["items"]] == ["ROBOPARK-4"]
+
+
 def test_tracker_read_filters_attention_state_before_pagination(
     client,
     db_session,
@@ -173,6 +202,154 @@ def test_tracker_list_honors_oldest_and_newest_sort(
 
     assert [item["key"] for item in oldest] == ["ROBOPARK-1", "ROBOPARK-2"]
     assert [item["key"] for item in newest] == ["ROBOPARK-2", "ROBOPARK-1"]
+
+
+def test_tracker_queue_first_orders_before_pagination_without_hiding_other_statuses(
+    client, db_session, seed_mechanic, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    def issue(key: str, created: str, status_key: str) -> dict:
+        return {
+            **_scoped_issue(key, created),
+            "status": "В очереди" if status_key == "queued" else "Диагностика",
+            "status_key": status_key,
+        }
+
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [
+            issue("ROBOPARK-1", "2026-01-01T00:00:00Z", "diagnostics"),
+            issue("ROBOPARK-3", "2026-01-03T00:00:00Z", "queued"),
+            issue("ROBOPARK-2", "2026-01-02T00:00:00Z", "queued"),
+        ],
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    first = client.get("/tracker/issues?sort=queue_first&open_only=true&limit=2&offset=0")
+    second = client.get("/tracker/issues?sort=queue_first&open_only=true&limit=2&offset=2")
+
+    assert first.status_code == second.status_code == 200
+    # Neither queued task has a verified transition: keep their upstream order
+    # rather than treating ticket creation as its time in the queue.
+    assert [item["key"] for item in first.json()["items"]] == ["ROBOPARK-3", "ROBOPARK-2"]
+    assert [item["key"] for item in second.json()["items"]] == ["ROBOPARK-1"]
+    assert first.json()["total"] == second.json()["total"] == 3
+
+
+def test_tracker_queue_first_uses_cached_first_queue_transition_before_pagination(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client, tracker_history
+
+    for key, queued_at in (
+        ("ROBOPARK-1", "2026-01-03T00:00:00Z"),
+        ("ROBOPARK-2", "2026-01-01T00:00:00Z"),
+    ):
+        tracker_history.ingest_status_history(
+            db_session,
+            issue_key=key,
+            park=seed_park_with_tracker,
+            history=[
+                {
+                    "updatedAt": queued_at,
+                    "fields": [
+                        {"field": {"id": "status"}, "to": {"key": "queued", "display": "В очереди"}}
+                    ],
+                }
+            ],
+        )
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [
+            {
+                **_scoped_issue("ROBOPARK-1", "2026-01-01T00:00:00Z"),
+                "status": "В очереди",
+                "status_key": "queued",
+            },
+            {
+                **_scoped_issue("ROBOPARK-2", "2026-01-02T00:00:00Z"),
+                "status": "В очереди",
+                "status_key": "queued",
+            },
+            {
+                **_scoped_issue("ROBOPARK-3", "2025-01-01T00:00:00Z"),
+                "status": "В очереди",
+                "status_key": "queued",
+            },
+        ],
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    first = client.get("/tracker/issues?sort=queue_first&open_only=true&limit=1&offset=0")
+    second = client.get("/tracker/issues?sort=queue_first&open_only=true&limit=1&offset=1")
+    third = client.get("/tracker/issues?sort=queue_first&open_only=true&limit=1&offset=2")
+
+    assert first.status_code == second.status_code == third.status_code == 200
+    assert [page.json()["items"][0]["key"] for page in (first, second, third)] == [
+        "ROBOPARK-2",
+        "ROBOPARK-1",
+        "ROBOPARK-3",
+    ]
+    assert third.json()["items"][0]["queued_at"] is None
+
+
+@pytest.mark.parametrize("status_filter", ["queued", "В очереди"])
+def test_operator_queued_filter_pages_by_verified_queue_age_not_creation(
+    client, db_session, seed_park_with_tracker, monkeypatch, status_filter
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client, tracker_history
+
+    tracker_history.ingest_status_history(
+        db_session,
+        issue_key="ROBOPARK-VERIFIED",
+        park=seed_park_with_tracker,
+        history=[
+            {
+                "updatedAt": "2026-01-03T09:00:00Z",
+                "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [
+            {
+                **_scoped_issue("ROBOPARK-UNKNOWN", "2025-01-01T00:00:00Z"),
+                "status": "В очереди",
+                "status_key": "queued",
+            },
+            {
+                **_scoped_issue("ROBOPARK-VERIFIED", "2026-01-02T00:00:00Z"),
+                "status": "В очереди",
+                "status_key": "queued",
+            },
+        ],
+    )
+    login_as(client, "op2", "secret")
+
+    first = client.get(
+        "/tracker/issues",
+        params={"status": status_filter, "sort": "oldest", "limit": 1, "offset": 0},
+    )
+    second = client.get(
+        "/tracker/issues",
+        params={"status": status_filter, "sort": "oldest", "limit": 1, "offset": 1},
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert [first.json()["items"][0]["key"], second.json()["items"][0]["key"]] == [
+        "ROBOPARK-VERIFIED",
+        "ROBOPARK-UNKNOWN",
+    ]
+    assert second.json()["items"][0]["queued_at"] is None
 
 
 def test_tracker_list_preserves_upstream_order_for_equal_queue_timestamps(
@@ -277,7 +454,69 @@ def test_tracker_owned_list_uses_local_claims_before_pagination_and_scope(
     assert response.json()["items"][0]["assignee"]["login"] == seed_mechanic.username
     assert "Assignee:" not in captured["query"]
     assert "Tags:" not in captured["query"]
+    assert "Key: ROBOPARK-OWN-OLD" in captured["query"]
+    assert "Key: ROBOPARK-OWN-NEW" in captured["query"]
+    assert "Key: ROBOPARK-OTHER-OWNER" not in captured["query"]
+    assert "Key: ROBOPARK-OTHER-PARK" not in captured["query"]
     assert captured["filter_open"] is True
+
+
+def test_owned_list_without_claims_skips_tracker_search(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: pytest.fail("No owned keys should require no Tracker request"),
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.get("/tracker/issues?owned_by_me=true")
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["total"] == 0
+
+
+def test_owned_list_batches_exact_keys_without_widening_search(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    keys = [f"ROBOPARK-BATCH-{index:02d}" for index in range(21)]
+    db_session.add_all(
+        TrackerClaim(
+            issue_key=key,
+            park_id=seed_park_with_tracker.id,
+            owner_user_id=seed_mechanic.id,
+            updated_by_user_id=seed_mechanic.id,
+            updated_at=1,
+        )
+        for key in keys
+    )
+    db_session.commit()
+    from robopark_api.services import tracker_client
+
+    queries = []
+
+    def fake_search(**kwargs):
+        query = kwargs["query"]
+        queries.append(query)
+        matched = [key for key in keys if f"Key: {key}" in query]
+        assert len(matched) <= 20
+        return [_scoped_issue(key, "2026-01-01T00:00:00Z") for key in matched]
+
+    monkeypatch.setattr(tracker_client, "search_issues", fake_search)
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.get("/tracker/issues?owned_by_me=true")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 21
+    assert len(queries) == 2
+    assert sum(query.count("Key: ") for query in queries) == 21
 
 
 def test_operator_owned_by_me_returns_only_assigned_pending_reviews(
@@ -320,13 +559,19 @@ def test_operator_owned_by_me_returns_only_assigned_pending_reviews(
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import tracker_client
 
+    queries = []
+
+    def fake_search(**kwargs):
+        queries.append(kwargs["query"])
+        return [
+            _scoped_issue("ROBOPARK-OTHER", "2026-01-01T00:00:00Z"),
+            _scoped_issue("ROBOPARK-MINE", "2026-01-02T00:00:00Z"),
+        ]
+
     monkeypatch.setattr(
         tracker_client,
         "search_issues",
-        lambda **_kwargs: [
-            _scoped_issue("ROBOPARK-OTHER", "2026-01-01T00:00:00Z"),
-            _scoped_issue("ROBOPARK-MINE", "2026-01-02T00:00:00Z"),
-        ],
+        fake_search,
     )
     login_as(client, operator.username, "secret")
 
@@ -334,6 +579,9 @@ def test_operator_owned_by_me_returns_only_assigned_pending_reviews(
 
     assert response.status_code == 200
     assert [item["key"] for item in response.json()["items"]] == ["ROBOPARK-MINE"]
+    assert len(queries) == 2
+    assert all("Key: ROBOPARK-MINE" in query for query in queries)
+    assert all("Key: ROBOPARK-OTHER" not in query for query in queries)
 
 
 def test_operator_owned_by_me_reconciles_external_closure_and_removes_review(
@@ -372,7 +620,7 @@ def test_operator_owned_by_me_reconciles_external_closure_and_removes_review(
 
     assert response.status_code == 200
     assert response.json()["items"] == []
-    assert filters == [False, True]
+    assert filters == [False]
     db_session.refresh(review)
     assert review.state == "closed"
 
@@ -418,10 +666,10 @@ def test_tracker_list_prefers_queue_history_and_exposes_exact_five_hour_sla(
     assert items[2]["sla_source"] is None
 
 
-def test_repair_sla_counts_only_moscow_working_hours():
+def test_sla_clock_counts_only_moscow_working_hours():
     from datetime import UTC, datetime
 
-    from robopark_api.services.tracker_client import repair_sla_deadline
+    from robopark_api.services.sla_clock import deadline
 
     cases = [
         (datetime(2026, 9, 18, 17, tzinfo=UTC), datetime(2026, 9, 19, 10, tzinfo=UTC)),
@@ -429,7 +677,135 @@ def test_repair_sla_counts_only_moscow_working_hours():
         (datetime(2026, 9, 18, 6, tzinfo=UTC), datetime(2026, 9, 18, 11, tzinfo=UTC)),
     ]
     for queued_at, expected in cases:
-        assert repair_sla_deadline(queued_at) == expected
+        assert deadline(queued_at, timezone="Europe/Moscow") == expected
+
+
+def test_queue_entry_keeps_original_sla_after_tracker_closure_and_reopen():
+    from robopark_api.services.tracker_client import repair_sla_fields
+
+    def transition(at: str, status: str) -> dict:
+        return {
+            "updatedAt": at,
+            "fields": [{"field": {"id": "status"}, "to": {"key": status}}],
+        }
+
+    issue = {
+        "status_history": [
+            transition("2026-09-18T05:00:00Z", "queued"),
+            transition("2026-09-18T06:00:00Z", "diagnostics"),
+            transition("2026-09-18T07:00:00Z", "queued"),
+        ]
+    }
+    first_entry = repair_sla_fields(issue, timezone="Asia/Yekaterinburg")
+    assert first_entry["queued_at"] == "2026-09-18T05:00:00Z"
+    assert first_entry["sla_deadline"] == "2026-09-18T10:00:00Z"
+
+    issue["status_history"].extend(
+        [
+            transition("2026-09-18T08:00:00Z", "closed"),
+        ]
+    )
+    issue["status_key"] = "closed"
+    closed = repair_sla_fields(issue, timezone="Asia/Yekaterinburg")
+    assert closed["queued_at"] == "2026-09-18T05:00:00Z"
+    assert closed["sla_deadline"] == first_entry["sla_deadline"]
+
+    issue["status_history"].append(transition("2026-09-19T05:00:00Z", "queued"))
+    issue["status_key"] = "queued"
+    reopened = repair_sla_fields(issue, timezone="Asia/Yekaterinburg")
+    assert reopened["queued_at"] == first_entry["queued_at"]
+    assert reopened["sla_deadline"] == first_entry["sla_deadline"]
+
+    issue["status_history"].extend(
+        [
+            transition("2026-09-19T07:00:00Z", "closed"),
+            transition("2026-09-20T05:00:00Z", "queued"),
+        ]
+    )
+    reopened_again = repair_sla_fields(issue, timezone="Asia/Yekaterinburg")
+    assert reopened_again["queued_at"] == first_entry["queued_at"]
+    assert reopened_again["sla_deadline"] == first_entry["sla_deadline"]
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_invalid_park_timezone_keeps_confirmed_queue_entry(embedded):
+    from robopark_api.services.tracker_client import repair_sla_fields
+
+    issue = {
+        "status_history": [
+            {
+                "updatedAt": "2026-09-18T05:00:00Z",
+                "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}],
+            }
+        ],
+    }
+    if embedded:
+        issue = {"queued_at": "2026-09-18T05:00:00Z", "sla_source": "status_history"}
+    result = repair_sla_fields(issue, timezone="Invalid/Timezone")
+    assert result["queued_at"] == "2026-09-18T05:00:00Z"
+    assert result["sla_deadline"] is None
+
+
+def test_unknown_anchor_timezone_does_not_fall_back_to_current_park():
+    from robopark_api.routers.tracker_read import _issue_out
+
+    result = _issue_out(
+        {
+            "key": "RP-UNKNOWN-PARK",
+            "queued_at": "2026-09-25T07:00:00Z",
+            "sla_source": "status_history",
+            "sla_anchor_timezone": None,
+        },
+        timezone="Europe/Moscow",
+    )
+    assert result.queued_at == "2026-09-25T07:00:00Z"
+    assert result.sla_deadline is None
+    assert result.sla_timezone is None
+
+
+def test_tracker_issue_exposes_original_sla_timezone_after_park_transfer():
+    from robopark_api.routers.tracker_read import _issue_out
+
+    result = _issue_out(
+        {
+            "key": "RP-TRANSFERRED",
+            "queued_at": "2026-09-18T12:00:00Z",
+            "sla_source": "status_history",
+            "sla_anchor_timezone": "Europe/Moscow",
+        },
+        timezone="Asia/Yekaterinburg",
+    )
+    assert result.sla_deadline == "2026-09-18T17:00:00Z"
+    assert result.sla_timezone == "Europe/Moscow"
+
+
+@pytest.mark.parametrize("park_tag", ["Alpha", "ALPHA"])
+def test_tracker_list_uses_the_issues_parks_timezone(
+    client, db_session, seed_park_with_tracker, monkeypatch, park_tag
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    seed_park_with_tracker.timezone = "Asia/Yekaterinburg"
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    issue = {
+        **_scoped_issue("ROBOPARK-1", "2026-09-18T04:00:00Z"),
+        "tags": [park_tag],
+        "status_history": [
+            {
+                "updatedAt": "2026-09-18T05:00:00Z",
+                "fields": [{"field": {"id": "status"}, "to": {"key": "queued"}}],
+            }
+        ],
+    }
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **_kwargs: [issue])
+    login_as(client, "op2", "secret")
+
+    result = client.get(f"/tracker/issues?park={park_tag}")
+    assert result.status_code == 200
+    assert result.json()["items"][0]["sla_deadline"] == "2026-09-18T10:00:00Z"
+    assert result.json()["items"][0]["sla_timezone"] == "Asia/Yekaterinburg"
 
 
 def test_tracker_work_page_hydrates_only_returned_items_and_orders_exact_queue_times(
@@ -474,6 +850,20 @@ def test_tracker_work_page_hydrates_only_returned_items_and_orders_exact_queue_t
     assert items[0]["queued_at"] == "2026-01-02T11:00:00Z"
     assert items[0]["sla_deadline"] == "2026-01-02T16:00:00Z"
     assert items[0]["sla_source"] == "status_history"
+    from robopark_api.models import TrackerIssueHistoryState
+
+    assert (
+        db_session.get(TrackerIssueHistoryState, "ROBOPARK-10").anchor_timezone == "Europe/Moscow"
+    )
+    tracker_client.clear_issue_status_history_cache()
+    monkeypatch.setattr(
+        tracker_client,
+        "_load_work_status_history",
+        lambda **_: (_ for _ in ()).throw(AssertionError("persisted anchor refetched")),
+    )
+    repeated = client.get("/tracker/issues?sort=oldest&limit=2").json()["items"]
+    assert repeated[0]["sla_deadline"] == items[0]["sla_deadline"]
+    assert len(calls) == 2
 
 
 def test_tracker_work_history_failure_does_not_invent_queue_start(
@@ -1166,11 +1556,23 @@ def test_mechanic_can_open_unclaimed_issue_and_another_users_claim_to_take_over(
         owner=seed_royal,
         issue_key="ROBOPARK-1",
         park_id=seed_park_with_tracker.id,
+        state="pending",
     )
     claimed = client.get("/tracker/issues/ROBOPARK-1")
     assert claimed.status_code == 200
     assert claimed.json()["assignee"]["login"] == seed_royal.username
-    assert claimed.json()["claim"] == {"park_id": seed_park_with_tracker.id}
+    assert claimed.json()["claim"] == {"park_id": seed_park_with_tracker.id, "state": "pending"}
+
+    claim_issue(
+        db_session,
+        actor=seed_royal,
+        owner=seed_royal,
+        issue_key="ROBOPARK-1",
+        park_id=seed_park_with_tracker.id,
+        state="active",
+    )
+    active = client.get("/tracker/issues/ROBOPARK-1")
+    assert active.json()["claim"] == {"park_id": seed_park_with_tracker.id, "state": "active"}
 
 
 def test_tracker_robot_search_royal(

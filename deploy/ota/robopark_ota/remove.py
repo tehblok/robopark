@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import stat
@@ -16,9 +17,24 @@ SYSTEMD_UNITS = (
     "robopark-updater.service",
     "robopark-doctor.service",
     "robopark-doctor.timer",
+    "robopark-backup.service",
+    "robopark-backup.timer",
     "robopark-watchdog.service",
     "robopark-watchdog.timer",
+    "robopark-bot.service",
+    "robopark-bot.path",
+    "robopark-update-check.service",
+    "robopark-update-check.timer",
 )
+
+
+def local_docker_environment(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Pin host operations to the local daemon, regardless of shell context."""
+    environment = dict(os.environ if base is None else base)
+    for key in ("DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        environment.pop(key, None)
+    environment["DOCKER_HOST"] = "unix:///var/run/docker.sock"
+    return environment
 
 
 @dataclass(frozen=True)
@@ -38,6 +54,7 @@ class RemovalPlan:
             root / "etc/robopark",
             root / "var/lib/robopark",
             root / "var/log/robopark",
+            root / "var/backups/robopark",
             root / "run/lock/robopark",
             *(root / "etc/systemd/system" / unit for unit in SYSTEMD_UNITS),
             root / "etc/tmpfiles.d/robopark.conf",
@@ -48,7 +65,7 @@ class RemovalPlan:
             services=SYSTEMD_UNITS,
             compose_projects=("robopark",),
             volumes=("robopark_robopark_postgres", "robopark_robopark_data"),
-            image_prefixes=("robopark-api:", "robopark-web:"),
+            image_prefixes=("robopark-api:", "robopark-web:", "robopark-bot:"),
         )
 
 
@@ -62,6 +79,14 @@ class DockerTargets:
     @classmethod
     def empty(cls) -> DockerTargets:
         return cls((), (), (), ())
+
+
+@dataclass(frozen=True)
+class RemovalPreviewEntry:
+    kind: str
+    name: str
+    path: Path | None
+    bytes_used: int
 
 
 class DockerRemoval(Protocol):
@@ -103,6 +128,47 @@ def _remove_path(path: Path) -> None:
         path.unlink()
 
 
+def _allocated_bytes(path: Path) -> int:
+    info = path.lstat()
+    total = info.st_blocks * 512
+    if stat.S_ISDIR(info.st_mode):
+        for child in path.iterdir():
+            total += _allocated_bytes(child)
+    return total
+
+
+def preview_owned_installation(
+    plan: RemovalPlan, docker: DockerCli, targets: DockerTargets
+) -> tuple[RemovalPreviewEntry, ...]:
+    entries = []
+    for path in plan.paths:
+        _validate_path(plan, path)
+        if path.exists():
+            entries.append(
+                RemovalPreviewEntry("path", str(path), path, _allocated_bytes(path))
+            )
+    for name in targets.containers:
+        entries.append(
+            RemovalPreviewEntry("container", name, None, docker.container_size(name))
+        )
+    for name in targets.volumes:
+        mountpoint = docker.volume_mountpoint(name)
+        if mountpoint.is_symlink():
+            raise ValueError("unsafe_volume_mountpoint")
+        entries.append(
+            RemovalPreviewEntry(
+                "volume", name, mountpoint, _allocated_bytes(mountpoint)
+            )
+        )
+    for name in targets.networks:
+        entries.append(RemovalPreviewEntry("network", name, None, 0))
+    for name in targets.images:
+        entries.append(
+            RemovalPreviewEntry("image", name, None, docker.image_size(name))
+        )
+    return tuple(entries)
+
+
 def remove_owned_installation(
     plan: RemovalPlan, docker: DockerRemoval, targets: DockerTargets
 ) -> None:
@@ -118,6 +184,10 @@ def remove_owned_installation(
 
 class DockerCli:
     _OWNED_PROJECT = re.compile(r"robopark(?:-candidate-[0-9a-f-]{8,64})?")
+    _OWNED_IMAGE_TAG = re.compile(
+        r"robopark-(?:api|web|bot):[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}"
+    )
+    _RESERVED_NAME = re.compile(r"robopark(?:[-_].*)?")
 
     @staticmethod
     def _lines(command: list[str]) -> tuple[str, ...]:
@@ -127,12 +197,20 @@ class DockerCli:
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            env=local_docker_environment(),
         )
-        return tuple(line.strip() for line in completed.stdout.splitlines() if line.strip())
+        return tuple(
+            line.strip() for line in completed.stdout.splitlines() if line.strip()
+        )
 
     def discover_owned(self) -> DockerTargets:
         containers = self._discover_labelled(
             ["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project"],
+            "container",
+            '{{ index .Config.Labels "com.docker.compose.project" }}',
+        )
+        self._reject_unlabelled_names(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"],
             "container",
             '{{ index .Config.Labels "com.docker.compose.project" }}',
         )
@@ -150,7 +228,12 @@ class DockerCli:
                 '{{ index .Labels "com.docker.compose.project" }}',
             )
         )
-        volumes.update({"robopark_robopark_postgres", "robopark_robopark_data"})
+        reserved_volumes = {"robopark_robopark_postgres", "robopark_robopark_data"}
+        present_reserved = reserved_volumes.intersection(
+            self._lines(["docker", "volume", "ls", "-q"])
+        )
+        if present_reserved - volumes:
+            raise ValueError("unverified_robopark_volume")
         networks = self._discover_labelled(
             [
                 "docker",
@@ -163,8 +246,26 @@ class DockerCli:
             "network",
             '{{ index .Labels "com.docker.compose.project" }}',
         )
-        images = set(self._lines(["docker", "image", "ls", "-q", "robopark-api:*"]))
-        images.update(self._lines(["docker", "image", "ls", "-q", "robopark-web:*"]))
+        self._reject_unlabelled_names(
+            ["docker", "network", "ls", "--format", "{{.Name}}"],
+            "network",
+            '{{ index .Labels "com.docker.compose.project" }}',
+        )
+        images = {
+            tag
+            for repository in ("robopark-api", "robopark-web", "robopark-bot")
+            for tag in self._lines(
+                [
+                    "docker",
+                    "image",
+                    "ls",
+                    "--format",
+                    "{{.Repository}}:{{.Tag}}",
+                    f"{repository}:*",
+                ]
+            )
+            if self._OWNED_IMAGE_TAG.fullmatch(tag)
+        }
         return DockerTargets(
             containers=containers,
             volumes=tuple(sorted(volumes)),
@@ -191,6 +292,57 @@ class DockerCli:
                 owned.append(identity)
         return tuple(owned)
 
+    def _reject_unlabelled_names(
+        self, list_command: list[str], object_name: str, format_template: str
+    ) -> None:
+        for identity in self._lines(list_command):
+            if not self._RESERVED_NAME.fullmatch(identity):
+                continue
+            project = self._lines(
+                [
+                    "docker",
+                    object_name,
+                    "inspect",
+                    "--format",
+                    format_template,
+                    identity,
+                ]
+            )
+            if len(project) != 1 or not self._OWNED_PROJECT.fullmatch(project[0]):
+                raise ValueError(f"unverified_robopark_{object_name}")
+
+    def volume_mountpoint(self, name: str) -> Path:
+        values = self._lines(
+            ["docker", "volume", "inspect", "--format", "{{.Mountpoint}}", name]
+        )
+        if len(values) != 1 or not Path(values[0]).is_absolute():
+            raise ValueError("invalid_volume_mountpoint")
+        return Path(values[0])
+
+    def container_size(self, name: str) -> int:
+        return self._object_size(
+            [
+                "docker",
+                "container",
+                "inspect",
+                "--size",
+                "--format",
+                "{{.SizeRw}}",
+                name,
+            ]
+        )
+
+    def image_size(self, name: str) -> int:
+        return self._object_size(
+            ["docker", "image", "inspect", "--format", "{{.Size}}", name]
+        )
+
+    def _object_size(self, command: list[str]) -> int:
+        values = self._lines(command)
+        if len(values) != 1 or not values[0].isdigit():
+            raise ValueError("invalid_docker_object_size")
+        return int(values[0])
+
     def _remove(self, object_name: str, names: tuple[str, ...]) -> None:
         if not names:
             return
@@ -198,6 +350,7 @@ class DockerCli:
             ["docker", object_name, "rm", "--force", *names],
             check=True,
             stdin=subprocess.DEVNULL,
+            env=local_docker_environment(),
         )
 
     def remove_containers(self, names: tuple[str, ...]) -> None:
@@ -206,6 +359,7 @@ class DockerCli:
                 ["docker", "rm", "--force", *names],
                 check=True,
                 stdin=subprocess.DEVNULL,
+                env=local_docker_environment(),
             )
 
     def remove_volumes(self, names: tuple[str, ...]) -> None:
@@ -215,4 +369,12 @@ class DockerCli:
         self._remove("network", names)
 
     def remove_images(self, names: tuple[str, ...]) -> None:
-        self._remove("image", names)
+        if any(not self._OWNED_IMAGE_TAG.fullmatch(name) for name in names):
+            raise ValueError("unverified_robopark_image")
+        if names:
+            subprocess.run(
+                ["docker", "image", "rm", *names],
+                check=True,
+                stdin=subprocess.DEVNULL,
+                env=local_docker_environment(),
+            )

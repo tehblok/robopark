@@ -2,6 +2,20 @@ import { expect, test } from '@playwright/test'
 import { openRouteFixture, assertResponsiveContracts } from './routeFixtures'
 import { userForRole } from './fixtures'
 
+for (const theme of ['light', 'dark'] as const) test(`management checkboxes use the action palette in ${theme}`, async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.addInitScript(value => localStorage.setItem('robopark-theme', value), theme)
+  await openRouteFixture(page, 'admin-roles', userForRole('royal'))
+  await expect(page.getByRole('checkbox', { name: 'Склад' })).toHaveCSS('accent-color', theme === 'dark' ? 'rgb(182, 207, 130)' : 'rgb(82, 107, 58)')
+})
+
+for (const theme of ['light', 'dark'] as const) test(`campaign link follows the action palette in ${theme}`, async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.addInitScript(value => localStorage.setItem('robopark-theme', value), theme)
+  await openRouteFixture(page, 'campaigns', userForRole('mechanic'))
+  await expect(page.locator('.campaign-card h2 a')).toHaveCSS('color', theme === 'dark' ? 'rgb(182, 207, 130)' : 'rgb(82, 107, 58)')
+})
+
 test('legacy diagnostic tabs are flat and touch-sized', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   await openRouteFixture(page, 'admin-robot-check', userForRole('royal'))

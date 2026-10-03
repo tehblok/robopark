@@ -152,6 +152,7 @@ class LoginThrottle:
 
 
 _login_throttle: LoginThrottle | None = None
+_login_ip_throttle: LoginThrottle | None = None
 _register_throttle: LoginThrottle | None = None
 _init_lock = threading.Lock()
 
@@ -180,11 +181,24 @@ def get_register_throttle(settings) -> LoginThrottle:
         return _register_throttle
 
 
+def get_login_ip_throttle(settings) -> LoginThrottle:
+    global _login_ip_throttle
+    with _init_lock:
+        if _login_ip_throttle is None:
+            _login_ip_throttle = LoginThrottle(
+                max_attempts=settings.login_ip_max_attempts,
+                window_seconds=settings.login_attempt_window_seconds,
+                lockout_seconds=settings.login_lockout_seconds,
+            )
+        return _login_ip_throttle
+
+
 def reset_throttles() -> None:
     """Drop cached configuration (used by tests)."""
-    global _login_throttle, _register_throttle
+    global _login_throttle, _login_ip_throttle, _register_throttle
     with _init_lock:
         _login_throttle = None
+        _login_ip_throttle = None
         _register_throttle = None
 
 

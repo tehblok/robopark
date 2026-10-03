@@ -1,18 +1,17 @@
 import type { EmergencySection } from '../../api'
-import type { AccessUser } from '../../app/routing/accessPolicy'
+import { canAccessRoute, type AccessUser } from '../../app/routing/accessPolicy'
 import { classifyApiError, type DomainError } from '../../shared/api/classifyApiError'
-export type RobotCheckTab = { id: string; title: string; kind: 'state' | 'errors' | 'tasks' | 'history' | 'map' | 'telemetry' | 'scheme' | 'section' }
+export type RobotCheckTab = { id: string; title: string; kind: 'state' | 'errors' | 'tasks' | 'map' | 'telemetry' | 'scheme' | 'section' }
 export const STATIC_CHECK_TABS: readonly RobotCheckTab[] = [
   { id: 'map', title: 'Карта', kind: 'map' },
   { id: 'state', title: 'Состояние', kind: 'state' },
   { id: 'errors', title: 'Ошибки', kind: 'errors' },
   { id: 'telemetry', title: 'Телеметрия', kind: 'telemetry' },
   { id: 'tasks', title: 'Задачи', kind: 'tasks' },
-  { id: 'history', title: 'История', kind: 'history' },
   { id: 'scheme', title: 'Схема', kind: 'scheme' },
 ]
 export function checkTabs(sections: EmergencySection[]): RobotCheckTab[] {
-  const seen = new Set(STATIC_CHECK_TABS.map(t => t.id))
+  const seen = new Set([...STATIC_CHECK_TABS.map(t => t.id), 'history'])
   return [...STATIC_CHECK_TABS, ...sections.filter(section => {
     if (!section.id || seen.has(section.id)) return false
     seen.add(section.id); return true
@@ -34,7 +33,9 @@ export function buildRobotCheckSearch(current: URLSearchParams, tab: string): st
 export function checkAccessIdentity(user: AccessUser): string {
   return JSON.stringify([user.role, user.access_status, user.must_change_password, [...(user.permissions ?? [])].sort(), user.parks.filter(p => p.is_active !== false).map(p => [p.id, p.tag, p.tracker_queue]).sort((a, b) => Number(a[0]) - Number(b[0]))])
 }
-export function classifyCheckError(error: unknown): DomainError {
+export function classifyCheckError(error: unknown, user: AccessUser): DomainError {
   const failure = classifyApiError(error, 'Не удалось загрузить данные проверки робота.')
-  return failure.kind === 'configuration' ? { ...failure, title: 'Интеграция проверки робота требует внимания', description: 'Обратитесь к администратору для проверки подключения.' } : failure
+  return failure.kind === 'configuration'
+    ? { ...failure, title: 'Интеграция проверки робота требует внимания', description: canAccessRoute(user, 'admin-robot-check') ? failure.description : 'Обратитесь к администратору для проверки подключения.' }
+    : failure
 }

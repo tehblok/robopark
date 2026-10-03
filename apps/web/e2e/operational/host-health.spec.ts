@@ -20,3 +20,22 @@ for (const width of [320, 1440]) test(`server status remains readable at ${width
   await assertNoSeriousA11yViolations(page)
   await page.screenshot({ path: info.outputPath(`server-${width}.png`), fullPage: true })
 })
+
+test('server status names missing host readings on a narrow phone', async ({ page }, info) => {
+  await page.setViewportSize({ width: 320, height: 900 })
+  await installOperational(page, { role: 'admin', routes: [{ method: 'GET', path: '/api/admin/health', handler: () => ({ json: {
+    sampled_at: 1788688800, database: 'ok', window_seconds: 300,
+    host_health_source_state: 'unavailable',
+    disk: { total_bytes: null, free_bytes: null, source_state: 'unavailable' },
+    memory: { total_bytes: null, available_bytes: null, container_used_bytes: null, container_limit_bytes: null },
+    backup: { verified_at: null, overdue: false, last_attempt_failed: false },
+    requests: {},
+  } }) }] })
+  await page.goto('/admin/settings?park=7&tab=health')
+  await expect(page.getByText(/Не удалось измерить диск API/)).toBeVisible()
+  await expect(page.getByText(/Снимок host agent отсутствует/)).toBeVisible()
+  await settlePage(page)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await assertNoSeriousA11yViolations(page)
+  await page.screenshot({ path: info.outputPath('server-missing-host-320.png'), fullPage: true })
+})

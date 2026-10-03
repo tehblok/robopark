@@ -50,7 +50,14 @@ function AttachmentActions({
       setPhotoPreview('')
       return
     }
-    const url = URL.createObjectURL(photoFile)
+    let url: string
+    try {
+      url = URL.createObjectURL(photoFile)
+    } catch {
+      // Upload remains available when the browser cannot create a local preview.
+      setPhotoPreview('')
+      return
+    }
     setPhotoPreview(url)
     return () => URL.revokeObjectURL(url)
   }, [photoFile])

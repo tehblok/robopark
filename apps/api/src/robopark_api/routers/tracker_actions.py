@@ -298,14 +298,19 @@ def submit_task_review(
         db, user, key, request=request, actions=("comment", "attach", "transition")
     )
     park = task_lifecycle.issue_park(db, issue)
-    reviewer = schedules.resolve_active_operator(db, park_id=park.id)
-    if reviewer is None:
-        raise HTTPException(409, "task_review_operator_unavailable")
     if len(photo) != 1:
         raise HTTPException(400, "task_review_exactly_one_photo")
     upload = photo[0]
     content = upload.file.read(tracker_client.MAX_ATTACHMENT_BYTES + 1)
     with submissions.task_mutation_lease(db, key):
+        reviewer = task_lifecycle.reviewer_for_review_replay(
+            db,
+            actor=user,
+            issue_key=key,
+            idempotency_key=idempotency_key,
+        ) or schedules.resolve_active_operator(db, park_id=park.id)
+        if reviewer is None:
+            raise HTTPException(409, "task_review_operator_unavailable")
         try:
             result = task_lifecycle.submit_review(
                 db,

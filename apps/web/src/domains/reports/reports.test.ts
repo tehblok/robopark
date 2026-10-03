@@ -5,6 +5,7 @@ import { reportDraftKey, reportsAccessIdentity } from './reports'
 const north: Park = {
   id: 7,
   name: 'Север',
+  timezone: 'Europe/Moscow',
   tag: ' north ',
   tracker_queue: ' ROBOPARK ',
   is_active: true,

@@ -1,5 +1,5 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import {
   api,
   ApiError,
@@ -22,7 +22,6 @@ import { mapApiError } from '../i18n/errors'
 import { roleLabel, ru } from '../i18n/ru'
 import { resourceStore, useCachedResource } from '../lib/resource'
 import { useParkScope } from '../app/park/parkScope'
-import { SlaPolicyEditor } from '../domains/insights/SlaPolicyEditor'
 import { ManagementNavigation } from '../domains/management/ManagementNavigation'
 import { DomainPresentation } from '../app/interface/DomainPresentation'
 import { MetricCard } from '../design-system/data/MetricCard'
@@ -30,9 +29,23 @@ import { StatusBadge } from '../design-system/status/StatusBadge'
 
 type TabId = 'integrations' | 'parks' | 'ops' | 'health'
 
+function validParkTimezone(value: string): boolean {
+  if (!value || value.trim() !== value || value.length > 64) return false
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: value })
+    return true
+  } catch (error) {
+    if (error instanceof RangeError) return false
+    throw error
+  }
+}
+
 // Keep inactive settings unmounted so host polling starts only in its own tab.
 function TabPanel({ id, active, children }: { id: TabId; active: boolean; children: ReactNode }) {
   if (!active) return null
+  if (id === 'parks') {
+    return <div className="rp-tab-panel" id="admin-panel-parks">{children}</div>
+  }
   return <DesignTabPanel id={`admin-panel-${id}`} labelledBy={`tab-${id}`} active>{children}</DesignTabPanel>
 }
 
@@ -43,7 +56,14 @@ type AdminBootstrap = {
   trackerPolicy: TrackerPolicySettings | null
   screenshotGuard: ScreenshotGuardSettings | null
   screenshotGuardLive?: boolean
-  pendingUserCount: number
+  failedSections?: AdminSection[]
+}
+
+type AdminSection = 'parkRequests' | 'integrations' | 'trackerPolicy'
+const adminSectionLabels: Record<AdminSection, string> = {
+  parkRequests: 'Заявки на парки',
+  integrations: 'Интеграции',
+  trackerPolicy: 'Политика Tracker',
 }
 
 async function loadScreenshotGuardSettings(): Promise<{
@@ -57,31 +77,56 @@ async function loadScreenshotGuardSettings(): Promise<{
   }
 }
 
-async function loadAdminBootstrap(canIntegrations: boolean): Promise<AdminBootstrap> {
-  const parks = await api.parks()
-  if (!canIntegrations) {
+async function loadAdminBootstrap(
+  tab: TabId,
+  previous?: Partial<AdminBootstrap>,
+): Promise<AdminBootstrap> {
+  const base: AdminBootstrap = {
+    parks: previous?.parks ?? [],
+    parkRequests: previous?.parkRequests ?? [],
+    settings: previous?.settings ?? null,
+    trackerPolicy: previous?.trackerPolicy ?? null,
+    screenshotGuard: previous?.screenshotGuard ?? null,
+    screenshotGuardLive: previous?.screenshotGuardLive ?? false,
+    failedSections: [],
+  }
+  if (tab === 'health' || tab === 'ops') return base
+  if (tab === 'parks') {
+    const [parksResult, parkRequestsResult] = await Promise.allSettled([
+      api.parks(), api.adminParkRequests(),
+    ])
+    if (parksResult.status === 'rejected') throw parksResult.reason
+    if (parkRequestsResult.status === 'rejected' && parkRequestsResult.reason instanceof ApiError
+      && (parkRequestsResult.reason.status === 401 || parkRequestsResult.reason.status === 403)) {
+      throw parkRequestsResult.reason
+    }
     return {
-      parks,
-      parkRequests: [],
-      settings: null,
-      trackerPolicy: null,
-      screenshotGuard: null,
-      screenshotGuardLive: false,
-      pendingUserCount: 0,
+      ...base,
+      parks: parksResult.value,
+      parkRequests: parkRequestsResult.status === 'fulfilled' ? parkRequestsResult.value : base.parkRequests,
+      failedSections: parkRequestsResult.status === 'rejected' ? ['parkRequests'] : [],
     }
   }
-  const [parkRequests, settings, trackerPolicy, screenshotGuardResult, pendingUsers] = await Promise.all([
-    api.adminParkRequests(), api.integrationSettings(), api.trackerPolicy(),
-    loadScreenshotGuardSettings(), api.adminUsers({ access_status: 'pending' }).catch(() => []),
+  const [settingsResult, trackerPolicyResult, screenshotGuardResult] = await Promise.allSettled([
+    api.integrationSettings(), api.trackerPolicy(), loadScreenshotGuardSettings(),
   ])
+  const results = [settingsResult, trackerPolicyResult]
+  for (const result of results) {
+    if (result.status === 'rejected' && result.reason instanceof ApiError
+      && (result.reason.status === 401 || result.reason.status === 403)) {
+      throw result.reason
+    }
+  }
+  const failedSections: AdminSection[] = []
+  if (settingsResult.status === 'rejected') failedSections.push('integrations')
+  if (trackerPolicyResult.status === 'rejected') failedSections.push('trackerPolicy')
   return {
-    parks,
-    parkRequests,
-    settings,
-    trackerPolicy,
-    screenshotGuard: screenshotGuardResult.settings,
-    screenshotGuardLive: screenshotGuardResult.live,
-    pendingUserCount: pendingUsers.length,
+    ...base,
+    settings: settingsResult.status === 'fulfilled' ? settingsResult.value : base.settings,
+    trackerPolicy: trackerPolicyResult.status === 'fulfilled' ? trackerPolicyResult.value : base.trackerPolicy,
+    screenshotGuard: screenshotGuardResult.status === 'fulfilled' ? screenshotGuardResult.value.settings : base.screenshotGuard,
+    screenshotGuardLive: screenshotGuardResult.status === 'fulfilled' && screenshotGuardResult.value.live,
+    failedSections,
   }
 }
 
@@ -151,7 +196,8 @@ export function Admin() {
 
 function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   const { user } = useAuth()
-  const { parkId } = useParkScope()
+  const { hash } = useLocation()
+  const { refreshParks } = useParkScope()
   const [searchParams, setSearchParams] = useSearchParams()
   const perms = user?.permissions ?? []
   const canParks = perms.includes('parks.manage')
@@ -174,14 +220,26 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
       return next
     }, { replace: true })
   }
-  const bootRes = useCachedResource<Partial<AdminBootstrap>>(bootstrapKey, () => loadAdminBootstrap(canIntegrations), {
-    persist: false,
-    // Background snapshots must not replace unsaved settings drafts.
-    refreshIntervalMs: 0,
-  })
+  const bootRes = useCachedResource<Partial<AdminBootstrap>>(
+    bootstrapKey,
+    () => loadAdminBootstrap(tab, resourceStore.get<Partial<AdminBootstrap>>(bootstrapKey)),
+    {
+      persist: false,
+      // Background snapshots must not replace unsaved settings drafts.
+      refreshIntervalMs: 0,
+    },
+  )
   const boot = bootRes.data
+  const refreshBootstrap = bootRes.refresh
   const settings = boot?.settings ?? null
   const active = useRef(true)
+  const previousTab = useRef(tab)
+  const pendingParkEdits = useRef<Map<number, Partial<Park>>>(new Map())
+  useEffect(() => {
+    if (previousTab.current === tab) return
+    previousTab.current = tab
+    void refreshBootstrap()
+  }, [tab, refreshBootstrap])
   useEffect(() => {
     active.current = true
     return () => { active.current = false }
@@ -198,13 +256,14 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   const [screenshotGuardLive, setScreenshotGuardLive] = useState(boot?.screenshotGuardLive === true)
   const [name, setName] = useState('')
   const [tag, setTag] = useState('')
+  const [timezone, setTimezone] = useState('Europe/Moscow')
+  const [newTrackerQueue, setNewTrackerQueue] = useState('')
   const [trackerToken, setTrackerToken] = useState('')
   const [emergencyCookie, setEmergencyCookie] = useState('')
   const [emergencyRobot, setEmergencyRobot] = useState('')
   const [parkSearch, setParkSearch] = useState('')
   const [editingParkId, setEditingParkId] = useState<number | null>(null)
   const [createParkOpen, setCreateParkOpen] = useState(false)
-  const [slaOpen, setSlaOpen] = useState(false)
   const [registrationPassword, setRegistrationPassword] = useState('')
   const [registrationSettings, setRegistrationSettings] =
     useState<RegistrationPasswordSettings | null>(null)
@@ -213,6 +272,11 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   const [busy, setBusy] = useState(false)
   const [trackerBusy, setTrackerBusy] = useState(false)
   const [emergencyBusy, setEmergencyBusy] = useState(false)
+
+  useEffect(() => {
+    if (hash !== '#tracker-token' || tab !== 'integrations' || bootRes.isLoading) return
+    document.getElementById('tracker-token')?.scrollIntoView?.({ block: 'center' })
+  }, [boot, bootRes.isLoading, hash, registrationSettings, tab])
 
   useEffect(() => {
     if (requestedTab === tab || (tab === 'integrations' && requestedTab === null)) return
@@ -226,7 +290,9 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
 
   // Integration-only cache updates preserve the other forms' unsaved edits.
   useEffect(() => {
-    if (boot?.parks) setParks(boot.parks)
+    if (boot?.parks) {
+      setParks(boot.parks.map((park) => ({ ...park, ...pendingParkEdits.current.get(park.id) })))
+    }
   }, [boot?.parks])
   useEffect(() => {
     if (boot?.parkRequests) setParkRequests(boot.parkRequests)
@@ -246,11 +312,12 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
       setRegistrationSettings(null)
       return
     }
+    if (tab !== 'integrations') return
     void api
       .registrationPasswordSettings()
       .then(setRegistrationSettings)
       .catch(() => setRegistrationSettings(null))
-  }, [user?.role, success])
+  }, [user?.role, tab, success])
 
   const run = async (action: () => Promise<unknown>, message = '') => {
     setError('')
@@ -269,12 +336,23 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
     }
   }
 
+  const runParkMutation = (action: () => Promise<unknown>, message = '') => run(async () => {
+    await action()
+    await refreshParks().catch(() => undefined)
+  }, message)
+
   const createPark = async (event: FormEvent) => {
     event.preventDefault()
-    await run(async () => {
-      await api.createPark({ name, tag })
+    if (!validParkTimezone(timezone)) return
+    await runParkMutation(async () => {
+      await api.createPark({
+        name, tag, timezone,
+        tracker_queue: newTrackerQueue.trim() || null,
+      })
       setName('')
       setTag('')
+      setNewTrackerQueue('')
+      setCreateParkOpen(false)
     }, 'Парк создан')
   }
 
@@ -289,6 +367,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
     resourceStore.invalidate(bootstrapKey)
     resourceStore.set(bootstrapKey, {
       ...current, settings: merge(current?.settings ?? null, updated),
+      failedSections: current?.failedSections?.filter(section => section !== 'integrations'),
     }, false)
   }
 
@@ -377,6 +456,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   }
 
   const editPark = (parkId: number, changes: Partial<Park>) => {
+    pendingParkEdits.current.set(parkId, { ...pendingParkEdits.current.get(parkId), ...changes })
     setParks((current) =>
       current.map((park) => (park.id === parkId ? { ...park, ...changes } : park)),
     )
@@ -411,20 +491,23 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
     >
       <ManagementNavigation />
       {displayError && <Alert tone="error">{displayError}</Alert>}
+      {boot?.failedSections && boot.failedSections.length > 0 && (
+        <Alert tone="warning">Не удалось загрузить: {boot.failedSections.map(section => adminSectionLabels[section]).join(', ')}. Ранее полученные сведения могут быть устаревшими.</Alert>
+      )}
       {success && <Alert tone="success">{success}</Alert>}
 
-      <Tabs
+      {tab !== 'parks' && <Tabs
         ariaLabel="Разделы настроек"
+        wrapOnPhone
         panelIdFor={id => `admin-panel-${id}`}
         items={[
           ...(canIntegrations ? [{ id: 'integrations', label: 'Интеграции' }] : []),
           ...(canIntegrations ? [{ id: 'health', label: 'Состояние сервера' }] : []),
-          ...(canParks ? [{ id: 'parks', label: 'Парки', count: parkRequests.length }] : []),
           ...(user?.role === 'royal' ? [{ id: 'ops', label: ru.ops.tab }] : []),
         ]}
         onChange={(id) => setTab(id as TabId)}
         value={tab}
-      />
+      />}
 
       {/* --- Integrations ------------------------------------------------- */}
       {canIntegrations && <TabPanel id="health" active={tab === 'health'}><HostHealthPanel /></TabPanel>}
@@ -451,7 +534,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
                 <div className="stat">
                   <span className="stat-label">Текущий пароль</span>
                   <span className="stat-value">
-                    {registrationSettings.password_masked ?? 'не задан'}
+                    {registrationSettings.configured ? 'Установлен' : 'Не задан'}
                   </span>
                 </div>
               </div>
@@ -516,6 +599,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
             <label className="field">
               <span className="field-label">Tracker OAuth-токен</span>
               <input
+                id="tracker-token"
                 disabled={trackerBusy}
                 onChange={(event) => setTrackerToken(event.target.value)}
                 placeholder="Оставьте пустым, чтобы не менять"
@@ -575,7 +659,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
         </Panel>
 
         {trackerPolicy && (
-          <Panel hint="Влияет на то, что видят операторы и механики." title="Политика Tracker">
+          <Panel density="dense" hint="Влияет на то, что видят операторы и механики." title="Политика Tracker">
             <div className="toggle-list">
               <Toggle
                 checked={trackerPolicy.operator_show_untagged}
@@ -603,7 +687,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
           </Panel>
         )}
 
-        <Panel collapsible hint={ru.screenshotGuard.adminHint} storageKey="admin-screenshot-guard" title="Защита от скриншотов">
+        <Panel collapsible density="dense" hint={ru.screenshotGuard.adminHint} storageKey="admin-screenshot-guard" title="Защита от скриншотов">
           {!screenshotGuard || !screenshotGuardLive ? <>
             <p role="status">{bootRes.isRevalidating
               ? 'Загрузка состояния защиты…'
@@ -630,7 +714,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
           </div>}
         </Panel>
 
-        <Panel title="Быстрые переходы">
+        <Panel density="dense" title="Быстрые переходы">
           <div className="link-row">
             <Link className="btn btn-secondary" to="/admin/tracker">
               Рабочий стол Tracker
@@ -650,11 +734,11 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
 
       {canParks && (
       <TabPanel id="parks" active={tab === 'parks'}>
-        <Panel actions={<><button className="btn btn-secondary" onClick={() => { setCreateParkOpen(true); setSlaOpen(false); setEditingParkId(null) }} type="button">Добавить парк</button>{user && parkId != null ? <button className="btn btn-secondary" onClick={() => { setSlaOpen(true); setCreateParkOpen(false); setEditingParkId(null) }} type="button">Настроить SLA</button> : null}</>} hint="Найдите парк и откройте его настройки." title="Парки">
+        <Panel actions={<button className="btn btn-secondary" onClick={() => { setCreateParkOpen(true); setEditingParkId(null) }} type="button">Добавить парк</button>} hint="Найдите парк и откройте его настройки." title="Парки">
+          <p>SLA — 5 рабочих часов от входа задачи в очередь, ежедневно с 09:00 до 21:00 по времени парка.</p>
           <label className="field"><span className="field-label">Поиск</span><input aria-label="Поиск парков" onChange={(event) => setParkSearch(event.target.value)} role="searchbox" value={parkSearch} /></label>
-          <ul className="card-list">{parks.filter((park) => `${park.name} ${park.tag}`.toLowerCase().includes(parkSearch.trim().toLowerCase())).map((park) => <li className="card action-row" key={park.id}><div><div className="card-title">{park.name}</div><div className="card-meta">{park.tag}</div></div><button aria-label={`Открыть парк ${park.name}`} className="btn btn-secondary" onClick={() => { setEditingParkId(park.id); setCreateParkOpen(false); setSlaOpen(false) }} type="button">Открыть</button></li>)}</ul>
+          <ul className="card-list">{parks.filter((park) => `${park.name} ${park.tag}`.toLowerCase().includes(parkSearch.trim().toLowerCase())).map((park) => <li className="card action-row" key={park.id}><div><div className="card-title">{park.name}</div><div className="card-meta">{park.tag}</div></div><button aria-label={`Открыть парк ${park.name}`} className="btn btn-secondary" onClick={() => { setEditingParkId(park.id); setCreateParkOpen(false) }} type="button">Открыть</button></li>)}</ul>
         </Panel>
-        {user && parkId != null && slaOpen ? <><button className="btn btn-ghost" onClick={() => setSlaOpen(false)} type="button">Закрыть SLA</button><SlaPolicyEditor parkId={parkId} user={user} /></> : null}
         {parkRequests.length > 0 && (
         <Panel
           collapsible
@@ -721,8 +805,30 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
                 value={tag}
               />
             </label>
+            <label className="field">
+              <span className="field-label">Часовой пояс парка</span>
+              <input
+                aria-invalid={!validParkTimezone(timezone)}
+                onChange={(event) => setTimezone(event.target.value)}
+                placeholder="Europe/Moscow"
+                required
+                value={timezone}
+              />
+              <span className="field-hint">Формат IANA, например Asia/Yekaterinburg. SLA: 5 часов ежедневно с 09:00 до 21:00 по времени парка.</span>
+              {!validParkTimezone(timezone) && <span className="field-hint" role="alert">Укажите действительный часовой пояс IANA.</span>}
+            </label>
+            <label className="field">
+              <span className="field-label">Очередь Tracker</span>
+              <input
+                autoCapitalize="characters"
+                onChange={(event) => setNewTrackerQueue(event.target.value)}
+                placeholder="SDCFLEETOPS"
+                value={newTrackerQueue}
+              />
+              <span className="field-hint">Если очередь ещё не создана, её можно указать позже в настройках парка. Пока она пуста, задачи Tracker не появятся.</span>
+            </label>
             <div className="form-actions">
-              <button className="btn" disabled={busy} type="submit">
+              <button className="btn" disabled={busy || !validParkTimezone(timezone)} type="submit">
                 {ru.create}
               </button>
             </div>
@@ -758,6 +864,17 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
                     required
                     value={park.tag}
                   />
+                </label>
+                <label className="field">
+                  <span className="field-label">Часовой пояс парка</span>
+                  <input
+                    aria-invalid={!validParkTimezone(park.timezone)}
+                    onChange={(event) => editPark(park.id, { timezone: event.target.value })}
+                    required
+                    value={park.timezone}
+                  />
+                  <span className="field-hint">Формат IANA. Новые задачи получат эту зону при входе в очередь; уже зафиксированные сроки SLA сохраняют исходную зону.</span>
+                  {!validParkTimezone(park.timezone) && <span className="field-hint" role="alert">Укажите действительный часовой пояс IANA.</span>}
                 </label>
                 <label className="field">
                   <span className="field-label">Очередь Tracker</span>
@@ -835,12 +952,13 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
               <div className="form-actions">
                 <button
                   className="btn"
-                  disabled={!park.name || !park.tag || busy}
+                  disabled={!park.name || !park.tag || busy || !validParkTimezone(park.timezone)}
                   onClick={() =>
-                    run(() =>
-                      api.updatePark(park.id, {
+                    runParkMutation(async () => {
+                      await api.updatePark(park.id, {
                         name: park.name,
                         tag: park.tag,
+                        timezone: park.timezone,
                         tracker_queue: park.tracker_queue || null,
                         tracker_priority: park.tracker_priority || null,
                         tracker_type: park.tracker_type || null,
@@ -850,8 +968,9 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
                         feature_reports: park.feature_reports,
                         feature_sla_repair: park.feature_sla_repair,
                         feature_backlog_alerts: park.feature_backlog_alerts,
-                      }),
-                    )
+                      })
+                      pendingParkEdits.current.delete(park.id)
+                    })
                   }
                   type="button"
                 >
@@ -861,7 +980,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
                   className="btn btn-secondary"
                   disabled={busy}
                   onClick={() =>
-                    run(() => api.updatePark(park.id, { is_active: !park.is_active }))
+                    runParkMutation(() => api.updatePark(park.id, { is_active: !park.is_active }))
                   }
                   type="button"
                 >

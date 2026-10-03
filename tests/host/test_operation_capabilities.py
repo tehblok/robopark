@@ -8,12 +8,13 @@ from robopark_host.commands import SafeProductionTypedHostEffects, TypedHostEffe
 
 BOOT_ID = "00000000-0000-4000-8000-000000000010"
 SAFE_KINDS = {
-    "ota-update", "package-inspect", "cleanup-preview", "diagnostics",
-    "usb-discover", "usb-select",
+    "ota-update", "package-inspect", "cleanup-preview", "cleanup-execute", "diagnostics",
+    "docker-image-preview", "docker-image-execute", "builder-cache-preview",
+    "builder-cache-execute", "usb-discover", "usb-select", "package-update",
+    "service-restart", "reboot", "usb-format",
 }
 UNAVAILABLE_KINDS = {
-    "release-update", "reinstall", "rollback", "package-update", "service-restart",
-    "reboot", "backup", "backup-restore", "cleanup-execute", "usb-format",
+    "rollback", "backup", "backup-restore",
 }
 
 
@@ -41,10 +42,12 @@ def test_idle_production_consumer_marks_missing_backup_key_context_unavailable(c
         for kind, value in report.operations.items() if not value.available
     }
     assert reasons == {
-        **dict.fromkeys(UNAVAILABLE_KINDS, "capability_unavailable"),
+        **dict.fromkeys(UNAVAILABLE_KINDS, "context_unavailable"),
         "backup-verify": "context_unavailable",
     }
+    assert (capability_host.ops / "public/operation-context.json").is_file()
     assert not (capability_host.ops / "inbox/approved.json").exists()
+    assert not (capability_host.etc / "backup-recovery.key").exists()
 
 
 def test_consumer_capabilities_follow_injected_adapter_and_are_replaced(capability_host):
@@ -69,6 +72,8 @@ def test_missing_diagnostic_dependencies_are_not_advertised(capability_host):
     effects = SafeProductionTypedHostEffects(capability_host)
     consume_commands(capability_host, None, None, typed_effects=effects)
     assert not host_bridge.operation_capabilities(capability_host.ops).operations["diagnostics"].available
+    assert not host_bridge.operation_capabilities(capability_host.ops).operations["docker-image-preview"].available
+    assert not host_bridge.operation_capabilities(capability_host.ops).operations["builder-cache-preview"].available
 
 
 @pytest.mark.parametrize("drift", ["adapter", "boot"])
@@ -127,3 +132,66 @@ def test_periodic_watchdog_refreshes_same_production_adapter(capability_host, mo
     report = host_bridge.operation_capabilities(capability_host.ops)
     assert report.state == "ready"
     assert {kind.value for kind, item in report.operations.items() if item.available} == SAFE_KINDS
+    assert not (capability_host.etc / "backup-recovery.key").exists()
+
+
+def test_operation_context_projects_only_bounded_safe_choices(capability_host):
+    from robopark_host.commands import BlockDevice
+    from robopark_host.operation_capabilities import publish_operation_context
+    from robopark_host.state import atomic_write_json
+
+    update_id = "00000000-0000-4000-8000-000000000001"
+    current = capability_host.releases / f"0.2.0-{update_id}"
+    previous = capability_host.releases / "0.1.9-previous"
+    current.mkdir(parents=True)
+    previous.mkdir()
+    capability_host.current.symlink_to(current)
+    capability_host.previous.symlink_to(previous)
+    metadata = capability_host.state / "ota-runtime" / f"{update_id}.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(json.dumps({
+        "schema": 1,
+        "operation_id": update_id,
+        "candidate": current.name,
+        "current": previous.name,
+    }))
+    (capability_host.ops / "rollbacks" / update_id).mkdir(parents=True)
+    key = capability_host.etc / "backup-recovery.key"
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_bytes(b"k" * 32)
+    key.chmod(0o600)
+    device = BlockDevice(
+        "00000000-0000-4000-8000-000000000001",
+        "/dev/sdz1",
+        removable=True,
+        mounted=True,
+        mount_point="/mnt/usb",
+    )
+    atomic_write_json(
+        capability_host.state / "selected-usb.json",
+        {"schema": 1, "device_uuid": device.uuid},
+    )
+    effects = SafeProductionTypedHostEffects(
+        capability_host,
+        runner=lambda *args, **kwargs: None,
+        device_provider=lambda: (device,),
+    )
+
+    value = publish_operation_context(capability_host, effects)
+
+    assert value["rollback_release"] == previous.name
+    assert value["selected_device_uuid"] == device.uuid
+    assert value["packages"] == [
+        "containerd.io", "docker-ce", "docker-ce-cli", "openssl",
+        "python3-cryptography",
+    ]
+    assert value["services"] == ["docker.service", "robopark-tuna.service", "robopark.service"]
+    assert value["devices"] == [
+        {"device_uuid": device.uuid, "removable": True, "mounted": True}
+    ]
+    assert value["backups"] == []
+    assert set(value) == {
+        "schema", "boot_id", "generated_at", "valid_for_seconds",
+        "selected_device_uuid", "rollback_release", "packages", "services",
+        "devices", "backups",
+    }

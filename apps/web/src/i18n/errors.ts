@@ -47,7 +47,7 @@ export function mapApiError(error: unknown, fallback = ''): string {
       return ru.maintenance.title
     }
     if (error.detail === 'emergency_upstream_unavailable') return ru.errors.emergency503
-    if (error.status === 503) return ru.errors.tasks503
+    if (error.status === 503) return fallback || 'Сервис временно недоступен. Повторите позже.'
     if (error.status === 401) {
       return ru.errors.sessionExpired
     }

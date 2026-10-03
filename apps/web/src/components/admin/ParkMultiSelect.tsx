@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { Park } from '../../api'
+import { Button } from '../../design-system/actions/Button'
+import './ParkMultiSelect.css'
 
 type ParkMultiSelectProps = {
   parks: Park[]
@@ -43,7 +45,7 @@ export function ParkMultiSelect({ parks, value, onChange, disabled = false, labe
   }
 
   return <div className="park-multi-select" ref={root}>
-    <button
+    <Button
       aria-controls={open ? listboxId : undefined}
       aria-expanded={open}
       aria-haspopup="dialog"
@@ -51,9 +53,10 @@ export function ParkMultiSelect({ parks, value, onChange, disabled = false, labe
       disabled={disabled}
       onClick={() => setOpen((current) => !current)}
       type="button"
+      variant="secondary"
     >
       {label}. Выбрано: {value.length}
-    </button>
+    </Button>
     {open ? <div
       aria-label={label}
       aria-modal="false"
@@ -75,8 +78,8 @@ export function ParkMultiSelect({ parks, value, onChange, disabled = false, labe
           ref={filterInput}
           value={query}
         />
-        <button onClick={() => update([...value, ...activeParks.map((park) => park.id)])} type="button">Выбрать все</button>
-        <button onClick={() => update([])} type="button">Очистить</button>
+        <Button onClick={() => update([...value, ...activeParks.map((park) => park.id)])} size="compact" type="button" variant="secondary">Выбрать все</Button>
+        <Button onClick={() => update([])} size="compact" type="button" variant="secondary">Очистить</Button>
       </div>
       <div className="park-multi-select__options">
         {visibleParks.map((park) => {

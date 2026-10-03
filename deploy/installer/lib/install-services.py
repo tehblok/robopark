@@ -8,11 +8,15 @@ from pathlib import Path
 UNITS = (
     "robopark-commands.service",
     "robopark-commands.path",
+    "robopark-bot.service",
+    "robopark-bot.path",
     "robopark.service",
     "robopark-tuna.service",
     "robopark-updater.service",
     "robopark-doctor.service",
     "robopark-doctor.timer",
+    "robopark-backup.service",
+    "robopark-backup.timer",
     "robopark-watchdog.service",
     "robopark-watchdog.timer",
 )
@@ -55,6 +59,22 @@ def install_units(root):
         if source.is_symlink() or not source.is_file():
             raise ValueError("missing_unit")
         contents[name] = source.read_bytes()
+    terminal_names = (
+        "robopark-terminal-setup.service", "robopark-terminal-broker.service",
+        "robopark-terminal-maintenance@.service", "robopark-terminal-root@.service",
+    )
+    terminal = {}
+    for name in terminal_names:
+        source = release / "deploy/systemd" / name
+        if source.is_symlink():
+            raise ValueError("terminal_payload_invalid")
+        if source.exists():
+            if not source.is_file():
+                raise ValueError("terminal_payload_invalid")
+            terminal[name] = source.read_bytes()
+    if terminal and len(terminal) != len(terminal_names):
+        raise ValueError("terminal_payload_invalid")
+    contents.update(terminal)
     tmpfiles_source = release / TMPFILES_SOURCE
     tmpfiles_target = root / TMPFILES_TARGET
     if tmpfiles_source.is_symlink() or not tmpfiles_source.is_file():

@@ -4,8 +4,9 @@ import { resourceStore, useCachedResource } from '../../lib/resource'
 import { AuthContext } from '../../auth-context'
 import { useParkScope } from '../../app/park/parkScope'
 import { MetricCard } from '../../design-system/data/MetricCard'
-import { EmptyState, LoadingState } from '../../design-system/feedback/AsyncState'
+import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { PageLayout } from '../../design-system/layout/PageLayout'
+import { classifyApiError } from '../../shared/api/classifyApiError'
 import { InventoryManageView } from './InventoryManageView'
 import { InventoryPartsView } from './InventoryPartsView'
 import { InventoryReceiptsView } from './InventoryReceiptsView'
@@ -31,20 +32,25 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   const overviewKey = `${accessPrefix}${parkId ?? 'none'}`
   useLayoutEffect(() => {
     resourceStore.activateScope('inventory-kpi', accessPrefix)
-    return () => resourceStore.cancelPending(overviewKey)
-  }, [accessPrefix, overviewKey])
+  }, [accessPrefix])
   const overviewResource = useCachedResource(overviewKey, async () => {
     const { park_id, component_count, part_count, low_stock_count, out_of_stock_count } = await apiClient.inventory(parkId!)
     // The KPI cache needs five numbers, not a second copy of the full catalog.
     return { key: overviewKey, value: { park_id, component_count, part_count, low_stock_count, out_of_stock_count } }
   }, { enabled: Boolean(parkId) && !loading, persist: false, trackProgress: false, staleTimeMs: 60_000, refreshIntervalMs: 0 })
   // A changed key must never paint the previous park/account while effects settle.
-  const overview = overviewResource.data?.key === overviewKey && overviewResource.data.value.park_id === parkId ? overviewResource.data.value : null
+  const overviewFailure = overviewResource.error
+    ? classifyApiError(overviewResource.error, 'Не удалось загрузить показатели склада.')
+    : null
+  const accessDenied = overviewFailure?.kind === 'unauthorized' || overviewFailure?.kind === 'forbidden'
+  const overview = accessDenied
+    ? null
+    : overviewResource.data?.key === overviewKey && overviewResource.data.value.park_id === parkId
+      ? overviewResource.data.value : null
   const refreshOverview = overviewResource.refresh
   const loadOverview = useCallback(() => {
-    resourceStore.invalidate(overviewKey)
     void refreshOverview()
-  }, [overviewKey, refreshOverview])
+  }, [refreshOverview])
   useEffect(() => {
     const changed = (event: Event) => {
       if ((event as CustomEvent<number>).detail !== parkId) return
@@ -58,8 +64,12 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
   if (!selectedPark) return <EmptyState description="Выберите парк." icon="parks" title="Парк не выбран" />
 
   return <PageLayout description={`Учёт запчастей парка «${selectedPark.name}»`} title="Склад">
-    {overview ? <div className="stat-grid inventory-kpis"><MetricCard label="Компоненты" value={overview.component_count} /><MetricCard label="Запчасти" value={overview.part_count} /><MetricCard label="Ниже минимума" tone={overview.low_stock_count ? 'warning' : 'neutral'} value={overview.low_stock_count} /><MetricCard label="Нет на складе" tone={overview.out_of_stock_count ? 'critical' : 'neutral'} value={overview.out_of_stock_count} /></div> : null}
-    <InventoryTabs readOnly={readOnly} renderPanel={view => view === 'parts'
+    <section aria-label="Показатели склада">
+      {overview ? <div className="stat-grid inventory-kpis"><MetricCard label="Компоненты" value={overview.component_count} /><MetricCard label="Запчасти" value={overview.part_count} /><MetricCard label="Ниже минимума" tone={overview.low_stock_count ? 'warning' : 'neutral'} value={overview.low_stock_count} /><MetricCard label="Нет на складе" tone={overview.out_of_stock_count ? 'critical' : 'neutral'} value={overview.out_of_stock_count} /></div> : null}
+      {overviewFailure ? <ErrorState description={overview ? `Показатели могут устареть. ${overviewFailure.description}` : overviewFailure.description} onRetry={overviewFailure.retryable ? () => void overviewResource.refresh() : undefined} requestId={overviewFailure.requestId} title={overviewFailure.title} /> : null}
+      {!overview && !overviewFailure && overviewResource.isLoading ? <LoadingState label="Загружаем показатели склада" variant="inline" /> : null}
+    </section>
+    {!accessDenied ? <InventoryTabs readOnly={readOnly} renderPanel={view => view === 'parts'
       ? <InventoryPartsView apiClient={apiClient} canManage={canManage} canPrint={canPrint} parkId={selectedPark.id} refreshVersion={refreshVersion} />
       : view === 'receipts'
         ? <InventoryReceiptsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} refreshVersion={refreshVersion} />
@@ -67,6 +77,6 @@ export function InventoryPage({ apiClient = api }: { apiClient?: InventoryApi })
           ? <InventoryCountsView apiClient={apiClient} onInventoryChanged={loadOverview} parkId={selectedPark.id} permissions={permissions} refreshVersion={refreshVersion} role={role} />
       : view === 'manage'
         ? <InventoryManageView apiClient={apiClient} parkId={selectedPark.id} role={role} refreshVersion={refreshVersion} />
-        : <InventoryExportView apiClient={apiClient} parks={parks} permissions={permissions} role={role} selectedPark={selectedPark} />} />
+        : <InventoryExportView apiClient={apiClient} parks={parks} permissions={permissions} role={role} selectedPark={selectedPark} />} /> : null}
   </PageLayout>
 }

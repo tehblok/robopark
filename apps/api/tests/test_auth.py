@@ -226,6 +226,43 @@ def test_me_includes_assigned_parks(client: TestClient, db_session: Session, see
     ]
 
 
+def test_me_does_not_disclose_inactive_park_coordinates_to_assigned_mechanic(
+    client: TestClient, db_session: Session, seed_mechanic
+):
+    inactive = Park(
+        name="Закрытый парк",
+        tag="inactive-coordinates",
+        is_active=False,
+        latitude=55.0,
+        longitude=37.0,
+    )
+    db_session.add(inactive)
+    db_session.flush()
+    db_session.add(UserPark(user_id=seed_mechanic.id, park_id=inactive.id))
+    db_session.commit()
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.get("/auth/me")
+
+    assert response.status_code == 200
+    assert [park["id"] for park in response.json()["parks"]] == [seed_mechanic.parks[0].id]
+    assert "inactive-coordinates" not in response.text
+
+
+def test_me_reports_pending_status_without_disclosing_assigned_park(
+    client: TestClient, db_session: Session, seed_mechanic
+):
+    seed_mechanic.access_status = "pending"
+    db_session.commit()
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.get("/auth/me")
+
+    assert response.status_code == 200
+    assert response.json()["access_status"] == "pending"
+    assert response.json()["parks"] == []
+
+
 @pytest.mark.parametrize("role", ["royal", "admin"])
 def test_require_admin_allows_admin_roles(db_session: Session, role: str):
     user = User(

@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.config import get_settings
 from robopark_api.db import SessionLocal
-from robopark_api.models import AuthThrottleState
+from robopark_api.models import AuthThrottleState, HostOperationStatus
 from robopark_api.routers import push
 from robopark_api.schedule_models import SystemIncidentOccurrence
 from robopark_api.services import (
@@ -33,9 +33,11 @@ from robopark_api.services import (
 )
 from robopark_api.services.diagnostic_unknowns import prune_diagnostic_unknowns
 from robopark_api.services.live_merge import get_live_merge_store
+from robopark_api.services.ops import operation_registry
 from robopark_api.services.ops.context import resolved_ops_dir
 from robopark_api.services.ops.maintenance import host_maintenance_active
 from robopark_api.services.ops.operation_registry import prune as prune_operation_registry
+from robopark_api.services.ops.ota_uploads import OtaUploadError, OtaUploadStore
 from robopark_api.services.report_attachments import (
     prune_deleted_report_files,
     reconcile_pending_report_deletions,
@@ -73,6 +75,34 @@ _STORAGE_TIME_BUDGET_SECONDS = 0.5
 _ATTACHMENT_SCAN_LIMIT = 4096
 _attachment_scan_cursors: dict[str, tuple[float, str]] = {}
 _attachment_scan_lock = threading.Lock()
+
+
+def prune_expired_ota_uploads(db: Session | None = None) -> int:
+    settings = get_settings()
+    if not settings.ops_host_root:
+        return 0
+    state = resolved_ops_dir(settings) / "ota-uploads"
+    host = Path(settings.ops_host_root) / "ota-uploads"
+    if not state.is_dir() or not host.is_dir():
+        return 0
+    try:
+        if db is not None:
+            operation_registry.snapshot_current_job(db, resolved_ops_dir(settings))
+
+        def is_terminal(operation_id) -> bool:
+            row = db.get(HostOperationStatus, str(operation_id)) if db is not None else None
+            return (
+                row is not None
+                and row.receipt_state == "terminal"
+                and row.error != "ota_rollback_failed"
+            )
+
+        return OtaUploadStore(state, host, max_bytes=settings.ops_max_upload_bytes).cleanup_expired(
+            is_terminal=is_terminal
+        )
+    except (OtaUploadError, OSError):
+        logger.warning("Expired OTA upload cleanup could not complete", exc_info=True)
+        return 0
 
 
 def _confirmed_attachment_rows(
@@ -503,9 +533,11 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
     if host_maintenance_active():
         return 0, 0
     current = now or datetime.now(UTC)
+    ota_uploads_removed = 0
     store = get_live_merge_store()
     files_removed = store.prune(now=current.timestamp()) if store is not None else 0
     with SessionLocal() as db:
+        ota_uploads_removed = prune_expired_ota_uploads(db)
         unknowns_removed = prune_diagnostic_unknowns(db, now=current)
         media_uploads_removed = media_uploads.cleanup_expired(db, now=current.timestamp())
         sync_receipts_removed = prune_offline_sync_receipts(db, now=current.timestamp())
@@ -534,6 +566,8 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         )
     if media_uploads_removed:
         logger.info("Pruned %s expired media upload(s)", media_uploads_removed)
+    if ota_uploads_removed:
+        logger.info("Pruned %s expired OTA upload(s)", ota_uploads_removed)
     if sync_receipts_removed:
         logger.info("Pruned %s expired offline sync receipt(s)", sync_receipts_removed)
     if throttle_states_removed:

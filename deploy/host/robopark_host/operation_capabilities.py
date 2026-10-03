@@ -3,7 +3,7 @@
 import hashlib
 import json
 import os
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from .state import atomic_write_json
@@ -14,6 +14,14 @@ CAPABILITY_TTL_SECONDS = 300
 def operation_capabilities(effects):
     from .commands import OperationKind
 
+    refresh = getattr(effects, "refresh_capabilities", None)
+    if callable(refresh):
+        try:
+            refresh()
+        except Exception:
+            # Capability discovery is fail closed: a broken context probe never
+            # advertises a privileged action.
+            effects.supported_kinds = frozenset()
     supported = getattr(effects, "supported_kinds", frozenset())
     reasons = getattr(effects, "unavailable_reasons", {})
     if not isinstance(supported, frozenset) or not supported <= set(OperationKind):
@@ -64,7 +72,7 @@ def publish_operation_capabilities(paths, effects):
     value = {
         "schema": 1,
         "boot_id": _boot_id(paths),
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "valid_for_seconds": CAPABILITY_TTL_SECONDS,
         "operations": operation_capabilities(effects),
     }
@@ -72,4 +80,30 @@ def publish_operation_capabilities(paths, effects):
     directory.mkdir(parents=True, exist_ok=True, mode=0o755)
     directory.chmod(0o755)
     atomic_write_json(directory / "operation-capabilities.json", value, mode=0o644)
+    return value
+
+
+def publish_operation_context(paths, effects):
+    """Publish only bounded identifiers that the owner may choose in the UI."""
+
+    now = datetime.now(timezone.utc)
+    context = effects.operation_context() if hasattr(effects, "operation_context") else {}
+    if not isinstance(context, dict):
+        context = {}
+    value = {
+        "schema": 1,
+        "boot_id": _boot_id(paths),
+        "generated_at": now.isoformat(),
+        "valid_for_seconds": CAPABILITY_TTL_SECONDS,
+        "selected_device_uuid": context.get("selected_device_uuid"),
+        "rollback_release": context.get("rollback_release"),
+        "packages": context.get("packages", []),
+        "services": context.get("services", []),
+        "devices": context.get("devices", []),
+        "backups": context.get("backups", []),
+    }
+    directory = paths.ops / "public"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o755)
+    directory.chmod(0o755)
+    atomic_write_json(directory / "operation-context.json", value, mode=0o644)
     return value

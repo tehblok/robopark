@@ -155,6 +155,8 @@ def _begin_writer_tracking(connection) -> None:
 
 @event.listens_for(Engine, "before_cursor_execute")
 def _guard_application_statement(connection, cursor, statement, parameters, context, executemany):
+    if getattr(connection.engine, "_robopark_schema_migration", False):
+        return
     # A SELECT-only observer remains usable during cutover. DML, DDL and raw
     # statements (including writable PRAGMAs/CTEs) must pass the host barrier.
     if statement.lstrip().upper().startswith(("SELECT", "EXPLAIN")):

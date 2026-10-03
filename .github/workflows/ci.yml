@@ -13,7 +13,8 @@ jobs:
   verify:
     name: Verify repository
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Includes the complete route/role/theme/viewport matrix and three engines.
+    timeout-minutes: 180
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -37,10 +38,22 @@ jobs:
       - name: Verify repository
         run: ./scripts/verify.sh
 
+      - name: Audit locked frontend, API and bot dependencies
+        run: sh scripts/audit-dependencies.sh
+
+      - name: Verify the optional bot image and its runtime dependencies
+        run: |
+          docker build -t robopark-bot:verify apps/bot
+          docker run --rm --entrypoint python robopark-bot:verify -c "import pandas, requests, matplotlib, qrcode, PIL"
+
       - name: Verify responsive browser journeys in the pinned Linux image
         working-directory: apps/web
-        run: npm run test:e2e:linux
+        run: npm run test:e2e:linux -- --workers=2
 
       - name: Verify the production PWA in the pinned Linux image
         working-directory: apps/web
         run: npm run test:e2e:pwa:linux
+
+      - name: Verify workflows in Chromium, Firefox and WebKit
+        working-directory: apps/web
+        run: npm run test:e2e:crossbrowser:linux -- --workers=2

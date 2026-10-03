@@ -34,6 +34,22 @@ it('keeps count status in the card flow and uses semantic mobile editor geometry
   expect(editor).not.toHaveAttribute('style')
 })
 
+it('removes an open inventory count when a refreshed list loses access', async () => {
+  const inventoryCounts = vi.fn()
+    .mockResolvedValueOnce({ items: [count], limit: 25, offset: 0, total: 1 })
+    .mockRejectedValueOnce(new ApiError(403, 'forbidden'))
+  const apiClient = client({ inventoryCounts })
+  const view = render(<InventoryCountsView apiClient={apiClient} parkId={7} refreshVersion={0} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Инвентаризация №71' })).getByRole('button', { name: 'Открыть' }))
+  expect(screen.getByRole('heading', { name: 'Сентябрь' })).toBeVisible()
+
+  view.rerender(<InventoryCountsView apiClient={apiClient} parkId={7} refreshVersion={1} />)
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Недостаточно прав')
+  expect(screen.queryByRole('heading', { name: 'Сентябрь' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('textbox', { name: 'Фактически ABC-1' })).not.toBeInTheDocument()
+})
+
 it('explicitly refreshes a stale snapshot and then sends exactly one new post', async () => {
   const stale = new ApiError(409, { code: 'inventory_count_stale', conflicts: [{ catalog_part_id: 31, expected_quantity: '5', current_quantity: '6', affected_lines: [{ count_line_id: 1, catalog_part_id: 31 }] }] })
   const refreshed = { ...count, lines: [{ ...count.lines[0], expected_quantity: '6' as const, actual_quantity: '9' as const, difference: '3' as const }] }

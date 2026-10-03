@@ -4,6 +4,8 @@ import type { User } from './api'
 export type AuthContextValue = {
   user: User | null
   loading: boolean
+  /** The UI was restored locally and awaits fresh server verification. */
+  offlineSession?: boolean
   login: (username: string, password: string, rememberMe?: boolean) => Promise<User>
   refreshUser: () => Promise<User>
   logout: () => Promise<void>

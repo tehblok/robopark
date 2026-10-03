@@ -5,12 +5,14 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import stat
 import time
 import zipfile
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -24,10 +26,19 @@ MAX_FILE_BYTES = 768 * 1024 * 1024
 MAX_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 250
 VERIFY_CHUNK_BYTES = 1024 * 1024
+MIN_HOST_FREE_BYTES = 6 * 1024**3
 
 
 class OtaUploadError(ValueError):
     pass
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +54,7 @@ class OtaUploadRecord:
     version: str | None = None
     changes: tuple[str, ...] = ()
     compatible_from: tuple[str, ...] = ()
+    required_free_bytes: int | None = None
     already_present: bool = False
 
 
@@ -50,8 +62,10 @@ def _safe_member(name: str) -> str:
     if not isinstance(name, str) or not name or "\\" in name or "\x00" in name:
         raise OtaUploadError("ota_invalid_container")
     path = PurePosixPath(name)
-    if name.startswith("/") or path.as_posix() != name or any(
-        part in {"", ".", ".."} for part in path.parts
+    if (
+        name.startswith("/")
+        or path.as_posix() != name
+        or any(part in {"", ".", ".."} for part in path.parts)
     ):
         raise OtaUploadError("ota_invalid_container")
     return name
@@ -68,7 +82,7 @@ def _stream_member_digest(source, *, limit: int) -> tuple[int, str]:
     return total, digest.hexdigest()
 
 
-def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...], int]:
     try:
         with zipfile.ZipFile(path) as archive:
             infos = archive.infolist()
@@ -90,8 +104,7 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]
                         info.file_size
                         and (
                             info.compress_size <= 0
-                            or info.file_size
-                            > info.compress_size * MAX_COMPRESSION_RATIO
+                            or info.file_size > info.compress_size * MAX_COMPRESSION_RATIO
                         )
                     )
                 ):
@@ -101,14 +114,24 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]
                 raise OtaUploadError("ota_manifest_invalid")
             raw = archive.read(info)
             manifest = json.loads(raw.decode("utf-8"))
-            if json.dumps(
-                manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ).encode() != raw:
+            if (
+                json.dumps(
+                    manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode()
+                != raw
+            ):
                 raise OtaUploadError("ota_manifest_invalid")
             expected = {
-                "format_version", "app_version", "git_sha", "migration_head",
-                "compatible_from", "required_free_bytes", "max_expanded_bytes",
-                "changes", "requirements", "files",
+                "format_version",
+                "app_version",
+                "git_sha",
+                "migration_head",
+                "compatible_from",
+                "required_free_bytes",
+                "max_expanded_bytes",
+                "changes",
+                "requirements",
+                "files",
             }
             if not isinstance(manifest, dict) or set(manifest) != expected:
                 raise OtaUploadError("ota_manifest_invalid")
@@ -117,6 +140,7 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]
             compatible = manifest["compatible_from"]
             files = manifest["files"]
             max_expanded = manifest["max_expanded_bytes"]
+            required_free = manifest["required_free_bytes"]
             if (
                 manifest["format_version"] != 1
                 or not isinstance(version, str)
@@ -126,6 +150,8 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]
                 or not isinstance(files, list)
                 or type(max_expanded) is not int
                 or not 0 < max_expanded <= MAX_EXPANDED_BYTES
+                or type(required_free) is not int
+                or not 0 < required_free <= 2**63 - 1
             ):
                 raise OtaUploadError("ota_manifest_invalid")
             declared = {}
@@ -157,7 +183,12 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...]]
                     )
                 if actual_size != row["size"] or digest != row["sha256"]:
                     raise OtaUploadError("ota_hash_mismatch")
-            return version, tuple(str(item)[:500] for item in changes[:100]), tuple(compatible[:256])
+            return (
+                version,
+                tuple(str(item)[:500] for item in changes[:100]),
+                tuple(compatible[:256]),
+                required_free,
+            )
     except OtaUploadError:
         raise
     except (OSError, ValueError, UnicodeError, KeyError, zipfile.BadZipFile) as exc:
@@ -223,6 +254,7 @@ class OtaUploadStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
+            _fsync_directory(self.state_root)
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -239,6 +271,11 @@ class OtaUploadStore:
                 value = json.load(stream)
             if not isinstance(value, dict) or value.get("upload_id") != str(parsed):
                 raise ValueError()
+            expires_at = value.get("expires_at")
+            if type(expires_at) not in (int, float) or not math.isfinite(expires_at):
+                raise ValueError()
+            if value.get("state") not in {"uploading", "verified"}:
+                raise ValueError()
             return value
         except FileNotFoundError as exc:
             raise OtaUploadError("ota_upload_not_found") from exc
@@ -246,22 +283,65 @@ class OtaUploadStore:
             raise OtaUploadError("ota_upload_state_invalid") from exc
 
     def _record(self, value: dict) -> OtaUploadRecord:
+        required_free = value.get("required_free_bytes")
+        if required_free is not None and (
+            type(required_free) is not int or not 0 < required_free <= 2**63 - 1
+        ):
+            raise OtaUploadError("ota_upload_state_invalid")
         return OtaUploadRecord(
-            upload_id=UUID(value["upload_id"]), filename=value["filename"],
-            size=value["size"], sha256=value["sha256"], offset=value["offset"],
-            expires_at=value["expires_at"], state=value["state"],
-            chunk_size=self.chunk_bytes, version=value.get("version"),
+            upload_id=UUID(value["upload_id"]),
+            filename=value["filename"],
+            size=value["size"],
+            sha256=value["sha256"],
+            offset=value["offset"],
+            expires_at=value["expires_at"],
+            state=value["state"],
+            chunk_size=self.chunk_bytes,
+            version=value.get("version"),
             changes=tuple(value.get("changes", ())),
             compatible_from=tuple(value.get("compatible_from", ())),
+            required_free_bytes=required_free,
             already_present=bool(value.get("already_present", False)),
         )
+
+    def _free_floor(self, total: int) -> int:
+        return max(self.reserve_bytes, MIN_HOST_FREE_BYTES, int(total * 0.15))
+
+    def list_owned(self, *, actor_id: int) -> list[OtaUploadRecord]:
+        with self._locked("global"):
+            records = []
+            for index, meta in enumerate(self.state_root.glob("*.json")):
+                if index >= 512:
+                    raise OtaUploadError("ota_upload_state_invalid")
+                try:
+                    row = self._read(meta.stem)
+                    if (
+                        row.get("actor_id") != actor_id
+                        or row.get("operation_id")
+                        or row["expires_at"] < self.now()
+                    ):
+                        continue
+                    identity = UUID(row["upload_id"])
+                    path = (
+                        self._host(identity) if row["state"] == "verified" else self._part(identity)
+                    )
+                    if path.is_symlink() or not path.is_file():
+                        continue
+                    records.append(self._record(row))
+                except (OtaUploadError, KeyError, TypeError, ValueError):
+                    continue
+            return sorted(records, key=lambda row: (row.expires_at, str(row.upload_id)))
 
     def create(self, *, actor_id: int, filename: str, size: int, sha256: str) -> OtaUploadRecord:
         with self._locked("global"):
             return self._create(actor_id=actor_id, filename=filename, size=size, sha256=sha256)
 
     def _create(self, *, actor_id: int, filename: str, size: int, sha256: str) -> OtaUploadRecord:
-        if not isinstance(filename, str) or Path(filename).name != filename or not filename.endswith(".ota"):
+        if (
+            not isinstance(filename, str)
+            or Path(filename).name != filename
+            or not filename.endswith(".ota")
+        ):
             raise OtaUploadError("ota_filename_invalid")
         if type(size) is not int or not 0 < size <= self.max_bytes:
             raise OtaUploadError("ota_package_too_large")
@@ -274,7 +354,9 @@ class OtaUploadStore:
                 row = self._read(meta.stem)
             except OtaUploadError:
                 continue
-            if row["state"] in {"uploading", "verified"}:
+            if row["state"] == "uploading" or (
+                row["state"] == "verified" and self._host(UUID(row["upload_id"])).is_file()
+            ):
                 active.append(row)
             if (
                 row.get("actor_id") == actor_id
@@ -288,17 +370,47 @@ class OtaUploadStore:
                 result = dict(row)
                 result["already_present"] = row["state"] == "verified"
                 return self._record(result)
-        if len(active) >= self.max_active_global or sum(
-            row["actor_id"] == actor_id for row in active
-        ) >= self.max_active_per_actor:
+        if (
+            len(active) >= self.max_active_global
+            or sum(row["actor_id"] == actor_id for row in active) >= self.max_active_per_actor
+        ):
             raise OtaUploadError("ota_upload_quota")
-        if shutil.disk_usage(self.state_root).free < size + self.reserve_bytes:
+        state_usage = shutil.disk_usage(self.state_root)
+        host_usage = shutil.disk_usage(self.host_root)
+        same_device = self.state_root.stat().st_dev == self.host_root.stat().st_dev
+        uploading = [row for row in active if row["state"] == "uploading"]
+        if any(
+            type(row.get("size")) is not int
+            or type(row.get("offset")) is not int
+            or not 0 <= row["offset"] <= row["size"] <= self.max_bytes
+            for row in uploading
+        ):
+            raise OtaUploadError("ota_upload_state_invalid")
+        remaining_parts = sum(row["size"] - row["offset"] for row in uploading)
+        required_state = remaining_parts + size + self._free_floor(state_usage.total)
+        if same_device:
+            # All parts may grow before finalization. One verified copy can
+            # coexist with its part, even when another upload is still active.
+            required_state += max((size, *(row["size"] for row in uploading)))
+            required_host = required_state
+        else:
+            # On a distinct host filesystem every active part can eventually
+            # become a verified file without freeing space on that filesystem.
+            required_host = sum(row["size"] for row in uploading) + size
+            required_host += self._free_floor(host_usage.total)
+        if state_usage.free < required_state or host_usage.free < required_host:
             raise OtaUploadError("ota_insufficient_space")
         identity = uuid4()
         value = {
-            "schema": 1, "upload_id": str(identity), "actor_id": actor_id,
-            "filename": filename, "size": size, "sha256": sha256, "offset": 0,
-            "expires_at": self.now() + self.ttl_seconds, "state": "uploading",
+            "schema": 1,
+            "upload_id": str(identity),
+            "actor_id": actor_id,
+            "filename": filename,
+            "size": size,
+            "sha256": sha256,
+            "offset": 0,
+            "expires_at": self.now() + self.ttl_seconds,
+            "state": "uploading",
         }
         descriptor = os.open(self._part(identity), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(descriptor)
@@ -309,7 +421,12 @@ class OtaUploadStore:
         value = self._read(identity)
         if value["actor_id"] != actor_id:
             raise OtaUploadError("ota_upload_forbidden")
-        if value["expires_at"] < self.now():
+        pinned = (
+            value.get("state") == "verified"
+            and value.get("operation_id")
+            and self._host(UUID(value["upload_id"])).is_file()
+        )
+        if value["expires_at"] < self.now() and not pinned:
             raise OtaUploadError("ota_upload_expired")
         return self._record(value)
 
@@ -329,7 +446,11 @@ class OtaUploadStore:
         descriptor = os.open(part, os.O_RDWR | os.O_NOFOLLOW)
         with os.fdopen(descriptor, "r+b") as stream:
             info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != record.offset:
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_size != record.offset
+            ):
                 raise OtaUploadError("ota_upload_state_invalid")
             if offset < record.offset and offset + len(chunk) <= record.offset:
                 stream.seek(offset)
@@ -350,9 +471,57 @@ class OtaUploadStore:
         with self._locked(str(identity)):
             return self._finalize(identity, actor_id=actor_id)
 
+    def pin_for_operation(
+        self,
+        identity: UUID | str,
+        *,
+        actor_id: int,
+        operation_id: UUID,
+        reassignable: Callable[[UUID], bool] | None = None,
+    ) -> None:
+        with self._locked(str(identity)):
+            record = self.status(identity, actor_id=actor_id)
+            if record.state != "verified" or not self._host(record.upload_id).is_file():
+                raise OtaUploadError("ota_upload_not_verified")
+            value = self._read(record.upload_id)
+            previous = value.get("operation_id")
+            if previous and previous != str(operation_id):
+                try:
+                    previous_id = UUID(previous)
+                except (TypeError, ValueError) as exc:
+                    raise OtaUploadError("ota_upload_in_use") from exc
+                if reassignable is None or not reassignable(previous_id):
+                    raise OtaUploadError("ota_upload_in_use")
+            value["operation_id"] = str(operation_id)
+            self._write(record.upload_id, value)
+
+    def check_install_capacity(self, identity: UUID | str, *, actor_id: int) -> OtaUploadRecord:
+        """Fast API preflight; root verifies the package and disk again before snapshot."""
+        with self._locked(str(identity)):
+            record = self.status(identity, actor_id=actor_id)
+            if record.state != "verified" or not self._host(record.upload_id).is_file():
+                raise OtaUploadError("ota_upload_not_verified")
+            try:
+                usage = shutil.disk_usage(self.host_root)
+            except OSError as exc:
+                raise OtaUploadError("ota_insufficient_space") from exc
+            # Legacy verified records have no stored requirement. Root admission
+            # still verifies the signed manifest and rejects insufficient space.
+            # Root first writes a second durable copy into ota-packages, then
+            # checks the installation budget. Reserve that transient copy here
+            # so the API does not accept an operation root must reject.
+            required = record.size + max(
+                self._free_floor(usage.total), record.required_free_bytes or 0
+            )
+            if usage.free < required:
+                raise OtaUploadError("ota_insufficient_space")
+            return record
+
     def _finalize(self, identity: UUID | str, *, actor_id: int) -> OtaUploadRecord:
         record = self.status(identity, actor_id=actor_id)
         if record.state == "verified":
+            self._part(record.upload_id).unlink(missing_ok=True)
+            _fsync_directory(self.state_root)
             return record
         if record.offset != record.size:
             raise OtaUploadError("ota_upload_incomplete")
@@ -363,7 +532,10 @@ class OtaUploadStore:
                 digest.update(chunk)
         if digest.hexdigest() != record.sha256:
             raise OtaUploadError("ota_hash_mismatch")
-        version, changes, compatible = _inspect_package(part)
+        version, changes, compatible, required_free = _inspect_package(part)
+        host_usage = shutil.disk_usage(self.host_root)
+        if host_usage.free < record.size + self._free_floor(host_usage.total):
+            raise OtaUploadError("ota_insufficient_space")
         target = self._host(record.upload_id)
         temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
         try:
@@ -373,28 +545,65 @@ class OtaUploadStore:
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, target)
+            _fsync_directory(self.host_root)
         finally:
             temporary.unlink(missing_ok=True)
         value = self._read(record.upload_id)
         value.update(
-            state="verified", version=version, changes=list(changes),
+            state="verified",
+            version=version,
+            changes=list(changes),
             compatible_from=list(compatible),
+            required_free_bytes=required_free,
         )
         self._write(record.upload_id, value)
+        part.unlink(missing_ok=True)
+        _fsync_directory(self.state_root)
         return self._record(value)
 
     def delete(self, identity: UUID | str, *, actor_id: int) -> None:
         with self._locked(str(identity)):
             record = self.status(identity, actor_id=actor_id)
+            value = self._read(record.upload_id)
+            if value.get("operation_id") and self._host(record.upload_id).is_file():
+                raise OtaUploadError("ota_upload_in_use")
             self._part(record.upload_id).unlink(missing_ok=True)
             self._host(record.upload_id).unlink(missing_ok=True)
+            _fsync_directory(self.host_root)
             self._meta(record.upload_id).unlink(missing_ok=True)
+            _fsync_directory(self.state_root)
 
-    def cleanup_expired(self) -> int:
+    def cleanup_expired(self, *, is_terminal: Callable[[UUID], bool] | None = None) -> int:
         with self._locked("global"):
-            return self._cleanup_expired()
+            return self._cleanup_expired(is_terminal=is_terminal)
 
-    def _cleanup_expired(self) -> int:
+    def pinned_operation_ids(self) -> set[str]:
+        """Protect terminal receipts until their verified upload has been reclaimed."""
+        with self._locked("global"):
+            metadata = tuple(self.state_root.glob("*.json"))
+            if len(metadata) > 512:
+                raise OtaUploadError("ota_upload_state_invalid")
+            pinned: set[str] = set()
+            for path in metadata:
+                value = self._read(path.stem)
+                if (
+                    value["state"] != "verified"
+                    or not self._host(UUID(value["upload_id"])).is_file()
+                ):
+                    continue
+                operation_id = value.get("operation_id")
+                if operation_id is None:
+                    continue
+                try:
+                    identity = UUID(operation_id)
+                except (TypeError, ValueError) as exc:
+                    raise OtaUploadError("ota_upload_state_invalid") from exc
+                if str(identity) != operation_id:
+                    raise OtaUploadError("ota_upload_state_invalid")
+                pinned.add(operation_id)
+            return pinned
+
+    def _cleanup_expired(self, *, is_terminal: Callable[[UUID], bool] | None = None) -> int:
         removed = 0
         for meta in tuple(self.state_root.glob("*.json")):
             try:
@@ -404,8 +613,73 @@ class OtaUploadStore:
             if value.get("expires_at", self.now() + 1) >= self.now():
                 continue
             identity = UUID(value["upload_id"])
+            if (
+                value.get("state") == "verified"
+                and value.get("operation_id")
+                and self._host(identity).is_file()
+            ):
+                try:
+                    operation_id = UUID(value["operation_id"])
+                except (TypeError, ValueError):
+                    continue
+                if is_terminal is None or not is_terminal(operation_id):
+                    continue
             self._part(identity).unlink(missing_ok=True)
             self._host(identity).unlink(missing_ok=True)
+            # Persist the host unlink before the metadata/DB receipt can vanish.
+            _fsync_directory(self.host_root)
             meta.unlink(missing_ok=True)
+            _fsync_directory(self.state_root)
             removed += 1
+        # _write() can leave this exact temporary file after SIGKILL.
+        if self.state_root.is_symlink():
+            raise OtaUploadError("ota_upload_storage_unsafe")
+        metadata_temps_removed = False
+        for path in self.state_root.iterdir():
+            if (
+                re.fullmatch(
+                    r"\.[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.json\.[0-9a-f]{32}\.tmp",
+                    path.name,
+                )
+                is None
+            ):
+                continue
+            info = path.lstat()
+            if (
+                stat.S_ISREG(info.st_mode)
+                and info.st_nlink == 1
+                and info.st_uid == os.geteuid()
+                and info.st_mtime < self.now() - self.ttl_seconds
+            ):
+                path.unlink()
+                removed += 1
+                metadata_temps_removed = True
+        if metadata_temps_removed:
+            _fsync_directory(self.state_root)
+        # A process killed while finalize() copies into host_root bypasses its
+        # finally block. Only its exact temporary naming scheme is reclaimable.
+        if self.host_root.is_symlink():
+            raise OtaUploadError("ota_upload_storage_unsafe")
+        temporary_removed = False
+        for path in self.host_root.iterdir():
+            if (
+                re.fullmatch(
+                    r"\.[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.ota\.[0-9a-f]{32}\.tmp",
+                    path.name,
+                )
+                is None
+            ):
+                continue
+            info = path.lstat()
+            if (
+                stat.S_ISREG(info.st_mode)
+                and info.st_nlink == 1
+                and info.st_uid == os.geteuid()
+                and info.st_mtime < self.now() - self.ttl_seconds
+            ):
+                path.unlink()
+                removed += 1
+                temporary_removed = True
+        if temporary_removed:
+            _fsync_directory(self.host_root)
         return removed

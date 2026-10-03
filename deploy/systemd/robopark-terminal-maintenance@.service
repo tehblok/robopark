@@ -1,0 +1,23 @@
+[Unit]
+Description=Robopark maintenance terminal %i
+BindsTo=robopark-terminal-broker.service
+After=robopark-terminal-broker.service
+
+[Service]
+Type=exec
+User=robopark-maint
+Group=robopark-maint
+ExecStart=/usr/bin/python3 -I /run/robopark-terminal-workers/worker.pyz %i maintenance
+KillMode=control-group
+SendSIGKILL=yes
+TimeoutStopSec=5
+TasksMax=128
+MemoryMax=512M
+CPUQuota=100%
+LimitCORE=0
+UMask=0077
+StandardOutput=null
+StandardError=null
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=

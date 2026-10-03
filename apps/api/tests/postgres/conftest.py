@@ -40,7 +40,20 @@ def postgres_container_name() -> Iterator[str]:
     try:
         for _attempt in range(60):
             ready = subprocess.run(
-                ["docker", "exec", name, "pg_isready", "-U", "robopark", "-d", "robopark"],
+                # The entrypoint's temporary initialization server accepts Unix
+                # sockets before it restarts. Wait for the final TCP listener.
+                [
+                    "docker",
+                    "exec",
+                    name,
+                    "pg_isready",
+                    "-h",
+                    "127.0.0.1",
+                    "-U",
+                    "robopark",
+                    "-d",
+                    "robopark",
+                ],
                 check=False,
                 capture_output=True,
                 text=True,

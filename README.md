@@ -2,6 +2,22 @@
 
 ## Установка и обновление
 
+На Ubuntu/Armbian с Python 3.10+, `curl` и `sudo` одна команда скачивает
+проверенный выпуск rc.21, сверяет SHA-256 и запускает меню установки:
+
+```sh
+d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.21.dev13181400260723547202/robopark-0.2.0-rc.21.dev13181400260723547202.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' 'eb2168458af4a6588c49f0f7100931bd690845bfff58ac5f69b2668014002092  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
+```
+
+Выберите «Чистая установка» на новом хосте. Установщик интерактивно запросит
+Tuna token, домен и пароль первого владельца. При найденных данных Robopark
+чистая установка откажет; для работающего хоста используйте OTA-обновление.
+Пакет поддерживает обновление с точного rc.20, указанного в его manifest.
+ARM64/AMD64, поддерживаемые ОС и требования к памяти/диску перечислены в
+[руководстве установки](docs/runbooks/usb-clean-install.md).
+Происхождение и границы проверки опубликованного пакета — в
+[описании rc.21](docs/releases/0.2.0-rc.21.dev13181400260723547202.md).
+
 Каноническая поставка — один файл `robopark-<версия>.ota`. Сборка:
 
 ```sh
@@ -13,20 +29,20 @@ USB: `sudo python3 robopark-<версия>.ota`. Royal обновляет сис
 См. [runbooks](docs/runbooks/build-ota.md). SHA-256 обеспечивает целостность,
 но не аутентифицирует издателя.
 
-Текущая версия исходников: **0.2.0-rc.1**. Production-профиль и чистый
+Версия исходников задаётся в [VERSION](VERSION). Production-профиль и чистый
 установщик используют **PostgreSQL 17**. Для Armbian/Ubuntu смотрите
 [руководство оператора](deploy/INSTALL-ARMBIAN-RU.md) и
-[приёмку 200 пользователей](deploy/CAPACITY-RU.md). Полные API/web/PostgreSQL,
-systemd/Docker/Tuna, load, soak, installer/VM и OTA gates для этого дерева
-остаются **НЕ ВЫПОЛНЕНЫ** до отдельного разрешённого запуска.
-Старые release-evidence к текущим исходникам не привязаны и не разрешают
-выпуск.
+[приёмку 200 пользователей](deploy/CAPACITY-RU.md). Результаты подготовки
+версии 0.2.0 и оставшиеся проверки приведены в
+[релизном отчёте](docs/reviews/2026-10-01-production-readiness.md).
+Готовность к выпуску определяется проверками конкретного пакета; старые
+release-evidence не подтверждают готовность изменённых исходников.
 
 Web-first fleet operations system (admin / operator / mechanic).
 
 - **Primary:** website on local host (API + app); remote access via **Tuna HTTPS tunnel** (no VPS, mechanics open a link).
-- **Reserve:** Telegram bots with feature parity, as thin clients to the same API (not in Phase 1).
-- **Clean slate:** new codebase; prior bot repo is reference only, not a dependency.
+- **Reserve:** optional Telegram bot using the shared API and integration gateway;
+  see [bot architecture](docs/architecture/2026-09-28-telegram-bot-integration.md).
 
 ## Phase 1
 

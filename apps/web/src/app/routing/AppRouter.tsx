@@ -1,6 +1,6 @@
 /* eslint-disable react/only-export-components */
-import { Component, lazy, Suspense, type ReactElement } from 'react'
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { Component, lazy, Suspense, useEffect, type ReactElement } from 'react'
+import { matchPath, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AppShell } from '../shell/AppShell'
 import { ParkProvider } from '../../ParkProvider'
 import { SyncProvider } from '../../pwa/SyncProvider'
@@ -136,7 +136,7 @@ function ShellBoundary() {
 function gatedElement(routeId: AppRouteId) {
   return (
     <RouteGate loadingElement={<RouteFallback />} routeId={routeId}>
-      <RouteLoadBoundary>
+      <RouteLoadBoundary key={routeId}>
         <Suspense fallback={<RouteModuleFallback />}>
           {ROUTE_ELEMENTS[routeId]}
         </Suspense>
@@ -146,6 +146,11 @@ function gatedElement(routeId: AppRouteId) {
 }
 
 export function AppRouter() {
+  const { pathname } = useLocation()
+  useEffect(() => {
+    const route = ROUTE_MANIFEST.find(item => matchPath(item.path, pathname))
+    document.title = route ? `${route.label} · Робопарк Сервис` : 'Робопарк Сервис'
+  }, [pathname])
   const publicAndStandaloneRoutes = ROUTE_MANIFEST.filter(
     (route) => route.surface !== 'shell' && route.id !== 'not-found',
   )

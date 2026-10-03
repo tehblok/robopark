@@ -13,7 +13,7 @@ sys.path.insert(0, str(SCRIPTS))
 from robopark_version import BuildIdentity, ReleaseVersion
 
 
-def test_repository_identity_is_rc6_across_shipped_sources() -> None:
+def test_repository_identity_agrees_across_shipped_sources() -> None:
     checker = importlib.util.spec_from_file_location(
         "check_release_version", SCRIPTS / "check-release-version.py"
     )
@@ -21,9 +21,10 @@ def test_repository_identity_is_rc6_across_shipped_sources() -> None:
     module = importlib.util.module_from_spec(checker)
     checker.loader.exec_module(module)
 
-    version = module.check(ROOT, tag="v0.2.0-rc.6")
-    assert version == "0.2.0-rc.6"
-    assert ReleaseVersion.parse(version).stage == "rc"
+    expected = (ROOT / "VERSION").read_text().strip()
+    version = module.check(ROOT, tag="v" + expected)
+    assert version == expected
+    assert ReleaseVersion.parse(version).raw == expected
 
 
 def test_release_documentation_targets_canonical_version() -> None:
@@ -114,3 +115,17 @@ def test_set_version_check_is_read_only_and_reports_mismatch(tmp_path: Path) -> 
     assert result.returncode != 0
     assert "inconsistent_version_sources" in result.stderr
     assert before == {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+
+@pytest.mark.parametrize(
+    ("version", "locked"),
+    [("0.2.0-rc.8", "0.2.0rc8"), ("0.2.0-rc.16.dev123", "0.2.0rc16.dev123")],
+)
+def test_version_check_accepts_uv_normalization_but_not_a_different_release(tmp_path, version, locked):
+    _write_version_tree(tmp_path, version)
+    lock = tmp_path / "apps/api/uv.lock"
+    lock.write_text(lock.read_text().replace(version, locked))
+    result = _run_set_version(tmp_path, version, "--check")
+    assert result.returncode == 0, result.stderr
+    lock.write_text(lock.read_text().replace(locked, "0.2.0rc99"))
+    assert _run_set_version(tmp_path, version, "--check").returncode != 0

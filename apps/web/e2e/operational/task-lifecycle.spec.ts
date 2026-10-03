@@ -1,4 +1,6 @@
-import { expect, test, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
+import { expect, test } from '../support/persistentWebKit'
+import { startHttpFixture } from '../support/httpFixture'
 import type { User } from '../../src/api'
 import type { MockResponse, MockRoute } from '../support/mockApi'
 import { startDiagnosticApi } from '../support/diagnosticApi'
@@ -22,11 +24,13 @@ async function bridgeCall(bridge: Bridge, input: Record<string, unknown>, actor:
 
 function trackerRoutes(bridge: Bridge, session: Session): MockRoute[] {
   const handler = async (request: Request) => {
+    if (!session.signedIn) return { status: 401, json: { detail: 'Unauthorized' } }
+    const actor = session.actor
     const url = new URL(request.url)
     const body = ['GET', 'HEAD'].includes(request.method) ? undefined : Buffer.from(await request.arrayBuffer()).toString('base64')
-    return bridgeCall(bridge, { method: request.method, path: url.pathname.replace(/^\/api/, '') + url.search, body_base64: body, headers: Object.fromEntries(request.headers) }, session.actor)
+    return bridgeCall(bridge, { method: request.method, path: url.pathname.replace(/^\/api/, '') + url.search, body_base64: body, headers: Object.fromEntries(request.headers) }, actor)
   }
-  return (['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const).map(method => ({ method, path: /^\/api\/tracker(?:\/|$)/, handler }))
+  return (['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const).map(method => ({ method, path: /^\/api\/(?:tracker|sync|media)(?:\/|$)/, handler }))
 }
 
 function authRoutes(session: Session): MockRoute[] {
@@ -44,17 +48,31 @@ function authRoutes(session: Session): MockRoute[] {
   ]
 }
 
-async function installLifecycle(page: Page, bridge: Bridge, session: Session) {
-  await installOperational(page, { user: browserUser(session.actor), routes: [...authRoutes(session), ...trackerRoutes(bridge, session)] })
+async function installLifecycle(page: Page, session: Session, origin: string) {
+  await installOperational(page, { user: browserUser(session.actor), routes: authRoutes(session) })
+  // Real HTTP preserves 304 responses and multipart bytes: WebKit's route.fulfill
+  // rejects 304 and its intercepted multipart body is empty.
+  await page.route(/^https?:\/\/[^/]+\/api\/(?:tracker|sync|media)(?:\/|$)/, route => {
+    const url = new URL(route.request().url())
+    return route.continue({ url: `${origin}${url.pathname}${url.search}` })
+  })
 }
 
 async function snapshot(bridge: Bridge) {
   const response = await bridgeCall(bridge, { control: 'snapshot' })
-  return response.json as { counts: Record<string, number>; field_values: Record<string, string>; actions: Array<{ id: string; action: string; state: string }>; timeline: string[] }
+  return response.json as { counts: Record<string, number>; field_values: Record<string, string>; actions: Array<{ id: string; action: string; state: string; error_code: string | null }>; claims: Array<{ issue_key: string; owner_user_id: number; state: string; start_action_id: string }>; timeline: string[] }
 }
 
 async function drain(bridge: Bridge) {
   expect((await bridgeCall(bridge, { control: 'drain' })).status).toBe(200)
+}
+
+async function waitForServerMessage(bridge: Bridge, fragment: string, occurrence = 1) {
+  await expect.poll(
+    async () => (await snapshot(bridge)).timeline.filter(text => text.includes(fragment)).length,
+    { timeout: 15_000 },
+  ).toBeGreaterThanOrEqual(occurrence)
+  await drain(bridge)
 }
 
 async function openIssue(page: Page) {
@@ -67,28 +85,49 @@ async function openIssue(page: Page) {
   await expect(page.getByRole('heading', { name: /Проверить колесо робота/ })).toBeVisible()
 }
 
-async function switchUser(page: Page, username: `${Actor}-browser`) {
+async function switchUser(page: Page, username: `${Actor}-browser`, password: string) {
   await page.getByRole('button', { name: /^(?:Ещё|Меню)$/ }).click()
+  const logoutResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/logout' && response.request().method() === 'POST')
   await page.getByRole('button', { name: 'Выйти', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Вход' })).toBeVisible()
+  expect((await logoutResponse).status()).toBe(204)
+  expect(await page.evaluate(async () => (await fetch('/api/tracker/issues')).status)).toBe(401)
   await page.getByRole('textbox', { name: 'Логин' }).fill(username)
-  await page.getByRole('textbox', { name: 'Пароль', exact: true }).fill('public-fixture-password')
+  await page.getByRole('textbox', { name: 'Пароль', exact: true }).fill(password)
   await page.getByRole('button', { name: 'Войти', exact: true }).click()
-  await expect(page.getByText(username, { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Вход' })).toBeHidden()
+  const mobileMenu = page.getByRole('button', { name: 'Меню', exact: true })
+  if ((page.viewportSize()?.width ?? 1440) <= 899) {
+    await expect(mobileMenu).toBeVisible()
+    await mobileMenu.click()
+    const menu = page.getByRole('dialog', { name: 'Меню', exact: true })
+    await expect(menu).toHaveAccessibleDescription(new RegExp(username))
+    await menu.getByRole('button', { name: 'Закрыть', exact: true }).click()
+  } else {
+    await expect(page.locator('.rp-shell__topbar .rp-shell__user').getByText(username, { exact: true })).toBeVisible()
+  }
   await openIssue(page)
 }
 
+async function openTaskConversation(page: Page) {
+  const conversation = page.getByRole('button', { name: 'История и сообщения', exact: true })
+  if (await conversation.getAttribute('aria-expanded') !== 'true') await conversation.click()
+}
+
 async function comment(page: Page, text: string) {
+  await openTaskConversation(page)
   await page.getByRole('textbox', { name: 'Комментарии', exact: true }).fill(text)
   await page.getByRole('button', { name: 'Отправить', exact: true }).click()
   await expectChatText(page, text)
 }
 
 async function expectChatText(page: Page, text: string) {
+  await openTaskConversation(page)
   await expect(page.getByRole('region', { name: 'Чат задачи' }).getByText(text, { exact: false })).toBeVisible()
 }
 
 async function handoff(page: Page, assignee: string, reason: string) {
+  await page.getByRole('tab', { name: 'Задача', exact: true }).click()
   await page.getByRole('group', { name: 'Дополнительные разделы задачи' }).getByRole('button', { name: 'Передать смену', exact: true }).click()
   await page.getByLabel('Логин сменщика').fill(assignee)
   await page.getByLabel('Причина передачи').fill(reason)
@@ -97,10 +136,12 @@ async function handoff(page: Page, assignee: string, reason: string) {
 }
 
 async function submitReview(page: Page, input: { clarification?: string; camera?: boolean }) {
+  await page.getByRole('tab', { name: 'Задача', exact: true }).click()
   await page.getByRole('button', { name: 'Передать на проверку', exact: true }).click()
   const form = page.locator('form').filter({ has: page.getByLabel('Код дефекта') })
   await form.getByLabel('Код дефекта').fill('BD-01')
-  if (input.clarification) await form.getByRole('textbox', { name: /Добавить уточнение|Комментарий о выполненной работе/ }).fill(input.clarification)
+  await form.getByRole('textbox', { name: /Добавить уточнение|Комментарий о выполненной работе/ })
+    .fill(input.clarification ?? 'Крепление колеса заменено')
   await (input.camera ? form.getByLabel('Сделать фото') : form.getByLabel('Выбрать файл')).setInputFiles(PHOTO)
   await expect(form.getByRole('img', { name: 'Предпросмотр wheel.png' })).toBeVisible()
   await form.getByRole('button', { name: 'Передать на проверку', exact: true }).click()
@@ -108,6 +149,7 @@ async function submitReview(page: Page, input: { clarification?: string; camera?
 }
 
 async function returnReview(page: Page) {
+  await page.getByRole('tab', { name: 'Задача', exact: true }).click()
   await page.getByRole('button', { name: 'Вернуть в работу', exact: true }).click()
   await page.getByRole('textbox', { name: 'Что нужно исправить' }).fill('Повторить проверку')
   await page.getByRole('button', { name: 'Вернуть задачу', exact: true }).click()
@@ -124,8 +166,31 @@ async function runLifecycle(page: Page, width: number) {
   const bridge = await startDiagnosticApi()
   const session: Session = { actor: 'mechanic', signedIn: true }
   const mobile = width === 390
+  let tearingDown = false
+  const handlers = trackerRoutes(bridge, session)
+  const http = await startHttpFixture(async request => {
+    if (tearingDown) return new Response(null, { status: 503 })
+    const handler = handlers.find(item => item.method === request.method)
+    if (!handler) return new Response(null, { status: 405 })
+    const response = await handler.handler(request)
+    const status = response.status ?? 200
+    const headers = new Headers(response.headers)
+    // The bridge returns decoded bytes; framing belongs to this HTTP server.
+    headers.delete('content-length')
+    headers.delete('content-encoding')
+    const body = response.body_base64 !== undefined
+      ? Buffer.from(response.body_base64, 'base64')
+      : response.json !== undefined ? JSON.stringify(response.json) : response.body ?? null
+    return new Response([204, 205, 304].includes(status) || request.method === 'HEAD' ? null : body, { status, headers })
+  })
   try {
-    await installLifecycle(page, bridge, session)
+    // Page routes own all traffic during the test. Only abort attachment loads
+    // after teardown starts, when the page-scoped route is being removed.
+    await page.context().route(
+      /^https?:\/\/[^/]+\/api\/tracker\/issues\/[^/]+\/attachments\/[^/]+\/content$/,
+      route => tearingDown ? route.abort() : route.fallback(),
+    )
+    await installLifecycle(page, session, http.origin)
     await page.setViewportSize({ width, height: mobile ? 844 : 900 })
     await page.goto('/work?park=7')
     await expect(page.getByRole('button', { name: 'Взять в работу', exact: true })).toBeVisible()
@@ -133,47 +198,73 @@ async function runLifecycle(page: Page, width: number) {
     if (mobile) {
       await bridgeCall(bridge, { control: 'tracker', available: false })
       await page.getByRole('button', { name: 'Взять в работу', exact: true }).click()
-      await expect(page.getByRole('alert').first()).toBeVisible()
+      await expect(page.getByRole('status').filter({ hasText: 'Взятие ожидает подтверждения' })).toBeVisible()
       expect((await snapshot(bridge)).actions).toHaveLength(0)
       await bridgeCall(bridge, { control: 'tracker', available: true })
       await page.reload()
-    }
-    await page.getByRole('button', { name: 'Взять в работу', exact: true }).dblclick()
-    await expect(page.getByRole('heading', { name: /Проверить колесо робота/ })).toBeVisible()
+    } else await page.getByRole('button', { name: 'Взять в работу', exact: true }).dblclick()
+    await openIssue(page)
     if (mobile) {
       await bridgeCall(bridge, { control: 'tracker', available: false })
       await drain(bridge)
       expect((await snapshot(bridge)).actions.some(action => action.state === 'retry_wait')).toBe(true)
       await bridgeCall(bridge, { control: 'tracker', available: true })
     }
-    await drain(bridge)
+    await expect.poll(
+      async () => (await snapshot(bridge)).actions.some(action => action.action === 'start'),
+      { timeout: 15_000 },
+    ).toBe(true)
+    const pendingClaimSnapshot = await snapshot(bridge)
+    expect(pendingClaimSnapshot.claims).toEqual([
+      expect.objectContaining({ issue_key: 'ROBOPARK-42', state: 'pending' }),
+    ])
     await page.reload()
+    const pendingClaim = page.getByText(/Tracker ещё подтверждает взятие задачи/)
+    const submitForReview = page.getByRole('button', { name: 'Передать на проверку', exact: true })
+    await expect(pendingClaim.or(submitForReview)).toBeVisible()
+    if (await pendingClaim.isVisible()) await expect(submitForReview).toHaveCount(0)
+    await drain(bridge)
+    await expect(submitForReview).toBeVisible({ timeout: 12_000 })
+    const afterClaim = (await snapshot(bridge)).actions
+    expect(afterClaim.filter(action => action.state !== 'succeeded')).toEqual([])
+    expect(afterClaim.some(action => action.action === 'assign_operator')).toBe(false)
 
     await comment(page, 'Заменено крепление колеса')
     await handoff(page, 'mechanic-next-browser', 'Конец смены')
-    await switchUser(page, 'mechanic-next-browser')
+    await waitForServerMessage(bridge, 'Конец смены')
+    await switchUser(page, 'mechanic-next-browser', bridge.password)
     await handoff(page, 'mechanic-browser', 'Проверка второй сменой завершена')
-    await switchUser(page, 'mechanic-browser')
+    await waitForServerMessage(bridge, 'Проверка второй сменой завершена')
+    await switchUser(page, 'mechanic-browser', bridge.password)
     await comment(page, 'Проверено после передачи')
+    await waitForServerMessage(bridge, 'Проверено после передачи')
+    await page.reload()
     await submitReview(page, { camera: mobile })
+    await waitForServerMessage(bridge, 'Передано на проверку')
     await drain(bridge)
+    expect((await snapshot(bridge)).actions.filter(action => action.action === 'assign_operator'))
+      .toEqual([expect.objectContaining({ state: 'succeeded' })])
 
-    await switchUser(page, 'operator-browser')
+    await switchUser(page, 'operator-browser', bridge.password)
     await returnReview(page)
     await drain(bridge)
-    await switchUser(page, 'mechanic-browser')
+    await switchUser(page, 'mechanic-browser', bridge.password)
     await comment(page, 'Исправлено после возврата')
+    await waitForServerMessage(bridge, 'Исправлено после возврата')
+    await page.reload()
     await submitReview(page, { clarification: 'Уточнение после возврата', camera: mobile })
+    await waitForServerMessage(bridge, 'Передано на проверку', 2)
     await drain(bridge)
 
-    await switchUser(page, 'operator-browser')
+    await switchUser(page, 'operator-browser', bridge.password)
     await page.getByRole('button', { name: 'Принять и закрыть', exact: true }).click()
     await expect(page.getByRole('heading', { name: /Проверить колесо робота/ })).not.toBeVisible()
     await drain(bridge)
 
     await openIssue(page)
+    await openTaskConversation(page)
     const timeline = page.getByRole('region', { name: 'Чат задачи' }).locator('.task-message .issue-comment-text')
-    const expected = ['Задача взята в работу', 'Заменено крепление колеса', 'Конец смены', 'Проверка второй сменой завершена', 'Проверено после передачи', 'Передано на проверку', 'Повторить проверку', 'Исправлено после возврата', 'Уточнение после возврата', 'Передано на проверку']
+    const expected = ['Задача взята в работу', 'Заменено крепление колеса', 'Конец смены', 'Проверка второй сменой завершена', 'Проверено после передачи', 'Крепление колеса заменено', 'Передано на проверку', 'Повторить проверку', 'Исправлено после возврата', 'Уточнение после возврата', 'Передано на проверку']
     await expect.poll(async () => {
       const texts = await timeline.allTextContents()
       let cursor = -1
@@ -190,7 +281,7 @@ async function runLifecycle(page: Page, width: number) {
     expect(evidence.counts['transition:close']).toBe(1)
     const commentActions = evidence.actions.filter(action => action.action === 'comment')
     const attachmentActions = evidence.actions.filter(action => action.action === 'attach')
-    expect(commentActions).toHaveLength(7)
+    expect(commentActions).toHaveLength(8)
     expect(attachmentActions).toHaveLength(2)
     const expectedCommentKeys = [...commentActions, ...attachmentActions]
       .map(action => `comment:surp-action:${action.id}`)
@@ -202,6 +293,11 @@ async function runLifecycle(page: Page, width: number) {
     expect(evidence.actions.every(action => action.state === 'succeeded')).toBe(true)
     if (mobile) await assertMobileContract(page)
   } finally {
+    tearingDown = true
+    await page.context().setOffline(true).catch(() => {})
+    if (!page.isClosed()) await page.close({ runBeforeUnload: false })
+    await new Promise(resolve => setTimeout(resolve, 250))
+    await http.close()
     await bridge.close()
   }
 }
@@ -210,11 +306,11 @@ test.beforeEach(() => { process.env.DIAGNOSTIC_E2E_MUTATION = 'task-lifecycle' }
 test.afterEach(() => { delete process.env.DIAGNOSTIC_E2E_MUTATION })
 
 test('desktop completes the full lifecycle through visible controls exactly once', async ({ page }) => {
-  test.setTimeout(30_000)
+  test.setTimeout(60_000)
   await runLifecycle(page, 1440)
 })
 
 test('390x844 completes the full lifecycle, outage recovery and mobile contract', async ({ page }) => {
-  test.setTimeout(30_000)
+  test.setTimeout(60_000)
   await runLifecycle(page, 390)
 })

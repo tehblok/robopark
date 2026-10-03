@@ -43,6 +43,9 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    # The host deliberately quiesces application writers before Alembic runs.
+    # Exempt only this dedicated migration engine, never the application's pool.
+    connectable._robopark_schema_migration = True
 
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)

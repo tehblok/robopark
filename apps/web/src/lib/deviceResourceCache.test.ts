@@ -6,6 +6,7 @@ import {
   activateDeviceResourceCache,
   currentDeviceResourceCache,
   purgeDeviceResourceCache,
+  suspendDeviceResourceCache,
 } from './deviceResourceCache'
 import { IndexedResourceStore } from './indexedResourceStore'
 import { resourceStore } from './resource'
@@ -20,6 +21,50 @@ afterEach(async () => {
   await purgeDeviceResourceCache()
   resourceStore.clearAll()
   vi.restoreAllMocks()
+})
+
+it('retains settled park snapshots when navigating one park, all parks, and another park', async () => {
+  const account = user(1)
+  await activateDeviceResourceCache(account, '7')
+  const store = currentDeviceResourceCache()!
+  await store.set('work:park:7', ['task-seven'])
+  await activateDeviceResourceCache(account, 'all')
+  await activateDeviceResourceCache(account, '8')
+  await activateDeviceResourceCache(account, '7')
+  expect(await currentDeviceResourceCache()!.get('work:park:7')).toEqual(['task-seven'])
+})
+
+it('purges a cold persisted cache on explicit reauthentication even if the account identity is reused', async () => {
+  await activateDeviceResourceCache(user(1))
+  await currentDeviceResourceCache()!.set('old-installation-task', ['old installation'])
+  suspendDeviceResourceCache()
+  await purgeDeviceResourceCache()
+  await activateDeviceResourceCache(user(1))
+  expect(await currentDeviceResourceCache()!.get('old-installation-task')).toBeUndefined()
+})
+
+it('can activate an empty device cache after first-login cleanup', async () => {
+  suspendDeviceResourceCache()
+  await purgeDeviceResourceCache()
+  await activateDeviceResourceCache(user(1))
+  expect(currentDeviceResourceCache()).not.toBeNull()
+})
+
+it('keeps the last requested account when a queued switch is immediately superseded', async () => {
+  await activateDeviceResourceCache(user(1))
+  const original = currentDeviceResourceCache()
+  const toOther = activateDeviceResourceCache(user(2))
+  await activateDeviceResourceCache(user(1))
+  await toOther
+  expect(currentDeviceResourceCache()).toBe(original)
+})
+
+it('purges snapshots when the authorized park membership changes', async () => {
+  const account = user(1)
+  await activateDeviceResourceCache(account, '7')
+  await currentDeviceResourceCache()!.set('work:park:7', ['protected'])
+  await activateDeviceResourceCache({ ...account, parks: [{ id: 8, name: 'Eight', tag: 'eight', timezone: 'Europe/Moscow' }] }, '8')
+  expect(await currentDeviceResourceCache()!.get('work:park:7')).toBeUndefined()
 })
 
 it('ignores a late IndexedDB read after authorization purge', async () => {
@@ -56,6 +101,30 @@ it('does not block the next account when purging the previous disk cache fails',
   await expect(activateDeviceResourceCache(user(2))).resolves.toBeUndefined()
 
   expect(currentDeviceResourceCache()).not.toBe(previous)
+})
+
+it('treats a different principal with a reused numeric id as a new cache scope', async () => {
+  await activateDeviceResourceCache(user(1))
+  const previous = currentDeviceResourceCache()!
+  await previous.set('operator:parks', [{ id: 7 }])
+
+  await activateDeviceResourceCache({ ...user(1), username: 'replacement-principal' })
+
+  const current = currentDeviceResourceCache()!
+  expect(current).not.toBe(previous)
+  expect(await current.get('operator:parks')).toBeUndefined()
+})
+
+it('retires the device cache when approval is revoked', async () => {
+  await activateDeviceResourceCache(user(1))
+  const previous = currentDeviceResourceCache()!
+  await previous.set('operator:parks', [{ id: 7 }])
+
+  await activateDeviceResourceCache({ ...user(1), access_status: 'rejected' })
+
+  const current = currentDeviceResourceCache()!
+  expect(current).not.toBe(previous)
+  expect(await current.get('operator:parks')).toBeUndefined()
 })
 
 it('preserves disk age so a stale hydration remains stale', async () => {
@@ -118,7 +187,7 @@ it('does not notify or restore a key when it is invalidated during hydration', a
 it('builds the same stable authorization scope regardless of permission or park order', () => {
   const left = user(7, 'mechanic')
   left.permissions = ['tracker.read', 'inventory.write']
-  left.parks = [{ id: 2, name: 'Two', tag: 'two' }, { id: 1, name: 'One', tag: 'one' }]
+  left.parks = [{ id: 2, name: 'Two', timezone: 'Europe/Moscow', tag: 'two' }, { id: 1, name: 'One', timezone: 'Europe/Moscow', tag: 'one' }]
   const right = { ...left, permissions: [...left.permissions].reverse(), parks: [...left.parks].reverse() }
 
   expect(offlineScopeForUser(left, '2')).toEqual(offlineScopeForUser(right, '2'))

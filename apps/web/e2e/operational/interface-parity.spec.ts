@@ -21,20 +21,27 @@ test('50 work-tab cycles retain one File, draft and bounded intervals without wr
     window.clearInterval = (id) => { ids.delete(id!); stop(id) }
     Object.defineProperty(window, '__intervalCount', { get: () => ids.size })
   })
-  let writes = 0
+  const writes: string[] = []
+  const presenceHeartbeats: string[] = []
   let resolutionReads = 0
   page.on('request', request => {
     if (!request.url().includes('/api/') || request.method() === 'GET') return
-    if (new URL(request.url()).pathname === '/api/emergency/resolve') resolutionReads++
-    else writes++
+    const path = new URL(request.url()).pathname
+    if (path === '/api/emergency/resolve') resolutionReads++
+    else if (path === '/api/presence/heartbeat') presenceHeartbeats.push(path)
+    else writes.push(path)
   })
   await installOperational(page, { issue: { ...issue, claim: { park_id: 7 }, workflow: {
     owner: { login: 'mechanic-e2e', display: 'Механик' }, review_state: null,
     display_status: 'in_progress', sync_state: 'synced', has_current_cycle_comment: true,
   } } })
   await page.goto('/work/ROBOPARK-42?park=7')
+  expect(resolutionReads).toBe(0)
+  await page.getByRole('tab', { name: 'Проверка', exact: true }).click()
   await expect.poll(() => resolutionReads).toBeGreaterThan(0)
+  await page.getByRole('tab', { name: 'Задача', exact: true }).click()
   const initialResolutionReads = resolutionReads
+  await page.getByRole('button', { name: 'История и сообщения' }).click()
   const comment = page.getByRole('textbox', { name: 'Комментарии', exact: true })
   const file = page.getByLabel('Выбрать фото', { exact: true })
   await comment.fill('Черновик после ремонта')
@@ -49,5 +56,6 @@ test('50 work-tab cycles retain one File, draft and bounded intervals without wr
     expect(await count()).toBeLessThanOrEqual(initial)
   }
   expect(resolutionReads).toBe(initialResolutionReads)
-  expect(writes).toBe(0)
+  expect(writes).toEqual([])
+  expect(presenceHeartbeats.length).toBeGreaterThan(0)
 })

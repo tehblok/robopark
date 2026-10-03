@@ -70,6 +70,19 @@ def test_manifest_inventory_exactly_matches_regular_members(tmp_path: Path):
     }
 
 
+def test_manifest_is_readable_by_installed_browser_without_decompression(tmp_path: Path):
+    artifact = build_ota(ROOT, tmp_path, git_sha="c" * 40)
+
+    with zipfile.ZipFile(artifact) as archive:
+        manifest = archive.getinfo("manifest.json")
+        assert manifest.compress_type == zipfile.ZIP_STORED
+        assert manifest.compress_size == manifest.file_size
+        assert all(
+            item.compress_type == zipfile.ZIP_DEFLATED
+            for item in archive.infolist() if item.filename != "manifest.json"
+        )
+
+
 @pytest.mark.parametrize(
     "forbidden",
     [

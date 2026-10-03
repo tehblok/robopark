@@ -22,6 +22,7 @@ export function analyticsFixture(parkId = 7, days = 1, bucket: AnalyticsBucket =
     sla_trend: { ...series, key: 'overdue_share', unit: 'percent', value: null, sample_count: 0, observed_buckets: 0, task_keys: [], aggregation: 'ratio', points: points.map(point => ({ ...point, key: 'overdue_share', unit: 'percent', value: null, sample_count: 0, observed_buckets: 0, complete: false, task_keys: [] })) },
     stage_durations: [{ ...metric, key: 'queued', unit: 'hours', value: null, sample_count: 0, task_keys: [] }],
     workload: [{ ...series, key: 'queued' }], coverage: { flow: coverage, observations: coverage }, drilldown_task_keys: ['ROBOPARK-42'],
-    warnings: ['flow_history_incomplete', 'observations_incomplete', 'sla_policy_or_age_unavailable', 'stage_durations_are_observed_estimates', 'flow_counts_have_no_task_keys'],
+    verified_closures: { count: 1, task_keys: ['ROBOPARK-42'], source: 'tracker_status_history', complete: false, sla_on_time_count: 1, sla_late_count: 0, sla_unknown_count: 0, sla_on_time_percent: 100, downtime_sample_count: 1, median_downtime_hours: 4, p90_downtime_hours: 4 },
+    warnings: ['flow_history_incomplete', 'observations_incomplete', 'queue_history_unavailable', 'stage_durations_are_observed_estimates', 'flow_counts_have_no_task_keys'],
   }
 }

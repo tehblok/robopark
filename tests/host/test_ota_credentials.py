@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import stat
 from pathlib import Path
 
@@ -73,7 +74,10 @@ def test_seed_command_uses_fixed_container_path_not_password(tmp_path: Path):
 
 def test_tuna_token_is_hidden_and_written_only_to_private_host_file(tmp_path: Path):
     token = "tt_private_value"
-    configuration = collect_tuna_configuration(getpass_fn=lambda _prompt: token)
+    configuration = collect_tuna_configuration(
+        getpass_fn=lambda _prompt: token,
+        input_fn=lambda _prompt: "robopark.ru.tuna.am",
+    )
 
     assert configuration == TunaConfiguration(
         token=token,
@@ -94,4 +98,52 @@ def test_tuna_token_is_hidden_and_written_only_to_private_host_file(tmp_path: Pa
 
 def test_clean_install_requires_tuna_token_for_secure_browser_features():
     with pytest.raises(ValueError, match="invalid_tuna_token"):
-        collect_tuna_configuration(getpass_fn=lambda _prompt: "")
+        collect_tuna_configuration(
+            getpass_fn=lambda _prompt: "",
+            input_fn=lambda _prompt: "robopark.ru.tuna.am",
+        )
+
+
+def test_tuna_address_is_collected_and_split_into_subdomain_and_location():
+    token = secrets.token_urlsafe(32)
+    configuration = collect_tuna_configuration(
+        getpass_fn=lambda _prompt: token,
+        input_fn=lambda _prompt: "robopark.ru.tuna.am",
+    )
+
+    assert configuration.subdomain == "robopark"
+    assert configuration.location == "ru"
+    assert configuration.domain == ""
+    assert configuration.public_origin == "https://robopark.ru.tuna.am"
+    assert token not in repr(configuration)
+
+
+def test_tuna_short_subdomain_uses_documented_ru_default():
+    configuration = collect_tuna_configuration(
+        getpass_fn=lambda _prompt: secrets.token_urlsafe(32),
+        input_fn=lambda _prompt: "robopark",
+    )
+
+    assert configuration.public_origin == "https://robopark.ru.tuna.am"
+    assert configuration.subdomain == "robopark"
+    assert configuration.location == "ru"
+
+
+def test_tuna_custom_domain_does_not_enable_subdomain_flag():
+    configuration = collect_tuna_configuration(
+        getpass_fn=lambda _prompt: secrets.token_urlsafe(32),
+        input_fn=lambda _prompt: "robots.example.com",
+    )
+
+    assert configuration.domain == "robots.example.com"
+    assert configuration.subdomain == ""
+    assert configuration.public_origin == "https://robots.example.com"
+
+
+@pytest.mark.parametrize("address", ["", "https://robopark.ru.tuna.am/path", "bad..example.com", "x\nTUNA_BIND=0.0.0.0:1"])
+def test_tuna_address_rejects_missing_or_unsafe_values(address: str):
+    with pytest.raises(ValueError, match="invalid_tuna_address"):
+        collect_tuna_configuration(
+            getpass_fn=lambda _prompt: secrets.token_urlsafe(32),
+            input_fn=lambda _prompt: address,
+        )

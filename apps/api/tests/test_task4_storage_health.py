@@ -204,6 +204,10 @@ def test_cleanup_retry_is_bounded_and_rate_limited():
 
 
 def test_host_snapshot_reads_actual_data_mount_and_only_public_projection(tmp_path, monkeypatch):
+    import json
+    import time
+    from datetime import UTC, datetime
+
     from robopark_api.services import (
         live_merge,
         operational_health,
@@ -217,11 +221,39 @@ def test_host_snapshot_reads_actual_data_mount_and_only_public_projection(tmp_pa
     for path in (data, ops, private):
         path.mkdir()
     public = ops / "host-health.json"
-    public.write_text(
-        '{"capabilities":{"profile":"orin","jpeg_backend":"software",'
-        '"hardware_jpeg":false,"cuda_available":true},'
-        '"storage":{"completed_at":123,"blocked":false,"pressure":false}}'
-    )
+    public_payload = {
+        "backup_attempt": {
+            "status": "failed",
+            "completed_at": datetime.now(UTC).isoformat(),
+        },
+        "capabilities": {
+            "profile": "orin",
+            "jpeg_backend": "software",
+            "checked_at": time.time(),
+            "hardware_jpeg": False,
+            "cuda_available": True,
+        },
+        "storage": {
+            "completed_at": time.time(),
+            "blocked": False,
+            "pressure": False,
+            "inventory_sampled_at": time.time(),
+            "category_bytes": {
+                "logs": 100,
+                "diagnostics": 50,
+                "backups": 75,
+                "scheduled_backups": 175,
+                "releases": 125,
+                "ota_uploads": 1024,
+                "docker_images": 2000,
+                "buildkit_cache": None,
+                "robopark_buildkit_reported": 8192,
+                "robopark_buildkit_private_reclaimable": 4096,
+                "postgresql_data": None,
+            },
+        },
+    }
+    public.write_text(json.dumps(public_payload))
     (ops / "api-storage-retention.json").write_text(
         '{"completed_at":124,"pressure":false,"owners":{"cache_tmp":'
         '{"deleted_count":2,"batches":1}}}'
@@ -231,6 +263,7 @@ def test_host_snapshot_reads_actual_data_mount_and_only_public_projection(tmp_pa
     )
     for name in ("live", "reports", "uploads"):
         (data / name).mkdir()
+    (data / "live" / "payload").write_bytes(b"data")
     monkeypatch.setattr(live_merge, "default_live_merge_root", lambda: data / "live")
     monkeypatch.setattr(report_attachments, "attachments_root", lambda: data / "reports")
     monkeypatch.setattr(task_timeline, "staged_attachments_root", lambda: data / "uploads")
@@ -241,14 +274,109 @@ def test_host_snapshot_reads_actual_data_mount_and_only_public_projection(tmp_pa
     assert result["disk"]["total_bytes"] > 0
     assert result["capabilities"]["profile"] == "orin"
     assert result["capabilities"]["jpeg_backend"] == "software"
-    assert result["storage"]["last_cleanup_at"] == 123
+    assert result["backup"]["last_attempt_failed"] is True
+    assert result["storage"]["last_cleanup_at"] == public_payload["storage"]["completed_at"]
     assert result["storage"]["api_last_cleanup_at"] == 124
     assert result["storage"]["api_cleanup_owners"]["cache_tmp"]["deleted_count"] == 2
+    assert result["storage"]["cleanup_busy"] is False
     assert set(result["process"]["directory_bytes"]) == {
         "live_merge",
         "report_attachments",
         "tracker_uploads",
     }
+    assert result["storage"]["category_bytes"] == {
+        "live_merge": 4,
+        "report_attachments": 0,
+        "tracker_uploads": 0,
+        "logs": 100,
+        "diagnostics": 50,
+        "backups": 75,
+        "scheduled_backups": 175,
+        "releases": 125,
+        "ota_uploads": 1024,
+        "docker_images": 2000,
+        "robopark_buildkit_reported": 8192,
+        "robopark_buildkit_private_reclaimable": 4096,
+    }
+    assert result["storage"]["inventory_stale"] is False
+    public_payload["storage"]["inventory_sampled_at"] = time.time() - 3600
+    public.write_text(json.dumps(public_payload))
+    operational_health._snapshot_cache.clear()
+    stale = operational_health.cached_host_snapshot(data, ops, public)
+    assert "ota_uploads" not in stale["storage"]["category_bytes"]
+    assert "docker_images" not in stale["storage"]["category_bytes"]
+    assert "robopark_buildkit_reported" not in stale["storage"]["category_bytes"]
+    assert "backups" not in stale["storage"]["category_bytes"]
+    assert "scheduled_backups" not in stale["storage"]["category_bytes"]
+    assert "releases" not in stale["storage"]["category_bytes"]
+    assert stale["storage"]["inventory_stale"] is True
+    public_payload["storage"]["completed_at"] = time.time() - 3600
+    public.write_text(json.dumps(public_payload))
+    operational_health._snapshot_cache.clear()
+    stale_cleanup = operational_health.cached_host_snapshot(data, ops, public)
+    assert "logs" not in stale_cleanup["storage"]["category_bytes"]
+    assert "diagnostics" not in stale_cleanup["storage"]["category_bytes"]
+    assert stale_cleanup["storage"]["cleanup_stale"] is True
+    public_payload["storage"]["completed_at"] = time.time()
+    public_payload["storage"]["inventory_failed"] = True
+    public.write_text(json.dumps(public_payload))
+    operational_health._snapshot_cache.clear()
+    failed = operational_health.cached_host_snapshot(data, ops, public)
+    assert failed["storage"]["inventory_failed"] is True
+    from types import SimpleNamespace
+
+    public_payload["storage"].update(pressure=True, blocked=False)
+    public.write_text(json.dumps(public_payload))
+    monkeypatch.setattr(
+        operational_health.shutil,
+        "disk_usage",
+        lambda _: SimpleNamespace(total=10 * 1024**3, free=2 * 1024**3),
+    )
+    operational_health._snapshot_cache.clear()
+    pressure = operational_health.cached_host_snapshot(data, ops, public)
+    assert pressure["storage"]["space_pressure"] is True
+    assert pressure["storage"]["cleanup_failed"] is False
+    public_payload["storage"]["blocked"] = True
+    public.write_text(json.dumps(public_payload))
+    operational_health._snapshot_cache.clear()
+    blocked = operational_health.cached_host_snapshot(data, ops, public)
+    assert blocked["storage"]["cleanup_failed"] is True
+    public_payload["storage"].update(busy=True, pressure=False)
+    public.write_text(json.dumps(public_payload))
+    operational_health._snapshot_cache.clear()
+    busy = operational_health.cached_host_snapshot(data, ops, public)
+    assert busy["storage"]["cleanup_busy"] is True
+    assert busy["storage"]["cleanup_failed"] is False
+    public_payload["storage"].update(busy="true", pressure=False)
+    public.write_text(json.dumps(public_payload))
+    operational_health._snapshot_cache.clear()
+    malformed_busy = operational_health.cached_host_snapshot(data, ops, public)
+    assert malformed_busy["storage"]["cleanup_busy"] is False
+    assert malformed_busy["storage"]["cleanup_failed"] is True
+    public_payload["storage"].update(busy=True, pressure=True)
+    public.write_text(json.dumps(public_payload))
+    operational_health._snapshot_cache.clear()
+    pressured_busy = operational_health.cached_host_snapshot(data, ops, public)
+    assert pressured_busy["storage"]["cleanup_busy"] is True
+    assert pressured_busy["storage"]["cleanup_failed"] is True
+    public_payload["storage"]["blocked"] = False
+    public_payload["storage"].pop("busy")
+    public_payload["storage"]["pressure"] = False
+    public.write_text(json.dumps(public_payload))
+    monkeypatch.setattr(
+        operational_health.shutil,
+        "disk_usage",
+        lambda _: (_ for _ in ()).throw(OSError("disk unavailable")),
+    )
+    operational_health._snapshot_cache.clear()
+    missing_disk = operational_health.cached_host_snapshot(data, ops, public)
+    assert missing_disk["storage"]["space_pressure"] is None
+    assert missing_disk["storage"]["bytes_to_reclaim"] is None
+    public_payload["storage"].pop("completed_at")
+    public.write_text(json.dumps(public_payload))
+    operational_health._snapshot_cache.clear()
+    no_cleanup_result = operational_health.cached_host_snapshot(data, ops, public)
+    assert no_cleanup_result["storage"]["cleanup_failed"] is None
 
 
 def test_production_storage_owner_env_resolves_under_measured_data_mount(monkeypatch):

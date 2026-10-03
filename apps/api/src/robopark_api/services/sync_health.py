@@ -28,6 +28,8 @@ def record_worker_heartbeat(db: Session, *, owner_id: str, now: datetime | None 
     if row is None:
         row = TrackerNotificationCursor(scope_key=WORKER_SCOPE)
         db.add(row)
+    if row.lease_owner != owner_id or not row.cursor_value:
+        row.cursor_value = current.isoformat()
     row.lease_owner = owner_id
     row.lease_until = current + HEARTBEAT_LEASE
     row.last_success_at = current

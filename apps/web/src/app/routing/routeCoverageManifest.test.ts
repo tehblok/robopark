@@ -47,6 +47,48 @@ describe('executable route coverage manifest', () => {
     }
   })
 
+  it('executes analytics stale revalidation because the page has a refresh action', () => {
+    const evidence = ROUTE_STATE_EVIDENCE.find(item => item.caseId === 'route-coverage:analytics:stale')
+    expect(evidence?.fixture).toBe('owner-test')
+    expect(evidence?.ownerDriver?.triggerSelector).toContain('Обновить аналитику')
+  })
+
+  it('executes settings stale revalidation when a cached settings route remounts', () => {
+    const evidence = ROUTE_STATE_EVIDENCE.find(item => item.caseId === 'route-coverage:admin-settings:stale')
+    expect(evidence?.fixture).toBe('owner-test')
+    expect(evidence?.ownerDriver?.remountViaSelector).toContain('/admin?')
+    expect(evidence?.ownerDriver?.remountReturnSelector).toContain('/admin/settings?')
+  })
+
+  it('executes robot-check settings stale revalidation after returning to the cached catalog', () => {
+    const evidence = ROUTE_STATE_EVIDENCE.find(item => item.caseId === 'route-coverage:admin-robot-check:stale')
+    expect(evidence?.fixture).toBe('owner-test')
+    expect(evidence?.ownerDriver?.remountViaSelector).toContain('/admin')
+    expect(evidence?.ownerDriver?.remountReturnSelector).toContain('/admin/emergency/config')
+  })
+
+  it('checks schedule data states instead of accepting the static page title', () => {
+    for (const kind of ['loading', 'empty', 'error', 'stale', 'denied']) {
+      const evidence = ROUTE_STATE_EVIDENCE.find(item => item.caseId === `route-coverage:schedule:${kind}`)
+      expect(evidence?.ownerDriver?.protectedSelector).toBe('#schedule-panel-mine')
+      expect(evidence?.ownerDriver?.expectedSelector).not.toContain('h1')
+    }
+    for (const kind of ['stale', 'denied']) {
+      const evidence = ROUTE_STATE_EVIDENCE.find(item => item.caseId === `route-coverage:schedule:${kind}`)
+      expect(evidence?.ownerDriver?.remountReturnSelector).toContain('/schedule')
+    }
+  })
+
+  it('checks system data states when the history has only one day', () => {
+    for (const kind of ['loading', 'empty', 'error', 'stale', 'denied']) {
+      const evidence = ROUTE_STATE_EVIDENCE.find(item => item.caseId === `route-coverage:system:${kind}`)
+      expect(evidence?.ownerDriver?.protectedSelector).toBe('section[aria-label="Пользователи"]')
+      expect(evidence?.ownerDriver?.expectedSelector).not.toContain('role="img"')
+    }
+    const loaded = ROUTE_STATE_EVIDENCE.find(item => item.caseId === 'route-coverage:system:metrics')
+    expect(loaded?.selector).toBe('section[aria-label="Пользователи"]')
+  })
+
   it('resolves every delegated state to one exact existing owner test', () => {
     const repoRoot = resolve(process.cwd(), '../..')
     for (const item of ROUTE_STATE_EVIDENCE.filter(item => item.fixture === 'owner-test')) {

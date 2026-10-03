@@ -1,8 +1,11 @@
 from unittest.mock import patch
 
+import pytest
+
 from conftest import login_as, role_id_for
 from robopark_api.models import Park, User, UserPark
 from robopark_api.security import hash_password
+from robopark_api.services import rbac
 from robopark_api.task_workflow_models import HiddenTask
 
 
@@ -73,6 +76,8 @@ def test_robot_search_merges_and_dedupes(client, db_session, seed_royal):
             "in_relocation": "0",
             "status_key": "queued",
             "resolution": "",
+            "queue": queue,
+            "tags": ["A" if queue == "Q1" else "B"],
         }
         if queue == "Q1":
             return [{**base, "key": "R-1", "summary": "[a447] one"}]
@@ -145,3 +150,72 @@ def test_robot_search_ticket_key_rejects_foreign_queue(client, db_session, seed_
         r = client.get("/operator/robots/FOREIGN-42/tickets")
     assert r.status_code == 200
     assert r.json()["items"] == []
+
+
+def test_robot_search_rejects_foreign_park_tag_in_shared_queue(client, db_session, seed_royal):
+    own = Park(name="Own", tag="Own", is_active=True, tracker_queue="SHARED")
+    foreign = Park(name="Foreign", tag="Foreign", is_active=True, tracker_queue="SHARED")
+    db_session.add_all([own, foreign])
+    db_session.flush()
+    operator = User(
+        username="op-shared",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status="approved",
+        is_active=True,
+    )
+    db_session.add(operator)
+    db_session.flush()
+    db_session.add(UserPark(user_id=operator.id, park_id=own.id))
+    db_session.commit()
+
+    login_as(client, "royal", "secret")
+    client.put("/admin/settings/tracker-token", json={"token": "fake"})
+    login_as(client, "op-shared", "secret")
+
+    base = {
+        "summary": "[a447] blocker",
+        "status": "queued",
+        "created": "2026-01-01T10:00:00+00:00",
+        "hours_created": "1.0",
+        "robot": "a447",
+        "in_relocation": "0",
+        "status_key": "queued",
+        "resolution": "",
+        "queue": "SHARED",
+    }
+    issues = [
+        {**base, "key": "R-OWN", "tags": ["Own"]},
+        {**base, "key": "R-FOREIGN", "tags": ["Foreign"]},
+    ]
+    with patch(
+        "robopark_api.services.tracker_cache.search_robot_tickets",
+        return_value=issues,
+    ):
+        response = client.get("/operator/robots/a447/tickets")
+
+    assert response.status_code == 200
+    assert [item["key"] for item in response.json()["items"]] == ["R-OWN"]
+
+
+@pytest.mark.parametrize(
+    "permission",
+    [rbac.PERMISSION_TRACKER_READ, rbac.PERMISSION_NAV_ROBOT_SEARCH],
+)
+def test_robot_search_respects_user_permission_denials(client, db_session, seed_royal, permission):
+    operator = seed_op_two_queues(db_session)
+    rbac.set_user_effective_permissions(
+        db_session,
+        operator,
+        sorted(rbac.permissions_for_user(db_session, operator) - {permission}),
+    )
+    db_session.commit()
+    login_as(client, "royal", "secret")
+    client.put("/admin/settings/tracker-token", json={"token": "fake"})
+    login_as(client, "op-robot", "secret")
+
+    with patch("robopark_api.services.tracker_cache.search_robot_tickets") as search:
+        response = client.get("/operator/robots/a447/tickets")
+
+    assert response.status_code == 403
+    search.assert_not_called()

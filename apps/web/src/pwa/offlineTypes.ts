@@ -27,6 +27,7 @@ export type OfflineAction = {
   baseRevision: string | null
   dependencies: string[]
   payload: unknown
+  result?: Record<string, unknown> | null
   state: OfflineActionState
   attempts?: number
   createdAt: number

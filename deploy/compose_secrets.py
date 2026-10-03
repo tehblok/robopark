@@ -163,6 +163,7 @@ def bootstrap_compose_secrets(
 
     password_path = directory / "postgres-password"
     pgpass_path = directory / "pgpass"
+    bot_bridge_key_path = directory / "bot-bridge-key"
     if password_path.exists() or password_path.is_symlink():
         password = _read_private(password_path, uid=root_uid)
     else:
@@ -176,6 +177,15 @@ def bootstrap_compose_secrets(
         _atomic_private(
             pgpass_path,
             expected_pgpass + "\n",
+            uid=api_uid,
+            gid=os.getegid() if testing else api_uid,
+        )
+    if bot_bridge_key_path.exists() or bot_bridge_key_path.is_symlink():
+        _read_private(bot_bridge_key_path, uid=api_uid)
+    else:
+        _atomic_private(
+            bot_bridge_key_path,
+            secrets.token_urlsafe(48) + "\n",
             uid=api_uid,
             gid=os.getegid() if testing else api_uid,
         )
@@ -199,6 +209,9 @@ def bootstrap_compose_secrets(
         env_path,
         "ROBOPARK_POSTGRES_PASSWORD_FILE=" + str(password_path) + "\n"
         "ROBOPARK_PGPASS_FILE=" + str(pgpass_path) + "\n"
+        "ROBOPARK_BOT_BRIDGE_KEY_FILE="
+        + str(bot_bridge_key_path)
+        + "\n"
         + snapshot_line,
         uid=root_uid,
         gid=root_gid,

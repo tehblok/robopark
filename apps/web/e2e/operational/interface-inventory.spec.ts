@@ -44,7 +44,7 @@ for (const width of [390, 1440]) test(`Classic inventory receipt draft, posting 
   await page.getByRole('textbox', { name: 'Количество ABC-1' }).fill('7')
   await expect(page.getByRole('textbox', { name: 'Количество ABC-1' })).toHaveValue('7')
   await expect(page.getByRole('textbox', { name: 'Поставщик или завод' })).toHaveValue('Поставка со склада')
-  await expect(page.locator('.inventory-document-editor')).toHaveCSS('border-radius', '12px')
+  await expect(page.locator('.inventory-document-editor')).toHaveCSS('border-radius', '16px')
   await assertResponsiveContracts(page, width)
   await page.evaluate(() => { (document.activeElement as HTMLElement)?.blur(); window.scrollTo(0, 0) })
   await page.screenshot({ path: testInfo.outputPath('receipt-classic.png'), fullPage: true })

@@ -3,6 +3,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { WorkFilters } from './WorkFilters'
 
 describe('WorkFilters', () => {
+  it('labels the mechanic all-status view with its queue priority', () => {
+    render(<WorkFilters queueFirst loading={false} onApply={vi.fn()} value={{ filters: { queue: 'RP' }, sort: 'oldest', page: 1 }} />)
+    expect(screen.getByText('Сначала очередь · затем остальные по возрасту')).toBeVisible()
+  })
+
   it('defaults the viewing-status selector to queued without changing ordering or queue scope', () => {
     render(<WorkFilters loading={false} onApply={vi.fn()} value={{ filters: { queue: 'RP', status: 'queued' }, sort: 'oldest', page: 1 }} />)
     expect(screen.getByRole('combobox', { name: 'Статус задач' })).toHaveValue('queued')
@@ -31,6 +36,12 @@ describe('WorkFilters', () => {
     expect(screen.getByRole('option', { name: 'review' })).toBeVisible()
   })
 
+  it('shows a readable label for a known Tracker status from a deep link', () => {
+    render(<WorkFilters loading={false} onApply={vi.fn()} value={{ filters: { queue: 'RP', status: 'open' }, sort: 'oldest', page: 1 }} />)
+    expect(screen.getByRole('combobox', { name: 'Статус задач' })).toHaveValue('open')
+    expect(screen.getByRole('option', { name: 'Открыта' })).toBeVisible()
+  })
+
   it('changes only the viewed status and returns to page one', () => {
     const onApply = vi.fn()
     render(<WorkFilters loading={false} onApply={onApply} value={{ filters: { queue: 'RP', status: 'queued', robot: '447', assignee: 'ivan' }, sort: 'oldest', page: 3 }} />)
@@ -42,7 +53,7 @@ describe('WorkFilters', () => {
   it('limits driver viewing statuses to the API-permitted stages', () => {
     render(<WorkFilters driver loading={false} onApply={vi.fn()} value={{ filters: { queue: 'RP', status: 'new' }, sort: 'oldest', page: 1 }} />)
 
-    expect(screen.getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['new', 'moving'])
+    expect(screen.getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['all', 'new', 'moving'])
   })
 
   it('lets only managers include hidden tasks through an explicit filter', () => {

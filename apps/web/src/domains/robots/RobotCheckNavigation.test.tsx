@@ -11,7 +11,6 @@ const tabs: RobotCheckTab[] = [
   { id: 'errors', title: 'Ошибки', kind: 'errors' },
   { id: 'telemetry', title: 'Телеметрия', kind: 'telemetry' },
   { id: 'tasks', title: 'Задачи', kind: 'tasks' },
-  { id: 'history', title: 'История', kind: 'history' },
   { id: 'scheme', title: 'Схема', kind: 'scheme' },
   { id: 'wheels', title: 'Колёса', kind: 'section' },
 ]
@@ -44,7 +43,7 @@ it('supports complete keyboard navigation in More and restores focus to the sele
   await actor.keyboard('{End}')
   expect(screen.getByRole('menuitem', { name: 'Колёса' })).toHaveFocus()
   await actor.keyboard('{ArrowUp}')
-  expect(screen.getByRole('menuitem', { name: 'История' })).toHaveFocus()
+  expect(screen.getByRole('menuitem', { name: 'Задачи' })).toHaveFocus()
   await actor.keyboard('{Home}{ArrowDown}{Enter}')
   expect(screen.getByRole('tab', { name: 'Телеметрия' })).toHaveFocus()
 })

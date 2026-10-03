@@ -106,6 +106,7 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const generation = useRef(0)
+  const accessGeneration = useRef(0)
   const operationGeneration = useRef(0)
   const activeParkId = useRef(parkId)
   const loadedCatalogCriteria = useRef<{ q?: string; mode: 'active' | 'archived' | 'all' }>({ mode: 'active' })
@@ -134,14 +135,37 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
       setLoading(false)
     } catch (reason) {
       if (requestId !== generation.current) return
-      setError(classifyApiError(reason, 'Не удалось загрузить каталог.').description)
+      const failure = classifyApiError(reason, 'Не удалось загрузить каталог.')
+      setError(failure.description)
+      if (failure.kind === 'unauthorized' || failure.kind === 'forbidden') {
+        accessGeneration.current += 1
+        operationGeneration.current += 1
+        setItems([])
+        setComponents([])
+        setCatalogTotal(0)
+        setSelectedPart(null)
+        select(null)
+        setWorkflow(null)
+        setDraft(emptyDraft)
+        setComponentName('')
+        setComponentPhoto(null)
+        setComponentPreview('')
+        setPartPhoto(null)
+        setPartPreview('')
+        setArchiveOpen(false)
+        setDeletePart(null)
+        setDeleteComponentOpen(false)
+        setNotice('')
+        setBusy(false)
+      }
       setLoading(false)
     }
-  }, [apiClient, catalogMode, catalogOffset, catalogQuery, parkId])
+  }, [apiClient, catalogMode, catalogOffset, catalogQuery, parkId, select])
 
   useEffect(() => {
     setItems([])
     activeParkId.current = parkId
+    const requestGeneration = ++accessGeneration.current
     setWorkflow(null)
     setSelectedPart(null)
     setCatalogOffset(0)
@@ -153,8 +177,8 @@ export function InventoryManageView({ apiClient = api, parkId, refreshVersion = 
     setComponentError('')
     setComponentPhoto(null); setComponentPreview(''); setPartPhoto(null); setPartPreview(''); setDeletePart(null); setDeleteComponentId(''); setDeleteComponentOpen(false)
     loadInventoryComponents(apiClient, parkId).then(value => {
-      if (activeParkId.current === parkId) setComponents(value.map(item => ({ id: item.id, name: item.name, has_photo: item.has_photo })))
-    }).catch(() => { if (activeParkId.current === parkId) setComponentError(INVENTORY_COMPONENTS_INCOMPLETE) })
+      if (activeParkId.current === parkId && accessGeneration.current === requestGeneration) setComponents(value.map(item => ({ id: item.id, name: item.name, has_photo: item.has_photo })))
+    }).catch(() => { if (activeParkId.current === parkId && accessGeneration.current === requestGeneration) setComponentError(INVENTORY_COMPONENTS_INCOMPLETE) })
     return () => { generation.current += 1 }
   }, [apiClient, parkId, select])
 

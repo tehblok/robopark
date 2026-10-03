@@ -21,6 +21,19 @@ it('shows observed warnings and distinguishes unavailable metrics from zero', as
   expect(screen.queryByRole('button', { name: /обновить/i })).not.toBeInTheDocument()
 })
 
+it('names failed disk measurement and missing host agent instead of only showing no data', async () => {
+  vi.spyOn(hostHealthApi, 'get').mockResolvedValue({
+    ...snapshot,
+    host_health_source_state: 'unavailable',
+    disk: { total_bytes: null, free_bytes: null, source_state: 'unavailable' },
+  })
+  render(tree())
+
+  expect(await screen.findByText(/Не удалось измерить диск API/)).toBeVisible()
+  expect(screen.getByText(/Снимок host agent отсутствует/)).toBeVisible()
+  expect(screen.getAllByText('Нет данных').length).toBeGreaterThan(0)
+})
+
 it('does not request privileged metrics for a mechanic', async () => {
   const read = vi.spyOn(hostHealthApi, 'get')
   render(tree({ ...actor, role: 'mechanic', permissions: [] }))
@@ -48,4 +61,75 @@ it('shows bounded storage, leak observations and selected acceleration', async (
   expect(screen.getByText(/Последняя уборка/)).toBeVisible()
   expect(screen.getByText(/RSS процесса/)).toBeVisible()
   expect(screen.getByText(/Давление памяти сохраняется/)).toBeVisible()
+})
+
+it('identifies an invalid host capability report instead of presenting a fallback as measured hardware', async () => {
+  vi.spyOn(hostHealthApi, 'get').mockResolvedValue({
+    ...snapshot,
+    capabilities: { profile: 'generic-arm', jpeg_backend: 'software', hardware_jpeg: false, npu_available: false, cuda_available: false, source_state: 'invalid' },
+  })
+  render(tree())
+
+  expect(await screen.findByText(/Повреждены сведения о возможностях хоста/)).toBeVisible()
+  expect(screen.queryByText(/Профиль: generic-arm/)).not.toBeInTheDocument()
+})
+
+it('warns when a previously measured host profile is stale', async () => {
+  vi.spyOn(hostHealthApi, 'get').mockResolvedValue({
+    ...snapshot,
+    capabilities: { profile: 'orin', jpeg_backend: 'software', hardware_jpeg: false, npu_available: false, cuda_available: false, source_state: 'stale' },
+  })
+  render(tree())
+
+  expect(await screen.findByText(/Проверка аппаратных возможностей хоста устарела/)).toBeVisible()
+  expect(screen.queryByText(/Профиль: orin/)).not.toBeInTheDocument()
+})
+
+it('shows remaining disk pressure separately from cleanup failure', async () => {
+  vi.spyOn(hostHealthApi, 'get').mockResolvedValue({
+    ...snapshot,
+    storage: { floor_bytes: 6 * 1024 ** 3, bytes_to_reclaim: null, category_bytes: {}, last_cleanup_at: 900, cleanup_failed: false, space_pressure: true },
+    process: { rss_bytes: null, rss_trend_bytes: 0, open_fds: null, tasks: 0, threads: 0, cache_bytes: 0, db_pool_checked_out: null },
+  })
+  render(tree())
+  expect(await screen.findByText(/Автоочистка завершилась, но свободного места всё ещё недостаточно/)).toBeVisible()
+  expect(screen.getAllByText('Нет данных').length).toBeGreaterThan(0)
+  expect(screen.queryByText(/Автоочистка не завершилась/)).not.toBeInTheDocument()
+})
+
+it('shows host cleanup deferred by a current operation without calling it a failure', async () => {
+  vi.spyOn(hostHealthApi, 'get').mockResolvedValue({
+    ...snapshot,
+    storage: { floor_bytes: 6 * 1024 ** 3, bytes_to_reclaim: 0, category_bytes: {}, last_cleanup_at: 900, cleanup_failed: false, cleanup_busy: true },
+    process: { rss_bytes: null, rss_trend_bytes: 0, open_fds: null, tasks: 0, threads: 0, cache_bytes: 0, db_pool_checked_out: null },
+  })
+  render(tree())
+
+  expect(await screen.findByText(/Автоочистка отложена до завершения текущей операции/)).toBeVisible()
+  expect(screen.queryByText(/Автоочистка не завершилась/)).not.toBeInTheDocument()
+})
+
+it('keeps cleanup errors ahead of a simultaneous busy marker', async () => {
+  vi.spyOn(hostHealthApi, 'get').mockResolvedValue({
+    ...snapshot,
+    storage: { floor_bytes: 6 * 1024 ** 3, bytes_to_reclaim: 1, category_bytes: {}, last_cleanup_at: 900, cleanup_failed: true, cleanup_busy: true, api_cleanup_failed: true },
+    process: { rss_bytes: null, rss_trend_bytes: 0, open_fds: null, tasks: 0, threads: 0, cache_bytes: 0, db_pool_checked_out: null },
+  })
+  render(tree())
+
+  expect(await screen.findByText(/Автоочистка не завершилась/)).toBeVisible()
+  expect(screen.queryByText(/Автоочистка отложена/)).not.toBeInTheDocument()
+})
+
+it('reports low disk during deferred cleanup without claiming cleanup completed', async () => {
+  vi.spyOn(hostHealthApi, 'get').mockResolvedValue({
+    ...snapshot,
+    storage: { floor_bytes: 6 * 1024 ** 3, bytes_to_reclaim: 1024, category_bytes: {}, last_cleanup_at: 900, cleanup_failed: false, cleanup_busy: true, space_pressure: true },
+    process: { rss_bytes: null, rss_trend_bytes: 0, open_fds: null, tasks: 0, threads: 0, cache_bytes: 0, db_pool_checked_out: null },
+  })
+  render(tree())
+
+  expect(await screen.findByText(/Автоочистка отложена до завершения текущей операции/)).toBeVisible()
+  expect(screen.getByText(/свободного места.*недостаточно/i)).toBeVisible()
+  expect(screen.queryByText(/Автоочистка завершилась/)).not.toBeInTheDocument()
 })

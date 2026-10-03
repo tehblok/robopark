@@ -124,16 +124,18 @@ async function assertPhotoGeometry(page: Page) {
 
 async function assertWorkMode(page: Page, width: number) {
   for (const row of await page.locator('.rp-work-entities .rp-entity-row:visible').all()) {
-    const age = await row.locator('.rp-work-issue-age').boundingBox()
+    const age = await row.locator('.rp-work-issue-meta').getByRole('status').boundingBox()
     const status = await row.locator('.rp-entity-row__status').boundingBox()
     expect(age && status).toBeTruthy()
     expect(age!.x + age!.width <= status!.x || status!.x + status!.width <= age!.x
       || age!.y + age!.height <= status!.y || status!.y + status!.height <= age!.y).toBe(true)
   }
   await expect(page.locator('.rp-work-detail-pane')).toBeVisible()
-  if (width >= 900) {
-    await expect(page.locator('.rp-work-list-pane')).toBeInViewport()
-    await expect(page.locator('.rp-work-detail-pane')).toBeInViewport()
+  if (width >= 1200) {
+    const list = await page.locator('.rp-work-list-pane').boundingBox()
+    const detail = await page.locator('.rp-work-detail-pane').boundingBox()
+    expect(list && detail).toBeTruthy()
+    expect(list!.x + list!.width <= detail!.x + 1 || list!.y + list!.height <= detail!.y + 1).toBe(true)
   } else await expect(page.locator('.rp-work-list-pane')).toBeHidden()
 }
 
@@ -152,6 +154,7 @@ async function assertRobotReadingGeometry(page: Page) {
 }
 
 async function assertRobotCheckGeometry(page: Page, width: number) {
+  await settlePage(page)
   const overview = await page.locator('[data-robot-overview]').boundingBox()
   const details = await page.locator('[data-robot-details]').boundingBox()
   const summary = await page.locator('.rp-check-summary').boundingBox()
@@ -198,7 +201,7 @@ for (const mode of ['Классический'] as const) for (const width of [3
 }
 
 for (const width of widths) for (const theme of themes) {
-  test(`robot readings and admin catalog reflow at ${width}px in ${theme}`, async ({ page }) => {
+  test(`robot readings and admin catalog reflow at ${width}px in ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 })
     await page.addInitScript(themeName => localStorage.setItem('robopark-theme', themeName), theme)
     await installOperational(page, {
@@ -213,6 +216,18 @@ for (const width of widths) for (const theme of themes) {
     await expect(page.getByRole('button', { name: 'Новое показание' })).toBeVisible()
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
     await assertResponsiveContracts(page, width)
+    if (width === 320) {
+      await page.screenshot({ path: testInfo.outputPath(`admin-readings-320-${theme}.png`), fullPage: true, animations: 'disabled' })
+      await page.getByRole('button', { name: 'Открыть показание Левый парктроник' }).click()
+      const editor = page.locator('.rp-reading-editor .rp-master-detail__detail')
+      await expect(editor).toBeVisible()
+      const editorBounds = await editor.boundingBox()
+      expect(editorBounds).toBeTruthy()
+      expect(editorBounds!.width).toBeGreaterThanOrEqual(270)
+      expect(editorBounds!.x + editorBounds!.width).toBeLessThanOrEqual(320)
+      await page.evaluate(() => { window.scrollTo(0, 0); (document.activeElement as HTMLElement | null)?.blur() })
+      await page.screenshot({ path: testInfo.outputPath(`admin-reading-editor-320-${theme}.png`), fullPage: true, animations: 'disabled' })
+    }
 
     await installOperational(page, { role: 'mechanic', snapshot: measuredSnapshot })
     await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
@@ -263,8 +278,8 @@ test('200% text zoom at an equivalent 720 CSS-pixel viewport keeps primary actio
 
 for (const boundary of [
   { width: 899, mode: 'sequential', filterColumns: 2 },
-  { width: 900, mode: 'compact split', filterColumns: 2 },
-  { width: 1199, mode: 'compact split', filterColumns: 2 },
+  { width: 900, mode: 'sequential', filterColumns: 2 },
+  { width: 1199, mode: 'sequential', filterColumns: 2 },
   { width: 1200, mode: 'wide split', filterColumns: 2 },
 ] as const) {
   test(`responsive boundary ${boundary.width}: ${boundary.mode}`, async ({ page }) => {
@@ -272,10 +287,10 @@ for (const boundary of [
     await installOperational(page, { issue: claimedIssue })
     await page.goto('/work/ROBOPARK-42?park=7&status=open&sort=newest&page=2')
     await expect(page.locator('.rp-work-detail-pane')).toBeVisible()
-    await expect(page.getByRole('textbox', { name: 'Комментарии', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'История и сообщения' })).toBeVisible()
     await settlePage(page)
     await assertWorkMode(page, boundary.width)
-    await expect(page.getByRole('heading', { name: 'Задача ROBOPARK-42', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: claimedIssue.summary, exact: true })).toBeVisible()
     // The contract is usable filters without clipping, not a fixed CSS column count.
     if (boundary.mode === 'sequential') {
       await expect(page.getByRole('button', { name: 'Назад к списку', exact: true })).toBeVisible()
@@ -304,7 +319,7 @@ for (const width of widths) for (const theme of themes) for (const state of stat
     await settlePage(page)
     if (state.name === 'work') {
       await assertWorkMode(page, width)
-      await expect(page.getByRole('textbox', { name: 'Комментарии', exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: 'История и сообщения' })).toBeVisible()
     }
     if (state.name === 'robot-check') {
       await page.locator('.rp-check-photo-frame img').scrollIntoViewIfNeeded()
@@ -332,8 +347,10 @@ test('1440px 200% root text reflow preserves Work triage and detail', async ({ p
   }
   await assertResponsiveContracts(page, 1440)
   await page.getByRole('button', { name: /^Открыть задачу ROBOPARK-42:/ }).click()
-  await expect(page.getByRole('heading', { name: 'Задача ROBOPARK-42', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: claimedIssue.summary, exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'История и сообщения' }).click()
   await expect(page.getByRole('textbox', { name: 'Комментарии', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'История и сообщения' }).click()
   await expect(page.getByRole('button', { name: 'Передать на проверку', exact: true })).toBeVisible()
   await assertResponsiveContracts(page, 1440)
 })

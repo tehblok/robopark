@@ -195,7 +195,9 @@ def is_exempt_session(ops_dir: Path, token_hash: str | None) -> bool:
     return job.exempt_token_hash == token_hash
 
 
-def expire_stale_job(ops_dir: Path, *, ttl_seconds: int | None = None) -> OpsJob | None:
+def expire_stale_job(
+    ops_dir: Path, *, ttl_seconds: int | None = None, expected_id: str | None = None
+) -> OpsJob | None:
     """Fail a job stuck in ACTIVE longer than *ttl_seconds* (default 2h)."""
     from robopark_api.config import get_settings
 
@@ -208,7 +210,12 @@ def expire_stale_job(ops_dir: Path, *, ttl_seconds: int | None = None) -> OpsJob
     with paths["lock"].open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         job = load_job(ops_dir)
-        if job is None or job.state not in ACTIVE_STATES or host_has_job(job):
+        if (
+            job is None
+            or job.state not in ACTIVE_STATES
+            or host_has_job(job)
+            or (expected_id is not None and job.id != expected_id)
+        ):
             return None
         try:
             created = datetime.fromisoformat(job.created_at)

@@ -5,15 +5,12 @@ Revises: 0003
 """
 
 import json
-import logging
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
-
-logger = logging.getLogger("alembic.runtime.migration")
 
 revision: str = "0004"
 down_revision: str | None = "0003"
@@ -44,6 +41,25 @@ def _section_meta(section: dict[str, Any]) -> str | None:
 
 
 def upgrade() -> None:
+    json_path = Path(__file__).resolve().parents[2] / "data" / "emergency_sections.json"
+    if not json_path.is_file():
+        raise FileNotFoundError("emergency_sections_seed_missing")
+    raw = json.loads(json_path.read_text(encoding="utf-8"))
+    sections = raw.get("sections") if isinstance(raw, dict) else None
+    if not isinstance(sections, dict) or not sections:
+        raise ValueError("invalid emergency sections seed: empty sections mapping")
+    for section_id, section in sections.items():
+        if not isinstance(section_id, str) or not 1 <= len(section_id) <= 64 or not isinstance(section, dict):
+            raise ValueError("invalid emergency sections seed: section")
+        fields = section.get("fields", [])
+        if not isinstance(fields, list) or any(
+            not isinstance(field, dict)
+            or not isinstance(field.get("path"), str)
+            or not 1 <= len(field["path"]) <= 256
+            for field in fields
+        ):
+            raise ValueError("invalid emergency sections seed: fields")
+
     op.create_table(
         "emergency_sections",
         sa.Column("id", sa.String(length=64), nullable=False),
@@ -94,26 +110,11 @@ def upgrade() -> None:
         sa.column("role", sa.String),
     )
 
-    json_path = Path(__file__).resolve().parents[2] / "data" / "emergency_sections.json"
-    if not json_path.is_file():
-        logger.warning(
-            "emergency seed file missing at %s; tables created empty",
-            json_path,
-        )
-        return
-
-    raw = json.loads(json_path.read_text(encoding="utf-8"))
-    sections = raw.get("sections") if isinstance(raw, dict) else None
-    if not isinstance(sections, dict):
-        raise ValueError("emergency_sections.json must contain a sections mapping")
-
     section_rows: list[dict[str, Any]] = []
     field_rows: list[dict[str, Any]] = []
     role_rows: list[dict[str, str]] = []
 
     for sort_order, (section_id, section) in enumerate(sections.items()):
-        if not isinstance(section, dict):
-            continue
         section_rows.append(
             {
                 "id": section_id,
@@ -124,9 +125,7 @@ def upgrade() -> None:
                 "meta_json": _section_meta(section),
             }
         )
-        for field_order, field in enumerate(section.get("fields") or []):
-            if not isinstance(field, dict):
-                continue
+        for field_order, field in enumerate(section.get("fields", [])):
             field_rows.append(
                 {
                     "section_id": section_id,

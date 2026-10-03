@@ -1,14 +1,15 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { StrictMode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, ApiError, type CampaignDetail, type Park, type User } from '../../api'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { PresentationModeContext } from '../../app/interface/presentationModeContext'
 import { AuthContext } from '../../auth-context'
-import { CampaignsPage } from './CampaignsPage'
+import { CampaignOverviewSection, CampaignsPage } from './CampaignsPage'
 
-const park: Park = { id: 7, name: 'Север', tag: 'NORTH', tracker_queue: 'ROBOPARK', is_active: true }
+const park: Park = { id: 7, name: 'Север', timezone: 'Europe/Moscow', tag: 'NORTH', tracker_queue: 'ROBOPARK', is_active: true }
 const user: User = { id: 2, username: 'worker', role: 'mechanic', access_status: 'approved', permissions: [], parks: [park] }
 const detail: CampaignDetail = {
   id: 4, kind: 'service_company', name: 'СК Альфа', tracker_tag: 'service-2026', starts_on: '2026-09-01', due_on: '2026-09-30', is_active: true,
@@ -21,8 +22,9 @@ const detail: CampaignDetail = {
   ],
 }
 
-function renderPage(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>, currentUser: User = user, mode: 'classic' = 'classic') {
-  return render(<PresentationModeContext.Provider value={mode}><MemoryRouter initialEntries={['/campaigns/4']}><AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns/:campaignId" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter></PresentationModeContext.Provider>)
+function renderPage(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>, currentUser: User = user, mode: 'classic' = 'classic', strict = false) {
+  const page = <PresentationModeContext.Provider value={mode}><MemoryRouter initialEntries={['/campaigns/4']}><AuthContext.Provider value={{ user: currentUser, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={apiClient} />} path="/campaigns/:campaignId" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter></PresentationModeContext.Provider>
+  return render(strict ? <StrictMode>{page}</StrictMode> : page)
 }
 
 function renderList(apiClient: Pick<typeof api, 'campaigns' | 'campaign' | 'refreshCampaign' | 'deleteCampaign' | 'createCampaign' | 'updateCampaign' | 'completeCampaignTicket'>, currentUser: User = user, mode: 'classic' = 'classic') {
@@ -44,6 +46,89 @@ function useViewport(matches: boolean) {
 
 beforeEach(() => useViewport(false))
 afterEach(() => vi.unstubAllGlobals())
+
+it('loads campaign detail after StrictMode replays the mount effect', async () => {
+  const campaign = vi.fn().mockResolvedValue(detail)
+  renderPage({ ...api, campaign }, user, 'classic', true)
+  expect(campaign).toHaveBeenCalledTimes(2)
+  expect(await screen.findByRole('heading', { name: 'СК Альфа' })).toBeVisible()
+})
+
+it('limits parallel overview campaign reads and drops parks left before their turn', async () => {
+  const finish: Array<(value: CampaignDetail[]) => void> = []
+  const campaigns = vi.fn(() => new Promise<CampaignDetail[]>(resolve => { finish.push(resolve) }))
+  const apiClient = { ...api, campaigns }
+  const view = render(<MemoryRouter>{[7, 8, 9, 10].map(parkId =>
+    <CampaignOverviewSection apiClient={apiClient} key={parkId} parkId={parkId} />,
+  )}</MemoryRouter>)
+
+  await waitFor(() => expect(campaigns).toHaveBeenCalledTimes(2))
+  view.unmount()
+  finish.forEach(resolve => resolve([]))
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(campaigns).toHaveBeenCalledTimes(2)
+})
+
+it('releases abandoned overview reads so the next park can load immediately', async () => {
+  const campaigns = vi.fn((_parkId?: number, _signal?: AbortSignal) => new Promise<CampaignDetail[]>(() => {}))
+  const apiClient = { ...api, campaigns }
+  const first = render(<MemoryRouter>{[7, 8].map(parkId =>
+    <CampaignOverviewSection apiClient={apiClient} key={parkId} parkId={parkId} />,
+  )}</MemoryRouter>)
+  await waitFor(() => expect(campaigns).toHaveBeenCalledTimes(2))
+  const firstSignal = campaigns.mock.calls[0][1] as AbortSignal
+
+  first.unmount()
+  expect(firstSignal.aborted).toBe(true)
+  render(<MemoryRouter><CampaignOverviewSection apiClient={apiClient} parkId={9} /></MemoryRouter>)
+  await waitFor(() => expect(campaigns).toHaveBeenCalledTimes(3))
+})
+
+it('starts the next campaign read when one of the two active parks finishes', async () => {
+  const finish: Array<(value: CampaignDetail[]) => void> = []
+  const campaigns = vi.fn(() => new Promise<CampaignDetail[]>(resolve => { finish.push(resolve) }))
+  const apiClient = { ...api, campaigns }
+  render(<MemoryRouter>{[7, 8, 9].map(parkId =>
+    <CampaignOverviewSection apiClient={apiClient} key={parkId} parkId={parkId} />,
+  )}</MemoryRouter>)
+
+  await waitFor(() => expect(campaigns).toHaveBeenCalledTimes(2))
+  finish[0]([])
+  await waitFor(() => expect(campaigns).toHaveBeenCalledTimes(3))
+  finish.slice(1).forEach(resolve => resolve([]))
+})
+
+it('shows a failed overview campaign request and retries instead of hiding it as an empty section', async () => {
+  const campaigns = vi.fn().mockRejectedValueOnce(new ApiError(503, 'offline')).mockResolvedValueOnce([detail])
+  render(<MemoryRouter><CampaignOverviewSection apiClient={{ ...api, campaigns }} parkId={park.id} /></MemoryRouter>)
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Сервис временно недоступен')
+  expect(screen.queryByText('СК Альфа')).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Повторить' }))
+  expect(await screen.findByText('СК Альфа')).toBeVisible()
+  expect(campaigns).toHaveBeenCalledTimes(2)
+})
+
+it('removes a previous park campaign while the newly selected park is loading', async () => {
+  const other = { ...park, id: 8, name: 'Юг' }
+  const campaigns = vi.fn((parkId?: number) => parkId === park.id
+    ? Promise.resolve([detail])
+    : new Promise<CampaignDetail[]>(() => {}))
+  const apiClient = { ...api, campaigns }
+  const view = render(<MemoryRouter><CampaignOverviewSection apiClient={apiClient} parkId={park.id} /></MemoryRouter>)
+  expect(await screen.findByText('СК Альфа')).toBeVisible()
+
+  view.rerender(<MemoryRouter><CampaignOverviewSection apiClient={apiClient} parkId={other.id} /></MemoryRouter>)
+  expect(screen.queryByText('СК Альфа')).not.toBeInTheDocument()
+  expect(screen.getByText('Загружаем кампании парка')).toBeVisible()
+})
+
+it('keeps the compact overview progress readable with its percentage as the visible label', async () => {
+  render(<MemoryRouter><CampaignOverviewSection apiClient={{ ...api, campaigns: vi.fn(async () => [detail]) }} parkId={park.id} /></MemoryRouter>)
+  const progress = await screen.findByRole('img', { name: 'СК Альфа: 50%' })
+  expect(progress).toHaveTextContent('50%')
+  expect(progress).not.toHaveTextContent('выполнено')
+})
 
 it.each(['classic'] as const)('renders the campaign loading contract in %s mode', mode => {
   renderList({ ...api, campaigns: vi.fn(() => new Promise<never>(() => {})) }, user, mode)
@@ -117,7 +202,15 @@ it('labels active, completed and overdue campaigns with accessible text', async 
   expect(await screen.findByText('Активна')).toBeVisible()
   expect(screen.getByText('Завершена')).toBeVisible()
   expect(screen.getByText('Просрочена')).toBeVisible()
-  expect(screen.getAllByText('Сервисная компания')).toHaveLength(3)
+  expect(screen.getAllByText('Сервисная кампания')).toHaveLength(3)
+})
+
+it('shows one progress ring per campaign when desktop metrics are expanded', async () => {
+  renderList({ ...api, campaigns: vi.fn(async () => [detail]) }, { ...user, role: 'royal' })
+
+  expect(await screen.findByRole('img', { name: 'СК Альфа: 50%' })).toBeVisible()
+  expect(screen.getAllByRole('img', { name: 'СК Альфа: 50%' })).toHaveLength(1)
+  expect(screen.getByText('Всего тикетов')).toBeVisible()
 })
 
 it('shows progress, open and closed campaign tickets and filters by robot', async () => {
@@ -159,6 +252,106 @@ it('requests a coalesced Tracker refresh and shows saved snapshot age while it r
   expect(screen.getByText(/Обновление запрошено/)).toBeVisible()
 })
 
+it('does not overlap campaign snapshot reads while Tracker refresh is pending', async () => {
+  vi.useFakeTimers()
+  try {
+    const pending = { ...detail, snapshot_state: 'pending' as const }
+    const campaign = vi.fn()
+      .mockResolvedValueOnce(pending)
+      .mockImplementation(() => new Promise<CampaignDetail>(() => {}))
+    renderPage({ ...api, campaign })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByRole('heading', { name: 'СК Альфа' })).toBeVisible()
+
+    await act(async () => { vi.advanceTimersByTime(3000); await Promise.resolve() })
+    expect(campaign).toHaveBeenCalledTimes(2)
+    await act(async () => { vi.advanceTimersByTime(9000); await Promise.resolve() })
+    expect(campaign).toHaveBeenCalledTimes(2)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('backs off pending campaign reads and stops when the snapshot is ready', async () => {
+  vi.useFakeTimers()
+  try {
+    const pending = { ...detail, snapshot_state: 'pending' as const }
+    const campaign = vi.fn()
+      .mockResolvedValueOnce(pending)
+      .mockResolvedValueOnce(pending)
+      .mockResolvedValueOnce({ ...pending, snapshot_state: 'ready' })
+    renderPage({ ...api, campaign })
+    await act(async () => { await Promise.resolve() })
+
+    await act(async () => { vi.advanceTimersByTime(3000); await Promise.resolve() })
+    expect(campaign).toHaveBeenCalledTimes(2)
+    await act(async () => { vi.advanceTimersByTime(5999); await Promise.resolve() })
+    expect(campaign).toHaveBeenCalledTimes(2)
+    await act(async () => { vi.advanceTimersByTime(1); await Promise.resolve() })
+    expect(campaign).toHaveBeenCalledTimes(3)
+    await act(async () => { vi.advanceTimersByTime(30_000); await Promise.resolve() })
+    expect(campaign).toHaveBeenCalledTimes(3)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('queues one fresh campaign read after a manual refresh during a slow poll', async () => {
+  vi.useFakeTimers()
+  try {
+    const pending = { ...detail, snapshot_state: 'pending' as const }
+    let finishPoll!: (value: CampaignDetail) => void
+    const slowPoll = new Promise<CampaignDetail>(resolve => { finishPoll = resolve })
+    const campaign = vi.fn()
+      .mockResolvedValueOnce(pending)
+      .mockReturnValueOnce(slowPoll)
+      .mockResolvedValueOnce({ ...pending, snapshot_state: 'ready' })
+    const refreshCampaign = vi.fn(async () => ({ snapshot_state: 'pending', snapshot_at: null }))
+    renderPage({ ...api, campaign, refreshCampaign })
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { vi.advanceTimersByTime(3000); await Promise.resolve() })
+    expect(campaign).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Обновить из Tracker' }))
+      await Promise.resolve()
+    })
+    expect(refreshCampaign).toHaveBeenCalledTimes(1)
+    expect(campaign).toHaveBeenCalledTimes(2)
+
+    await act(async () => { finishPoll(pending); await Promise.resolve() })
+    expect(campaign).toHaveBeenCalledTimes(3)
+    await act(async () => { vi.advanceTimersByTime(30_000); await Promise.resolve() })
+    expect(campaign).toHaveBeenCalledTimes(3)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('does not retry a denied campaign read after a concurrent manual refresh', async () => {
+  vi.useFakeTimers()
+  try {
+    const pending = { ...detail, snapshot_state: 'pending' as const }
+    let rejectPoll!: (reason: unknown) => void
+    const slowPoll = new Promise<CampaignDetail>((_, reject) => { rejectPoll = reject })
+    const campaign = vi.fn().mockResolvedValueOnce(pending).mockReturnValueOnce(slowPoll).mockResolvedValue(pending)
+    const refreshCampaign = vi.fn(async () => ({ snapshot_state: 'pending', snapshot_at: null }))
+    renderPage({ ...api, campaign, refreshCampaign })
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { vi.advanceTimersByTime(3000); await Promise.resolve() })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Обновить из Tracker' }))
+      await Promise.resolve()
+    })
+
+    await act(async () => { rejectPoll(new ApiError(403, 'forbidden')); await Promise.resolve() })
+    expect(campaign).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('heading', { name: 'СК Альфа' })).not.toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 it('lets a manager confirm campaign deletion and removes the detail view', async () => {
   vi.spyOn(window, 'confirm').mockReturnValue(true)
   const deleteCampaign = vi.fn(async () => ({ result: 'archived' as const }))
@@ -180,7 +373,7 @@ it('serializes campaign completion, reports a failed patch and allows retry', as
   expect(updateCampaign).toHaveBeenCalledTimes(1)
   reject(new ApiError(503, 'offline', 'campaign-toggle'))
 
-  expect(await screen.findByRole('alert')).toHaveTextContent('Tracker не настроен')
+  expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось изменить состояние кампании.')
   expect(toggle).toBeEnabled()
   await userEvent.click(toggle)
   await waitFor(() => expect(updateCampaign).toHaveBeenCalledTimes(2))

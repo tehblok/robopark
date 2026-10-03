@@ -5,6 +5,57 @@ import pytest
 from robopark_api.services.tracker_client import TrackerError, count_issues, issue_to_dict
 
 
+def test_closed_history_page_reads_only_fields_needed_for_status_import(monkeypatch):
+    from robopark_api.services import tracker_client
+
+    calls = []
+
+    class FakeIssues:
+        def find(self, query, **kwargs):
+            calls.append((query, kwargs))
+            return [
+                {
+                    "key": "RP-1",
+                    "queue": {"key": "ROBOPARK"},
+                    "tags": ["Alpha"],
+                    "status": {"key": "closed", "display": "Закрыт"},
+                    "updatedAt": "2026-09-25T10:00:00Z",
+                    "summary": "Must not enter the DTO",
+                }
+            ]
+
+    monkeypatch.setattr(
+        tracker_client, "_client", lambda token: type("Client", (), {"issues": FakeIssues()})()
+    )
+    monkeypatch.setattr(tracker_client, "_run_tracked", lambda fn, **kwargs: fn())
+    result = tracker_client.search_closed_history_page(
+        token="test-token", query="Queue: ROBOPARK", page=3
+    )
+    assert calls == [
+        (
+            "Queue: ROBOPARK",
+            {
+                "per_page": 50,
+                "page": 3,
+                "fields": "key,queue,tags,status,updatedAt",
+            },
+        )
+    ]
+    assert [
+        {key: value for key, value in item.items() if key != "_tracker_resource"} for item in result
+    ] == [
+        {
+            "key": "RP-1",
+            "queue": "ROBOPARK",
+            "tags": ["Alpha"],
+            "status_key": "closed",
+            "status": "Закрыт",
+            "updated": "2026-09-25T10:00:00Z",
+        }
+    ]
+    assert len(result) == 1
+
+
 def test_issue_to_dict_includes_queue():
     item = issue_to_dict(
         {

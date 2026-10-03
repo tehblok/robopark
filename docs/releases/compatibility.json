@@ -1,14 +1,12 @@
 {
   "schema": 1,
-  "target_version": "0.2.0-rc.8",
-  "migration_head": "0050_media_action_dependency",
+  "target_version": "0.2.0-rc.21.dev13181400260723547202",
+  "migration_head": "0056_host_terminal",
   "known_heads": [
-    "0036_audit_remediation_state",
-    "0037_claim_workflow_visibility",
-    "0038_inventory_photo_cleanup"
+    "0055_media_upload_park"
   ],
-  "bridge_before": "0.1.45",
-  "bridge_version": "0.1.45",
+  "bridge_before": "0.2.0-rc.8",
+  "bridge_version": "0.2.0-rc.8",
   "recovery": "snapshot",
   "eligible_channels": [
     "rc"

@@ -9,15 +9,20 @@ import tempfile
 from pathlib import Path
 
 from .release import ReleaseError, verify_directory
+from .terminal_install import TERMINAL_UNITS, quiesce_terminal
 
 UNITS = (
     "robopark-commands.service",
     "robopark-commands.path",
+    "robopark-bot.service",
+    "robopark-bot.path",
     "robopark.service",
     "robopark-tuna.service",
     "robopark-updater.service",
     "robopark-doctor.service",
     "robopark-doctor.timer",
+    "robopark-backup.service",
+    "robopark-backup.timer",
     "robopark-watchdog.service",
     "robopark-watchdog.timer",
 )
@@ -43,6 +48,21 @@ def atomic_symlink(target, link):
         sync_directory(link.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def restore_previous_link(paths, name):
+    """A retired grandparent is no longer an available rollback target."""
+    if name is not None:
+        if not isinstance(name, str) or name in {"", ".", ".."} or Path(name).name != name:
+            raise ReleaseError("unsafe_release_path")
+        target = paths.releases / name
+        if target.is_symlink() or (target.exists() and not target.is_dir()):
+            raise ReleaseError("unsafe_release_path")
+        if target.is_dir():
+            atomic_symlink(target, paths.previous)
+            return
+    paths.previous.unlink(missing_ok=True)
+    sync_directory(paths.opt)
 
 
 def atomic_copy(source, target, mode=0o600):
@@ -179,7 +199,7 @@ def snapshot(paths, journal, runner=None, *, refresh=False):
     backup = root / "units"
     backup.mkdir(mode=0o700, exist_ok=True)
     installed = paths.root / "etc/systemd/system"
-    for unit in UNITS:
+    for unit in (*UNITS, *TERMINAL_UNITS):
         path = installed / unit
         if path.is_file():
             atomic_copy(path, backup / unit)
@@ -187,10 +207,22 @@ def snapshot(paths, journal, runner=None, *, refresh=False):
     sync_directory(root)
 
 
+def discard_rollback_artifacts(paths, journal):
+    for target in (
+        paths.ops / "rollbacks" / journal["job_id"],
+        paths.var / (".displaced-" + journal["job_id"]),
+    ):
+        if target.is_symlink():
+            raise ReleaseError("unsafe_path")
+        if target.is_dir():
+            shutil.rmtree(target)
+            sync_directory(target.parent)
+
+
 def restore_units(paths, journal):
     backup = paths.ops / "rollbacks" / journal["job_id"] / "units"
     installed = paths.root / "etc/systemd/system"
-    for unit in UNITS:
+    for unit in (*UNITS, *TERMINAL_UNITS):
         path = installed / unit
         if (backup / unit).is_file():
             atomic_copy(backup / unit, path, 0o644)
@@ -222,10 +254,14 @@ def restore_data(paths, journal, runner=None):
                     "pg_restore",
                     "--clean",
                     "--if-exists",
+                    "--create",
+                    "--exit-on-error",
                     "--no-owner",
                     "--no-privileges",
                     "--username=robopark",
-                    "--dbname=robopark",
+                    # This is our private pg_dump of the fixed robopark DB.
+                    # --clean alone leaves objects created by later migrations.
+                    "--dbname=postgres",
                     f"/host-rollbacks/{journal['job_id']}/database.dump",
                 ],
             ),
@@ -239,24 +275,27 @@ def rollback_release(paths, journal, runner, phase):
     verify_directory(previous, None)
     if journal["writes_resumed"]:
         raise ReleaseError("manual_recovery_required")
+    quiesce_terminal(paths, runner, reason="rollback")
     phase("rolling_back")
     runner.run(["systemctl", "stop", "robopark.service"], timeout=120)
     if journal["migration_started"]:
         restore_data(paths, journal, runner)
     atomic_symlink(previous, paths.current)
     atomic_symlink(paths.state / journal["previous_config"], paths.state / "current-compose.json")
-    if journal["original_previous"]:
-        atomic_symlink(paths.releases / journal["original_previous"], paths.previous)
-    else:
-        paths.previous.unlink(missing_ok=True)
-        sync_directory(paths.opt)
+    restore_previous_link(paths, journal["original_previous"])
     if journal["snapshot_done"]:
         restore_units(paths, journal)
     atomic_symlink(previous / "deploy/host", paths.opt / "host-tools")
     runner.run(["systemctl", "daemon-reload"], timeout=60)
     runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
+    from .runtime import bot_enabled
+
     if not runner.wait_ready(
-        project="robopark", config=paths.state / "current-compose.json", timeout=180
+        project="robopark", config=paths.state / "current-compose.json", timeout=180,
+        bot_required=bot_enabled(paths),
     ):
         raise ReleaseError("manual_recovery_required")
+    from .terminal_install import reconcile_terminal_installation
+
+    reconcile_terminal_installation(paths, previous, runner)
     phase("rollback_healthy")

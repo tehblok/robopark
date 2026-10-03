@@ -111,6 +111,22 @@ it('shows list failures with retry and enforces effective permissions', async ()
   expect(screen.queryByRole('searchbox', { name: 'Найти запчасть для поставки' })).not.toBeInTheDocument()
 })
 
+it('removes an open receipt when a refreshed list loses access', async () => {
+  const inventoryReceipts = vi.fn()
+    .mockResolvedValueOnce({ items: [receipt], limit: 25, offset: 0, total: 1 })
+    .mockRejectedValueOnce(new ApiError(403, 'forbidden'))
+  const apiClient = client({ inventoryReceipts })
+  const view = render(<InventoryReceiptsView apiClient={apiClient} parkId={7} refreshVersion={0} />)
+  await userEvent.click(within(await screen.findByRole('article', { name: 'Поставка №91' })).getByRole('button', { name: 'Открыть' }))
+  expect(screen.getByRole('textbox', { name: 'Поставщик или завод' })).toHaveValue('Завод')
+
+  view.rerender(<InventoryReceiptsView apiClient={apiClient} parkId={7} refreshVersion={1} />)
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Недостаточно прав')
+  expect(screen.queryByRole('textbox', { name: 'Поставщик или завод' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name: 'Поставка №91' })).not.toBeInTheDocument()
+})
+
 it('lets manage-only users save and update drafts without posting', async () => {
   const apiClient = client()
   render(<InventoryReceiptsView apiClient={apiClient} parkId={7} permissions={['inventory.stock.manage']} />)

@@ -1,10 +1,13 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { api, type Park } from '../../api'
 import { Alert } from '../PageShell'
 import { EmptyBlock, SkeletonList, Spinner } from '../ui/Feedback'
 import { mapApiError } from '../../i18n/errors'
 import { ru } from '../../i18n/ru'
 import { resourceStore, useCachedResource } from '../../lib/resource'
+import { Dialog } from '../../design-system/overlays/Dialog'
+
+const EMPTY_PARKS: Park[] = []
 
 export function RequestParkModal({
   open,
@@ -19,6 +22,12 @@ export function RequestParkModal({
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const [success, setSuccess] = useState('')
+  const closeTimer = useRef<number | null>(null)
+
+  useEffect(() => () => {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
+    closeTimer.current = null
+  }, [open])
 
   const availableRes = useCachedResource<Park[]>(
     open ? 'operator:available-parks' : '',
@@ -26,7 +35,7 @@ export function RequestParkModal({
     { enabled: open },
   )
 
-  const available = availableRes.data ?? []
+  const available = availableRes.data ?? EMPTY_PARKS
   const loading = open && availableRes.isLoading && !availableRes.data
   const loadError = availableRes.error
     ? mapApiError(availableRes.error, ru.errors.load)
@@ -44,15 +53,6 @@ export function RequestParkModal({
     }
   }, [open, available, parkId])
 
-  useEffect(() => {
-    if (!open) return
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !submitting) onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose, submitting])
-
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!parkId) return
@@ -67,7 +67,10 @@ export function RequestParkModal({
       resourceStore.invalidate('operator:parks')
       await availableRes.refresh()
       onSubmitted?.()
-      window.setTimeout(() => onClose(), 900)
+      closeTimer.current = window.setTimeout(() => {
+        closeTimer.current = null
+        onClose()
+      }, 900)
     } catch {
       setSubmitError(ru.parks.requestParkError)
     } finally {
@@ -78,35 +81,14 @@ export function RequestParkModal({
   if (!open) return null
 
   return (
-    <>
-      <button
-        aria-label={ru.nav.close}
-        className="modal-backdrop"
-        disabled={submitting}
-        onClick={onClose}
-        type="button"
-      />
-      <div
-        aria-labelledby="request-park-title"
-        aria-modal="true"
-        className="modal-panel"
-        role="dialog"
-      >
-        <header className="modal-head">
-          <h2 id="request-park-title">{ru.parks.requestPark}</h2>
-          <button
-            aria-label={ru.nav.close}
-            className="btn-ghost modal-close"
-            disabled={submitting}
-            onClick={onClose}
-            type="button"
-          >
-            ×
-          </button>
-        </header>
-
-        <p className="modal-hint">{ru.parks.requestParkHint}</p>
-
+    <Dialog
+      closeLabel={ru.nav.close}
+      description={ru.parks.requestParkHint}
+      dismissible={!submitting}
+      onOpenChange={next => { if (!next) onClose() }}
+      open={open}
+      title={ru.parks.requestPark}
+    >
         {loadError && <Alert tone="error">{loadError}</Alert>}
         {submitError && <Alert tone="error">{submitError}</Alert>}
         {success && <Alert tone="success">{success}</Alert>}
@@ -130,7 +112,7 @@ export function RequestParkModal({
                 ))}
               </select>
             </label>
-            <div className="form-actions modal-actions">
+            <div className="form-actions">
               <button className="btn btn-secondary" disabled={submitting} onClick={onClose} type="button">
                 {ru.nav.close}
               </button>
@@ -142,7 +124,6 @@ export function RequestParkModal({
         ) : (
           <EmptyBlock hint={ru.parks.requestParkEmptyHint} icon="✓" title={ru.parks.requestParkEmpty} />
         )}
-      </div>
-    </>
+    </Dialog>
   )
 }

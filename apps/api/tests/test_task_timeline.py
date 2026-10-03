@@ -266,6 +266,28 @@ def test_standalone_photo_is_one_idempotent_message_and_one_attachment_action(
     assert delivered_replay.json()["sync_state"] == "synced"
 
 
+def test_share_target_photo_rejects_changed_account_before_staging(
+    client, db_session, seed_royal, monkeypatch
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache
+
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **_kwargs: dict(ISSUE))
+    login_as(client, "royal", "secret")
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/photos",
+        headers={
+            "Idempotency-Key": "shared-photo-0001",
+            "X-Expected-Account-Id": str(seed_royal.id + 1),
+        },
+        files={"file": ("robot.png", PNG, "image/png")},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "account_changed"
+    assert db_session.scalars(select(TaskAttachment)).all() == []
+
+
 def test_standalone_photo_requires_mechanic_claim(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
@@ -496,20 +518,54 @@ def test_local_attachment_has_authorized_content_url_and_safe_image_headers(
     assert wrong_issue.status_code == 404
 
 
-def test_attachment_head_rejects_closed_issue(client, db_session, seed_royal, monkeypatch):
+def test_closed_issue_attachment_remains_readable_to_authorized_owner(
+    client, db_session, seed_royal, monkeypatch, tmp_path
+):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
-    from robopark_api.services import tracker_cache
+    from robopark_api.services import task_timeline, tracker_cache
 
     monkeypatch.setattr(
         tracker_cache,
         "get_issue",
         lambda **kwargs: {**ISSUE, "status": "Closed", "status_key": "closed"},
     )
+    root = tmp_path / "task-attachments"
+    root.mkdir()
+    monkeypatch.setattr(task_timeline, "staged_attachments_root", lambda: root)
+    message = TaskMessage(
+        id="closed-photo-message",
+        issue_key="ROBOPARK-1",
+        kind="user",
+        author_user_id=seed_royal.id,
+        author_name=seed_royal.username,
+        text="Фото закрытой задачи",
+        sync_state="synced",
+        created_at=1,
+        updated_at=1,
+    )
+    attachment = TaskAttachment(
+        id=str(uuid4()),
+        message_id=message.id,
+        blob_name="closed-photo.png",
+        original_name="closed-photo.png",
+        mime_type="image/png",
+        size_bytes=len(PNG),
+        sha256="a" * 64,
+        created_at=1,
+    )
+    db_session.add_all([message, attachment])
+    db_session.commit()
+    (root / attachment.blob_name).write_bytes(PNG)
     login_as(client, seed_royal.username, "secret")
 
-    response = client.head("/tracker/issues/ROBOPARK-1/attachments/missing/content")
+    path = f"/tracker/issues/ROBOPARK-1/attachments/{attachment.id}/content"
+    head = client.head(path)
+    content = client.get(path)
 
-    assert response.status_code == 409
+    assert head.status_code == 204
+    assert content.status_code == 200
+    assert content.content == PNG
+    assert content.headers["cache-control"] == "private, no-store"
 
 
 def test_attachment_head_rejects_inactive_park(
@@ -544,7 +600,9 @@ def test_attachment_head_rejects_untagged_issue_resolved_to_inactive_park_by_que
     assert response.status_code == 403
 
 
-def test_attachment_get_rejects_closed_issue(client, db_session, seed_royal, monkeypatch):
+def test_closed_issue_attachment_still_requires_matching_id(
+    client, db_session, seed_royal, monkeypatch
+):
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     from robopark_api.services import tracker_cache
 
@@ -557,7 +615,119 @@ def test_attachment_get_rejects_closed_issue(client, db_session, seed_royal, mon
 
     response = client.get("/tracker/issues/ROBOPARK-1/attachments/missing/content")
 
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("method", ["head", "get"])
+def test_closed_issue_attachment_still_enforces_mechanic_park_scope(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch, method
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache
+
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **kwargs: {
+            **ISSUE,
+            "status": "Closed",
+            "status_key": "closed",
+            "tags": ["Other park"],
+        },
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = getattr(client, method)("/tracker/issues/ROBOPARK-1/attachments/missing/content")
+
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("kind", ["message", "photo"])
+def test_closed_issue_rejects_new_timeline_mutations(
+    client, db_session, seed_royal, monkeypatch, kind
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache
+
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **kwargs: {**ISSUE, "status": "Closed", "status_key": "closed"},
+    )
+    login_as(client, seed_royal.username, "secret")
+
+    if kind == "message":
+        response = client.post(
+            "/tracker/issues/ROBOPARK-1/messages",
+            headers={"Idempotency-Key": "closed-message-0001"},
+            json={"text": "Новая запись"},
+        )
+    else:
+        response = client.post(
+            "/tracker/issues/ROBOPARK-1/photos",
+            headers={"Idempotency-Key": "closed-photo-0001"},
+            files={"file": ("robot.png", PNG, "image/png")},
+        )
+
     assert response.status_code == 409
+    assert response.json()["detail"] == "task_already_closed"
+    assert db_session.scalars(select(ReliableAction)).all() == []
+
+
+@pytest.mark.parametrize(("message_at", "expected_status"), [(1, 409), (3, 201)])
+def test_reopened_issue_attaches_only_to_current_cycle_message(
+    client, db_session, seed_royal, monkeypatch, tmp_path, message_at, expected_status
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import task_timeline, tracker_cache
+
+    monkeypatch.setattr(tracker_cache, "get_issue", lambda **kwargs: dict(ISSUE))
+    monkeypatch.setattr(
+        task_timeline, "staged_attachments_root", lambda: tmp_path / "task-attachments"
+    )
+    db_session.add_all(
+        [
+            TaskMessage(
+                id="previous-cycle-message",
+                issue_key="ROBOPARK-1",
+                kind="user",
+                author_user_id=seed_royal.id,
+                author_name=seed_royal.username,
+                text="Ремонт",
+                sync_state="synced",
+                created_at=message_at,
+                updated_at=message_at,
+            ),
+            TaskMessage(
+                id="previous-cycle-close",
+                issue_key="ROBOPARK-1",
+                kind="system",
+                external_id="tracker-external-close:previous-cycle",
+                author_name="Tracker",
+                text="Закрыто",
+                sync_state="saved",
+                created_at=2,
+                updated_at=2,
+            ),
+        ]
+    )
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.post(
+        "/tracker/issues/ROBOPARK-1/message-attachments",
+        headers={"Idempotency-Key": "previous-cycle-photo-0001"},
+        data={"message_id": "previous-cycle-message"},
+        files={"file": ("robot.png", PNG, "image/png")},
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == 409:
+        assert response.json()["detail"] == "task_message_previous_cycle"
+        assert db_session.scalars(select(ReliableAction)).all() == []
+    else:
+        assert response.json()["message_id"] == "previous-cycle-message"
+        assert len(db_session.scalars(select(ReliableAction)).all()) == 1
 
 
 @pytest.mark.parametrize("tags", [["Alpha"], []])
@@ -711,6 +881,60 @@ def test_concurrent_tracker_import_is_conflict_safe_and_rereads_winner(db_engine
     ]
     with Session(db_engine) as db:
         assert db.query(TaskMessage).filter_by(external_id="concurrent-comment").count() == 1
+
+
+def test_timeline_explains_unsent_message_from_previous_repair_cycle(
+    db_session,
+    seed_mechanic,
+):
+    from robopark_api.services.reliable_actions import begin_action
+    from robopark_api.services.task_timeline import merge_timeline
+
+    action = begin_action(
+        db_session,
+        actor=seed_mechanic,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-1",
+        action="comment",
+        idempotency_key="old-cycle-comment",
+        payload={"text": "Сохранено локально"},
+    ).row
+    db_session.add_all(
+        [
+            TaskMessage(
+                id="old-cycle-message",
+                issue_key="ROBOPARK-1",
+                kind="user",
+                author_user_id=seed_mechanic.id,
+                author_name=seed_mechanic.username,
+                text="Сохранено локально",
+                action_id=action.id,
+                sync_state="pending",
+                visibility="participants",
+                created_at=action.created_at,
+                updated_at=action.created_at,
+            ),
+            TaskMessage(
+                id="old-cycle-close",
+                issue_key="ROBOPARK-1",
+                kind="system",
+                author_user_id=None,
+                author_name="Tracker",
+                text="Задача закрыта",
+                external_id="tracker-external-close:old-cycle-close",
+                sync_state="synced",
+                visibility="participants",
+                created_at=action.created_at + 1,
+                updated_at=action.created_at + 1,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    items = merge_timeline(db_session, issue_key="ROBOPARK-1", comments=[])
+    old = next(item for item in items if item["id"] == "old-cycle-message")
+    assert old["delivery_note"] == "previous_cycle_not_sent"
+    assert old["text"] == "Сохранено локально"
 
 
 def test_attachment_projection_falls_back_per_action_without_losing_remote_evidence(

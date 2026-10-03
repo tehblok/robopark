@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiTimeoutError, api, clearApiValidators } from './api'
+import { systemClient } from './opsApi'
 
 type ApiCall = () => Promise<unknown>
 
@@ -67,6 +68,65 @@ describe('API transport metadata', () => {
     clearApiValidators()
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it('binds a shared photo request to the account that claimed it', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response('{}', { status: 201, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await api.taskPhoto('ROBOPARK-42', new File(['image'], 'robot.png', { type: 'image/png' }), 'share-photo-0001', 11)
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      'Idempotency-Key': 'share-photo-0001',
+      'X-Expected-Account-Id': '11',
+    })
+  })
+
+  it('passes an abort signal through resumable media requests', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      return new Response('{"received_offset":3}', { headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const request = api.putMediaChunk('upload-1', 0, new Blob(['abc']), 'digest', controller.signal)
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(false)
+    controller.abort()
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
+    await request
+  })
+
+  it('passes the report history boundary and filters to the API', async () => {
+    const fetchMock = vi.fn(async () => new Response('[]', { headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.reportsMine({ limit: 26, beforeId: 52, anchorId: 77, status: 'returned' })
+    await api.reportsInbox(7, { limit: 26, afterId: 52, anchorId: 77 })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/reports/mine?limit=26&anchor_id=77&before_id=52&status=returned', expect.any(Object))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/reports/inbox?park_id=7&limit=26&anchor_id=77&after_id=52', expect.any(Object))
+  })
+
+  it('sends schedule revision and retry keys through edit and delete requests', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{"id":"entry/1"}', { headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const options = { base_revision: '2026-09-20T10:00:00+00:00', idempotency_key: 'schedule-retry-key-0001' }
+
+    await api.scheduleUpdate('entry/1', {
+      kind: 'vacation',
+      start_at: '2026-09-21T09:00:00+03:00',
+      end_at: '2026-09-21T21:00:00+03:00',
+      ...options,
+    })
+    await api.scheduleDelete('entry/1', options)
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/schedules/entry%2F1')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject(options)
+    const deleteUrl = new URL(fetchMock.mock.calls[1][0], 'https://robopark.invalid')
+    expect(deleteUrl.pathname).toBe('/api/schedules/entry%2F1')
+    expect(Object.fromEntries(deleteUrl.searchParams)).toEqual(options)
+    expect(fetchMock.mock.calls[1][1].method).toBe('DELETE')
   })
 
   it('loads every keyset page for one exact schedule scope', async () => {
@@ -176,6 +236,55 @@ describe('API transport metadata', () => {
     expect(authorizationFailure).not.toHaveBeenCalled()
 
     window.removeEventListener('robopark:authorization-failure', authorizationFailure)
+  })
+
+  it('keeps the authenticated session after a privileged challenge is rejected', async () => {
+    const authorizationFailure = vi.fn()
+    window.addEventListener('robopark:authorization-failure', authorizationFailure)
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'invalid_credentials' }), {
+        status: 401, headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 7, username: 'royal' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    try {
+      await expect(systemClient.reauthorize({
+        password: 'wrong-password',
+        code: '000000',
+        operation_kind: 'service-restart',
+        operation_id: 'service-restart-1',
+        capability_revision: 'a'.repeat(64),
+      })).rejects.toMatchObject({ status: 401, detail: 'invalid_credentials' })
+      expect(authorizationFailure).not.toHaveBeenCalled()
+      await expect(api.me()).resolves.toMatchObject({ id: 7, username: 'royal' })
+      expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/auth/me', expect.any(Object))
+    } finally {
+      window.removeEventListener('robopark:authorization-failure', authorizationFailure)
+    }
+  })
+
+  it('invalidates an expired session rejected by the privileged challenge endpoint', async () => {
+    const authorizationFailure = vi.fn()
+    window.addEventListener('robopark:authorization-failure', authorizationFailure)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ detail: 'Unauthorized' }), {
+      status: 401, headers: { 'Content-Type': 'application/json' },
+    })))
+
+    try {
+      await expect(systemClient.reauthorize({
+        password: 'secret',
+        code: '123456',
+        operation_kind: 'service-restart',
+        operation_id: 'service-restart-1',
+        capability_revision: 'a'.repeat(64),
+      })).rejects.toMatchObject({ status: 401 })
+      expect(authorizationFailure).toHaveBeenCalledOnce()
+    } finally {
+      window.removeEventListener('robopark:authorization-failure', authorizationFailure)
+    }
   })
 
   it('classifies emergency resolve as a query POST and invalidates late protected validators on 403', async () => {

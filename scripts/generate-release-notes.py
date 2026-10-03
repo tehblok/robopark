@@ -5,6 +5,7 @@ import argparse
 import json
 import re
 from pathlib import Path
+from release_policy import SupportPolicy
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -23,7 +24,7 @@ def expected_compatibility(root=ROOT):
         "bridge_before": migration["bridge_before"],
         "bridge_version": migration["bridge_version"],
         "recovery": migration["recovery"],
-        "eligible_channels": ["rc"],
+        "eligible_channels": list(SupportPolicy.from_file(root / "deploy/support-policy.json").release(target_version(root)).eligible_channels),
     }
 
 
@@ -35,7 +36,8 @@ def validate_note(root=ROOT):
         raise ValueError("release_contract_missing")
     contract = json.loads(match.group(1))
     metadata = json.loads((root / "deploy/release-metadata.json").read_text())
-    if contract != {"migration_head": metadata["migration_head"], "support_class": "candidate", "support_months": 0, "version": version}:
+    support = SupportPolicy.from_file(root / "deploy/support-policy.json").release(version)
+    if contract != {"migration_head": metadata["migration_head"], "support_class": support.support_class, "support_months": support.support_months, "version": version}:
         raise ValueError("release_contract_mismatch")
 
 

@@ -60,7 +60,8 @@ def _tree(fd, budget, depth=0):
 
     if depth > 64:
         raise RetentionBlocked("restore_tree_limit")
-    size = count = 0
+    size = os.fstat(fd).st_blocks * 512
+    count = 0
     with os.scandir(fd) as listing:
         for entry in listing:
             budget[0] -= 1
@@ -78,7 +79,7 @@ def _tree(fd, budget, depth=0):
                 size += subtotal
                 count += files
             elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                size += info.st_size
+                size += info.st_blocks * 512
                 count += 1
             else:
                 raise RetentionBlocked("unsafe_restore_tree")
@@ -134,7 +135,7 @@ def entries(paths, stack):
             ):
                 raise RetentionBlocked("invalid_restore_receipt")
             trees = []
-            size = info.st_size
+            size = info.st_blocks * 512
             files = 1
             for target in (
                 paths.state / "restores" / identity,

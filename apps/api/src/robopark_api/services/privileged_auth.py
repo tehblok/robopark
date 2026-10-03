@@ -35,6 +35,7 @@ TOTP_STEP_SECONDS = 30
 REAUTH_TTL_SECONDS = 120
 RECOVERY_RESET_TTL_SECONDS = 600
 RECOVERY_CODE_COUNT = 10
+TERMINAL_ACTIONS = frozenset({"terminal.open.maintenance", "terminal.open.root"})
 RECOVERY_HASH_VERSION = "scrypt-v1"
 LEGACY_RECOVERY_HASH_VERSION = "legacy-hmac-v1"
 
@@ -295,6 +296,9 @@ def _lock_credential(db: Session, user_id: int) -> PrivilegedCredential | None:
 def _advance_generation_and_revoke(
     db: Session, credential: PrivilegedCredential, *, now: datetime
 ) -> None:
+    from robopark_api.services.terminal.sessions import revoke_sessions
+
+    revoke_sessions(db, owner_id=credential.user_id, reason="credentials_changed")
     credential.credential_generation += 1
     db.execute(
         update(PrivilegedReauthorization)
@@ -392,12 +396,14 @@ def confirm_enrollment(
 
 
 def _verify_second_factor(
-    db: Session, actor: User, settings: Settings, code: str
+    db: Session, actor: User, settings: Settings, code: str, *, totp_only: bool = False
 ) -> tuple[bool, str]:
     row = _lock_credential(db, actor.id)
     if row is None or row.enrolled_at is None:
         return False, "privileged_enrollment_required"
     if not (len(code) == 6 and code.isascii() and code.isdigit()):
+        if totp_only:
+            return False, "invalid_credentials"
         recovery, row = _match_recovery(db, actor, code)
         if recovery == "matched" and row is not None:
             row.used_at = _now()
@@ -467,7 +473,9 @@ def issue_reauthorization(
         )
     valid, reason = False, "invalid_credentials"
     if verify_password(password, actor.password_hash):
-        valid, reason = _verify_second_factor(db, actor, settings, code)
+        valid, reason = _verify_second_factor(
+            db, actor, settings, code, totp_only=context.operation_kind in TERMINAL_ACTIONS
+        )
     if not valid:
         status_code = (
             409
@@ -521,6 +529,7 @@ def issue_reauthorization(
             capability_revision=context.capability_revision,
             credential_generation=credential.credential_generation,
             expires_at=_now() + timedelta(seconds=REAUTH_TTL_SECONDS),
+            totp_only=reason == "totp",
         )
     )
     throttle.reset(throttle_key, db=db, commit=False)
@@ -536,13 +545,13 @@ def issue_reauthorization(
     return raw
 
 
-@_atomic
-def consume_reauthorization(
+def consume_reauthorization_in_transaction(
     db: Session,
     actor: User,
     *,
     raw_token: str,
     context: AuditContext,
+    require_totp_only: bool = False,
 ) -> bool:
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     credential = _lock_credential(db, actor.id)
@@ -569,6 +578,7 @@ def consume_reauthorization(
         row is not None
         and expires is not None
         and row.used_at is None
+        and (not require_totp_only or row.totp_only)
         and expires > now
         and credential is not None
         and row.credential_generation == credential.credential_generation
@@ -606,6 +616,14 @@ def consume_reauthorization(
         ),
         context=context,
     )
+    return valid
+
+
+@_atomic
+def consume_reauthorization(
+    db: Session, actor: User, *, raw_token: str, context: AuditContext
+) -> bool:
+    valid = consume_reauthorization_in_transaction(db, actor, raw_token=raw_token, context=context)
     _commit(db)
     return valid
 

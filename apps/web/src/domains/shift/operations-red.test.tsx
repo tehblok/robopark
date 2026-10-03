@@ -6,13 +6,13 @@ import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { OverviewPage } from './OverviewPage'
 
-it('driver receives the operations task queue and honest unconfigured SLA', async () => {
+it('driver receives the operations task queue and honest unavailable SLA data', async () => {
   vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
     matches: false, media: '(max-width: 599px)', onchange: null,
     addEventListener: vi.fn(), removeEventListener: vi.fn(),
     addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
   }))
-  const park = { id: 7, name: 'Север', tag: 'north', tracker_queue: 'ROBOPARK' }
+  const park = { id: 7, name: 'Север', timezone: 'Europe/Moscow', tag: 'north', tracker_queue: 'ROBOPARK' }
   const user = { id: 1, username: 'driver', role: 'driver', access_status: 'approved', parks: [park], permissions: ['nav.dashboard', 'nav.tasks', 'tracker.read'] }
   const client = {
     dashboardSummary: vi.fn(), mechanicTasks: vi.fn(), operatorBlockers: vi.fn(), trackerIssues: vi.fn(),
@@ -20,6 +20,6 @@ it('driver receives the operations task queue and honest unconfigured SLA', asyn
   }
   render(<MemoryRouter><AuthContext.Provider value={{ user, loading: false, login: async () => user, logout: async () => {}, refreshUser: async () => user }}><ParkScopeContext.Provider value={{ parkId: 7, selectedPark: park, parks: [park], loading: false, locked: false, setParkId: vi.fn(), refreshParks: async () => {} }}><OverviewPage apiClient={client} /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
   expect(await screen.findByText('Новая задача водителя')).toBeVisible()
-  expect(screen.getByText('Норматив SLA не задан')).toBeVisible()
+  expect(screen.getByText('Данные SLA недоступны')).toBeVisible()
   expect(screen.queryByText('Просрочек нет')).not.toBeInTheDocument()
 })

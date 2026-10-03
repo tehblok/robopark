@@ -1,0 +1,23 @@
+[Unit]
+Description=Reconcile optional Robopark Telegram bot
+Requires=robopark.service
+After=robopark.service
+PartOf=robopark.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark-bot-runtime reconcile
+TimeoutStartSec=180
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+ReadOnlyPaths=/var/lib/robopark /etc/robopark /opt/robopark

@@ -24,7 +24,10 @@ def check_release_migrations(root: Path) -> list[str]:
         ]
     except (CommandError, KeyError, OSError, TypeError, ValueError) as error:
         return [f"release_migration_check_failed: {error}"]
-    if actual == declared == policy == "0050_media_action_dependency":
+    if actual == declared == policy and "0050_media_action_dependency" in {
+        revision.revision
+        for revision in ScriptDirectory.from_config(config).walk_revisions()
+    }:
         return []
     return [f"actual={actual} metadata={declared} policy={policy}"]
 

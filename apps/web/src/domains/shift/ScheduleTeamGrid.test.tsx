@@ -25,6 +25,7 @@ describe('ScheduleTeamGrid', () => {
     expect(within(matrix).getByRole('rowheader', { name: 'Анна · Механик' })).toBeInTheDocument()
     expect(within(matrix).getByRole('columnheader', { name: /21 сентября/ })).toBeInTheDocument()
     expect(within(matrix).getByText('Смена')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Таблица графика команды' })).toHaveAttribute('tabindex', '0')
   })
 
   it('nests headers and cells inside explicit accessible row groups and rows', () => {
@@ -43,6 +44,15 @@ describe('ScheduleTeamGrid', () => {
     expect(within(bodyRows[1]).getAllByRole('cell')).toHaveLength(7)
   })
 
+  it('labels a pending period in both layouts and keeps its edit actions unavailable', () => {
+    const days = visibleRange(new Date('2026-09-21T12:00:00+03:00'), 'week').days
+    render(<ScheduleTeamGrid days={days} employees={employees} items={items} pendingIds={new Set(['shift-one'])} selectedDate={days[0]} onDelete={() => undefined} onEdit={() => undefined} />)
+
+    expect(screen.getAllByText('Ожидает синхронизации')).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: 'Изменить' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Удалить' })).not.toBeInTheDocument()
+  })
+
   it('groups selected-day mobile cards by employee', () => {
     const days = visibleRange(new Date('2026-09-21T12:00:00+03:00'), 'week').days
     render(<ScheduleTeamGrid days={days} employees={employees} items={items} selectedDate={days[0]} />)
@@ -50,11 +60,12 @@ describe('ScheduleTeamGrid', () => {
     const cards = screen.getByTestId('schedule-day-cards')
     expect(within(cards).getByRole('heading', { name: 'Анна' })).toBeInTheDocument()
     expect(within(cards).getByText('Смена')).toBeInTheDocument()
-    expect(within(cards).queryByRole('heading', { name: 'Олег' })).not.toBeInTheDocument()
+    expect(within(cards).getByRole('heading', { name: 'Олег' })).toBeInTheDocument()
+    expect(within(cards).getByText('Периодов нет')).toBeInTheDocument()
 
     fireEvent.click(screen.getAllByRole('button', { name: /22 сентября/ }).at(-1)!)
 
-    expect(within(cards).getByText('На выбранный день периодов нет')).toBeInTheDocument()
+    expect(within(cards).getAllByText('Периодов нет')).toHaveLength(2)
   })
 
   it('does not synthesize a team row for an unknown schedule owner', () => {

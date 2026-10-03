@@ -44,6 +44,7 @@ const retryable: Record<ApiDomainErrorKind, boolean> = {
 
 const configurationDetails = new Set([
   'tracker_token_not_configured',
+  'blockers_disabled_for_park',
   'emergency_cookie_not_configured',
   'emergency_cookie_invalid',
 ])

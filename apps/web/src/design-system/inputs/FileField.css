@@ -1,0 +1,9 @@
+.rp-file-field { display: grid; gap: var(--rp-space-1); min-width: 0; }
+.rp-file-field__control { align-items: center; background: var(--rp-surface); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-control); display: flex; gap: var(--rp-space-2); min-height: var(--rp-control-min-size); min-width: 0; overflow: hidden; padding: var(--rp-space-1); position: relative; }
+.rp-file-field__choose { align-items: center; background: var(--rp-surface-elevated); border: 1px solid var(--rp-border); border-radius: var(--rp-radius-control); color: var(--rp-text); display: inline-flex; flex: 0 0 auto; font-weight: 600; justify-content: center; min-height: var(--rp-control-min-size); padding: 0 var(--rp-space-3); white-space: nowrap; }
+.rp-file-field__name { color: var(--rp-text-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rp-file-field__input { cursor: pointer; height: 100%; inset: 0; opacity: 0; position: absolute; width: 100%; }
+.rp-file-field:focus-within .rp-file-field__control { outline: 2px solid var(--rp-action); outline-offset: 2px; }
+.rp-file-field[data-disabled='true'] .rp-file-field__control { opacity: .65; }
+.rp-file-field[data-disabled='true'] .rp-file-field__input { cursor: not-allowed; }
+@media (max-width: 360px) { .rp-file-field__control { flex-wrap: wrap; } .rp-file-field__name { flex: 1 1 100%; padding-inline: var(--rp-space-2); } }

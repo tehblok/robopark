@@ -46,8 +46,8 @@ test('real API write is not resent and keeps its draft after a failed response',
 test('automatic sync status stays centered and does not present a manual sync action', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await openRouteFixture(page, 'overview', userForRole('mechanic'))
-  const indicator = page.locator('.rp-sync-center')
-  await expect(indicator).toContainText('автоматически')
+  const indicator = page.getByRole('button', { name: 'Открыть центр синхронизации. Синхронизация выполняется автоматически' })
+  await expect(indicator).toBeVisible()
   await expect(page.getByRole('button', { name: /(?:синхронизировать|запустить синхронизацию)/i })).toHaveCount(0)
   const centers = await page.locator('.rp-sync-center, .rp-shell__topbar').evaluateAll(([sync, topbar]) => {
     const syncBox = sync.getBoundingClientRect()

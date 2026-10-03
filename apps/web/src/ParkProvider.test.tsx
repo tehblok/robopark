@@ -12,6 +12,7 @@ const park = (id: number): Park => ({
   id,
   name: `Парк ${id}`,
   tag: `park-${id}`,
+  timezone: 'Europe/Moscow',
   is_active: true,
 })
 

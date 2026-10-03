@@ -96,7 +96,7 @@ def _system_runner(command: Sequence[str], *, timeout: int, max_output: int) -> 
 
 class _Http:
     def get(self, url: str, *, timeout: int) -> Any:
-        with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - URLs are fixed checks
+        with urllib.request.urlopen(url, timeout=timeout) as response:
             body = response.read(16_385)
             return _HttpResponse(
                 response.status, dict(response.headers), body[:16_384], len(body) <= 16_384
@@ -165,9 +165,14 @@ def _repair_owned(paths: HostPaths) -> int:
 
 
 def _watchdog_handler(paths: HostPaths) -> int:
-    from .operation_capabilities import publish_operation_capabilities
+    from .operation_capabilities import (
+        publish_operation_capabilities,
+        publish_operation_context,
+    )
 
-    publish_operation_capabilities(paths, _production_typed_effects(paths))
+    effects = _production_typed_effects(paths)
+    publish_operation_capabilities(paths, effects)
+    publish_operation_context(paths, effects)
     result = run_watchdog(paths, _system_runner, _Http())
     _print(
         {
@@ -176,6 +181,31 @@ def _watchdog_handler(paths: HostPaths) -> int:
             "busy": result.busy,
         }
     )
+    return 0
+
+
+def _backup_handler(paths: HostPaths) -> int:
+    from .operational_state import record_backup
+    from .scheduled_backup import create_scheduled_backup
+
+    try:
+        with host_operation(paths):
+            created = create_scheduled_backup(paths)
+    except HostBusy:
+        _print({"state": "busy", "error": "host_busy"})
+        return 75
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        # Docker stderr and archive data can contain credentials.
+        with suppress(OSError, ValueError):
+            record_backup(paths, "failed")
+        _print({"state": "failed", "error": "scheduled_backup_failed"})
+        return 1
+    try:
+        record_backup(paths, "success")
+    except (OSError, ValueError):
+        _print({"state": "failed", "error": "backup_receipt_failed"})
+        return 1
+    _print({"state": "succeeded", "path": str(created)})
     return 0
 
 
@@ -223,7 +253,10 @@ def _production_typed_effects(paths: HostPaths):
         runner=_system_runner,
         http=_Http(),
         device_provider=devices,
-        ota_effects=OtaProductionEffects(paths, SystemRunner()),
+        ota_effects=OtaProductionEffects(
+            paths,
+            SystemRunner(failure_log=paths.root / "var/log/robopark/ota-update.log"),
+        ),
     )
 
 
@@ -246,6 +279,18 @@ def _restore_check_handler(paths: HostPaths) -> int:
     return 0 if check_app_start(paths) else 1
 
 
+def _tuna_start_handler(paths: HostPaths) -> int:
+    """Queue enabled ingress from core's post-start without an After= deadlock."""
+    del paths
+    from robopark_ota.local_update import restart_enabled_tuna
+
+    from .updater import SystemRunner
+
+    state = restart_enabled_tuna(SystemRunner(), wait=False)
+    _print({"tuna": state})
+    return int(state == "failed")
+
+
 def _retain_after_terminal_update(paths: HostPaths, state: str) -> None:
     if state not in {"current_healthy", "previous_restored", "rejected"}:
         return
@@ -256,6 +301,7 @@ def _retain_after_terminal_update(paths: HostPaths, state: str) -> None:
 
 
 COMMAND_HANDLERS: dict[str, Handler] = {
+    "backup": _backup_handler,
     "consume": _consume_handler,
     "restore-check": _restore_check_handler,
     "restore": _foundation_handler,
@@ -265,6 +311,7 @@ COMMAND_HANDLERS: dict[str, Handler] = {
     "repair": _repair_handler,
     "update": _foundation_handler,
     "watchdog": _watchdog_handler,
+    "tuna-start": _tuna_start_handler,
 }
 
 
@@ -283,6 +330,21 @@ def build_parser() -> argparse.ArgumentParser:
             mode.add_argument("--worker", action="store_true")
             mode.add_argument("--reconcile", action="store_true")
             mode.add_argument("--recover", action="store_true")
+    commands.add_parser("terminal-prepare")
+    commands.add_parser("terminal-reconcile")
+    commands.add_parser("terminal-setup")
+    commands.add_parser("terminal-broker")
+    terminal_worker = commands.add_parser("terminal-worker")
+    terminal_worker.add_argument("--id", required=True)
+    terminal_worker.add_argument("--profile", choices=("maintenance", "root"), required=True)
+    recovery = commands.add_parser("recovery-key")
+    recovery_commands = recovery.add_subparsers(dest="recovery_key_action", required=True)
+    recovery_commands.add_parser("init")
+    export = recovery_commands.add_parser("export")
+    export.add_argument("--output", type=Path, required=True)
+    import_key = recovery_commands.add_parser("import")
+    import_key.add_argument("--input", type=Path, required=True)
+    import_key.add_argument("--confirmation", default="")
     return parser
 
 
@@ -292,23 +354,91 @@ def main(argv: Sequence[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
     if values == ["--self-test"]:
         from .commands import OperationKind, TypedHostEffects
-        from .release import INSTALLER_VERSION, version
+        from .release import CAPABILITIES, INSTALLER_VERSION
         from .updater import SystemRunner
 
-        version(INSTALLER_VERSION)
+        assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", INSTALLER_VERSION)
+        assert "hash-only-ota-v1" in CAPABILITIES
         assert callable(SystemRunner.wait_ready)
-        assert len(OperationKind) == 17 and callable(TypedHostEffects.usb_format)
+        assert OperationKind.OTA_UPDATE.value == "ota-update"
+        assert callable(TypedHostEffects.ota_update) and callable(TypedHostEffects.usb_format)
         assert not {"shell", "exec", "command"} & set(COMMAND_HANDLERS)
         for source in Path(__file__).parent.glob("*.py"):
             compile(source.read_bytes(), str(source), "exec")
         return 0
     arguments = build_parser().parse_args(values)
     paths = paths_from_environment()
+    if arguments.command in {"terminal-prepare", "terminal-reconcile"}:
+        from .terminal_install import (
+            prepare_terminal_installation,
+            reconcile_terminal_installation,
+        )
+        from .updater import SystemRunner
+        release = paths.current.resolve(strict=True)
+        if release.parent != paths.releases.resolve(strict=True):
+            raise ValueError("terminal_invalid_release")
+        handler = prepare_terminal_installation if arguments.command == "terminal-prepare" else reconcile_terminal_installation
+        handler(paths, release, SystemRunner())
+        return 0
+    if arguments.command == "terminal-setup":
+        from .terminal_setup import prepare_terminal_host
+        from .updater import SystemRunner
+        prepare_terminal_host(
+            paths,
+            SystemRunner(failure_log=paths.root / "var/log/robopark/terminal-setup.log"),
+        )
+        return 0
+    if arguments.command == "terminal-broker":
+        from .terminal_broker import run_broker
+        return run_broker(paths)
+    if arguments.command == "terminal-worker":
+        from .terminal_worker import run_worker
+        return run_worker(paths, arguments.id, arguments.profile)
+    if arguments.command == "recovery-key":
+        from .commands import (
+            ensure_backup_recovery_key,
+            export_backup_recovery_key,
+            import_backup_recovery_key,
+        )
+        from .release import ReleaseError
+
+        try:
+            if arguments.recovery_key_action == "init":
+                target = ensure_backup_recovery_key(paths)
+                _print({"state": "ready", "path": str(target)})
+            elif arguments.recovery_key_action == "export":
+                target = export_backup_recovery_key(paths, arguments.output)
+                _print({"state": "exported", "path": str(target)})
+            else:
+                target, previous = import_backup_recovery_key(
+                    paths, arguments.input, confirmation=arguments.confirmation,
+                )
+                _print({
+                    "state": "imported", "path": str(target),
+                    "previous_path": str(previous) if previous else None,
+                })
+            return 0
+        except ReleaseError as error:
+            reason = str(error)
+            if not re.fullmatch(r"[a-z0-9_]+", reason):
+                reason = "recovery_key_operation_failed"
+            _print({"state": "failed", "error": reason})
+            return 2
     if arguments.command == "restore":
-        from .restore import recover_restore
+        from .release import ReleaseError
+        from .restore import active_restore, recover_restore
+        from .terminal_install import reconcile_terminal_compose
         from .updater import SystemRunner
 
-        return recover_restore(paths, SystemRunner(), automatic=arguments.boot_recover)
+        # Cache the candidate helper before recovery can switch host-tools back.
+        code = recover_restore(paths, SystemRunner(), automatic=arguments.boot_recover)
+        if code == 0 and arguments.boot_recover and not active_restore(paths):
+            try:
+                reconcile_terminal_compose(paths)
+            except ReleaseError:
+                _print({"state": "failed", "error": "terminal_invalid_compose"})
+                return 1
+        return code
     if arguments.command == "update":
         from .launcher import launch_update
         from .release import ReleaseError, UpdateRequest

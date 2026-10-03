@@ -82,6 +82,21 @@ it('ends stdin for normal shutdown and releases child resources', async () => {
   expectReleased(child)
 })
 
+it('uses one ephemeral password and key for the isolated bridge process', async () => {
+  const { api } = await startFixture()
+  const credential = (api as typeof api & { password?: string }).password
+  const options = vi.mocked(spawn).mock.calls.at(-1)?.[2]
+  const childPassword = options?.env?.ROBOPARK_BROWSER_PASSWORD
+  const childKey = options?.env?.ROBOPARK_BROWSER_SECRET_KEY
+
+  expect(typeof credential).toBe('string')
+  expect((credential?.length ?? 0) >= 32).toBe(true)
+  expect(credential === childPassword).toBe(true)
+  expect((childKey?.length ?? 0) >= 32).toBe(true)
+  expect(options?.env).not.toHaveProperty('DATABASE_URL')
+  await within(api.close())
+})
+
 it('closes a child that already exited normally', async () => {
   const { api, child, exited } = await startFixture()
   await expect(api.call({ method: 'GET', path: '/exit' })).rejects.toThrow('bridge exited')

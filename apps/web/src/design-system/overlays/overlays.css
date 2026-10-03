@@ -10,7 +10,7 @@
 }
 
 .rp-dialog {
-  background: var(--rp-surface-elevated);
+  background: var(--rp-surface);
   border: 1px solid var(--rp-border);
   border-radius: var(--rp-radius-sheet);
   box-shadow: var(--rp-shadow-panel);
@@ -45,6 +45,10 @@
 .rp-dialog__body {
   display: grid;
   gap: var(--rp-form-gap);
+}
+
+.rp-dialog .form-grid {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .rp-dialog__footer {
@@ -98,6 +102,15 @@
 }
 
 @media (max-width: 599px) {
+  .rp-dialog .form-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .rp-dialog .form-actions > .btn {
+    width: 100%;
+  }
+
   .rp-dialog-backdrop:has(.rp-bottom-sheet) {
     align-items: flex-end;
     padding: 0;

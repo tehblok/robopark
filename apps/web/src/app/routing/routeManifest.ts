@@ -137,7 +137,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
   {
     id: 'robots',
     path: '/robots',
-    legacyPaths: ['/robots/search'],
+    legacyPaths: ['/robots/search', '/map'],
     label: ru.nav.robot_search,
     icon: 'robot',
     permission: 'nav.robot_search',

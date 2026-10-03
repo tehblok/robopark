@@ -12,6 +12,7 @@
         const media = window.matchMedia('(prefers-color-scheme: dark)')
         let preference = 'system'
         let density = 'comfortable'
+        let accent = 'olive'
         try {
           const stored = window.localStorage.getItem('robopark-theme')
           if (stored === 'light' || stored === 'dark' || stored === 'system') preference = stored
@@ -23,15 +24,22 @@
         } catch {
           density = 'comfortable'
         }
+        try {
+          const storedAccent = window.localStorage.getItem('robopark-accent')
+          if (storedAccent === 'olive' || storedAccent === 'blue' || storedAccent === 'violet' || storedAccent === 'warm') accent = storedAccent
+        } catch {
+          accent = 'olive'
+        }
         const resolved = preference === 'system' ? (media.matches ? 'dark' : 'light') : preference
         const resolvedDensity = window.matchMedia('(max-width: 899px)').matches ? 'comfortable' : density
         document.documentElement.dataset.theme = resolved
         document.documentElement.dataset.density = resolvedDensity
+        document.documentElement.dataset.accent = accent
         document.documentElement.style.colorScheme = resolved
         window.__roboparkThemeBootstrappedAt = performance.now()
       })()
     </script>
-    <title>Работа</title>
+    <title>Робопарк Сервис</title>
   </head>
   <body>
     <div id="root"></div>

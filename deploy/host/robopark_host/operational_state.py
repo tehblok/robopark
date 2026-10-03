@@ -56,13 +56,11 @@ def record_backup(paths, status, completed_at=None):
     if status not in {"success", "failed"}:
         raise ValueError("invalid_backup_status")
     stamp = timestamp(completed_at or datetime.now(UTC).isoformat())
-    atomic_write_json(
-        paths.state / "last-backup.json",
-        {
-            "status": status,
-            "completed_at": stamp.astimezone(UTC).isoformat(),
-        },
-    )
+    value = {"status": status, "completed_at": stamp.astimezone(UTC).isoformat()}
+    atomic_write_json(paths.state / "last-backup.json", value)
+    from .health_projection import update_public_health
+
+    update_public_health(paths.var / "api-ops/host-health.json", backup_attempt=value)
 
 
 def backup_state(paths):

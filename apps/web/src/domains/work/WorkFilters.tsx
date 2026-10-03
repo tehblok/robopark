@@ -1,4 +1,5 @@
 import { Button } from '../../design-system/actions/Button'
+import { trackerStatusLabel } from '../../components/tracker/trackerStatusLabel'
 import type { WorkUrlState } from './workUrl'
 
 const viewingStatuses = [
@@ -14,14 +15,15 @@ const viewingStatuses = [
 export type WorkFiltersProps = {
   value: WorkUrlState
   driver?: boolean
+  queueFirst?: boolean
   manager?: boolean
   loading: boolean
   onApply(next: WorkUrlState): void
 }
 
-export function WorkFilters({ value, driver = false, manager = false, loading, onApply }: WorkFiltersProps) {
+export function WorkFilters({ value, driver = false, queueFirst = false, manager = false, loading, onApply }: WorkFiltersProps) {
   const { filters } = value
-  const statuses = driver ? viewingStatuses.filter(({ key }) => key === 'new' || key === 'moving') : viewingStatuses
+  const statuses = driver ? viewingStatuses.filter(({ key }) => key === 'all' || key === 'new' || key === 'moving') : viewingStatuses
   const selectedStatus = filters.status ?? 'all'
   const linkedStatus = !driver && !statuses.some(({ key }) => key === selectedStatus) ? selectedStatus : null
   const restrictions = [
@@ -40,10 +42,10 @@ export function WorkFilters({ value, driver = false, manager = false, loading, o
           page: 1,
         })} value={selectedStatus}>
           {statuses.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
-          {linkedStatus ? <option value={linkedStatus}>{linkedStatus}</option> : null}
+          {linkedStatus ? <option value={linkedStatus}>{trackerStatusLabel(linkedStatus)}</option> : null}
         </select>
       </label>
-      <p className="rp-work-filters__ordering">От старых к новым</p>
+      <p className="rp-work-filters__ordering">{queueFirst && !filters.status ? 'Сначала очередь · затем остальные по возрасту' : 'От старых к новым'}</p>
       {manager ? <label className="checkbox-field">
         <input checked={Boolean(filters.includeHidden)} disabled={loading} onChange={(event) => onApply({
           ...value,

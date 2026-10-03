@@ -4,10 +4,10 @@ import { Tabs } from '../../components/ui/Tabs'
 import { adminResourceOptions } from '../../components/admin/adminResources'
 import { Button } from '../../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
-import { SyncStatus } from '../../design-system/status/SyncStatus'
 import { MasterDetail } from '../../design-system/layout/MasterDetail'
 import { resourceStore, useCachedResource } from '../../lib/resource'
-import { emptyDraft, errorText, RuleForm, type Draft } from './DiagnosticRuleEditor'
+import { RuleForm } from './DiagnosticRuleEditor'
+import { emptyDraft, errorText, type Draft } from './diagnosticRuleDraft'
 import { unknownDiagnosticApi, type UnknownDiagnostic, type UnknownDiagnosticState } from './unknownDiagnosticApi'
 
 const states = [{ id: 'new', label: 'Новые' }, { id: 'mapped', label: 'Размеченные' }, { id: 'ignored', label: 'Игнорируемые' }]
@@ -34,15 +34,15 @@ export function UnknownDiagnosticInbox({ cachePrefix, active, onAccess, onRuleCr
   const selectionRef = useRef(selected?.id)
   useLayoutEffect(() => { activeRef.current = active; selectionRef.current = selected?.id }, [active, selected?.id])
   const key = `${cachePrefix}${state}:${offset}`
-  const controller = useRef<AbortController | null>(null)
-  const pending = useRef(0)
+  const requestOwner = useRef<{ controller: AbortController; pending: number } | null>(null)
   useEffect(() => {
     alive.current = true
-    const request = new AbortController(); controller.current = request
+    const owner = { controller: new AbortController(), pending: 0 }
+    requestOwner.current = owner
     return () => {
       alive.current = false
-      if (pending.current > 0) resourceStore.invalidate(key)
-      request.abort()
+      if (owner.pending > 0) resourceStore.invalidate(key)
+      owner.controller.abort()
     }
   }, [key])
   const access = (failure: unknown) => {
@@ -55,9 +55,11 @@ export function UnknownDiagnosticInbox({ cachePrefix, active, onAccess, onRuleCr
     }
   }
   const resource = useCachedResource(key, async () => {
-    const signal = controller.current?.signal
-    if (!alive.current || denied.current || signal?.aborted) throw new DOMException('Retired inbox owner', 'AbortError')
-    pending.current++
+    const owner = requestOwner.current
+    if (!owner || !alive.current || denied.current) throw new DOMException('Retired inbox owner', 'AbortError')
+    const signal = owner.controller.signal
+    if (signal.aborted) throw new DOMException('Retired inbox owner', 'AbortError')
+    owner.pending++
     try {
       const page = await unknownDiagnosticApi.list(state, offset, signal)
       if (signal?.aborted || !alive.current || denied.current) throw new DOMException('Retired inbox request', 'AbortError')
@@ -65,7 +67,7 @@ export function UnknownDiagnosticInbox({ cachePrefix, active, onAccess, onRuleCr
     } catch (failure) {
       if (!signal?.aborted) access(failure)
       throw failure
-    } finally { pending.current-- }
+    } finally { owner.pending-- }
   }, { ...adminResourceOptions, enabled: active })
   useEffect(() => {
     if (resource.data) setSelected(current => current ? resource.data!.items.find(item => item.id === current.id) ?? current : null)
@@ -117,7 +119,6 @@ export function UnknownDiagnosticInbox({ cachePrefix, active, onAccess, onRuleCr
   const selectedId = selected?.id
   return <div className="rp-diagnostic-panel">
     <p className="rp-diagnostic-hint">Здесь собраны нераспознанные значения со всех роботов. Одинаковые источник и значение объединены. Наблюдения учитываются не чаще раза в минуту для каждой пары робот–ошибка. Разметьте ошибку, чтобы добавить расшифровку и место на роботе.</p>
-    <SyncStatus {...resource} />
     <Tabs items={states} value={state} onChange={value => { setState(value as UnknownDiagnosticState); setOffset(0) }} />
     {error || resource.error ? <ErrorState title="Не удалось загрузить неизвестные ошибки" description={error || errorText(resource.error)} onRetry={() => { setError(''); void resource.refresh() }} /> : null}
     {notice ? <p role="status">{notice}</p> : null}

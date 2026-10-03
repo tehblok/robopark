@@ -1,8 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { api, type InventoryOverview, type Park } from '../../api'
+import { ApiError, api, type InventoryOverview, type Park } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { InventoryPage } from './InventoryPage'
@@ -10,7 +10,7 @@ import { TaskPartsPanel } from './TaskPartsPanel'
 import { INVENTORY_REVISION_CHANGED } from './inventoryRevision'
 import { resourceStore } from '../../lib/resource'
 
-const park: Park = { id: 7, name: 'Север', tag: 'North', is_active: true }
+const park: Park = { id: 7, name: 'Север', timezone: 'Europe/Moscow', tag: 'North', is_active: true }
 const stock: InventoryOverview = { park_id: 7, component_count: 1, part_count: 1, low_stock_count: 0, out_of_stock_count: 0, components: [{ id: 2, park_id: 7, name: 'Подвязка', has_photo: true, parts: [{ id: 3, park_id: 7, component_id: 2, name: 'Тяга', article: 'TY-001', quantity: '5', minimum_quantity: '2', location: 'Стеллаж A / полка 2', is_active: true, has_photo: true }] }] }
 
 
@@ -156,6 +156,56 @@ it('keeps tabs and export usable when the optional overview KPI request fails', 
   expect(await screen.findByRole('tabpanel')).toHaveTextContent('Выгрузка парка Север')
   expect(screen.getByRole('tablist', { name: 'Разделы склада' })).toBeVisible()
   expect(client.inventory).toHaveBeenCalledWith(7)
+})
+
+it('shows the failed KPI request and retries it without blocking the active tab', async () => {
+  const inventory = vi.fn().mockRejectedValueOnce(new ApiError(503, 'host_unavailable'))
+    .mockResolvedValueOnce(stock)
+  const client = inventoryClient({ inventory })
+  render(renderInventoryPage(park, client, '/inventory?park=7&view=export'))
+
+  const metrics = await screen.findByRole('region', { name: 'Показатели склада' })
+  expect(await within(metrics).findByRole('alert')).toHaveTextContent('Сервис временно недоступен')
+  expect(screen.getByRole('tabpanel')).toHaveTextContent('Выгрузка парка Север')
+  await userEvent.click(within(metrics).getByRole('button', { name: 'Повторить' }))
+  expect(await screen.findByText('Компоненты')).toBeVisible()
+  await waitFor(() => expect(within(metrics).queryByRole('alert')).not.toBeInTheDocument())
+  expect(inventory).toHaveBeenCalledTimes(2)
+})
+
+it('removes protected inventory content after a later overview access denial', async () => {
+  const inventory = vi.fn().mockResolvedValueOnce(stock)
+    .mockRejectedValueOnce(new ApiError(403, 'forbidden'))
+  const client = inventoryClient({
+    inventory,
+    searchInventory: vi.fn(async () => ({ items: [{ id: 3, name: 'Тяга', article: 'TY-001', component_id: 2, component_name: 'Подвязка', quantity: '5', minimum_quantity: '2', location: 'Полка 2', has_photo: false, is_active: true, stock_is_active: true }], limit: 25, offset: 0, total: 1 })),
+    inventoryCatalogComponents: vi.fn(async () => ({ items: [], limit: 200, offset: 0, total: 0 })),
+  })
+  render(renderInventoryPage(park, client, '/inventory?park=7&view=parts'))
+  expect(await screen.findByText('Компоненты')).toBeVisible()
+  expect(await screen.findByText('Полка 2')).toBeVisible()
+
+  window.dispatchEvent(new CustomEvent(INVENTORY_REVISION_CHANGED, { detail: 7 }))
+
+  const metrics = await screen.findByRole('region', { name: 'Показатели склада' })
+  expect(await within(metrics).findByRole('alert')).toHaveTextContent('Нет доступа')
+  expect(screen.queryByText('Компоненты')).not.toBeInTheDocument()
+  expect(screen.queryByText('Полка 2')).not.toBeInTheDocument()
+  expect(screen.queryByRole('tablist', { name: 'Разделы склада' })).not.toBeInTheDocument()
+})
+
+it('labels retained KPIs as stale after a failed refresh', async () => {
+  const inventory = vi.fn().mockResolvedValueOnce(stock)
+    .mockRejectedValueOnce(new ApiError(503, 'host_unavailable'))
+  render(renderInventoryPage(park, inventoryClient({ inventory }), '/inventory?park=7&view=export'))
+  const metrics = await screen.findByRole('region', { name: 'Показатели склада' })
+  expect(await within(metrics).findByText('Компоненты')).toBeVisible()
+
+  window.dispatchEvent(new CustomEvent(INVENTORY_REVISION_CHANGED, { detail: 7 }))
+
+  expect(await within(metrics).findByRole('alert')).toHaveTextContent('Показатели могут устареть')
+  expect(within(metrics).getByText('Компоненты')).toBeVisible()
+  expect(inventory).toHaveBeenCalledTimes(2)
 })
 
 it('writes a selected part off from the current task without rounding int64 input', async () => {

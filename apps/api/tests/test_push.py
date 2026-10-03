@@ -1,7 +1,7 @@
 import time
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import sessionmaker
 from starlette.background import BackgroundTasks
 
@@ -9,7 +9,7 @@ from conftest import login_as, role_id_for
 from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.notification_delivery_models import NotificationDelivery
-from robopark_api.schedule_models import NotificationEvent, ScheduleEntry
+from robopark_api.schedule_models import NotificationEvent, PushSubscription, ScheduleEntry
 from robopark_api.security import hash_password
 from robopark_api.services import notification_delivery, platform_settings
 from robopark_api.services.rbac import RoleSlug
@@ -106,7 +106,7 @@ def test_submit_review_replay_keeps_persisted_reviewer_after_shift_change(
 
     assert response.status_code == replay.status_code == 200
     assert response.json() == replay.json()
-    assert resolved_parks == [seed_park_with_tracker.id, seed_park_with_tracker.id]
+    assert resolved_parks == [seed_park_with_tracker.id]
     assert db_session.query(TaskReview).one().reviewer_user_id == first_operator.id
     notifications = list(
         db_session.scalars(
@@ -175,6 +175,114 @@ def test_push_subscription_and_internal_inbox_do_not_expose_task_text(client, se
     inbox = client.get("/push/inbox").json()
     assert inbox[0]["event_type"] == "operator_comment"
     assert inbox[0]["protected_text"] == "секретный текст тикета"
+
+
+def test_inbox_hides_park_notification_after_access_is_revoked(client, db_session, seed_mechanic):
+    park_id = seed_mechanic.parks[0].id
+    event = client.app.state.push_service.emit_for_tests(
+        event_type="return",
+        park_id=park_id,
+        protected_text="Данные задачи бывшего парка",
+        recipient_user_ids={seed_mechanic.id},
+    )
+    notification_id = f"{event['event_id']}-{seed_mechanic.id}"
+    login_as(client, seed_mechanic.username, "secret")
+    assert [item["id"] for item in client.get("/push/inbox").json()] == [notification_id]
+
+    db_session.execute(
+        delete(UserPark).where(UserPark.user_id == seed_mechanic.id, UserPark.park_id == park_id)
+    )
+    db_session.commit()
+
+    assert client.get("/push/inbox").json() == []
+    assert client.post(f"/push/inbox/{notification_id}/read").status_code == 404
+
+
+def test_push_routes_reject_session_after_user_approval_is_revoked(
+    client, db_session, seed_mechanic
+):
+    event = client.app.state.push_service.emit_for_tests(
+        event_type="return",
+        park_id=seed_mechanic.parks[0].id,
+        protected_text="Текст задачи",
+        recipient_user_ids={seed_mechanic.id},
+    )
+    notification_id = f"{event['event_id']}-{seed_mechanic.id}"
+    login_as(client, seed_mechanic.username, "secret")
+    assert client.get("/push/inbox").status_code == 200
+
+    seed_mechanic.access_status = AccessStatus.pending.value
+    db_session.commit()
+
+    assert client.get("/push/inbox").status_code == 403
+    assert client.post(f"/push/inbox/{notification_id}/read").status_code == 403
+    assert client.get("/push/config").status_code == 403
+
+
+def test_user_can_remove_own_device_subscription_after_approval_is_revoked(
+    client, db_session, seed_mechanic
+):
+    login_as(client, seed_mechanic.username, "secret")
+    subscription_id = client.post(
+        "/push/subscriptions",
+        json={"endpoint": "https://push.example/sub/revoked", "p256dh": "key", "auth": "auth"},
+    ).json()["id"]
+    seed_mechanic.access_status = AccessStatus.pending.value
+    db_session.commit()
+
+    assert client.delete(f"/push/subscriptions/{subscription_id}").status_code == 204
+    assert db_session.get(PushSubscription, subscription_id) is None
+
+
+def test_delayed_targeted_notification_skips_former_park_member(client, db_session, seed_mechanic):
+    park_id = seed_mechanic.parks[0].id
+    db_session.execute(
+        delete(UserPark).where(UserPark.user_id == seed_mechanic.id, UserPark.park_id == park_id)
+    )
+    db_session.commit()
+
+    result = client.app.state.push_service.emit_for_tests(
+        event_type="operator_comment",
+        park_id=park_id,
+        protected_text="Комментарий после смены парка",
+        recipient_user_ids={seed_mechanic.id},
+    )
+
+    assert result["internal_recipient_ids"] == []
+    assert db_session.scalars(select(NotificationEvent)).all() == []
+
+
+def test_inbox_hides_owner_alert_after_role_is_downgraded(client, db_session, seed_royal):
+    event = client.app.state.push_service.emit_for_tests(
+        event_type="server_problem",
+        park_id=None,
+        protected_text="Состояние хоста",
+    )
+    notification_id = f"{event['event_id']}-{seed_royal.id}"
+    login_as(client, seed_royal.username, "secret")
+    assert [item["id"] for item in client.get("/push/inbox").json()] == [notification_id]
+
+    seed_royal.role_id = role_id_for(db_session, RoleSlug.MECHANIC)
+    db_session.commit()
+
+    assert client.get("/push/inbox").json() == []
+    assert client.post(f"/push/inbox/{notification_id}/read").status_code == 404
+
+
+def test_delayed_targeted_notification_skips_changed_role(client, db_session, seed_mechanic):
+    park_id = seed_mechanic.parks[0].id
+    seed_mechanic.role_id = role_id_for(db_session, RoleSlug.OPERATOR)
+    db_session.commit()
+
+    result = client.app.state.push_service.emit_for_tests(
+        event_type="operator_comment",
+        park_id=park_id,
+        protected_text="Комментарий механику",
+        recipient_user_ids={seed_mechanic.id},
+    )
+
+    assert result["internal_recipient_ids"] == []
+    assert db_session.scalars(select(NotificationEvent)).all() == []
 
 
 def test_role_matrix_on_shift_and_mandatory_royal_internal_alert(

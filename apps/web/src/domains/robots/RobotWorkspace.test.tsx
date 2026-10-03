@@ -10,7 +10,7 @@ import { RobotCheckPage } from './RobotCheckPage'
 import { RobotsPage } from './RobotsPage'
 
 const VIN = 'YASADR00000000447'
-const park = { id: 8, name: 'Юг', tag: 'Beta', tracker_queue: 'ROBOPARK' }
+const park = { id: 8, name: 'Юг', timezone: 'Europe/Moscow', tag: 'Beta', tracker_queue: 'ROBOPARK' }
 const user: User = { id: 3, username: 'operator', role: 'operator', access_status: 'approved',
   permissions: ['nav.robot_search', 'nav.tasks', 'nav.emergency', 'tracker.read'], parks: [park] }
 const snapshot: EmergencySnapshot = { vin: VIN, short_number: '447', observed_at: new Date().toISOString(),

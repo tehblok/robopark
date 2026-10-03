@@ -16,10 +16,10 @@ for (const width of [320, 390, 412, 899, 1440]) for (const theme of ['light', 'd
     await settlePage(page)
 
     await expect(page.locator('.classic-task-layout')).toBeVisible()
-    await expect(page.getByTestId('task-workflow-zone')).toBeVisible()
-    await expect(page.getByTestId('task-context-zone')).toBeVisible()
-    await expect(page.getByTestId('task-action-zone')).toBeVisible()
-    await expect(page.getByTestId('task-action-zone').getByRole('button', { name: 'Передать на проверку' })).toBeVisible()
+    await expect(page.locator('.classic-task-layout [data-task-header]')).toBeVisible()
+    await expect(page.locator('.classic-task-layout [data-task-body]')).toBeVisible()
+    await expect(page.getByRole('tablist', { name: 'Разделы задачи' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Передать на проверку' })).toBeVisible()
     await assertResponsiveContracts(page, width)
     await page.screenshot({ path: info.outputPath(`work-classic-${theme}-${width}.png`), fullPage: true, animations: 'disabled' })
 

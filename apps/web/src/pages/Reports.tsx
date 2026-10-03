@@ -1,8 +1,7 @@
-import { SyncStatus } from '../design-system/status/SyncStatus'
 import { quarantineReportPhotoDraft, restoreReportPhotoDraft } from '../domains/reports/reportPhotoDrafts'
-import { useCallback, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, type Park, type Report, type User } from '../api'
+import { api, type Park, type Report, type ReportSummary, type User } from '../api'
 import { useAuth } from '../auth-context'
 import { ReportDetail } from '../components/reports/ReportDetail'
 import { ReportForms } from '../components/reports/ReportForms'
@@ -10,6 +9,7 @@ import { ReportList } from '../components/reports/ReportList'
 import { Alert, Panel } from '../components/PageShell'
 import { EmptyBlock, SkeletonList } from '../components/ui/Feedback'
 import { TabPanel, Tabs } from '../design-system/navigation/Tabs'
+import { PageNavigation } from '../design-system/navigation/PageNavigation'
 import { MasterDetail } from '../design-system/layout/MasterDetail'
 import {
   reportDraftKey,
@@ -26,6 +26,7 @@ type ReportsPane = 'mine' | 'inbox'
 type ReportsStatus = 'all' | 'open' | 'returned' | 'done'
 
 const REPORT_STATUSES = new Set<ReportsStatus>(['all', 'open', 'returned', 'done'])
+const REPORT_PAGE_SIZE = 25
 
 function hasInbox(user: User): boolean {
   return (user.permissions ?? []).includes('reports.resolve')
@@ -94,19 +95,46 @@ function ReportsOwner({
   const statusFilter: ReportsStatus = requestedStatus && REPORT_STATUSES.has(requestedStatus)
     ? requestedStatus
     : 'all'
+  const requestedPage = Number(params.get('page') ?? '1')
+  const requestedAnchor = Number(params.get('anchor'))
+  const anchorId = params.has('anchor') && Number.isSafeInteger(requestedAnchor) && requestedAnchor > 0
+    ? requestedAnchor : undefined
+  const requestedBefore = Number(params.get('before'))
+  const requestedAfter = Number(params.get('after'))
+  const beforeId = params.has('before') && Number.isSafeInteger(requestedBefore) && requestedBefore > 0
+    ? requestedBefore : undefined
+  const afterId = params.has('after') && Number.isSafeInteger(requestedAfter) && requestedAfter > 0
+    ? requestedAfter : undefined
+  const validCursor = beforeId === undefined || afterId === undefined
+  const validPage = Number.isSafeInteger(requestedPage) && requestedPage > 0 && requestedPage <= 40_000 && validCursor && (
+    requestedPage === 1 ? beforeId === undefined && (afterId === undefined || anchorId !== undefined) :
+      anchorId !== undefined && (beforeId !== undefined || afterId !== undefined)
+  )
+  const page = validPage ? requestedPage : 1
   const selectedPark = parks.find((park) => park.id === parkId) ?? null
 
-  const mineKey = `${resourcePrefix}mine`
-  const mineRes = useCachedResource<Report[]>(
+  useEffect(() => {
+    if (validPage) return
+    const next = new URLSearchParams(params)
+    next.delete('page')
+    next.delete('anchor')
+    next.delete('before')
+    next.delete('after')
+    setParams(next, { replace: true })
+  }, [params, setParams, validPage])
+
+  const cursor = validPage ? (beforeId ? `before:${beforeId}` : afterId ? `after:${afterId}` : 'latest') : 'latest'
+  const mineKey = `${resourcePrefix}mine:${statusFilter}:${page}:${anchorId ?? 'latest'}:${cursor}`
+  const mineRes = useCachedResource<ReportSummary[]>(
     mineKey,
-    () => apiClient.reportsMine(),
-    { enabled: (listRoute || detailRoute) && createEnabled && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'mine' ? RESOURCE_REFRESH_MS : 0 },
+    () => apiClient.reportsMine({ limit: afterId ? REPORT_PAGE_SIZE : REPORT_PAGE_SIZE + 1, status: statusFilter, ...(validPage && anchorId ? { anchorId } : {}), ...(validPage && beforeId ? { beforeId } : {}), ...(validPage && afterId ? { afterId } : {}) }),
+    { enabled: (listRoute || detailRoute) && visiblePane === 'mine' && createEnabled && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'mine' ? RESOURCE_REFRESH_MS : 0 },
   )
-  const inboxKey = `${resourcePrefix}inbox`
-  const inboxRes = useCachedResource<Report[]>(
+  const inboxKey = `${resourcePrefix}inbox:${page}:${anchorId ?? 'latest'}:${cursor}`
+  const inboxRes = useCachedResource<ReportSummary[]>(
     inboxKey,
-    () => apiClient.reportsInbox(inboxParkId),
-    { enabled: (listRoute || detailRoute) && inboxEnabled && (leader || parkId != null) && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'inbox' ? RESOURCE_REFRESH_MS : 0 },
+    () => apiClient.reportsInbox(inboxParkId, { limit: afterId ? REPORT_PAGE_SIZE : REPORT_PAGE_SIZE + 1, ...(validPage && anchorId ? { anchorId } : {}), ...(validPage && beforeId ? { beforeId } : {}), ...(validPage && afterId ? { afterId } : {}) }),
+    { enabled: (listRoute || detailRoute) && visiblePane === 'inbox' && inboxEnabled && (leader || parkId != null) && !parksLoading, persist: false, refreshIntervalMs: listRoute && visiblePane === 'inbox' ? RESOURCE_REFRESH_MS : 0 },
   )
   const detailKey = `${resourcePrefix}detail:${parsedReportId ?? 'none'}`
   const detailRes = useCachedResource<Report>(
@@ -128,9 +156,38 @@ function ReportsOwner({
     } else {
       next.delete('pane')
     }
+    next.delete('page')
+    next.delete('anchor')
+    next.delete('before')
+    next.delete('after')
     navigate({ pathname: '/reports', search: searchString(next) })
   }
-  const openReport = (report: Report, actionable: boolean) => {
+  const choosePage = (nextPage: number) => updateSearch(next => {
+    const current = visiblePane === 'mine' ? mineRes.data : inboxRes.data
+    const firstId = current?.[0]?.id
+    const lastId = current?.[Math.min(current.length, REPORT_PAGE_SIZE) - 1]?.id
+    const forward = nextPage > page
+    const cursorId = forward ? lastId : firstId
+    const boundary = anchorId ?? firstId
+    if (!cursorId || !boundary) return
+    next.set('page', String(nextPage))
+    next.set('anchor', String(boundary))
+    if (forward) {
+      next.set('before', String(cursorId))
+      next.delete('after')
+    } else {
+      next.set('after', String(cursorId))
+      next.delete('before')
+    }
+  })
+  const showLatest = () => {
+    const latestKey = visiblePane === 'mine'
+      ? `${resourcePrefix}mine:${statusFilter}:1:latest:latest`
+      : `${resourcePrefix}inbox:1:latest:latest`
+    resourceStore.invalidate(latestKey)
+    updateSearch(next => { next.delete('page'); next.delete('anchor'); next.delete('before'); next.delete('after') })
+  }
+  const openReport = (report: ReportSummary, actionable: boolean) => {
     const next = new URLSearchParams(params)
     if (actionable) next.set('pane', 'inbox')
     else next.delete('pane')
@@ -139,18 +196,19 @@ function ReportsOwner({
   const closeDetail = () => {
     navigate({ pathname: '/reports', search: searchString(params) })
   }
-  const parkNameForReport = (report: Report): string => {
+  const parkNameForReport = (report: ReportSummary): string => {
     if (report.park_id == null) return 'Платформа'
     return parks.find((park) => park.id === report.park_id)?.name ?? `Парк #${report.park_id}`
   }
   const refreshLists = useCallback(async () => {
-    resourceStore.cancelPending(mineKey)
-    resourceStore.cancelPending(inboxKey)
-    await Promise.all([
-      createEnabled ? mineRes.refresh() : Promise.resolve(),
-      inboxEnabled && (leader || parkId != null) ? inboxRes.refresh() : Promise.resolve(),
-    ])
-  }, [createEnabled, inboxEnabled, inboxKey, inboxRes, leader, mineKey, mineRes, parkId])
+    if (visiblePane === 'mine' && createEnabled) {
+      resourceStore.cancelPending(mineKey)
+      await mineRes.refresh()
+    } else if (visiblePane === 'inbox' && inboxEnabled && (leader || parkId != null)) {
+      resourceStore.cancelPending(inboxKey)
+      await inboxRes.refresh()
+    }
+  }, [createEnabled, inboxEnabled, inboxKey, inboxRes, leader, mineKey, mineRes, parkId, visiblePane])
   const handleDetailUpdated = async () => {
     const requestedNavigation = navigation.current
     const isCurrent = () => active.current && navigation.current === requestedNavigation
@@ -164,6 +222,7 @@ function ReportsOwner({
     if (fresh && fresh.status !== 'open') closeDetail()
   }
   const handleCreated = () => {
+    updateSearch(next => { next.delete('page'); next.delete('anchor'); next.delete('before'); next.delete('after') })
     void refreshLists()
     refreshReportsBadge()
   }
@@ -176,10 +235,10 @@ function ReportsOwner({
 
   const mine = mineRes.data ?? []
   const inbox = inboxRes.data ?? []
-  const visibleMine = statusFilter === 'all'
-    ? mine
-    : mine.filter((report) => report.status === statusFilter)
+  const visibleMine = mine.slice(0, REPORT_PAGE_SIZE)
+  const visibleInbox = inbox.slice(0, REPORT_PAGE_SIZE)
   const activeList = visiblePane === 'mine' ? mineRes : inboxRes
+  const hasNextPage = (activeList.data?.length ?? 0) > REPORT_PAGE_SIZE || (validPage && afterId !== undefined)
   const listError = activeList.error ? mapApiError(activeList.error, ru.errors.load) : ''
   const showListSkeleton = activeList.isLoading && !activeList.data && !listError
   const selectedReport = detailRes.data ?? null
@@ -199,7 +258,7 @@ function ReportsOwner({
         <div className="dashboard-toolbar">
           <h1 className="dashboard-title">Создать репорт</h1>
         </div>
-        <div className="report-composition">
+        <div className="report-composition rp-domain-composition">
         <section>{!createEnabled ? (
           <EmptyBlock hint="Для этой роли создание репортов отключено." icon="✉" title="Нет доступа" />
         ) : parkId == null ? (
@@ -225,7 +284,7 @@ function ReportsOwner({
             />
           </Panel></div>
         )}</section>
-        <div><Link className="btn btn-secondary" to={{ pathname: '/reports', search: currentSearch }}>К репортам</Link></div>
+        <div className="rp-page-layout__actions"><Link className="btn btn-secondary" to={{ pathname: '/reports', search: currentSearch }}>К репортам</Link></div>
         </div>
       </div>
     )
@@ -236,7 +295,7 @@ function ReportsOwner({
       <div className="dashboard-toolbar">
         <h1 className="dashboard-title" id="reports-title">{ru.nav.reports}</h1>
       </div>
-      <div className="report-composition">
+      <div className="report-composition rp-domain-composition">
       <section><MasterDetail detailOpen={detailRoute} onBack={closeDetail} list={<div>
       {createEnabled && inboxEnabled && (
         <Tabs
@@ -260,6 +319,10 @@ function ReportsOwner({
               const status = event.target.value as ReportsStatus
               if (status === 'all') next.delete('status')
               else next.set('status', status)
+              next.delete('page')
+              next.delete('anchor')
+              next.delete('before')
+              next.delete('after')
             })}
             value={statusFilter}
           >
@@ -270,8 +333,6 @@ function ReportsOwner({
           </select>
         </label>
       )}
-
-      <SyncStatus {...activeList} />
       {listError && <Alert tone="error">{listError}</Alert>}
 
       {createEnabled && (
@@ -290,6 +351,7 @@ function ReportsOwner({
               selectedId={parsedReportId}
               showReturnComment
             />
+            {visiblePane === 'mine' && <PageNavigation hasNext={hasNextPage} label="Страницы репортов" onChange={choosePage} onReset={anchorId ? showLatest : undefined} page={page} />}
           </Panel>
         </TabPanel>
       )}
@@ -313,10 +375,11 @@ function ReportsOwner({
                 loading={showListSkeleton && visiblePane === 'inbox'}
                 onSelect={(report) => openReport(report, true)}
                 parkNameForReport={parkNameForReport}
-                reports={inbox}
+                reports={visibleInbox}
                 selectedId={parsedReportId}
                 showReturnComment={false}
               />
+              {visiblePane === 'inbox' && <PageNavigation hasNext={hasNextPage} label="Страницы репортов" onChange={choosePage} onReset={anchorId ? showLatest : undefined} page={page} />}
             </Panel>
           )}
         </TabPanel>

@@ -1,21 +1,23 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { ThemeProvider, useTheme } from '../../design-system/theme/ThemeProvider'
+import { ThemeProvider } from '../../design-system/theme/ThemeProvider'
+import { useTheme } from '../../design-system/theme/themeContext'
 import { InspectionMap } from './InspectionMap'
 const mocks = vi.hoisted(() => {
   const map = { setView: vi.fn(), on: vi.fn(), invalidateSize: vi.fn(), remove: vi.fn(), panTo: vi.fn(), stop: vi.fn() }
   const marker = { addTo: vi.fn(), getLatLng: vi.fn(() => ({ lat: 55, lng: 37 })), setLatLng: vi.fn() }
-  return { map, marker, create: vi.fn(), tiles: vi.fn() }
+  const tile = { addTo: vi.fn(), on: vi.fn() }
+  return { map, marker, tile, create: vi.fn(), tiles: vi.fn() }
 })
 vi.mock('leaflet', () => ({ default: { Icon: { Default: { prototype: {}, mergeOptions: vi.fn() } }, map: mocks.create, marker: () => mocks.marker, tileLayer: mocks.tiles } }))
 let reduced = false
 const listeners = new Set<(event: MediaQueryListEvent) => void>()
 function Controls() { const { setPreference } = useTheme(); return <button onClick={() => setPreference('light')}>light</button> }
-function tree(lat = 55, follow = true, onUserPan = vi.fn()) { return <ThemeProvider><Controls /><InspectionMap lat={lat} lon={37} follow={follow} onUserPan={onUserPan} /></ThemeProvider> }
+function tree(lat: number | null = 55, follow = true, onUserPan = vi.fn(), visible = true) { return <ThemeProvider><Controls /><InspectionMap lat={lat} lon={37} follow={follow} onUserPan={onUserPan} visible={visible} /></ThemeProvider> }
 beforeEach(() => {
   vi.clearAllMocks(); reduced = false; listeners.clear(); localStorage.clear()
   mocks.map.setView.mockReturnValue(mocks.map); mocks.create.mockReturnValue(mocks.map)
-  mocks.marker.addTo.mockReturnValue(mocks.marker); mocks.tiles.mockReturnValue({ addTo: vi.fn() })
+  mocks.marker.addTo.mockReturnValue(mocks.marker); mocks.tiles.mockReturnValue(mocks.tile); mocks.tile.on.mockReturnValue(mocks.tile)
   vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduced-motion') ? reduced : query.includes('dark'), addEventListener: (_name: string, cb: (e: MediaQueryListEvent) => void) => { if (query.includes('reduced-motion')) listeners.add(cb) }, removeEventListener: (_name: string, cb: (e: MediaQueryListEvent) => void) => listeners.delete(cb) }))
 })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -29,6 +31,41 @@ it('changes resolved theme on the same map and preserves provider attribution an
   expect(mocks.tiles).toHaveBeenCalledWith('https://tile.openstreetmap.org/{z}/{x}/{y}.png', expect.objectContaining({ attribution: expect.stringContaining('OpenStreetMap'), referrerPolicy: 'strict-origin' }))
   const drag = mocks.map.on.mock.calls.find(call => call[0] === 'dragstart')![1]; drag(); expect(pan).toHaveBeenCalledOnce()
   view.rerender(tree(56, false, pan)); expect(mocks.map.panTo).not.toHaveBeenCalled()
+})
+it('explains failed background tiles while keeping robot coordinates available', () => {
+  render(tree())
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  const tileError = mocks.tile.on.mock.calls.find(call => call[0] === 'tileerror')?.[1]
+  const loading = mocks.tile.on.mock.calls.find(call => call[0] === 'loading')?.[1]
+  expect(tileError).toBeTypeOf('function')
+  act(() => tileError())
+  expect(screen.getByRole('status')).toHaveTextContent('Подложка карты недоступна')
+  expect(screen.getByRole('status')).toHaveTextContent('Координаты робота доступны')
+  expect(screen.getByText(/55\.00000, 37\.00000/)).toBeVisible()
+  act(() => loading())
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
+})
+it('loads map tiles only after first opening the map tab and reuses the map on return', () => {
+  const pan = vi.fn()
+  const view = render(tree(55, true, pan, false))
+  expect(mocks.create).not.toHaveBeenCalled()
+  expect(mocks.tiles).not.toHaveBeenCalled()
+  view.rerender(tree(55, true, pan, true))
+  expect(mocks.create).toHaveBeenCalledOnce()
+  expect(mocks.tiles).toHaveBeenCalledOnce()
+  expect(mocks.marker.addTo).toHaveBeenCalledOnce()
+  view.rerender(tree(55, true, pan, false))
+  view.rerender(tree(55, true, pan, true))
+  expect(mocks.create).toHaveBeenCalledOnce()
+  expect(mocks.tiles).toHaveBeenCalledOnce()
+  expect(mocks.map.remove).not.toHaveBeenCalled()
+})
+it('creates the map when coordinates arrive after an initially empty result', () => {
+  const view = render(tree(null))
+  expect(mocks.create).not.toHaveBeenCalled()
+  view.rerender(tree(55))
+  expect(mocks.create).toHaveBeenCalledOnce()
+  expect(mocks.marker.addTo).toHaveBeenCalledOnce()
 })
 it('reduced motion moves synchronously without RAF and follows without animation', () => {
   reduced = true

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.collaboration_models import TrackerPresence
 from robopark_api.models import User
-from robopark_api.task_workflow_models import ReliableAction
+from robopark_api.task_workflow_models import ReliableAction, TaskMessage
 
 
 def _begin(db, actor, *, key="claim-0001", payload=None):
@@ -258,3 +258,48 @@ def test_retry_needs_attention_preserves_attempt_history_and_makes_actions_due(
     assert row.attempts == 4
     assert row.next_attempt_at == 100.0
     assert row.lease_until is None
+
+
+def test_retry_does_not_replay_action_rejected_after_ticket_closed(
+    db_session,
+    seed_mechanic,
+):
+    from robopark_api.services.reliable_actions import retry_needs_attention
+
+    row = _begin(db_session, seed_mechanic, key="closed-cycle-action").row
+    row.state = "needs_attention"
+    row.error_code = "task_already_closed"
+    db_session.commit()
+
+    assert retry_needs_attention(db_session, resource_id="SDCFLEETOPS-1", now=100.0) == 0
+    assert row.state == "needs_attention"
+
+
+def test_retry_only_targets_actions_after_latest_confirmed_closure(
+    db_session,
+    seed_mechanic,
+):
+    from robopark_api.services.reliable_actions import retry_needs_attention
+
+    old = _begin(db_session, seed_mechanic, key="attention-before-close").row
+    old.state = "needs_attention"
+    old.error_code = "timeout"
+    db_session.add(
+        TaskMessage(
+            id="close-marker-1",
+            issue_key="SDCFLEETOPS-1",
+            kind="system",
+            author_user_id=None,
+            author_name="Tracker",
+            text="Задача закрыта",
+            external_id="tracker-external-close:close-marker-1",
+            sync_state="synced",
+            visibility="participants",
+            created_at=old.created_at + 1,
+            updated_at=old.created_at + 1,
+        )
+    )
+    db_session.commit()
+
+    assert retry_needs_attention(db_session, resource_id="SDCFLEETOPS-1", now=100.0) == 0
+    assert old.state == "needs_attention"

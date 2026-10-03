@@ -6,7 +6,7 @@ import { installMatchMedia, renderApp, testUser } from '../../test/renderApp'
 import { ROUTE_ELEMENTS } from './AppRouter'
 import { resourceStore } from '../../lib/resource'
 
-const north = { id: 7, name: 'Северный', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
+const north = { id: 7, name: 'Северный', timezone: 'Europe/Moscow', tag: 'north', tracker_queue: 'ROBOPARK', is_active: true }
 
 describe('AppRouter', () => {
   beforeEach(() => {
@@ -34,7 +34,8 @@ describe('AppRouter', () => {
     }))
 
     expect(screen.getByText('Загрузка…')).toBeVisible()
-    expect(await screen.findByRole('heading', { name: 'Работа' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Работа' }, { timeout: 3_000 })).toBeVisible()
+    expect(document.title).toBe('Работа · Робопарк Сервис')
   })
 
   it('keeps the fresh shell resource across a real route transition', async () => {
@@ -52,6 +53,7 @@ describe('AppRouter', () => {
 
     await user.click(screen.getAllByRole('link', { name: 'Роботы' })[0])
     await screen.findByRole('heading', { name: 'Роботы' })
+    expect(document.title).toBe('Роботы · Робопарк Сервис')
     expect(badge).toHaveBeenCalledTimes(1)
     await user.click(screen.getByRole('button', { name: 'Ещё' }))
     expect(screen.queryByRole('radiogroup', { name: 'Интерфейс' })).not.toBeInTheDocument()
@@ -72,6 +74,9 @@ describe('AppRouter', () => {
       }))
       expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось открыть экран')
       expect(screen.getByRole('link', { name: 'Перезагрузить страницу' })).toHaveAttribute('href', window.location.href)
+      await userEvent.click(screen.getAllByRole('link', { name: 'Обзор' })[0])
+      expect(await screen.findByRole('heading', { name: 'Что требует решения сейчас' })).toBeVisible()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     } finally {
       ROUTE_ELEMENTS.work = original
     }
@@ -80,7 +85,7 @@ describe('AppRouter', () => {
   it('renders the Overview screen at its canonical URL without losing park scope', async () => {
     renderApp('/overview?park=7', testUser({ permissions: ['nav.dashboard', 'tracker.read'], parks: [north] }))
 
-    expect(await screen.findByRole('heading', { name: 'Смена / Обзор' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Что требует решения сейчас' })).toBeVisible()
     expect(screen.getByTestId('location')).toHaveTextContent('/overview?park=7')
   })
 
@@ -117,6 +122,7 @@ describe('AppRouter', () => {
   it.each([
     ['/tasks?park=7&status=open', '/work?park=7&status=open', 'Работа'],
     ['/robots/search?q=447&park=7', '/robots?q=447&park=7', 'Роботы'],
+    ['/map?park=7', '/robots?park=7', 'Роботы'],
     ['/work/ROBOPARK-42?park=7&status=open', '/work/ROBOPARK-42?park=7&status=open', 'Работа'],
     ['/robots/YASADR00000000447/check?park=7&tab=map', '/robots/YASADR00000000447?park=7&tab=map', 'Проверка робота'],
     ['/robots/YASADR00000000447?park=7', '/robots/YASADR00000000447?park=7', 'Проверка робота'],
@@ -166,7 +172,7 @@ describe('AppRouter', () => {
       permissions: ['nav.dashboard'],
       parks: [north],
     }))
-    expect(await screen.findByRole('heading', { name: 'Смена / Обзор' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Что требует решения сейчас' })).toBeVisible()
 
     app.rerenderAuth(null)
 
@@ -252,7 +258,7 @@ describe('AppRouter', () => {
   })
 
   it('renders operator and admin targets together in the royal inbox', async () => {
-    const south = { id: 9, name: 'Южный', tag: 'south', tracker_queue: 'SOUTH', is_active: true }
+    const south = { id: 9, name: 'Южный', timezone: 'Europe/Moscow', tag: 'south', tracker_queue: 'SOUTH', is_active: true }
     const operatorTarget = {
       id: 31, kind: 'mechanic_problem' as const, status: 'open' as const, park_id: 7,
       author_user_id: 2, target_role: 'operator', tracker_key: null, tracker_url: null,
@@ -287,8 +293,8 @@ describe('AppRouter', () => {
     expect(await screen.findByRole('button', { name: 'Открыть репорт Нужен оператор' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Открыть репорт Нужен администратор' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Открыть репорт Cookie требует внимания' })).toBeVisible()
-    expect(api.reportsInbox).toHaveBeenCalledWith(undefined)
-    expect(api.reportsInbox).not.toHaveBeenCalledWith(7)
+    expect(api.reportsInbox).toHaveBeenCalledWith(undefined, { limit: 26 })
+    expect(api.reportsInbox).not.toHaveBeenCalledWith(7, expect.anything())
   })
 
   it('shows a parkless cookie alert to royal even when no active parks exist', async () => {
@@ -310,7 +316,7 @@ describe('AppRouter', () => {
 
     expect(await screen.findByRole('button', { name: 'Открыть репорт Cookie требует внимания' })).toBeVisible()
     expect(screen.queryByText('Выберите парк в верхней панели')).not.toBeInTheDocument()
-    expect(api.reportsInbox).toHaveBeenCalledWith(undefined)
+    expect(api.reportsInbox).toHaveBeenCalledWith(undefined, { limit: 26 })
   })
 
   it('restores the report pane and author status filter from the canonical URL', async () => {
@@ -367,7 +373,7 @@ describe('AppRouter', () => {
 
   it('labels an author report with its own park rather than the current shell park', async () => {
     const actor = userEvent.setup()
-    const south = { id: 8, name: 'Южный', tag: 'south', tracker_queue: 'SOUTH', is_active: true }
+    const south = { id: 8, name: 'Южный', timezone: 'Europe/Moscow', tag: 'south', tracker_queue: 'SOUTH', is_active: true }
     const report = {
       id: 19, kind: 'mechanic_problem' as const, status: 'open' as const, park_id: 8,
       author_user_id: 1, target_role: 'operator', tracker_key: null, tracker_url: null,

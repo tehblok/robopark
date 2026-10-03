@@ -107,6 +107,15 @@ export function statusTone(
   return 'open'
 }
 
+const ISSUE_TYPE_LABELS: Record<string, string> = {
+  task: 'Задача',
+  bug: 'Ошибка',
+  subtask: 'Подзадача',
+  story: 'История',
+  epic: 'Эпик',
+}
+
 export function issueTypeLabel(type?: string | null): string {
-  return (type || '').trim()
+  const value = (type || '').trim()
+  return ISSUE_TYPE_LABELS[value.toLowerCase()] ?? value
 }

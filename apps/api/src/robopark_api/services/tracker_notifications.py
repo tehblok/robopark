@@ -6,12 +6,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from time import monotonic
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -280,6 +282,7 @@ def _update_state(
     error: str | None = None,
     release: bool = False,
     lease_seconds: float,
+    verified: bool = True,
 ) -> bool:
     now = datetime.now(UTC)
     values: dict = {
@@ -289,7 +292,8 @@ def _update_state(
     }
     if cursor is not None:
         values["cursor_value"] = _encode_cursor(cursor)
-        values["last_success_at"] = now
+        if verified:
+            values["last_success_at"] = now
     with session_factory() as db:
         result = db.execute(
             update(TrackerNotificationCursor)
@@ -322,7 +326,10 @@ def _search_query(queues: list[str], cursor: tuple[datetime, str] | None) -> str
     )
     created_clause = ""
     if cursor is not None:
-        created = cursor[0].isoformat().replace("+00:00", "Z")
+        # Tracker query language accepts local "YYYY-MM-DD HH:MM:SS", not an
+        # ISO timestamp. The token account's query timezone is configurable.
+        zone = ZoneInfo(os.environ.get("TRACKER_QUERY_TIMEZONE") or "Europe/Moscow")
+        created = cursor[0].astimezone(zone).strftime("%Y-%m-%d %H:%M:%S")
         created_clause = f'Created: > "{created}"'
         if cursor[1]:
             created_clause = (
@@ -372,6 +379,9 @@ def poll_tracker_notifications(
     """Process one bounded Tracker page, returning emitted event count."""
     if lease_seconds < poll_deadline_seconds + max_operation_seconds:
         raise ValueError("tracker_notification_lease_too_short")
+    token, queues = _query_context(session_factory)
+    if not token or not queues:
+        return 0
     deadline = monotonic() + poll_deadline_seconds
     claimed = _claim(
         session_factory,
@@ -390,20 +400,11 @@ def poll_tracker_notifications(
             error=None,
             release=True,
             lease_seconds=lease_seconds,
+            verified=False,
         )
         return 0
     emitted = 0
     try:
-        token, queues = _query_context(session_factory)
-        if not token or not queues:
-            _update_state(
-                session_factory,
-                owner_id=owner_id,
-                error=None,
-                release=True,
-                lease_seconds=lease_seconds,
-            )
-            return 0
         issues = tracker_cache.search_issue_page(
             token=token,
             query=_search_query(queues, cursor),

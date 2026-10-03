@@ -13,6 +13,7 @@ import tempfile
 from collections.abc import Mapping
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from itertools import islice
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -578,12 +579,16 @@ def _storage_retention_check(paths: HostPaths) -> CheckResult:
     completed = value.get("completed_at")
     completed = completed if isinstance(completed, int | float) else "unknown"
     blocked = value.get("blocked") is True
+    busy = value.get("busy") is True
     pressure = value.get("pressure") is True
-    status = "failed" if blocked or pressure else "ok"
+    status = "failed" if pressure or blocked and not busy else "warning" if busy else "ok"
+    message = f"Автоочистка: категория {category}; последняя уборка {completed}"
+    if status == "warning":
+        message += "; отложена до завершения текущей операции"
     return CheckResult(
         "storage_retention",
         status,
-        f"Автоочистка: категория {category}; последняя уборка {completed}",
+        message,
         None,
     )
 
@@ -732,9 +737,49 @@ def _publish_service_health(paths: HostPaths, report: DiagnosticReport) -> None:
             "docker": state("docker_daemon", "compose", "containers"),
             "tuna": state("tuna_inactive", "tuna_route"),
             "internet": state("dns", "outbound_https"),
+            "wifi": _wifi_service_state(),
         },
         services_checked_at=report.created_at,
     )
+
+
+def _wifi_service_state(
+    wireless_path: Path = Path("/proc/net/wireless"),
+    net_path: Path = Path("/sys/class/net"),
+) -> str:
+    """Read Linux Wi-Fi link state without publishing interface or network names."""
+    try:
+        with wireless_path.open(encoding="ascii", errors="replace") as stream:
+            rows = stream.read(8192).splitlines()[2:]
+    except OSError:
+        rows = []
+    names = []
+    for row in rows[:32]:
+        match = re.match(r"^\s*([a-zA-Z0-9_.-]{1,32}):", row)
+        if match is not None:
+            names.append(match.group(1))
+    if not names:
+        try:
+            for entry in islice(net_path.iterdir(), 64):
+                if re.fullmatch(r"[a-zA-Z0-9_.-]{1,32}", entry.name) and (
+                    (entry / "phy80211").exists() or (entry / "wireless").exists()
+                ):
+                    names.append(entry.name)
+        except OSError:
+            return "unknown"
+    states = []
+    for name in names:
+        try:
+            states.append((net_path / name / "operstate").read_text().strip())
+        except OSError:
+            states.append("unknown")
+    if not states:
+        return "unknown"
+    if "up" in states:
+        return "ok"
+    if all(value in {"down", "dormant", "lowerlayerdown", "notpresent"} for value in states):
+        return "degraded"
+    return "unknown"
 
 
 def _release_metadata(paths: HostPaths) -> dict[str, str | None]:

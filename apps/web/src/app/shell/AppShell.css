@@ -1,88 +1,163 @@
-/* Shared controls rendered by AppShell portals. Never add page-shell geometry here. */
+/* The menu is portalled outside the shell, so its visual language lives here. */
 .rp-shell-controls {
   color: var(--rp-text);
   display: grid;
-  gap: var(--rp-density-gap);
+  gap: var(--rp-space-6);
   min-width: 0;
 }
 
-.rp-shell-controls .rp-shell__more-nav,
-.rp-shell-controls .rp-shell__preference-group {
+.rp-shell-controls .rp-shell__more-nav {
   display: grid;
-  gap: var(--rp-density-gap);
+  gap: var(--rp-space-2);
+  min-width: 0;
+}
+
+.rp-shell-controls .rp-shell__menu-heading {
+  color: var(--rp-text-muted);
+  font-size: var(--rp-font-size-caption);
+  font-weight: var(--rp-font-weight-bold);
+  letter-spacing: .08em;
+  line-height: 1.3;
+  margin: 0 0 var(--rp-space-1);
+  text-transform: uppercase;
 }
 
 .rp-shell-controls .rp-shell__more-link {
   align-items: center;
-  border: 1px solid var(--rp-border);
-  border-radius: var(--rp-radius-control);
-  color: var(--rp-text-muted);
-  display: flex;
-  gap: var(--rp-space-2);
-  min-height: var(--rp-control-min-size);
-  padding: var(--rp-space-2) var(--rp-space-3);
-  text-decoration: none;
-}
-
-.rp-shell-controls button.rp-shell__more-link {
   background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--rp-radius-control);
+  color: var(--rp-text);
+  display: flex;
+  gap: var(--rp-space-3);
+  min-height: var(--rp-touch-primary-min-size);
+  min-width: 0;
+  padding: var(--rp-space-3);
   text-align: left;
+  text-decoration: none;
   width: 100%;
 }
 
 .rp-shell-controls .rp-shell__more-link:hover {
   background: var(--rp-state-hover);
-  color: var(--rp-text);
   text-decoration: none;
 }
 
 .rp-shell-controls .rp-shell__more-link.is-active {
-  background: var(--rp-state-selected);
+  background: transparent;
+  border-color: transparent;
+  border-inline-start-color: var(--rp-action);
+  border-inline-start-width: 3px;
   color: var(--rp-text);
   font-weight: var(--rp-font-weight-bold);
+  padding-inline-start: calc(var(--rp-space-3) - 2px);
 }
 
-.rp-shell-controls .rp-shell__nav-label {
-  flex: 1;
-  min-width: 0;
-}
+.rp-shell-controls .rp-shell__more-link.is-active > svg { color: var(--rp-action); }
+.rp-shell-controls .rp-shell__nav-label { flex: 1; min-width: 0; }
 
 .rp-shell-controls .rp-shell__badge {
   background: var(--rp-critical);
-  border-radius: 999px;
+  border-radius: var(--rp-radius-chip);
   color: var(--rp-critical-on);
-  font-size: var(--rp-font-size-body);
+  font-size: var(--rp-font-size-caption);
   min-width: var(--rp-space-6);
   padding: var(--rp-space-1) var(--rp-space-2);
   text-align: center;
 }
 
 .rp-shell-controls .rp-shell__preference-group {
-  border: 1px solid var(--rp-border);
-  border-radius: var(--rp-radius-control);
+  border: 0;
+  display: grid;
+  gap: var(--rp-space-2);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0;
-  padding: var(--rp-density-panel-padding);
+  min-width: 0;
+  padding: 0;
 }
 
 .rp-shell-controls .rp-shell__preference-group legend {
+  color: var(--rp-text-muted);
+  font-size: var(--rp-font-size-caption);
   font-weight: var(--rp-font-weight-bold);
-  padding: 0 var(--rp-space-1);
+  letter-spacing: .08em;
+  margin-bottom: var(--rp-space-3);
+  padding: 0;
+  text-transform: uppercase;
 }
 
 .rp-shell-controls .rp-shell__preference-group label {
   align-items: center;
+  background: var(--rp-surface-sunken);
+  border: 1px solid var(--rp-divider);
+  border-radius: var(--rp-radius-control);
+  color: var(--rp-text);
+  cursor: pointer;
   display: flex;
-  gap: var(--rp-space-2);
+  justify-content: center;
   min-height: var(--rp-control-min-size);
+  min-width: 0;
+  padding: var(--rp-space-2);
+  position: relative;
+  text-align: center;
+}
+
+.rp-shell-controls .rp-shell__preference-group label:hover { border-color: var(--rp-action); }
+
+.rp-shell-controls .rp-shell__preference-group label:has(input:checked) {
+  background: var(--rp-state-selected);
+  border-color: var(--rp-action);
+  color: var(--rp-text);
+  font-weight: var(--rp-font-weight-bold);
+}
+
+.rp-shell-controls .rp-shell__preference-group label:has(input:focus-visible) {
+  outline: 2px solid var(--rp-focus);
+  outline-offset: 2px;
 }
 
 .rp-shell-controls .rp-shell__preference-group input {
-  flex: 0 0 20px;
-  width: 20px;
-  height: 20px;
-  min-height: 20px;
-  min-width: 20px;
+  appearance: none;
+  cursor: inherit;
+  height: 100%;
+  inset: 0;
   margin: 0;
+  min-height: 0;
+  min-width: 0;
+  opacity: 0;
+  position: absolute;
+  width: 100%;
+}
+
+.rp-shell-controls .rp-shell__preference-group:has(input[name='rp-density']) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.rp-shell-controls .rp-shell__accent-group {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.rp-shell-controls .rp-shell__accent-group label {
+  flex-direction: column;
+  font-size: var(--rp-font-size-caption);
+  gap: var(--rp-space-1);
+  justify-content: center;
+  line-height: var(--rp-line-height-compact);
+  padding-inline: var(--rp-space-1);
+}
+
+.rp-shell-controls .rp-shell__accent-group [data-accent-option='olive'] { --rp-accent-choice: #6b7f43; }
+.rp-shell-controls .rp-shell__accent-group [data-accent-option='blue'] { --rp-accent-choice: #3b82f6; }
+.rp-shell-controls .rp-shell__accent-group [data-accent-option='violet'] { --rp-accent-choice: #8b5cf6; }
+.rp-shell-controls .rp-shell__accent-group [data-accent-option='warm'] { --rp-accent-choice: #c45a24; }
+
+.rp-shell-controls .rp-shell__accent-swatch {
+  background: var(--rp-accent-choice);
+  border: 1px solid rgb(0 0 0 / 18%);
+  border-radius: 50%;
+  flex: 0 0 auto;
+  height: 1rem;
+  width: 1rem;
 }
 
 .rp-shell-controls .rp-shell__preference-group p,
@@ -90,3 +165,6 @@
   color: var(--rp-text-muted);
   margin: 0;
 }
+
+.rp-shell-controls > .rp-button { justify-self: start; }
+.rp-shell-controls .rp-shell__about { font-size: var(--rp-font-size-caption); }

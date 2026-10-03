@@ -43,6 +43,17 @@ it('renders one chronological chat and keeps attachments inside their message', 
   expect(screen.queryByRole('heading', { name: 'История действий' })).not.toBeInTheDocument()
 })
 
+it('explains why an old-cycle draft will not be resent into reopened Tracker work', () => {
+  render(<TaskTimeline items={[{
+    id: 'old-cycle', kind: 'user', author: 'Анна', text: 'Фото и описание ремонта',
+    created_at: '2026-09-15T10:00:00Z', sync_state: 'needs_attention',
+    delivery_note: 'previous_cycle_not_sent', attachments: [],
+  }]} />)
+
+  expect(screen.getByText('Фото и описание ремонта')).toBeVisible()
+  expect(screen.getByText(/предыдущего цикла.*не отправлено в Tracker/i)).toBeVisible()
+})
+
 it('renders a local image thumbnail and revokes its object URL', async () => {
   const fetchAttachment = vi.fn(async () => new Response('photo', {
     headers: { 'Content-Type': 'image/jpeg' },

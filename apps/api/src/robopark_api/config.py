@@ -16,13 +16,13 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/robopark.db"
     session_cookie_name: str = "robopark_session"
     #: Sliding idle timeout: no authenticated request for this long → re-login.
-    session_idle_seconds: int = 60 * 60 * 24 * 3
+    session_idle_seconds: int = Field(default=60 * 60 * 24 * 3, gt=0)
     #: Hard cap from login (also Max-Age when remember_me is set).
-    session_absolute_ttl_seconds: int = 60 * 60 * 24 * 30
+    session_absolute_ttl_seconds: int = Field(default=60 * 60 * 24 * 30, gt=0)
     #: Do not rewrite expires_at on every request (SQLite write load).
-    session_slide_min_interval_seconds: int = 60 * 60
+    session_slide_min_interval_seconds: int = Field(default=60 * 60, ge=0)
     cookie_secure: bool = False
-    cookie_samesite: str = "lax"
+    cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     cors_origins: str = "http://localhost:5173"
     operator_shared_password: str | None = None
     seed_username: str | None = None
@@ -43,18 +43,20 @@ class Settings(BaseSettings):
     ops_job_ttl_seconds: int = 2 * 60 * 60
 
     # --- Password policy -------------------------------------------------
-    password_min_length: int = 12
+    password_min_length: int = Field(default=12, ge=8, le=128)
     password_require_complexity: bool = True
 
     # --- Brute-force protection -----------------------------------------
     #: Failed attempts (per username+IP) before temporary lockout.
-    login_max_attempts: int = 5
+    login_max_attempts: int = Field(default=5, ge=1, le=1_000)
+    #: Failed logins across all usernames from one IP (shared NAT gets a wider budget).
+    login_ip_max_attempts: int = Field(default=30, ge=1, le=10_000)
     #: Rolling window in which failures are counted.
-    login_attempt_window_seconds: int = 300
+    login_attempt_window_seconds: int = Field(default=300, gt=0)
     #: Lockout duration once the threshold is reached.
-    login_lockout_seconds: int = 900
+    login_lockout_seconds: int = Field(default=900, gt=0)
     #: Registration attempts allowed per IP inside the same window.
-    register_max_attempts: int = 10
+    register_max_attempts: int = Field(default=10, ge=1, le=1_000)
 
     # --- Session hygiene --------------------------------------------------
     #: How often expired sessions are purged from the database.
@@ -91,6 +93,9 @@ class Settings(BaseSettings):
     ops_dir: str | None = None
     #: Installed host bridge mount; unset for manual Compose installations.
     ops_host_root: str | None = None
+    terminal_broker_socket: str | None = None
+    terminal_allowed_origins: str | None = None
+    terminal_allow_loopback_http: bool = False
     #: Cross-process live-merge blobs (default: ``<sqlite-dir>/live-merge``).
     live_merge_dir: str | None = None
     #: Staged Tracker upload copies (production: under the measured /data mount).

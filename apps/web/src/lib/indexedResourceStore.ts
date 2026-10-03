@@ -6,9 +6,12 @@ const DB_VERSION = 1
 
 export type AccountScope = {
   account: string
+  principal?: string
+  accessStatus?: string
   role: string
   permissions: string
   park: string
+  parkAccess?: string
   schema: number
 }
 
@@ -39,7 +42,7 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
 }
 
 function scopeKey(scope: AccountScope): string {
-  return [scope.account, scope.role, scope.permissions, scope.park, String(scope.schema)]
+  return [scope.account, scope.principal ?? '', scope.accessStatus ?? '', scope.role, scope.permissions, scope.park, scope.parkAccess ?? '', String(scope.schema)]
     .map(value => encodeURIComponent(value)).join('|')
 }
 
@@ -80,6 +83,22 @@ export class IndexedResourceStore {
     await result.purgeOtherScopes()
     await result.prune()
     return result
+  }
+
+  static async clearAll(): Promise<void> {
+    if (typeof indexedDB === 'undefined') return
+    const request = indexedDB.open(DATABASE, DB_VERSION)
+    request.onupgradeneeded = () => {
+      const store = request.result.createObjectStore(STORE, { keyPath: 'id' })
+      store.createIndex('scope', 'scope', { unique: false })
+    }
+    const db = await requestResult(request)
+    try {
+      if (!db.objectStoreNames.contains(STORE)) return
+      const transaction = db.transaction(STORE, 'readwrite')
+      transaction.objectStore(STORE).clear()
+      await transactionDone(transaction)
+    } finally { db.close() }
   }
 
   captureGeneration(): number { return this.generation }
@@ -159,7 +178,7 @@ export class IndexedResourceStore {
     return { entries: entries.length, bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0) }
   }
 
-  close(): void { this.db.close() }
+  close(): void { this.generation += 1; this.db.close() }
 
   private async put(entry: Entry): Promise<void> {
     const transaction = this.db.transaction(STORE, 'readwrite')

@@ -4,7 +4,7 @@ from threading import Barrier
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
@@ -98,6 +98,286 @@ def test_employee_creates_only_own_bulk_and_pattern_in_device_timezone(
     )
 
 
+def test_single_schedule_create_replays_one_entry_and_rejects_changed_payload(
+    client, db_session, seed_mechanic, seed_park_with_tracker
+):
+    login_as(client, seed_mechanic.username, "secret")
+    payload = {
+        **_interval(),
+        "park_id": seed_park_with_tracker.id,
+        "idempotency_key": "single-shift-request-0001",
+    }
+
+    first = client.post("/schedules", json=payload)
+    replay = client.post("/schedules", json=payload)
+    changed = client.post("/schedules", json={**payload, "kind": "vacation"})
+
+    assert first.status_code == replay.status_code == 201
+    assert first.json() == replay.json()
+    assert changed.status_code == 409
+    assert (
+        len(
+            list(
+                db_session.scalars(
+                    select(ScheduleEntry).where(
+                        ScheduleEntry.park_id == seed_park_with_tracker.id,
+                        ScheduleEntry.owner_user_id == seed_mechanic.id,
+                    )
+                )
+            )
+        )
+        == 1
+    )
+
+
+def test_single_schedule_retry_after_lost_response_keeps_one_entry(
+    client, db_session, monkeypatch, seed_mechanic, seed_park_with_tracker
+):
+    login_as(client, seed_mechanic.username, "secret")
+    payload = {
+        **_interval(),
+        "park_id": seed_park_with_tracker.id,
+        "idempotency_key": "single-shift-lost-response-0001",
+    }
+    real_commit = db_session.commit
+    raised = False
+
+    def ambiguous_commit():
+        nonlocal raised
+        real_commit()
+        if not raised:
+            raised = True
+            raise RuntimeError("response_lost_after_commit")
+
+    monkeypatch.setattr(db_session, "commit", ambiguous_commit)
+    with pytest.raises(RuntimeError, match="response_lost_after_commit"):
+        client.post("/schedules", json=payload)
+    monkeypatch.setattr(db_session, "commit", real_commit)
+
+    replay = client.post("/schedules", json=payload)
+    assert replay.status_code == 201
+    assert (
+        len(
+            list(
+                db_session.scalars(
+                    select(ScheduleEntry).where(
+                        ScheduleEntry.park_id == seed_park_with_tracker.id,
+                        ScheduleEntry.owner_user_id == seed_mechanic.id,
+                    )
+                )
+            )
+        )
+        == 1
+    )
+
+
+def test_schedule_edit_and_delete_retry_without_overwriting_newer_revision(
+    client, db_session, seed_mechanic, seed_park_with_tracker
+):
+    login_as(client, seed_mechanic.username, "secret")
+    created = client.post("/schedules", json={**_interval(), "park_id": seed_park_with_tracker.id})
+    assert created.status_code == 201
+    entry_id = created.json()["id"]
+    revision = created.json()["updated_at"]
+    edit = {
+        "kind": "vacation",
+        "base_revision": revision,
+        "idempotency_key": "schedule-edit-retry-0001",
+    }
+
+    changed = client.patch(f"/schedules/{entry_id}", json=edit)
+    replay = client.patch(f"/schedules/{entry_id}", json=edit)
+    altered_replay = client.patch(f"/schedules/{entry_id}", json={**edit, "kind": "sick"})
+    stale = client.patch(
+        f"/schedules/{entry_id}",
+        json={
+            **edit,
+            "idempotency_key": "schedule-edit-stale-0002",
+        },
+    )
+
+    assert changed.status_code == replay.status_code == 200
+    assert changed.json() == replay.json()
+    assert altered_replay.status_code == stale.status_code == 409
+    assert db_session.get(ScheduleEntry, entry_id).kind == "vacation"
+
+    delete_params = {
+        "base_revision": changed.json()["updated_at"],
+        "idempotency_key": "schedule-delete-retry-0001",
+    }
+    removed = client.delete(f"/schedules/{entry_id}", params=delete_params)
+    removed_again = client.delete(f"/schedules/{entry_id}", params=delete_params)
+
+    assert removed.status_code == removed_again.status_code == 204
+    assert db_session.get(ScheduleEntry, entry_id) is None
+
+
+def test_driver_can_create_only_own_schedule_template(client, db_session, seed_park_with_tracker):
+    driver = _add_user(
+        db_session,
+        username="schedule-driver",
+        role=RoleSlug.DRIVER,
+        park_id=seed_park_with_tracker.id,
+    )
+    login_as(client, driver.username, "secret")
+
+    response = client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(
+            seed_park_with_tracker.id,
+            [driver.id],
+            pattern="none",
+            idempotency_key="driver-own-pattern-0001",
+        ),
+    )
+
+    assert response.status_code == 201
+    assert {item["owner_user_id"] for item in response.json()} == {driver.id}
+
+
+def test_pending_user_cannot_read_or_create_schedule(client, db_session, seed_park_with_tracker):
+    pending = _add_user(
+        db_session,
+        username="pending-schedule-actor",
+        role=RoleSlug.MECHANIC,
+        park_id=seed_park_with_tracker.id,
+    )
+    pending.access_status = AccessStatus.pending.value
+    db_session.commit()
+    login_as(client, pending.username, "secret")
+
+    assert client.get(f"/schedules?park_id={seed_park_with_tracker.id}").status_code == 403
+    assert (
+        client.post(
+            "/schedules", json={**_interval(), "park_id": seed_park_with_tracker.id}
+        ).status_code
+        == 403
+    )
+
+
+def test_removed_park_member_cannot_update_or_delete_old_schedule(
+    client, db_session, seed_mechanic, seed_park_with_tracker
+):
+    login_as(client, seed_mechanic.username, "secret")
+    created = client.post("/schedules", json={**_interval(), "park_id": seed_park_with_tracker.id})
+    assert created.status_code == 201
+    entry_id = created.json()["id"]
+    series = client.post(
+        "/schedules/bulk",
+        json={
+            **_interval(),
+            "park_id": seed_park_with_tracker.id,
+            "owner_user_ids": [seed_mechanic.id],
+            "repeat_count": 2,
+            "repeat_every_days": 7,
+        },
+    )
+    assert series.status_code == 201
+    series_id = series.json()[0]["series_id"]
+
+    membership = db_session.scalar(
+        select(UserPark).where(
+            UserPark.user_id == seed_mechanic.id,
+            UserPark.park_id == seed_park_with_tracker.id,
+        )
+    )
+    db_session.delete(membership)
+    db_session.commit()
+
+    changed = client.patch(f"/schedules/{entry_id}", json={"kind": "vacation"})
+    removed = client.delete(f"/schedules/{entry_id}")
+    removed_series = client.delete(f"/schedules/series/{series_id}")
+
+    assert changed.status_code == 403
+    assert removed.status_code == 403
+    assert removed_series.status_code == 403
+    row = db_session.get(ScheduleEntry, entry_id)
+    assert row is not None
+    assert row.kind == "shift"
+    assert (
+        len(
+            list(
+                db_session.scalars(
+                    select(ScheduleEntry).where(
+                        ScheduleEntry.series_id == series_id,
+                    )
+                )
+            )
+        )
+        == 2
+    )
+
+
+def test_pattern_and_copy_replay_recheck_current_park_access(
+    client, db_session, seed_mechanic, seed_park_with_tracker
+):
+    login_as(client, seed_mechanic.username, "secret")
+    park_id = seed_park_with_tracker.id
+    pattern = _pattern_payload(
+        park_id,
+        [seed_mechanic.id],
+        pattern="none",
+        idempotency_key="pattern-revoked-replay-0001",
+    )
+    copied = {
+        "park_id": park_id,
+        "owner_user_ids": [seed_mechanic.id],
+        "source_start": "2026-09-03T00:00:00+03:00",
+        "source_end": "2026-09-04T00:00:00+03:00",
+        "target_start": "2026-09-10T00:00:00+03:00",
+        "idempotency_key": "copy-revoked-replay-0001",
+    }
+    assert client.post("/schedules/pattern", json=pattern).status_code == 201
+    assert client.post("/schedules/copy", json=copied).status_code == 201
+
+    membership = db_session.scalar(
+        select(UserPark).where(
+            UserPark.user_id == seed_mechanic.id,
+            UserPark.park_id == park_id,
+        )
+    )
+    db_session.delete(membership)
+    db_session.commit()
+
+    assert client.post("/schedules/pattern", json=pattern).status_code == 403
+    assert client.post("/schedules/copy", json=copied).status_code == 403
+
+
+def test_deleting_schedule_series_does_not_leave_entries_after_first_page(
+    client, db_session, seed_mechanic, seed_park_with_tracker
+):
+    series_id = "schedule-series-boundary"
+    start = datetime(2026, 9, 21, 9, tzinfo=ZoneInfo("Europe/Moscow"))
+    db_session.add_all(
+        [
+            ScheduleEntry(
+                owner_user_id=seed_mechanic.id,
+                park_id=seed_park_with_tracker.id,
+                kind="shift",
+                start_at=start + timedelta(days=index),
+                end_at=start + timedelta(days=index, hours=12),
+                series_id=series_id,
+                created_by_user_id=seed_mechanic.id,
+                updated_by_user_id=seed_mechanic.id,
+            )
+            for index in range(1001)
+        ]
+    )
+    db_session.commit()
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.delete(f"/schedules/series/{series_id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 1001}
+    assert (
+        db_session.scalar(
+            select(ScheduleEntry.id).where(ScheduleEntry.series_id == series_id).limit(1)
+        )
+        is None
+    )
+
+
 def test_employee_bulk_and_pattern_reject_other_owner(
     client, db_session, seed_mechanic, seed_park_with_tracker
 ):
@@ -155,6 +435,31 @@ def test_notification_fallback_uses_local_hours_only_without_explicit_state(
     assert seed_mechanic.id not in {
         user.id for user in schedules.eligible_recipients(event, at_ten)
     }
+
+
+def test_notification_routing_keeps_active_utc_shift_across_local_midnight(
+    db_session, seed_mechanic, seed_park_with_tracker
+):
+    at = datetime(2026, 10, 1, 0, 30, tzinfo=ZoneInfo("Europe/Moscow")).astimezone(UTC)
+    db_session.add(
+        ScheduleEntry(
+            owner_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            kind="shift",
+            start_at=at - timedelta(hours=1),
+            end_at=at + timedelta(hours=1),
+            created_by_user_id=seed_mechanic.id,
+            updated_by_user_id=seed_mechanic.id,
+        )
+    )
+    db_session.commit()
+
+    audience = schedules.eligible_recipients(
+        schedules.RoutingEvent(db_session, "new_task", seed_park_with_tracker.id),
+        at,
+    )
+
+    assert seed_mechanic.id in {user.id for user in audience}
 
 
 def test_notification_schedule_state_is_one_atomic_select(
@@ -345,6 +650,17 @@ def test_four_on_four_off_pattern_dates(client, db_session, seed_royal, seed_par
             ],
         ),
         ("2/2", ["2026-09-03", "2026-09-04", "2026-09-07", "2026-09-08", "2026-09-11"]),
+        (
+            "3/3",
+            [
+                "2026-09-03",
+                "2026-09-04",
+                "2026-09-05",
+                "2026-09-09",
+                "2026-09-10",
+                "2026-09-11",
+            ],
+        ),
     ],
 )
 def test_pattern_exact_dates_and_moscow_wall_times(
@@ -596,6 +912,62 @@ def test_pattern_rejects_forged_inactive_pending_and_nonstaff_owners(
         assert response.status_code == 403
 
 
+@pytest.mark.parametrize("endpoint", ["single", "bulk", "copy"])
+@pytest.mark.parametrize("owner_state", ["inactive", "pending", "admin"])
+def test_royal_schedule_creation_rejects_ineligible_assignees(
+    client,
+    db_session,
+    seed_royal,
+    seed_park_with_tracker,
+    endpoint,
+    owner_state,
+):
+    owner = _add_user(
+        db_session,
+        username=f"{endpoint}-{owner_state}-assignee",
+        role=RoleSlug.ADMIN if owner_state == "admin" else RoleSlug.MECHANIC,
+        park_id=seed_park_with_tracker.id,
+    )
+    if owner_state == "inactive":
+        owner.is_active = False
+    elif owner_state == "pending":
+        owner.access_status = AccessStatus.pending.value
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+
+    if endpoint == "single":
+        response = client.post(
+            "/schedules",
+            json={
+                **_interval(),
+                "park_id": seed_park_with_tracker.id,
+                "owner_user_id": owner.id,
+            },
+        )
+    elif endpoint == "bulk":
+        response = client.post(
+            "/schedules/bulk",
+            json={
+                **_interval(),
+                "park_id": seed_park_with_tracker.id,
+                "owner_user_ids": [owner.id],
+            },
+        )
+    else:
+        response = client.post(
+            "/schedules/copy",
+            json={
+                "park_id": seed_park_with_tracker.id,
+                "source_start": "2026-09-01T00:00:00+03:00",
+                "source_end": "2026-10-01T00:00:00+03:00",
+                "target_start": "2026-10-01T00:00:00+03:00",
+                "owner_user_ids": [owner.id],
+            },
+        )
+
+    assert response.status_code == 403
+
+
 def test_pattern_rejects_owner_and_generated_entry_limits_before_insert(
     client, db_session, seed_royal, seed_park_with_tracker
 ):
@@ -737,6 +1109,98 @@ def test_employee_manages_own_schedule_and_gets_overlap_warning(
         json={**_interval(), "park_id": seed_park_with_tracker.id, "owner_user_id": other.id},
     )
     assert denied.status_code == 403
+
+
+@pytest.mark.parametrize("absence_kind", ["vacation", "sick"])
+def test_absence_hides_intersecting_shift_without_destroying_or_shifting_series(
+    client, db_session, seed_mechanic, seed_park_with_tracker, absence_kind
+):
+    login_as(client, seed_mechanic.username, "secret")
+    pattern = client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(
+            seed_park_with_tracker.id,
+            [seed_mechanic.id],
+            pattern="2/2",
+            start_date="2026-09-21",
+            end_date="2026-09-28",
+            idempotency_key="absence-series-0001",
+        ),
+    )
+    assert pattern.status_code == 201
+    original_dates = [row["start_at"][:10] for row in pattern.json()]
+    assert original_dates == ["2026-09-21", "2026-09-22", "2026-09-25", "2026-09-26"]
+
+    absence = client.post(
+        "/schedules",
+        json={
+            "park_id": seed_park_with_tracker.id,
+            "kind": absence_kind,
+            "start_at": "2026-09-22T00:00:00+03:00",
+            "end_at": "2026-09-23T00:00:00+03:00",
+        },
+    )
+    assert absence.status_code == 201
+
+    visible = client.get(
+        "/schedules",
+        params={
+            "park_id": seed_park_with_tracker.id,
+            "start_at": "2026-09-21T00:00:00+03:00",
+            "end_at": "2026-09-29T00:00:00+03:00",
+        },
+    )
+    assert visible.status_code == 200
+    assert [(row["kind"], row["start_at"][:10]) for row in visible.json()] == [
+        ("shift", "2026-09-21"),
+        (absence_kind, "2026-09-22"),
+        ("shift", "2026-09-25"),
+        ("shift", "2026-09-26"),
+    ]
+    assert db_session.query(ScheduleEntry).count() == 5
+
+    assert client.delete(f"/schedules/{absence.json()['id']}").status_code == 204
+    restored = client.get(
+        "/schedules",
+        params={
+            "park_id": seed_park_with_tracker.id,
+            "start_at": "2026-09-21T00:00:00+03:00",
+            "end_at": "2026-09-29T00:00:00+03:00",
+        },
+    )
+    assert [row["start_at"][:10] for row in restored.json()] == original_dates
+
+
+def test_absence_excludes_operator_even_when_shift_still_exists(db_session, seed_park_with_tracker):
+    now = datetime(2026, 9, 23, 9, 0, tzinfo=UTC)
+    operator = _add_user(
+        db_session,
+        username="operator-on-leave",
+        role=RoleSlug.OPERATOR,
+        park_id=seed_park_with_tracker.id,
+    )
+    for kind in ("shift", "sick"):
+        db_session.add(
+            ScheduleEntry(
+                owner_user_id=operator.id,
+                park_id=seed_park_with_tracker.id,
+                kind=kind,
+                start_at=now - timedelta(hours=1),
+                end_at=now + timedelta(hours=1),
+                created_by_user_id=operator.id,
+                updated_by_user_id=operator.id,
+            )
+        )
+    db_session.commit()
+
+    assert (
+        schedules.resolve_active_operator(
+            db_session,
+            park_id=seed_park_with_tracker.id,
+            at=now,
+        )
+        is None
+    )
 
 
 def test_admin_reads_only_accessible_parks_while_royal_bulk_assigns(
@@ -1028,7 +1492,7 @@ def test_list_schedule_overlap_warnings_survive_keyset_page_boundaries(
         id="overlap-b",
         owner_user_id=seed_mechanic.id,
         park_id=seed_park_with_tracker.id,
-        kind="vacation",
+        kind="shift",
         start_at=datetime.fromisoformat("2026-09-01T10:00:00+03:00"),
         end_at=datetime.fromisoformat("2026-09-01T12:00:00+03:00"),
         created_by_user_id=seed_mechanic.id,

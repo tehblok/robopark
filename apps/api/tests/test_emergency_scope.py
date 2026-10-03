@@ -92,3 +92,23 @@ def test_operator_no_matching_ticket_denied(db_session, seed_park_with_tracker):
         return_value=[],
     ):
         assert vin_allowed_for_user(db_session, user, "YASADR00000000447") is False
+
+
+def test_mechanic_may_check_robot_from_unclaimed_assigned_park_task(
+    db_session, seed_mechanic, seed_park_with_tracker
+):
+    """Diagnostics follow park visibility, not local task ownership."""
+    settings_svc.set_setting(db_session, settings_svc.TRACKER_TOKEN_KEY, "tok")
+    issue = {
+        "key": "R-WAITING-PARTS",
+        "queue": seed_park_with_tracker.tracker_queue,
+        "summary": "[447] waiting for parts",
+        "status": "Ожидание поставки",
+        "status_key": "deliveryWaiting",
+        "tags": [seed_park_with_tracker.tag],
+    }
+    with patch(
+        "robopark_api.services.tracker_client.search_robot_tickets",
+        return_value=[issue],
+    ):
+        assert vin_allowed_for_user(db_session, seed_mechanic, "YASADR00000000447") is True

@@ -50,7 +50,7 @@ def test_existing_role_receives_only_new_default_permissions(db_session):
 
 def test_ensure_rbac_catalog_does_not_wipe_custom_role_permissions(db_session):
     operator = db_session.scalar(select(Role).where(Role.slug == "operator"))
-    extra = db_session.scalar(select(Permission).where(Permission.key == "nav.map"))
+    extra = db_session.scalar(select(Permission).where(Permission.key == "nav.learning"))
     default_perm = db_session.scalar(select(Permission).where(Permission.key == "tracker.read"))
     assert operator is not None
     assert extra is not None
@@ -74,13 +74,17 @@ def test_ensure_rbac_catalog_does_not_wipe_custom_role_permissions(db_session):
             .where(RolePermission.role_id == operator.id)
         )
     )
-    assert "nav.map" in keys
+    assert "nav.learning" in keys
     assert "tracker.read" not in keys
 
 
 def test_ensure_rbac_catalog_preserves_removed_system_role_permissions(db_session):
     mechanic = db_session.scalar(select(Role).where(Role.slug == "mechanic"))
     extra = db_session.scalar(select(Permission).where(Permission.key == "nav.map"))
+    if extra is None:
+        extra = Permission(key="nav.map", category="nav", label="Карта", sort_order=50)
+        db_session.add(extra)
+        db_session.flush()
     write_perm = db_session.scalar(select(Permission).where(Permission.key == "tracker.write"))
     read_perm = db_session.scalar(select(Permission).where(Permission.key == "tracker.read"))
     assert mechanic is not None

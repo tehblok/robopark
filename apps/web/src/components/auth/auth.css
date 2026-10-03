@@ -44,7 +44,7 @@
 
 .rp-auth__themes {
   display: inline-flex;
-  gap: 3px;
+  gap: var(--rp-space-2);
   padding: 3px;
   border: 1px solid var(--rp-border);
   border-radius: 999px;
@@ -335,10 +335,17 @@
 .rp-auth__card .field-check input:checked {
   border-color: var(--rp-action);
   background-color: var(--rp-action);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-7' fill='none' stroke='%23171a1d' stroke-linecap='round' stroke-linejoin='round' stroke-width='2.2'/%3E%3C/svg%3E");
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: 14px;
+  display: grid;
+  place-items: center;
+}
+
+.rp-auth__card .field-check input:checked::after {
+  background: var(--rp-action-on);
+  content: '';
+  height: 14px;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-7' fill='none' stroke='black' stroke-linecap='round' stroke-linejoin='round' stroke-width='2.2'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-7' fill='none' stroke='black' stroke-linecap='round' stroke-linejoin='round' stroke-width='2.2'/%3E%3C/svg%3E") center / contain no-repeat;
+  width: 14px;
 }
 
 .rp-auth__card .field-check:hover input {

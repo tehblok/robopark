@@ -63,6 +63,16 @@ def test_record_host_backup_is_read_by_real_public_projection(host_paths):
     assert _state_check(host_paths, "backup", "checked").status == "ok"
 
 
+def test_failed_host_copy_is_projected_to_api_without_private_fields(host_paths):
+    from robopark_host.operational_state import record_backup
+
+    record_backup(host_paths, "failed")
+    public = json.loads((host_paths.var / "api-ops/host-health.json").read_text())
+    assert public["backup_attempt"]["status"] == "failed"
+    assert "completed_at" in public["backup_attempt"]
+    assert set(public["backup_attempt"]) == {"status", "completed_at"}
+
+
 def test_malformed_operational_fields_fail_closed_without_crashing_doctor(host_paths):
     from robopark_host.operational_state import update_state
 

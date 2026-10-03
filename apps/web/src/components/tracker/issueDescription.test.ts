@@ -42,3 +42,8 @@ it('removes Tracker control wrappers without dropping their useful text', () => 
   expect(summarizeIssueDescription('Заменить <[колесо]> и проверить <{подвеску}>'))
     .toBe('Заменить колесо и проверить подвеску')
 })
+
+it('hides an empty Tracker media template instead of showing markup in the task', () => {
+  expect(summarizeIssueDescription('Подробное описание Тест\n<[**Медиа**]>\n<{Файлы\n\n}>'))
+    .toBe('Подробное описание Тест')
+})

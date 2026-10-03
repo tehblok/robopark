@@ -80,7 +80,6 @@ from robopark_api import (
 from robopark_api.db import SessionLocal, engine
 from robopark_api.models import (
     AuthSession,
-    Base,
     Park,
     Report,
     User,
@@ -93,20 +92,24 @@ from robopark_api.services import (
     tracker_client,
 )
 from robopark_api.services.cache_metrics import snapshot_all
-from robopark_api.services.emergency_config import (
-    DEFAULT_JSON_PATH,
-    seed_emergency_config,
-)
 from robopark_api.services.rbac import get_role_by_slug
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
 
 def seed():
-    Base.metadata.create_all(engine)
+    # A partial ORM import can silently omit tables used only by writes (for
+    # example notification deliveries). Exercise the actual production schema.
+    from alembic import command
+    from alembic.config import Config
+
+    api_root = Path(__file__).resolve().parents[1] / "apps/api"
+    migration_config = Config(str(api_root / "alembic.ini"))
+    migration_config.set_main_option("script_location", str(api_root / "alembic"))
+    os.environ["DATABASE_URL"] = CONFIG["database_url"]
+    command.upgrade(migration_config, "head")
     now = datetime.now(UTC)
     with SessionLocal() as db:
         ensure_rbac_catalog(db)
-        seed_emergency_config(db, DEFAULT_JSON_PATH)
         park = Park(
             name="Capacity Alpha", tag="CapacityAlpha", tracker_queue="ROBOPARK"
         )

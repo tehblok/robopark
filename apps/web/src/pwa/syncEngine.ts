@@ -1,7 +1,7 @@
 import type { SyncBatchRequest, SyncBatchResponse } from '../api'
-import type { OfflineDb } from './offlineDb'
+import type { OfflineDb, SyncTransactionWriter } from './offlineDb'
 import type { OfflineAction, OfflineMedia } from './offlineTypes'
-import type { SyncCoordinator } from './syncCoordinator'
+import type { LeaseFence, SyncCoordinator } from './syncCoordinator'
 import { ClientBatcher } from './clientBatcher'
 
 export type SyncStatus = 'idle' | 'syncing' | 'offline' | 'attention'
@@ -9,7 +9,10 @@ export type SyncState = { status: SyncStatus, pending: number, conflicts: number
 export const WEAK_LINK_BATCH_LIMIT = 2
 export const SYNC_BATCH_LIMIT = 20
 export const MEDIA_CONCURRENCY = 2
-export type OfflineActionInput = Omit<OfflineAction, 'state' | 'attempts' | 'createdAt' | 'updatedAt'>
+class SyncLeaseLostError extends Error {
+  constructor() { super('sync_lease_lost') }
+}
+export type OfflineActionInput = Omit<OfflineAction, 'state' | 'attempts' | 'createdAt' | 'updatedAt' | 'result'>
 export type OfflineMediaInput = Omit<OfflineMedia, 'state' | 'attempts' | 'createdAt' | 'updatedAt'>
 
 type EventEnvironment = {
@@ -32,13 +35,21 @@ type EngineOptions = {
   cancelRetry?: (timer: ReturnType<typeof setTimeout>) => void
 }
 
-function causalOrder(actions: OfflineAction[]): OfflineAction[] {
+function causalOrder(actions: OfflineAction[], knownActions: OfflineAction[], knownMedia: OfflineMedia[]): OfflineAction[] {
   const byId = new Map(actions.map(item => [item.id, item]))
+  const actionStates = new Map(knownActions.map(item => [item.id, item.state]))
+  const mediaStates = new Map(knownMedia.map(item => [item.id, item.state]))
   const ordered: OfflineAction[] = []
   const done = new Set<string>()
   const remaining = [...actions].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
   while (remaining.length) {
-    const index = remaining.findIndex(item => item.dependencies.every(dep => done.has(dep) || !byId.has(dep)))
+    const index = remaining.findIndex(item => item.dependencies.every(dep => {
+      if (done.has(dep)) return true
+      if (byId.has(dep)) return false
+      if (actionStates.has(dep)) return actionStates.get(dep) === 'confirmed'
+      if (mediaStates.has(dep)) return mediaStates.get(dep) === 'confirmed'
+      return false // The dependency cannot be verified from the local action/media receipt.
+    }))
     if (index < 0) break
     const [item] = remaining.splice(index, 1)
     ordered.push(item)
@@ -76,7 +87,7 @@ export class SyncEngine {
   private readonly cancelRetry: NonNullable<EngineOptions['cancelRetry']>
   private readonly subscribers = new Set<() => void>()
   private readonly actionSubscribers = new Map<string, Set<(action: OfflineAction | undefined) => void>>()
-  private readonly batcher = new ClientBatcher(() => this.syncNow('batch'))
+  private readonly batcher = new ClientBatcher(() => this.syncNow('batch').catch(() => false))
   private networkFallback: NetworkOnlySyncEngine | null = null
   private state: SyncState = { status: 'idle', pending: 0, conflicts: 0 }
   private durableState: SyncState = { status: 'idle', pending: 0, conflicts: 0 }
@@ -84,10 +95,15 @@ export class SyncEngine {
   private started = false
   private disposed = false
   private running = false
+  private cancelling = false
+  private wakeAfterCancellation = false
+  private activeRun: Promise<unknown> | null = null
   private wakeAfterCurrent = false
   private retryTimer: ReturnType<typeof setTimeout> | null = null
+  private retryGeneration = 0
   private abortController: AbortController | null = null
-  private readonly wake = () => { void this.syncNow('event') }
+  private lastActionCreatedAt = Number.NEGATIVE_INFINITY
+  private readonly wake = () => { void this.syncNow('event').catch(() => {}) }
 
   constructor(options: EngineOptions) {
     this.db = options.db
@@ -144,13 +160,21 @@ export class SyncEngine {
       .sort((left, right) => right.updatedAt - left.updatedAt)[0]
   }
 
+  async listActions(): Promise<OfflineAction[]> {
+    return this.db.listActions()
+  }
+
+  async listMedia(): Promise<OfflineMedia[]> {
+    return this.db.listMedia()
+  }
+
   start(): void {
     if (this.started || this.disposed) return
     this.started = true
     this.environment?.addEventListener('online', this.wake)
     this.environment?.addEventListener('focus', this.wake)
     void this.refreshState().catch(() => {})
-    void this.syncNow('start')
+    void this.syncNow('start').catch(() => {})
   }
 
   async enqueueAction(input: OfflineActionInput): Promise<OfflineAction> {
@@ -158,7 +182,8 @@ export class SyncEngine {
   }
 
   enqueueOptimistic(input: OfflineActionInput, projection?: unknown): Promise<OfflineAction> {
-    const now = this.now()
+    const now = Math.max(this.now(), this.lastActionCreatedAt + 1)
+    this.lastActionCreatedAt = now
     const action: OfflineAction = { ...input, state: 'ready', attempts: 0, createdAt: now, updatedAt: now }
     if (projection !== undefined) this.batcher.project(action.id, `${action.resourceType}:${action.resourceId}`, projection)
     return this.persistOrSend(action)
@@ -166,16 +191,21 @@ export class SyncEngine {
 
   private async persistOrSend(action: OfflineAction): Promise<OfflineAction> {
     try {
-      if (!await this.db.putAction(action)) throw new Error('offline_scope_inactive')
+      const stored = await this.db.putQueuedAction(action)
+      if (!stored) throw new Error('offline_scope_inactive')
+      action = stored
+      this.lastActionCreatedAt = Math.max(this.lastActionCreatedAt, action.createdAt)
+      if (['confirmed', 'cancelled', 'conflict', 'attention'].includes(action.state)) this.batcher.settle(action.id)
     } catch (error) {
-      if (!this.db.isGenerationCurrent() || (error instanceof Error && error.message === 'offline_scope_inactive')) {
+      if (!this.db.isGenerationCurrent() || (error instanceof Error
+        && ['offline_scope_inactive', 'sync_payload_conflict'].includes(error.message))) {
         this.batcher.settle(action.id)
         throw error
       }
       // Denied/quota-limited writes share the same 150 ms transport batch and
       // are accepted only after the server confirms them.
       if (!this.networkFallback) {
-        this.networkFallback = new NetworkOnlySyncEngine({ deviceId: this.deviceId, sendBatch: this.sendBatch })
+        this.networkFallback = new NetworkOnlySyncEngine({ deviceId: this.deviceId, sendBatch: this.sendBatch, onRevokedScopes: this.onRevokedScopes })
         this.networkFallback.subscribe(() => {
           const fallback = this.networkFallback?.getState()
           if (fallback) {
@@ -187,7 +217,7 @@ export class SyncEngine {
       // A quota failure does not imply that earlier durable actions/media are
       // gone. Count them before the transient network batch is accepted.
       await this.refreshState().catch(() => {})
-      const { state: _state, attempts: _attempts, createdAt: _createdAt, updatedAt: _updatedAt, ...input } = action
+      const { state: _state, attempts: _attempts, createdAt: _createdAt, updatedAt: _updatedAt, result: _result, ...input } = action
       const stop = this.networkFallback.subscribeAction(action.id, next => {
         this.actionSubscribers.get(action.id)?.forEach(listener => listener(next))
       })
@@ -210,25 +240,59 @@ export class SyncEngine {
   async enqueueMedia(input: OfflineMediaInput, dependentAction?: OfflineActionInput): Promise<OfflineMedia> {
     const now = this.now()
     const media: OfflineMedia = { ...input, state: 'ready', attempts: 0, createdAt: now, updatedAt: now }
+    let savedMedia = media
+    let needsSync = true
     if (dependentAction && dependentAction.id !== input.actionId) throw new Error('media_action_identity_mismatch')
     if (dependentAction) {
-      const action: OfflineAction = { ...dependentAction, state: 'ready', attempts: 0, createdAt: now, updatedAt: now }
-      await this.db.transaction(writer => {
-        writer.putMedia(media)
-        writer.putAction(action)
-      })
+      const actionTime = Math.max(now, this.lastActionCreatedAt + 1)
+      this.lastActionCreatedAt = actionTime
+      const action: OfflineAction = { ...dependentAction, state: 'ready', attempts: 0, createdAt: actionTime, updatedAt: now }
+      const stored = await this.db.putQueuedAction(action, media)
+      if (!stored) throw new Error('offline_scope_inactive')
+      if (stored.state === 'cancelled') throw new Error('sync_action_already_terminal')
+      savedMedia = await this.db.getMedia(media.id) ?? (stored.state === 'confirmed'
+        ? { ...media, state: 'confirmed' } : media)
+      needsSync = stored.state === 'ready' || stored.state === 'local' || stored.state === 'sending'
     } else if (!await this.db.putMedia(media)) throw new Error('offline_scope_inactive')
     await this.refreshState()
-    if (this.started) void this.syncNow('media')
-    return media
+    if (this.started && needsSync) void this.syncNow('media').catch(() => {})
+    return savedMedia
   }
 
   async cancelAction(id: string): Promise<void> {
-    const action = await this.db.getAction(id)
-    if (!action || action.state === 'confirmed') return
-    await this.db.putAction({ ...action, state: 'cancelled', updatedAt: this.now() })
-    this.batcher.settle(id)
-    await this.refreshState()
+    if (this.running || this.cancelling) throw new Error('sync_busy')
+    this.cancelling = true
+    let committed = false
+    try {
+      const performed = await this.coordinator.runExclusive(async (_leaseSignal, ensureLease, fence) => {
+        const action = await this.db.getAction(id)
+        if (!action || ['confirmed', 'cancelled'].includes(action.state)) return
+        if (action.state === 'sending') throw new Error('sync_busy')
+        const media = (await this.db.listMedia()).filter(item => item.actionId === id && item.state !== 'confirmed')
+        if (media.some(item => item.state === 'uploading')) throw new Error('sync_busy')
+        const otherActions = (await this.db.listActions()).filter(item => item.id !== id && !['confirmed', 'cancelled'].includes(item.state))
+        if (otherActions.some(other => other.dependencies.includes(id)
+          || media.some(item => other.dependencies.includes(item.id)))) throw new Error('sync_dependency_in_use')
+        if (!await ensureLease()) throw new Error('sync_busy')
+        await this.writeUnderLease(fence, writer => {
+          writer.putAction({ ...action, state: 'cancelled', updatedAt: this.now() })
+          for (const item of media) writer.deleteMedia(item.id)
+        })
+        committed = true
+        this.batcher.settle(id)
+      })
+      if (!performed && !committed) throw new Error('sync_busy')
+      await this.refreshState()
+    } catch (error) {
+      if (error instanceof SyncLeaseLostError) throw new Error('sync_busy')
+      throw error
+    } finally {
+      this.cancelling = false
+      if (this.wakeAfterCancellation && !this.disposed) {
+        this.wakeAfterCancellation = false
+        this.batcher.schedule()
+      }
+    }
   }
 
   async resolveConflict(id: string, baseRevision: string | null): Promise<void> {
@@ -236,22 +300,35 @@ export class SyncEngine {
     if (!action || action.state !== 'conflict') return
     await this.db.putAction({ ...action, state: 'ready', baseRevision, updatedAt: this.now() })
     await this.refreshState()
-    void this.syncNow('conflict-resolved')
+    void this.syncNow('conflict-resolved').catch(() => {})
   }
 
-  async syncNow(_reason: string): Promise<boolean> {
+  async syncNow(reason: string): Promise<boolean> {
     if (this.disposed) return false
+    if (this.cancelling) { this.wakeAfterCancellation = true; return false }
     if (this.running) { this.wakeAfterCurrent = true; return false }
+    this.cancelScheduledRetry()
     this.batcher.cancelScheduled()
     let performed = false
     this.running = true
     try {
-      await this.coordinator.runExclusive(async () => {
-        performed = await this.pump()
+      const work = this.coordinator.runExclusive(async (leaseSignal, ensureLease, fence) => {
+        performed = await this.pump(reason === 'manual', leaseSignal, ensureLease, fence)
       })
-      return performed
+      this.activeRun = work
+      return await work && performed
+    } catch (error) {
+      if (!(error instanceof SyncLeaseLostError)) throw error
+      if (!this.disposed) {
+        await this.refreshState()
+        this.setState({ ...this.durableState, status: 'offline' })
+        this.scheduleSyncRetry('lease-retry', 1_000)
+      }
+      return false
     } finally {
+      this.activeRun = null
       this.running = false
+      if (this.disposed) this.db.close()
       if (this.wakeAfterCurrent && !this.disposed) {
         this.wakeAfterCurrent = false
         this.batcher.schedule()
@@ -265,30 +342,63 @@ export class SyncEngine {
     this.started = false
     this.environment?.removeEventListener('online', this.wake)
     this.environment?.removeEventListener('focus', this.wake)
-    if (this.retryTimer) this.cancelRetry(this.retryTimer)
-    this.retryTimer = null
+    this.cancelScheduledRetry()
     this.abortController?.abort()
     this.abortController = null
     this.subscribers.clear()
     this.actionSubscribers.clear()
     this.batcher.dispose()
     this.networkFallback?.dispose()
-    this.db.close()
+    if (!this.activeRun) this.db.close()
   }
 
-  private async pump(): Promise<boolean> {
-    await this.recoverInterruptedTransfers()
-    const pendingMedia = (await this.db.listMedia()).filter(item => item.state === 'local' || item.state === 'ready' || item.state === 'attention')
+  private cancelScheduledRetry(): void {
+    this.retryGeneration += 1
+    if (this.retryTimer !== null) this.cancelRetry(this.retryTimer)
+    this.retryTimer = null
+  }
+
+  private scheduleSyncRetry(reason: string, delay: number): void {
+    if (this.disposed) return
+    this.cancelScheduledRetry()
+    const generation = this.retryGeneration
+    this.retryTimer = this.scheduleRetry(() => {
+      if (this.disposed || generation !== this.retryGeneration) return
+      this.retryTimer = null
+      void this.syncNow(reason).catch(() => {})
+    }, delay)
+  }
+
+  private async writeUnderLease(fence: LeaseFence, mutator: (writer: SyncTransactionWriter) => unknown): Promise<void> {
+    if (fence) {
+      if (!await this.db.transactionIfLease(fence.owner, fence.now, mutator)) throw new SyncLeaseLostError()
+    } else await this.db.transaction(mutator)
+  }
+
+  private async pump(retryAttentionMedia: boolean, leaseSignal: AbortSignal, ensureLease: () => Promise<boolean>, fence: LeaseFence): Promise<boolean> {
+    await this.recoverInterruptedTransfers(fence)
+    const pendingMedia = (await this.db.listMedia()).filter(item => item.state === 'local' || item.state === 'ready' || (retryAttentionMedia && item.state === 'attention'))
     if (pendingMedia.length && this.uploadMedia) {
       this.setState({ ...this.durableState, status: 'syncing' })
       this.abortController = new AbortController()
+      const mediaController = this.abortController
+      const abortMedia = () => mediaController.abort('sync_lease_lost')
+      leaseSignal.addEventListener('abort', abortMedia, { once: true })
       try {
         for (const media of pendingMedia.slice(0, this.weakLink() ? 1 : MEDIA_CONCURRENCY)) {
-          await this.db.putMedia({ ...media, state: 'uploading', updatedAt: this.now() })
-          await this.uploadMedia(media, this.abortController.signal)
-          await this.db.putMedia({ ...media, originalBlob: undefined, state: 'confirmed', updatedAt: this.now() })
+          if (!await ensureLease()) throw new Error('sync_lease_lost')
+          await this.writeUnderLease(fence, writer => writer.putMedia({ ...media, state: 'uploading', updatedAt: this.now() }))
+          await this.uploadMedia(media, mediaController.signal)
+          if (!await ensureLease()) throw new Error('sync_lease_lost')
+          await this.writeUnderLease(fence, writer => writer.putMedia({ ...media, originalBlob: undefined, state: 'confirmed', updatedAt: this.now() }))
         }
       } catch (error) {
+        if (leaseSignal.aborted || error instanceof SyncLeaseLostError) {
+          await this.refreshState()
+          this.setState({ ...this.durableState, status: 'offline' })
+          this.scheduleSyncRetry('lease-retry', 1_000)
+          return false
+        }
         let maxAttempts = 1
         const status = typeof error === 'object' && error !== null && 'status' in error ? Number((error as { status?: unknown }).status) : 0
         const permanent = status >= 400 && status < 500 && ![408, 425, 429].includes(status)
@@ -296,42 +406,73 @@ export class SyncEngine {
           if ((await this.db.getMedia(media.id))?.state === 'uploading') {
             const attempts = (media.attempts ?? 0) + 1
             maxAttempts = Math.max(maxAttempts, attempts)
-            await this.db.putMedia({ ...media, state: permanent ? 'attention' : 'ready', attempts, updatedAt: this.now() })
+            await this.writeUnderLease(fence, writer => writer.putMedia({ ...media, state: permanent ? 'attention' : 'ready', attempts, updatedAt: this.now() }))
           }
         }
         await this.refreshState()
         if (!permanent) {
           this.setState({ ...this.durableState, status: 'offline' })
           const delay = Math.min(60_000, 1_000 * 2 ** (maxAttempts - 1)) * (1 + this.random() * 0.25)
-          if (!this.disposed) this.retryTimer = this.scheduleRetry(() => { this.retryTimer = null; void this.syncNow('media-retry') }, delay)
+          this.scheduleSyncRetry('media-retry', delay)
         }
         return false
       } finally {
+        leaseSignal.removeEventListener('abort', abortMedia)
         this.abortController = null
       }
     }
     const all = await this.db.listActions()
-    const ready = causalOrder(all.filter(item => item.state === 'ready' || item.state === 'local'))
+    const allMedia = await this.db.listMedia()
+    const actionStates = new Map(all.map(item => [item.id, item.state]))
+    const mediaIds = new Set(allMedia.map(item => item.id))
+    const broken = all.filter(item => (item.state === 'ready' || item.state === 'local')
+      && item.dependencies.some(dep => actionStates.get(dep) === 'cancelled'
+        || (!actionStates.has(dep) && !mediaIds.has(dep))))
+    if (broken.length) {
+      const now = this.now()
+      await this.writeUnderLease(fence, writer => {
+        for (const item of broken) writer.putAction({ ...item, state: 'attention',
+          result: { code: 'offline_dependency_missing' }, updatedAt: now })
+      })
+      for (const item of broken) this.batcher.settle(item.id)
+    }
+    const brokenIds = new Set(broken.map(item => item.id))
+    const currentActions = all.map(item => brokenIds.has(item.id) ? { ...item, state: 'attention' as const } : item)
+    const unconfirmedMediaActions = new Set(allMedia
+      .filter(item => item.state !== 'confirmed').map(item => item.actionId))
+    const ready = causalOrder(currentActions.filter(item => (item.state === 'ready' || item.state === 'local') && !unconfirmedMediaActions.has(item.id)), currentActions, allMedia)
     if (!ready.length) { await this.refreshState(); return false }
     const batch = ready.slice(0, this.weakLink() ? WEAK_LINK_BATCH_LIMIT : SYNC_BATCH_LIMIT)
     const sending = batch.map(item => ({ ...item, state: 'sending' as const, updatedAt: this.now() }))
-    for (const item of sending) await this.db.putAction(item)
+    for (const item of sending) await this.writeUnderLease(fence, writer => writer.putAction(item))
     this.setState({ ...this.durableState, status: 'syncing' })
     this.abortController = new AbortController()
+    const batchController = this.abortController
+    const abortBatch = () => batchController.abort('sync_lease_lost')
+    leaseSignal.addEventListener('abort', abortBatch, { once: true })
     try {
+      if (!await ensureLease()) throw new Error('sync_lease_lost')
       const response = await this.sendBatch({
         device_id: this.deviceId,
         known_revisions: {},
         actions: sending.map(toBatchAction),
-      }, this.abortController.signal)
+      }, batchController.signal)
+      if (!await ensureLease()) throw new Error('sync_lease_lost')
       let retryAttempts = 0
       for (const result of response.results) {
         const item = sending.find(candidate => candidate.id === result.client_action_id)
         if (!item) continue
-        if (result.state === 'attention') {
+        const dependencyStillPendingLocally = item.dependencies.some(dep =>
+          actionStates.has(dep) && actionStates.get(dep) !== 'confirmed')
+        if (result.state === 'attention' && (result.code === 'dependency_missing'
+          || (result.code === 'dependency_failed' && !dependencyStillPendingLocally))) {
+          await this.writeUnderLease(fence, writer => writer.putAction({ ...item,
+            state: 'attention', result: { code: result.code }, updatedAt: this.now() }))
+          this.batcher.settle(item.id)
+        } else if (result.state === 'attention') {
           const attempts = (item.attempts ?? 0) + 1
           retryAttempts = Math.max(retryAttempts, attempts)
-          await this.db.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() })
+          await this.writeUnderLease(fence, writer => writer.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() }))
         } else if (result.state === 'conflict' && ['media_upload_missing', 'media_dependency_pending'].includes(result.code ?? '')) {
           const mediaId = item.action === 'submit_review' && typeof item.payload === 'object' && item.payload
             ? String((item.payload as { media_id?: unknown }).media_id ?? '')
@@ -340,52 +481,68 @@ export class SyncEngine {
           if (media && media.actionId === item.id && media.sizeBytes > 0) {
             const attempts = (item.attempts ?? 0) + 1
             retryAttempts = Math.max(retryAttempts, attempts)
-            await this.db.transaction(writer => {
+            await this.writeUnderLease(fence, writer => {
               writer.putMedia({ ...media, state: 'ready', attempts: (media.attempts ?? 0) + 1, updatedAt: this.now() })
               writer.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() })
             })
           } else {
-            await this.db.putAction({ ...item, state: 'conflict', updatedAt: this.now() })
+            await this.writeUnderLease(fence, writer => writer.putAction({ ...item, state: 'conflict', updatedAt: this.now() }))
             this.batcher.settle(item.id)
           }
         } else {
           const state = result.state === 'confirmed' ? 'confirmed' : result.state === 'conflict' ? 'conflict' : 'attention'
-          await this.db.putAction({ ...item, state, updatedAt: this.now() })
+          const outcome = result.state === 'confirmed' || !result.code
+            ? result.result : { ...result.result, code: result.code }
+          await this.writeUnderLease(fence, writer => writer.putAction({ ...item, state, result: outcome, updatedAt: this.now() }))
           if (state === 'confirmed' || state === 'conflict') this.batcher.settle(item.id)
         }
       }
-      for (const [section, revision] of Object.entries(response.revisions)) {
-        await this.db.setRevision(section, String(revision))
+      const answered = new Set(response.results.map(result => result.client_action_id))
+      for (const item of sending) {
+        if (answered.has(item.id)) continue
+        const attempts = (item.attempts ?? 0) + 1
+        retryAttempts = Math.max(retryAttempts, attempts)
+        await this.writeUnderLease(fence, writer => writer.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() }))
       }
+      if (Object.keys(response.revisions).length) await this.writeUnderLease(fence, writer => {
+        for (const [section, revision] of Object.entries(response.revisions)) writer.putRevision(section, String(revision))
+      })
       await this.refreshState()
       if (response.revoked_scopes.length) this.onRevokedScopes?.(response.revoked_scopes)
       if (retryAttempts && !this.disposed) {
         const delay = Math.min(60_000, 1_000 * 2 ** (retryAttempts - 1)) * (1 + this.random() * 0.25)
-        this.retryTimer = this.scheduleRetry(() => { this.retryTimer = null; void this.syncNow('server-retry') }, delay)
+        this.scheduleSyncRetry('server-retry', delay)
       }
       return true
-    } catch {
+    } catch (error) {
+      if (leaseSignal.aborted || error instanceof SyncLeaseLostError) {
+        await this.refreshState()
+        this.setState({ ...this.durableState, status: 'offline' })
+        this.scheduleSyncRetry('lease-retry', 1_000)
+        return false
+      }
       let maxAttempts = 1
       for (const item of sending) {
         const attempts = (item.attempts ?? 0) + 1
         maxAttempts = Math.max(maxAttempts, attempts)
-        await this.db.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() })
+        await this.writeUnderLease(fence, writer => writer.putAction({ ...item, state: 'ready', attempts, updatedAt: this.now() }))
       }
       this.setState({ ...this.durableState, status: 'offline' })
       const delay = Math.min(60_000, 1_000 * 2 ** (maxAttempts - 1)) * (1 + this.random() * 0.25)
-      if (!this.disposed) this.retryTimer = this.scheduleRetry(() => { this.retryTimer = null; void this.syncNow('retry') }, delay)
+      this.scheduleSyncRetry('retry', delay)
       return false
     } finally {
+      leaseSignal.removeEventListener('abort', abortBatch)
       this.abortController = null
     }
   }
 
-  private async recoverInterruptedTransfers(): Promise<void> {
+  private async recoverInterruptedTransfers(fence: LeaseFence): Promise<void> {
     const interruptedActions = (await this.db.listActions()).filter(item => item.state === 'sending')
     const interruptedMedia = (await this.db.listMedia()).filter(item => item.state === 'uploading')
     if (!interruptedActions.length && !interruptedMedia.length) return
     const now = this.now()
-    await this.db.transaction(writer => {
+    await this.writeUnderLease(fence, writer => {
       for (const action of interruptedActions) {
         writer.putAction({ ...action, state: 'ready', attempts: (action.attempts ?? 0) + 1, updatedAt: now })
       }
@@ -428,13 +585,15 @@ export class SyncEngine {
 
 type NetworkPending = {
   action: OfflineAction
+  signature: string
+  promise: Promise<OfflineAction>
   resolve: (action: OfflineAction) => void
   reject: (reason: unknown) => void
 }
 
 /** Direct transport used only when durable browser storage cannot be opened. */
 export class NetworkOnlySyncEngine {
-  private readonly options: Pick<EngineOptions, 'deviceId' | 'sendBatch' | 'uploadMedia'>
+  private readonly options: Pick<EngineOptions, 'deviceId' | 'sendBatch' | 'uploadMedia' | 'onRevokedScopes'>
   private readonly pending = new Map<string, NetworkPending>()
   private readonly listeners = new Set<() => void>()
   private readonly actionSubscribers = new Map<string, Set<(action: OfflineAction | undefined) => void>>()
@@ -442,8 +601,9 @@ export class NetworkOnlySyncEngine {
   private state: SyncState = { status: 'idle', pending: 0, conflicts: 0 }
   private disposed = false
   private sending = false
+  private readonly mediaAbortControllers = new Set<AbortController>()
 
-  constructor(options: Pick<EngineOptions, 'deviceId' | 'sendBatch' | 'uploadMedia'>) { this.options = options }
+  constructor(options: Pick<EngineOptions, 'deviceId' | 'sendBatch' | 'uploadMedia' | 'onRevokedScopes'>) { this.options = options }
 
   start(): void {}
   getState(): SyncState { return this.state }
@@ -456,8 +616,15 @@ export class NetworkOnlySyncEngine {
     if (this.disposed) return Promise.reject(new Error('sync_disposed'))
     const now = Date.now()
     const action: OfflineAction = { ...input, state: 'ready', attempts: 0, createdAt: now, updatedAt: now }
+    const signature = JSON.stringify(toBatchAction(action))
+    const existing = this.pending.get(action.id)
+    if (existing) return existing.signature === signature
+      ? existing.promise : Promise.reject(new Error('sync_payload_conflict'))
     if (projection !== undefined) this.batcher.project(action.id, `${action.resourceType}:${action.resourceId}`, projection)
-    const promise = new Promise<OfflineAction>((resolve, reject) => this.pending.set(action.id, { action, resolve, reject }))
+    let resolve!: (value: OfflineAction) => void
+    let reject!: (reason: unknown) => void
+    const promise = new Promise<OfflineAction>((onResolve, onReject) => { resolve = onResolve; reject = onReject })
+    this.pending.set(action.id, { action, signature, promise, resolve, reject })
     this.notifyAction(action.id, action)
     this.publish({ status: 'idle', pending: this.pending.size, conflicts: 0 })
     this.batcher.schedule()
@@ -465,19 +632,25 @@ export class NetworkOnlySyncEngine {
   }
 
   async enqueueMedia(input: OfflineMediaInput, dependentAction?: OfflineActionInput): Promise<OfflineMedia> {
+    if (this.disposed) throw new Error('sync_disposed')
     if (!this.options.uploadMedia) throw new Error('media_network_unavailable')
     if (dependentAction && dependentAction.id !== input.actionId) throw new Error('media_action_identity_mismatch')
     const now = Date.now()
     const media: OfflineMedia = { ...input, state: 'uploading', attempts: 0, createdAt: now, updatedAt: now }
+    const controller = new AbortController()
+    this.mediaAbortControllers.add(controller)
     this.publish({ status: 'syncing', pending: 1, conflicts: 0 })
     try {
-      await this.options.uploadMedia(media)
+      await this.options.uploadMedia(media, controller.signal)
+      if (controller.signal.aborted || this.disposed) throw new Error('sync_disposed')
       if (dependentAction) await this.enqueueAction(dependentAction)
       this.publish({ status: 'idle', pending: 0, conflicts: 0 })
       return { ...media, state: 'confirmed' }
     } catch (error) {
       this.publish({ status: 'attention', pending: 0, conflicts: 1 })
       throw error
+    } finally {
+      this.mediaAbortControllers.delete(controller)
     }
   }
 
@@ -497,7 +670,7 @@ export class NetworkOnlySyncEngine {
         this.pending.delete(item.action.id)
         this.batcher.settle(item.action.id)
         if (result?.state === 'confirmed') {
-          const confirmed = { ...item.action, state: 'confirmed' as const }
+          const confirmed = { ...item.action, state: 'confirmed' as const, result: result.result }
           this.notifyAction(item.action.id, confirmed)
           item.resolve(confirmed)
         } else {
@@ -507,6 +680,7 @@ export class NetworkOnlySyncEngine {
       }
       const conflicts = items.filter(item => response.results.find(result => result.client_action_id === item.action.id)?.state !== 'confirmed').length
       this.publish({ status: conflicts ? 'attention' : 'idle', pending: this.pending.size, conflicts })
+      if (response.revoked_scopes.length) this.options.onRevokedScopes?.(response.revoked_scopes)
       return true
     } catch (error) {
       for (const item of items) {
@@ -536,6 +710,10 @@ export class NetworkOnlySyncEngine {
   async findAction(resourceId: string, action: string): Promise<OfflineAction | undefined> {
     return [...this.pending.values()].find(item => item.action.resourceId === resourceId && item.action.action === action)?.action
   }
+  async listActions(): Promise<OfflineAction[]> {
+    return [...this.pending.values()].map(item => item.action)
+  }
+  async listMedia(): Promise<OfflineMedia[]> { return [] }
   subscribeAction(id: string, listener: (action: OfflineAction | undefined) => void): () => void {
     const listeners = this.actionSubscribers.get(id) ?? new Set()
     listeners.add(listener)
@@ -545,6 +723,8 @@ export class NetworkOnlySyncEngine {
   }
   dispose(): void {
     this.disposed = true
+    for (const controller of this.mediaAbortControllers) controller.abort(new Error('session_changed'))
+    this.mediaAbortControllers.clear()
     for (const item of this.pending.values()) item.reject(new Error('sync_disposed'))
     this.pending.clear()
     this.batcher.dispose()

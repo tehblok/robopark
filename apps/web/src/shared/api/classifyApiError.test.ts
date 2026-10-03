@@ -13,6 +13,7 @@ describe('classifyApiError', () => {
     [404, null, 'not-found', 'Не найдено', false],
     [409, null, 'conflict', 'Данные изменились', true],
     [503, 'tracker_token_not_configured', 'configuration', 'Требуется настройка', false],
+    [409, 'blockers_disabled_for_park', 'configuration', 'Требуется настройка', false],
     [403, 'emergency_cookie_invalid', 'configuration', 'Требуется настройка', false],
     [503, null, 'server', 'Сервис временно недоступен', true],
     [503, 'temporary_upstream_not_configured', 'server', 'Сервис временно недоступен', true],

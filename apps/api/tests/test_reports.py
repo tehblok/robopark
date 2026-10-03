@@ -127,6 +127,19 @@ def test_create_manual_ticket_question_success(db_session, seed_mechanic, seed_p
     assert report.body == "What is the status?"
 
 
+def test_report_create_checks_one_park_without_enumerating_scope(
+    db_session, seed_mechanic, seed_park_with_tracker, seed_other_park, monkeypatch
+):
+    monkeypatch.setattr(
+        reports_svc,
+        "_user_park_ids",
+        lambda *_args: pytest.fail("single-park report create enumerated every park"),
+    )
+    reports_svc._require_park(db_session, seed_mechanic, seed_park_with_tracker.id)
+    with pytest.raises(PermissionError, match="forbidden"):
+        reports_svc._require_park(db_session, seed_mechanic, seed_other_park.id)
+
+
 def test_create_manual_mechanic_problem_without_tracker_key(
     db_session, seed_mechanic, seed_park_with_tracker
 ):
@@ -930,3 +943,98 @@ def test_http_list_mine(client: TestClient, db_session, seed_mechanic, seed_park
     r = client.get("/reports/mine")
     assert r.status_code == 200
     assert [item["id"] for item in r.json()] == [second.id, first.id]
+
+
+def test_http_report_lists_bound_history_and_page_status_filter(
+    client: TestClient, db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    reports = [
+        _create_open_report(
+            db_session,
+            author=seed_mechanic,
+            park_id=seed_park_with_tracker.id,
+            title=f"History {index}",
+        )
+        for index in range(54)
+    ]
+    reports[-1].status = reports_svc.STATUS_RETURNED
+    db_session.commit()
+    _login(client, "mech1")
+    mine = client.get("/reports/mine")
+    assert mine.status_code == 200
+    assert len(mine.json()) == 50
+    assert "body" not in mine.json()[0]
+    assert "attachments" not in mine.json()[0]
+    detail = client.get(f"/reports/{reports[-1].id}")
+    assert detail.status_code == 200
+    assert detail.json()["body"] == "Body"
+    assert "attachments" in detail.json()
+    older = client.get("/reports/mine?limit=5&offset=50")
+    assert [item["id"] for item in older.json()] == [row.id for row in reversed(reports[:4])]
+    returned = client.get("/reports/mine?status=returned")
+    assert [item["id"] for item in returned.json()] == [reports[-1].id]
+
+    _login(client, "operator1")
+    inbox = client.get("/reports/inbox")
+    assert inbox.status_code == 200
+    assert len(inbox.json()) == 50
+    assert len(client.get("/reports/inbox?limit=5&offset=50").json()) == 3
+    assert client.get("/reports/inbox?limit=102").status_code == 422
+
+
+def test_report_pages_keep_the_first_page_boundary_after_a_new_report(
+    client: TestClient, db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    reports = [
+        _create_open_report(db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id)
+        for _ in range(4)
+    ]
+    _login(client, "mech1")
+    first = client.get("/reports/mine?limit=2")
+    assert [item["id"] for item in first.json()] == [reports[3].id, reports[2].id]
+    anchor_id = first.json()[0]["id"]
+    _create_open_report(db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id)
+    older = client.get(f"/reports/mine?limit=2&offset=2&anchor_id={anchor_id}")
+    assert [item["id"] for item in older.json()] == [reports[1].id, reports[0].id]
+
+    _login(client, "operator1")
+    inbox = client.get(f"/reports/inbox?limit=2&offset=2&anchor_id={anchor_id}")
+    assert [item["id"] for item in inbox.json()] == [reports[1].id, reports[0].id]
+    assert client.get("/reports/inbox?anchor_id=0").status_code == 422
+
+
+def test_inbox_cursor_keeps_older_rows_after_a_newer_report_leaves_queue(
+    client: TestClient, db_session, seed_mechanic, seed_operator_with_park, seed_park_with_tracker
+):
+    reports = [
+        _create_open_report(db_session, author=seed_mechanic, park_id=seed_park_with_tracker.id)
+        for _ in range(4)
+    ]
+    _login(client, "operator1")
+    first = client.get("/reports/inbox?limit=2")
+    assert [item["id"] for item in first.json()] == [reports[3].id, reports[2].id]
+    cursor = first.json()[-1]
+    reports[3].status = reports_svc.STATUS_DONE
+    db_session.commit()
+
+    older = client.get(
+        "/reports/inbox",
+        params={
+            "limit": 2,
+            "anchor_id": first.json()[0]["id"],
+            "before_id": cursor["id"],
+        },
+    )
+    assert older.status_code == 200
+    assert [item["id"] for item in older.json()] == [reports[1].id, reports[0].id]
+    previous = client.get(
+        "/reports/inbox",
+        params={
+            "limit": 2,
+            "anchor_id": first.json()[0]["id"],
+            "after_id": older.json()[0]["id"],
+        },
+    )
+    assert [item["id"] for item in previous.json()] == [reports[2].id]
+    assert client.get("/reports/inbox?before_id=2&after_id=3").status_code == 422
+    assert client.get("/reports/inbox?before_id=0").status_code == 422

@@ -44,7 +44,6 @@ def authorize_privileged_ops(client, monkeypatch):
     )
 
     def operation(path: str, kwargs: dict) -> tuple[str, str] | None:
-        payload = kwargs.get("json") or {}
         mapping = {
             "/admin/ops/snapshot": ("snapshot", "snapshot"),
             "/admin/ops/restore": ("restore", "restore"),

@@ -17,7 +17,7 @@ import time
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .operational_state import read_object
@@ -38,13 +38,27 @@ MIN_FREE_BYTES = 6 * GIB
 MIN_FREE_RATIO = 0.15
 MAX_STORAGE_DELETIONS = 128
 STORAGE_CATEGORIES = ("diagnostics", "logs")
-MANAGED_STORAGE_CATEGORIES = ("backups", "releases")
+MANAGED_STORAGE_CATEGORIES = ("backups", "releases", "ota_cache")
 STORAGE_PRIORITY = {name: index for index, name in enumerate(STORAGE_CATEGORIES)}
 STORAGE_TTL = {
     "diagnostics": 7 * 86400,
     "logs": 14 * 86400,
 }
 STORAGE_MAX_BYTES = {"logs": 256 * 1024**2}
+
+
+class CleanupPartialError(ValueError):
+    """A consumed plan failed after one or more targets may have been removed."""
+
+    def __init__(self, deleted: list[dict], uncertain_target: dict | None = None):
+        super().__init__("cleanup_plan_changed")
+        self.deleted = deleted
+        self.uncertain_target = uncertain_target
+
+
+def _allocated_bytes(info: os.stat_result) -> int:
+    """Match disk inventory and the blocks a local unlink can actually free."""
+    return info.st_blocks * 512
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +93,7 @@ def cleanup_storage_roots(
     dry_run: bool,
     max_deletions: int = MAX_STORAGE_DELETIONS,
     now: float | None = None,
+    expected_identities: list[dict[str, object]] | None = None,
 ) -> dict:
     """Delete direct regular files from explicit roots in the pressure order.
 
@@ -93,6 +108,10 @@ def cleanup_storage_roots(
     skipped_counts: dict[str, int] = {}
     opened: list[int] = []
     category_totals: dict[str, int] = {}
+    expected_by_path = (
+        {(item["category"], item["path"]): item for item in expected_identities}
+        if expected_identities is not None else None
+    )
 
     def retain_oldest(heap: list, item: tuple) -> None:
         if len(heap) < max(0, max_deletions):
@@ -128,7 +147,7 @@ def cleanup_storage_roots(
                         skip("not_owned_file")
                         continue
                     category_totals[category] = (
-                        category_totals.get(category, 0) + info.st_size
+                        category_totals.get(category, 0) + _allocated_bytes(info)
                     )
                     item = (-info.st_mtime_ns, entry.name, info, descriptor)
                     retain_oldest(oldest, item)
@@ -164,6 +183,7 @@ def cleanup_storage_roots(
     target = budget.bytes_to_reclaim
     reclaimed = 0
     planned: list[dict[str, object]] = []
+    identities: list[dict[str, object]] = []
     deleted: list[dict[str, object]] = []
     for _, _, _, category, name, before, descriptor in candidates:
         expired = now - before.st_mtime >= STORAGE_TTL[category]
@@ -175,11 +195,22 @@ def cleanup_storage_roots(
             break
         if not (expired or over_category_budget or under_pressure):
             continue
-        item = {"category": category, "path": name, "bytes": before.st_size}
+        identity = {
+            "category": category, "path": name,
+            "dev": before.st_dev, "ino": before.st_ino,
+            "mtime_ns": before.st_mtime_ns, "ctime_ns": before.st_ctime_ns,
+        }
+        if expected_by_path is not None and expected_by_path.get((category, name)) != identity:
+            blocked = True
+            skip("artifact_changed")
+            break
+        size = _allocated_bytes(before)
+        item = {"category": category, "path": name, "bytes": size}
         planned.append(item)
+        identities.append(identity)
         if dry_run:
-            reclaimed += before.st_size
-            category_totals[category] -= before.st_size
+            reclaimed += size
+            category_totals[category] -= size
             continue
         try:
             current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
@@ -188,12 +219,13 @@ def cleanup_storage_roots(
                 current.st_ino,
                 current.st_size,
                 current.st_mtime_ns,
-            ) != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns):
+                current.st_ctime_ns,
+            ) != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns):
                 raise RetentionBlocked("artifact_changed")
             os.unlink(name, dir_fd=descriptor)
             deleted.append(item)
-            reclaimed += before.st_size
-            category_totals[category] -= before.st_size
+            reclaimed += size
+            category_totals[category] -= size
         except (OSError, ValueError):
             blocked = True
             skip("delete_failed")
@@ -213,6 +245,7 @@ def cleanup_storage_roots(
         "bytes_to_reclaim": target,
         "reclaimed_bytes": reclaimed,
         "planned": planned,
+        "identities": identities,
         "deleted": deleted,
         "deleted_count": len(deleted),
         "pressure": budget.free_bytes + reclaimed < budget.floor_bytes,
@@ -232,6 +265,7 @@ def _cleanup_plan_body(report):
         "floor_bytes": report["floor_bytes"],
         "bytes_to_reclaim": report["bytes_to_reclaim"],
         "planned": report["planned"],
+        "identities": report["identities"],
         "blocked": report["blocked"],
         "unknown_categories": report["unknown_categories"],
     }
@@ -259,8 +293,16 @@ def execute_cleanup_plan(
     if plan != expected or expected["blocked"]:
         raise ValueError("cleanup_plan_changed")
     result = cleanup_storage_roots(
-        roots, budget, dry_run=False, max_deletions=max_deletions, now=now
+        roots, budget, dry_run=False, max_deletions=max_deletions, now=now,
+        expected_identities=plan["identities"],
     )
+    if result["blocked"] or result["deleted"] != plan["planned"]:
+        if result["deleted"]:
+            next_target = next(
+                (item for item in plan["planned"] if item not in result["deleted"]), None
+            )
+            raise CleanupPartialError(result["deleted"], next_target)
+        raise ValueError("cleanup_plan_changed")
     return {**result, "plan_id": expected["plan_id"]}
 
 
@@ -281,7 +323,30 @@ def _regular_sha256(path: Path, *, max_bytes: int = 4 * 1024**3) -> tuple[int, s
             if total > max_bytes:
                 raise RetentionBlocked("cleanup_artifact_limit")
             digest.update(chunk)
-    return total, digest.hexdigest()
+    return _allocated_bytes(info), digest.hexdigest()
+
+
+def _ota_cache_identity(path: Path) -> tuple[int, str]:
+    if re.fullmatch(r"[a-f0-9]{64}\.ota", path.name) is None:
+        raise RetentionBlocked("unsafe_ota_cache")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid not in {0, os.geteuid()}
+            or not 0 < info.st_size <= MAX_BYTES
+            or stat.S_IMODE(info.st_mode) & 0o022
+        ):
+            raise RetentionBlocked("unsafe_ota_cache")
+    after = path.lstat()
+    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+    identity = tuple(getattr(info, key) for key in fields)
+    if identity != tuple(getattr(after, key) for key in fields):
+        raise RetentionBlocked("unsafe_ota_cache")
+    fingerprint = hashlib.sha256(repr((identity, path.stem)).encode()).hexdigest()
+    return _allocated_bytes(info), fingerprint
 
 
 def _backup_receipts(paths):
@@ -325,11 +390,12 @@ def _managed_cleanup_snapshot(
     planned = []
     guard = None
     try:
-        receipts = _backup_receipts(paths)
+        needs_backup_scan = bool(set(requested) & {"backups", "releases"})
+        receipts = _backup_receipts(paths) if needs_backup_scan else {}
         backup_root = paths.var / "backups"
         # A verified backup is the safety guard for destructive release cleanup,
         # independently of whether backup artifacts themselves were requested.
-        if set(requested) & set(MANAGED_STORAGE_CATEGORIES) and backup_root.exists():
+        if needs_backup_scan and backup_root.exists():
             if (
                 backup_root.is_symlink()
                 or not backup_root.is_dir()
@@ -371,9 +437,12 @@ def _managed_cleanup_snapshot(
                     )
         if "releases" in requested:
             from .restore_retention import protected_release_names
-            from .updater import _successful_release_receipts
+            from .updater import _load_journal, _successful_release_receipts
 
             protected = protected_release_names(paths)
+            journal = _load_journal(paths)
+            if journal and journal["phase"] not in {"succeeded", "rolled_back", "failed"}:
+                protected.update((journal["previous"], journal["candidate"]))
             for name, _, _ in _successful_release_receipts(paths):
                 if name in protected:
                     continue
@@ -381,7 +450,12 @@ def _managed_cleanup_snapshot(
                 if target.parent != paths.releases or target.is_symlink() or not target.is_dir():
                     raise RetentionBlocked("unsafe_release_path")
                 digest = hashlib.sha256()
-                size = 0
+                root_info = target.lstat()
+                digest.update(str((
+                    root_info.st_dev, root_info.st_ino, root_info.st_mode,
+                    root_info.st_mtime_ns, root_info.st_ctime_ns,
+                )).encode())
+                size = _allocated_bytes(root_info)
                 count = 0
                 for root, directories, files in os.walk(target, followlinks=False):
                     directories.sort()
@@ -392,12 +466,15 @@ def _managed_cleanup_snapshot(
                         count += 1
                         if count > MAX_ENTRIES or entry.is_symlink():
                             raise RetentionBlocked("unsafe_release_path")
-                        if stat.S_ISREG(info.st_mode):
-                            size += info.st_size
-                        elif not stat.S_ISDIR(info.st_mode):
+                        if stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode):
+                            size += _allocated_bytes(info)
+                        else:
                             raise RetentionBlocked("unsafe_release_path")
                         digest.update(entry.relative_to(target).as_posix().encode())
-                        digest.update(str((info.st_mode, info.st_size, info.st_mtime_ns)).encode())
+                        digest.update(str((
+                            info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                            info.st_mtime_ns, info.st_ctime_ns,
+                        )).encode())
                 planned.append(
                     {
                         "category": "releases",
@@ -406,19 +483,46 @@ def _managed_cleanup_snapshot(
                         "fingerprint": digest.hexdigest(),
                     }
                 )
+        if "ota_cache" in requested:
+            from .ota_store import OtaPackageStore
+
+            store = OtaPackageStore(paths)
+            journal = paths.state / "ota-update-journal.json"
+            cache_root = store.packages
+            receipt_root = paths.state / "ota-update-receipts"
+            if (
+                journal.exists() and not read_object(journal)
+                or cache_root.is_symlink()
+                or receipt_root.is_symlink()
+                or cache_root.exists() and not cache_root.is_dir()
+                or receipt_root.exists() and not receipt_root.is_dir()
+            ):
+                raise RetentionBlocked("unsafe_ota_cache")
+            for target in store.terminal_cache_candidates():
+                size, fingerprint = _ota_cache_identity(target)
+                planned.append({
+                    "category": "ota_cache",
+                    "path": target.name,
+                    "bytes": size,
+                    "fingerprint": fingerprint,
+                })
     except (OSError, ValueError, RetentionBlocked):
         blocked = True
-    planned.sort(key=lambda item: (item["category"], item["path"]))
+    managed_priority = {"ota_cache": 0, "backups": 1, "releases": 2}
+    planned.sort(key=lambda item: (managed_priority[item["category"]], item["path"]))
     planned = planned[:max(0, max_deletions)]
     target = budget.bytes_to_reclaim
     selected = []
     reclaimed = 0
     for item in planned:
-        if reclaimed >= target:
+        if item["category"] != "ota_cache" and reclaimed >= target:
             break
         selected.append(item)
         reclaimed += item["bytes"]
-    if sum(item["bytes"] for item in selected) >= large_cleanup_bytes and guard is None:
+    guarded_bytes = sum(
+        item["bytes"] for item in selected if item["category"] != "ota_cache"
+    )
+    if guarded_bytes >= large_cleanup_bytes and guard is None:
         blocked = True
     return {
         "schema": 1,
@@ -466,7 +570,7 @@ def preview_system_cleanup_plan(
     max_deletions=MAX_STORAGE_DELETIONS,
     now=None,
 ):
-    """Preview any public cleanup category without granting an execute capability."""
+    """Bound the exact public targets for a separately authorized cleanup."""
 
     now = time.time() if now is None else now
     requested = tuple(categories)
@@ -484,6 +588,13 @@ def preview_system_cleanup_plan(
         max_deletions=max_deletions,
         now=now,
     )
+    managed_budget = StorageBudget(
+        budget.partition_bytes,
+        budget.free_bytes + sum(item["bytes"] for item in regular["planned"]),
+        budget.minimum_free_bytes,
+        budget.minimum_free_ratio,
+    )
+    remaining_slots = max(0, max_deletions - len(regular["planned"]))
     managed_categories = [
         category for category in requested if category in MANAGED_STORAGE_CATEGORIES
     ]
@@ -491,8 +602,8 @@ def preview_system_cleanup_plan(
         preview_host_cleanup_plan(
             paths,
             managed_categories,
-            budget,
-            max_deletions=max_deletions,
+            managed_budget,
+            max_deletions=remaining_slots,
             now=now,
         )
         if managed_categories
@@ -506,27 +617,96 @@ def preview_system_cleanup_plan(
     priority = {
         "diagnostics": 0,
         "logs": 1,
-        "backups": 2,
-        "releases": 3,
+        "ota_cache": 2,
+        "backups": 3,
+        "releases": 4,
     }
     planned = sorted(
         [*regular["planned"], *managed["planned"]],
         key=lambda item: (priority[item["category"]], item["path"]),
     )[: max(0, max_deletions)]
+    truncated = len(regular["planned"]) + len(managed["planned"]) > len(planned)
     body = {
         "schema": 1,
         "bounded": len(planned) <= max(0, max_deletions),
         "floor_bytes": budget.floor_bytes,
         "bytes_to_reclaim": budget.bytes_to_reclaim,
         "planned": planned,
+        "identities": regular["identities"],
         "blocked": bool(
             unknown or duplicate or not requested or regular["blocked"] or managed["blocked"]
+            or truncated
         ),
         "unknown_categories": unknown,
         "guard": managed.get("guard"),
     }
     encoded = json.dumps(body, allow_nan=False, sort_keys=True, separators=(",", ":"))
     return {**body, "plan_id": str(uuid.uuid5(uuid.NAMESPACE_URL, encoded))}
+
+
+def execute_system_cleanup_plan(
+    paths,
+    categories,
+    budget,
+    plan,
+    *,
+    max_deletions=MAX_STORAGE_DELETIONS,
+    now=None,
+):
+    """Delete only the unchanged, fully enumerated system preview targets."""
+
+    now = time.time() if now is None else now
+    expected = preview_system_cleanup_plan(
+        paths, categories, budget, max_deletions=max_deletions, now=now
+    )
+    if plan != expected or expected["blocked"]:
+        raise ValueError("cleanup_plan_changed")
+    ephemeral = {
+        "diagnostics": paths.var / "diagnostics",
+        "logs": paths.root / "var/log/robopark",
+    }
+    roots = {key: path for key, path in ephemeral.items() if key in categories}
+    regular = preview_cleanup_plan(roots, budget, max_deletions=max_deletions, now=now)
+    managed_budget = StorageBudget(
+        budget.partition_bytes,
+        budget.free_bytes + sum(item["bytes"] for item in regular["planned"]),
+        budget.minimum_free_bytes,
+        budget.minimum_free_ratio,
+    )
+    remaining_slots = max(0, max_deletions - len(regular["planned"]))
+    managed_categories = [key for key in categories if key in MANAGED_STORAGE_CATEGORIES]
+    managed = (
+        preview_host_cleanup_plan(
+            paths,
+            managed_categories,
+            managed_budget,
+            max_deletions=remaining_slots,
+            now=now,
+        )
+        if managed_categories else None
+    )
+    deleted = []
+    try:
+        if regular["planned"]:
+            deleted.extend(
+                execute_cleanup_plan(
+                    roots, budget, regular, max_deletions=max_deletions, now=now
+                )["deleted"]
+            )
+        if managed is not None and managed["planned"]:
+            deleted.extend(
+                execute_host_cleanup_plan(
+                    paths, managed_categories, managed_budget, managed,
+                    max_deletions=remaining_slots, now=now,
+                )["deleted"]
+            )
+    except CleanupPartialError as exc:
+        raise CleanupPartialError([*deleted, *exc.deleted], exc.uncertain_target) from exc
+    except (OSError, ValueError) as exc:
+        if deleted:
+            raise CleanupPartialError(deleted) from exc
+        raise
+    return {**expected, "deleted": deleted, "deleted_count": len(deleted)}
 
 
 def execute_host_cleanup_plan(
@@ -555,25 +735,42 @@ def execute_host_cleanup_plan(
         raise ValueError("cleanup_plan_changed")
     deleted = []
     for item in expected["planned"]:
-        if item["category"] == "backups":
-            target = paths.var / "backups" / item["path"]
-            _, digest = _regular_sha256(target)
-            if digest != item["fingerprint"]:
-                raise ValueError("cleanup_plan_changed")
-            target.unlink()
-        else:
-            from .restore_retention import protected_release_names
+        try:
+            if item["category"] == "backups":
+                target = paths.var / "backups" / item["path"]
+                _, digest = _regular_sha256(target)
+                if digest != item["fingerprint"]:
+                    raise ValueError("cleanup_plan_changed")
+                target.unlink()
+            elif item["category"] == "ota_cache":
+                from .ota_store import OtaPackageStore
+                from .rollback import sync_directory
 
-            if item["path"] in protected_release_names(paths):
-                raise ValueError("cleanup_plan_changed")
-            target = paths.releases / item["path"]
-            if target.is_symlink() or not target.is_dir():
-                raise ValueError("cleanup_plan_changed")
-            if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
-                raise ValueError("cleanup_plan_changed")
-            shutil.rmtree(target)
-            (paths.state / "successful-releases" / f"{item['path']}.json").unlink()
-        deleted.append({key: item[key] for key in ("category", "path", "bytes")})
+                target = OtaPackageStore(paths).packages / item["path"]
+                _, fingerprint = _ota_cache_identity(target)
+                if fingerprint != item["fingerprint"]:
+                    raise ValueError("cleanup_plan_changed")
+                target.unlink()
+                sync_directory(target.parent)
+            else:
+                from .restore_retention import protected_release_names
+
+                if item["path"] in protected_release_names(paths):
+                    raise ValueError("cleanup_plan_changed")
+                target = paths.releases / item["path"]
+                if target.is_symlink() or not target.is_dir():
+                    raise ValueError("cleanup_plan_changed")
+                if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+                    raise ValueError("cleanup_plan_changed")
+                shutil.rmtree(target)
+                (paths.state / "successful-releases" / f"{item['path']}.json").unlink()
+            deleted.append({key: item[key] for key in ("category", "path", "bytes")})
+        except (OSError, ValueError) as exc:
+            if deleted or item["category"] == "releases":
+                raise CleanupPartialError(deleted, {
+                    key: item[key] for key in ("category", "path", "bytes")
+                }) from exc
+            raise
     return {**expected, "deleted": deleted, "deleted_count": len(deleted)}
 
 
@@ -610,13 +807,22 @@ def retain_storage(
             "completed_at": time.time(),
         }
     if not dry_run and not paths.state.is_symlink():
+        from .storage_inventory import collect_storage_inventory
+
+        try:
+            inventory = collect_storage_inventory(paths)
+        except (OSError, ValueError):
+            inventory = None
+        category_bytes = dict(report.get("category_bytes") or {})
+        if inventory is not None:
+            category_bytes.update(inventory["category_bytes"])
         atomic_write_json(paths.state / "storage-retention.json", report)
         from .health_projection import update_public_health
 
         update_public_health(
             paths.var / "api-ops/host-health.json",
             storage={
-                key: report.get(key)
+                key: category_bytes if key == "category_bytes" else report.get(key)
                 for key in (
                     "floor_bytes",
                     "bytes_to_reclaim",
@@ -627,7 +833,9 @@ def retain_storage(
                     "pressure_category",
                     "completed_at",
                 )
-            },
+            }
+            | ({"busy": True} if report.get("busy") is True else {})
+            | ({"inventory_sampled_at": inventory["sampled_at"]} if inventory is not None else {"inventory_failed": True}),
         )
     return report
 
@@ -805,6 +1013,7 @@ def command_retired(paths, identity):
 
 
 def _protected(paths):
+    from .ota_update import OtaUpdateEngine, OtaUpdateRequest
     from .restore import _load
 
     names = set()
@@ -813,6 +1022,19 @@ def _protected(paths):
     if journal:
         identities.add(journal["request"]["job_id"])
         names.add(journal["request"]["artifact"])
+    ota_journal_path = paths.state / "ota-update-journal.json"
+    if ota_journal_path.is_symlink():
+        raise RetentionBlocked("invalid_active_state")
+    try:
+        ota_journal = OtaUpdateEngine(paths, None)._read_journal()
+    except RuntimeError as exc:
+        raise RetentionBlocked("invalid_active_state") from exc
+    if ota_journal and (
+        ota_journal["phase"] not in {"published", "rolled_back", "failed"}
+        or ota_journal["error"] == "ota_rollback_failed"
+    ):
+        request = OtaUpdateRequest.from_dict(ota_journal["request"])
+        identities.add(str(request.operation_id))
     for path in (
         paths.ops / "inbox/approved.json",
         paths.state / "command-request.json",
@@ -978,6 +1200,7 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
         "atomic_deleted": 0,
         "diagnostic_deleted": 0,
         "ota_uploads_deleted": 0,
+        "ota_temporary_deleted": 0,
         "temporary_deleted": 0,
         "bytes": 0,
         "pressure": False,
@@ -1014,6 +1237,14 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
 
             result["ota_uploads_deleted"] = len(
                 OtaPackageStore(paths).cleanup_expired(now=now, ttl_seconds=STAGING_TTL)
+            )
+            result["ota_temporary_deleted"] = len(
+                OtaPackageStore(paths).cleanup_abandoned_copies(
+                    now=now, ttl_seconds=STAGING_TTL
+                )
+            )
+            result["ota_packages_deleted"] = len(
+                OtaPackageStore(paths).cleanup_terminal_packages()
             )
             bits = _bloom(paths)
             fill = sum(byte.bit_count() for byte in bits)
@@ -1111,7 +1342,7 @@ def retain_artifacts(paths, *, now=None, max_bytes=MAX_BYTES):
         else:
             result.update(blocked=True, pressure=True)
     result["errors"] = ["cleanup_blocked"] if result["blocked"] else []
-    result["completed_at"] = datetime.now(UTC).isoformat()
+    result["completed_at"] = datetime.now(timezone.utc).isoformat()
     # Bounded root-owned outcome lets doctor report blocked/saturated cleanup.
     if not paths.state.is_symlink():
         atomic_write_json(paths.state / "retention.json", result)

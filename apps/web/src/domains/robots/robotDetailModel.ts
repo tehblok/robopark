@@ -12,6 +12,8 @@ export type RobotDetailViewModel = {
   criticalReason: string | null
 }
 
+export const ROBOT_OBSERVATION_FUTURE_TOLERANCE_MS = 60_000
+
 const ROBOT_MODES: Record<string, string> = {
   AUTO: 'Автономный',
   MANUAL: 'Ручной',
@@ -26,8 +28,9 @@ export function formatRobotMode(value: string | null | undefined): string {
 }
 
 export function buildRobotDetailModel(snapshot: EmergencySnapshot, browserOnline: boolean, now = new Date()): RobotDetailViewModel {
-  const age = Math.max(0, now.getTime() - new Date(snapshot.observed_at).getTime())
-  const freshness: Freshness = !browserOnline ? 'offline' : age <= 30_000 ? 'live' : age <= 300_000 ? 'fresh' : 'stale'
+  const age = now.getTime() - Date.parse(snapshot.observed_at)
+  const plausibleTime = Number.isFinite(age) && age >= -ROBOT_OBSERVATION_FUTURE_TOLERANCE_MS
+  const freshness: Freshness = !browserOnline ? 'offline' : !plausibleTime ? 'stale' : age <= 30_000 ? 'live' : age <= 300_000 ? 'fresh' : 'stale'
   const connection: RobotDetailViewModel['connection'] = !browserOnline
     ? { state: 'device-offline', tone: 'warning', label: 'Нет сети на этом устройстве' }
     : snapshot.online === false

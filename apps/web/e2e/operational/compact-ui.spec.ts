@@ -9,7 +9,7 @@ for (const width of [412, 1440, 1920]) for (const route of ['inventory', 'report
     const main = await page.locator('main').boundingBox()
     const title = await page.getByRole('heading', { level: 1 }).boundingBox()
     // At 1920: 272px sidebar, then a centered 1440px content column.
-    expect(Math.round(title!.x - main!.x)).toBe(width < 900 ? 12 : width === 1920 ? 104 : 24)
+    expect(Math.round(title!.x - main!.x)).toBe(width < 900 ? 16 : width === 1920 ? 104 : 24)
   })
 }
 

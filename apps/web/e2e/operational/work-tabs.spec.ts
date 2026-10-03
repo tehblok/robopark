@@ -4,6 +4,16 @@ import type { MockRoute } from '../support/mockApi'
 import { FIXED_TIME, installOperational, issue, settlePage, snapshot } from './fixtures'
 
 const rootKey = 'ROBOPARK-42'
+
+async function openConversation(page: Page) {
+  const disclosure = page.getByRole('button', { name: 'История и сообщения', exact: true })
+  if (await disclosure.getAttribute('aria-expanded') !== 'true') await disclosure.click()
+}
+async function expectTaskIdentity(page: Page, key: string, summary: string) {
+  const task = page.getByRole('tabpanel', { name: 'Задача', exact: true })
+  await expect(task.getByRole('link', { name: key, exact: true })).toBeVisible()
+  await expect(task.getByRole('heading', { name: summary, exact: true })).toBeVisible()
+}
 const firstRepair: TrackerIssueDetail = {
   ...issue, key: 'ROBOPARK-200', summary: 'Проверить крепление батареи', type: 'repair', priority: 'minor',
   created_at: '2026-08-20T09:00:00Z', url: 'https://tracker.example.invalid/ROBOPARK-200',
@@ -108,19 +118,18 @@ for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 900 })
     const { queries, emergency, mutations } = await installWorkTabs(page)
     await page.goto(`/work/${rootKey}?park=7&status=queued&page=2`)
-    await expect(page.getByRole('heading', { name: `Задача ${rootKey}`, exact: true })).toBeVisible()
-    for (const name of ['Задача', 'Открытые задачи', 'Закрытые задачи', 'Проверка робота']) {
+    await expectTaskIdentity(page, rootKey, issue.summary)
+    for (const name of ['Задача', 'Открытые задачи', 'Закрытые задачи', 'Проверка']) {
       await expect(page.getByRole('tab', { name, exact: true })).toBeVisible()
     }
     await expect(page.getByRole('tab', { name: 'Задача', exact: true })).toHaveAttribute('aria-selected', 'true')
     await settlePage(page)
     expect(queries).toEqual([])
-    await expect.poll(() => emergency).toEqual(expect.arrayContaining([
-      '/api/emergency/resolve', `/api/emergency/${snapshot.vin}/snapshot`,
-    ]))
+    expect(emergency).toEqual([])
     const initialEmergencyCount = emergency.length
 
     const draft = 'Черновик комментария главного блокера'
+    await openConversation(page)
     await page.getByRole('textbox', { name: 'Комментарии', exact: true }).fill(draft)
     await page.getByRole('tab', { name: 'Открытые задачи', exact: true }).click()
     await expectWorkLocation(page, rootKey, 'open')
@@ -133,6 +142,7 @@ for (const width of [390, 1440]) {
     expect(emergency).toHaveLength(initialEmergencyCount)
     await page.getByRole('tab', { name: 'Задача', exact: true }).click()
     await expectWorkLocation(page, rootKey)
+    await openConversation(page)
     await expect(page.getByRole('textbox', { name: 'Комментарии', exact: true })).toHaveValue(draft)
     expect(mutations).toEqual([])
 
@@ -140,13 +150,14 @@ for (const width of [390, 1440]) {
     await page.getByRole('tabpanel').getByRole('button', { name: `Открыть задачу ${firstRepair.key}: ${firstRepair.summary}`, exact: true }).click()
     await expectWorkLocation(page, firstRepair.key)
     expect(new URL(page.url()).searchParams.get('blocker')).toBe(rootKey)
-    await expect(page.getByRole('heading', { name: `Задача ${firstRepair.key}`, exact: true })).toBeVisible()
+    await expectTaskIdentity(page, firstRepair.key, firstRepair.summary)
+    await openConversation(page)
     await expect(page.getByRole('textbox', { name: 'Комментарии', exact: true })).toHaveValue('')
     const comment = 'Крепление батареи проверено в дополнительной задаче'
     await page.getByRole('textbox', { name: 'Комментарии', exact: true }).fill(comment)
     await page.getByRole('button', { name: 'Отправить', exact: true }).click()
     await expect(page.getByText(comment, { exact: true })).toBeVisible()
-    expect(mutations).toEqual([{ key: firstRepair.key, text: comment }])
+    expect(mutations).toEqual([])
 
     await page.getByRole('tab', { name: 'Открытые задачи', exact: true }).click()
     await expectWorkLocation(page, firstRepair.key, 'open')
@@ -155,7 +166,7 @@ for (const width of [390, 1440]) {
     await page.getByRole('tabpanel').getByRole('button', { name: `Открыть задачу ${secondRepair.key}: ${secondRepair.summary}`, exact: true }).click()
     await expectWorkLocation(page, secondRepair.key)
     expect(new URL(page.url()).searchParams.get('blocker')).toBe(rootKey)
-    await page.getByRole('tab', { name: 'Проверка робота', exact: true }).click()
+    await page.getByRole('tab', { name: 'Проверка', exact: true }).click()
     await expectWorkLocation(page, secondRepair.key, 'check')
     await page.getByRole('tab', { name: 'Схема', exact: true }).click()
     await expect.poll(() => new URL(page.url()).searchParams.get('check_tab')).toBe('scheme')
@@ -173,26 +184,24 @@ for (const width of [390, 1440]) {
     const checkUrl = page.url()
     await page.reload()
     await expect(page).toHaveURL(checkUrl)
-    await expect(page.getByRole('tab', { name: 'Проверка робота', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tab', { name: 'Проверка', exact: true })).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByRole('tab', { name: 'Схема', exact: true })).toHaveAttribute('aria-selected', 'true')
     await expect(page.locator('.rp-check-photo-frame img')).toBeVisible()
     await page.getByRole('link', { name: `К главному блокеру ${rootKey}`, exact: true }).click()
     await expectWorkLocation(page, rootKey)
     expect(new URL(page.url()).searchParams.has('check_tab')).toBe(false)
     await expect(page.getByRole('tab', { name: 'Задача', exact: true })).toHaveAttribute('aria-selected', 'true')
-    await expect(page.getByRole('heading', { name: `Задача ${rootKey}`, exact: true })).toBeVisible()
+    await expectTaskIdentity(page, rootKey, issue.summary)
   })
 
   test(`closed repair tab loads any priority lazily and paginates ten oldest first at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
     const { queries, emergency } = await installWorkTabs(page)
     await page.goto(`/work/${rootKey}?park=7&status=queued&page=2`)
-    await expect(page.getByRole('heading', { name: `Задача ${rootKey}`, exact: true })).toBeVisible()
+    await expectTaskIdentity(page, rootKey, issue.summary)
     await settlePage(page)
     expect(queries).toEqual([])
-    await expect.poll(() => emergency).toEqual(expect.arrayContaining([
-      '/api/emergency/resolve', `/api/emergency/${snapshot.vin}/snapshot`,
-    ]))
+    expect(emergency).toEqual([])
     const initialEmergencyCount = emergency.length
     await page.getByRole('tab', { name: 'Закрытые задачи', exact: true }).click()
     await expectWorkLocation(page, rootKey, 'closed')

@@ -1,39 +1,34 @@
-import { createContext, useContext, useEffect, useMemo, useState, type PropsWithChildren } from 'react'
+import { useEffect, useMemo, useState, type PropsWithChildren } from 'react'
 import {
   applyTheme,
   applyDensity,
+  applyAccent,
+  ACCENT_STORAGE_KEY,
   DENSITY_MEDIA_QUERY,
   DENSITY_STORAGE_KEY,
   readDensityPreference,
+  readAccentPreference,
   readThemePreference,
   resolveDensity,
   resolveTheme,
   THEME_MEDIA_QUERY,
   THEME_STORAGE_KEY,
-  type ResolvedTheme,
-  type ResolvedDensity,
   type DensityPreference,
   type ThemePreference,
+  type AccentPreference,
 } from './theme'
+import { ThemeContext, type ThemeContextValue } from './themeContext'
 
-export type { DensityPreference, ThemePreference } from './theme'
-
-type ThemeContextValue = {
-  preference: ThemePreference
-  resolvedTheme: ResolvedTheme
-  setPreference: (preference: ThemePreference) => void
-  densityPreference: DensityPreference
-  resolvedDensity: ResolvedDensity
-  setDensityPreference: (preference: DensityPreference) => void
-}
-
-const ThemeContext = createContext<ThemeContextValue | null>(null)
+export type { AccentPreference, DensityPreference, ThemePreference } from './theme'
 
 export function ThemeProvider({ children }: PropsWithChildren) {
   const [preference, setPreferenceState] = useState<ThemePreference>(readThemePreference)
   const [systemDark, setSystemDark] = useState(() => matchMedia(THEME_MEDIA_QUERY).matches)
   const [densityPreference, setDensityPreferenceState] = useState<DensityPreference>(
     readDensityPreference,
+  )
+  const [accentPreference, setAccentPreferenceState] = useState<AccentPreference>(
+    readAccentPreference,
   )
   const [narrowViewport, setNarrowViewport] = useState(
     () => matchMedia(DENSITY_MEDIA_QUERY).matches,
@@ -57,12 +52,14 @@ export function ThemeProvider({ children }: PropsWithChildren) {
 
   useEffect(() => applyTheme(resolvedTheme), [resolvedTheme])
   useEffect(() => applyDensity(resolvedDensity), [resolvedDensity])
+  useEffect(() => applyAccent(accentPreference), [accentPreference])
 
   const value = useMemo<ThemeContextValue>(() => ({
     preference,
     resolvedTheme,
     densityPreference,
     resolvedDensity,
+    accentPreference,
     setPreference(next) {
       try {
         localStorage.setItem(THEME_STORAGE_KEY, next)
@@ -79,13 +76,15 @@ export function ThemeProvider({ children }: PropsWithChildren) {
       }
       setDensityPreferenceState(next)
     },
-  }), [densityPreference, preference, resolvedDensity, resolvedTheme])
+    setAccentPreference(next) {
+      try {
+        localStorage.setItem(ACCENT_STORAGE_KEY, next)
+      } catch {
+        // The in-memory preference remains available when storage is denied.
+      }
+      setAccentPreferenceState(next)
+    },
+  }), [accentPreference, densityPreference, preference, resolvedDensity, resolvedTheme])
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
-}
-
-export function useTheme(): ThemeContextValue {
-  const value = useContext(ThemeContext)
-  if (!value) throw new Error('useTheme must be used inside ThemeProvider')
-  return value
 }

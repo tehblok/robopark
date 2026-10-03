@@ -301,6 +301,21 @@ describe('in-flight invalidation', () => {
     expect(window.localStorage.getItem(`robopark:res:${key}`)).toBeNull()
   })
 
+  it('surfaces a current access denial after the global auth handler clears the cache', async () => {
+    const key = 'admin:emergency-sections:actor'
+    resourceStore.set(key, { value: 'protected' }, false)
+    const loader = vi.fn(async () => {
+      resourceStore.clearAll()
+      throw { status: 403 }
+    })
+    const view = renderHook(() => useCachedResource<TestPayload>(key, loader, { refreshIntervalMs: 0 }))
+
+    await act(async () => { await view.result.current.refresh() })
+    expect(view.result.current.error).toEqual({ status: 403 })
+    expect(view.result.current.data).toBeUndefined()
+    expect(resourceStore.get(key)).toBeUndefined()
+  })
+
   it('does not let an old principal repopulate cache after a scope switch', async () => {
     const oldKey = 'work:7:principal-old:list'
     const newKey = 'work:7:principal-new:list'
@@ -431,6 +446,37 @@ describe('automatic cached refresh', () => {
     expect(loader).toHaveBeenCalledTimes(3)
   })
 
+  it('guards claim-style revalidation with retry delay while keeping explicit refresh available', async () => {
+    vi.useFakeTimers()
+    const loader = vi.fn()
+      .mockRejectedValueOnce(new Error('temporarily unavailable'))
+      .mockResolvedValueOnce({ value: 'confirmed' })
+    resourceStore.set('pending-claim', { value: 'pending' }, false)
+    const view = renderHook(() => useCachedResource<TestPayload>('pending-claim', loader, { refreshIntervalMs: 0 }))
+
+    await act(() => view.result.current.refreshIfAllowed())
+    expect(loader).toHaveBeenCalledTimes(1)
+    await act(() => view.result.current.refreshIfAllowed())
+    expect(loader).toHaveBeenCalledTimes(1)
+    await act(() => vi.advanceTimersByTimeAsync(1001))
+    await act(() => view.result.current.refreshIfAllowed())
+    expect(loader).toHaveBeenCalledTimes(2)
+    expect(view.result.current.data?.value).toBe('confirmed')
+  })
+
+  it.each([401, 403])('blocks claim-style revalidation after access denial %s', async status => {
+    vi.useFakeTimers()
+    resourceStore.set(`pending-claim-denied-${status}`, { value: 'pending' }, false)
+    const loader = vi.fn().mockRejectedValue({ status })
+    const view = renderHook(() => useCachedResource<TestPayload>(`pending-claim-denied-${status}`, loader, { refreshIntervalMs: 0 }))
+
+    await act(() => view.result.current.refreshIfAllowed())
+    await act(() => vi.advanceTimersByTimeAsync(300_000))
+    await act(() => view.result.current.refreshIfAllowed())
+    expect(loader).toHaveBeenCalledTimes(1)
+    expect(view.result.current.data).toBeUndefined()
+  })
+
   it.each([401, 403])('halts automatic refresh after access error %s', async status => {
     vi.useFakeTimers()
     const loader = vi.fn().mockRejectedValue({ status })
@@ -457,6 +503,25 @@ describe('automatic cached refresh', () => {
     await act(() => vi.advanceTimersByTimeAsync(300_000))
     await act(async () => window.dispatchEvent(new Event('focus')))
     expect(loader).toHaveBeenCalledTimes(1)
+  })
+
+  it('can refresh on mount and resume without a periodic request timer', async () => {
+    vi.useFakeTimers()
+    resourceStore.set('open-only', { value: 'previous' }, false)
+    const loader = vi.fn(async () => ({ value: String(loader.mock.calls.length) }))
+    const view = renderHook(() => useCachedResource('open-only', loader, {
+      refreshOnMount: true,
+      refreshIntervalMs: 0,
+      refreshOnResume: true,
+      staleTimeMs: 30_000,
+    }))
+    await act(async () => {})
+    expect(view.result.current.data?.value).toBe('1')
+    await act(() => vi.advanceTimersByTimeAsync(120_000))
+    expect(loader).toHaveBeenCalledTimes(1)
+    await act(async () => { window.dispatchEvent(new Event('focus')); window.dispatchEvent(new Event('online')) })
+    expect(view.result.current.data?.value).toBe('2')
+    expect(loader).toHaveBeenCalledTimes(2)
   })
 
   it('allows forced mutation refresh and opts editable resources out of automatic replacement', async () => {

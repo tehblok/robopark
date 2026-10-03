@@ -19,7 +19,6 @@ from robopark_api.models import User
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import rbac, tracker_cache
 from robopark_api.services.rbac import RoleSlug
-from robopark_api.services.tracker_claims import mechanic_owns_issue
 from robopark_api.services.tracker_policy import is_issue_in_scope
 
 
@@ -65,10 +64,9 @@ def vin_allowed_for_user(db: Session, user: User, vin: str) -> bool:
             continue
         seen_queues.add(queue)
         issues = tracker_cache.search_robot_tickets(token=token, queue=queue, query=query)
-        if any(
-            is_issue_in_scope(db, user, issue)
-            and (user.role != RoleSlug.MECHANIC or mechanic_owns_issue(db, user, issue))
-            for issue in issues
-        ):
+        # A mechanic may inspect a robot before taking any of its tasks.  Park
+        # scope remains the authorization boundary; a local claim controls
+        # mutations and ownership, not read-only diagnostics.
+        if any(is_issue_in_scope(db, user, issue) for issue in issues):
             return True
     return False

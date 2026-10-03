@@ -30,7 +30,6 @@ PERMISSION_NAV_DASHBOARD = "nav.dashboard"
 PERMISSION_NAV_TASKS = "nav.tasks"
 PERMISSION_NAV_ROBOT_SEARCH = "nav.robot_search"
 PERMISSION_NAV_EMERGENCY = "nav.emergency"
-PERMISSION_NAV_MAP = "nav.map"
 PERMISSION_NAV_ANALYTICS = "nav.analytics"
 PERMISSION_NAV_REPORTS = "nav.reports"
 PERMISSION_NAV_INVENTORY = "nav.inventory"
@@ -62,7 +61,6 @@ ALL_PERMISSIONS: tuple[str, ...] = (
     PERMISSION_NAV_TASKS,
     PERMISSION_NAV_ROBOT_SEARCH,
     PERMISSION_NAV_EMERGENCY,
-    PERMISSION_NAV_MAP,
     PERMISSION_NAV_ANALYTICS,
     PERMISSION_NAV_REPORTS,
     PERMISSION_NAV_INVENTORY,
@@ -131,7 +129,6 @@ PERMISSION_CATALOG: tuple[PermissionDef, ...] = (
     PermissionDef(PERMISSION_NAV_TASKS, "nav", "Задачи", 20),
     PermissionDef(PERMISSION_NAV_ROBOT_SEARCH, "nav", "Поиск робота", 30),
     PermissionDef(PERMISSION_NAV_EMERGENCY, "nav", "Проверка робота", 40),
-    PermissionDef(PERMISSION_NAV_MAP, "nav", "Карта", 50),
     PermissionDef(PERMISSION_NAV_ANALYTICS, "nav", "Аналитика", 60),
     PermissionDef(PERMISSION_NAV_REPORTS, "nav", "Обращения", 70),
     PermissionDef(PERMISSION_NAV_INVENTORY, "nav", "Склад", 75),

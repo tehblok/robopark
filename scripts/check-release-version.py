@@ -14,7 +14,7 @@ from robopark_version import ReleaseVersion
 
 def check(root, tag=None):
     version = (root / "VERSION").read_text().strip()
-    ReleaseVersion.parse(version)
+    parsed = ReleaseVersion.parse(version)
     api = tomllib.loads((root / "apps/api/pyproject.toml").read_text())["project"]["version"]
     api_lock = tomllib.loads((root / "apps/api/uv.lock").read_text())
     locked_api_versions = [
@@ -34,7 +34,7 @@ def check(root, tag=None):
             isinstance(target, ast.Name) and target.id == "APP_VERSION" for target in node.targets
         )
     ]
-    if locked_api_versions != [version] or host != [version] or {
+    if (len(locked_api_versions) != 1 or locked_api_versions[0] not in {version, parsed.python_version}) or host != [version] or {
         api,
         web,
         lock["version"],

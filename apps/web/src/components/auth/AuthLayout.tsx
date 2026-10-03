@@ -1,6 +1,7 @@
 import type { PropsWithChildren } from 'react'
 import robotImage from '../../assets/robots/isometric.webp'
-import { useTheme, type ThemePreference } from '../../design-system/theme/ThemeProvider'
+import type { ThemePreference } from '../../design-system/theme/ThemeProvider'
+import { useTheme } from '../../design-system/theme/themeContext'
 import './auth.css'
 
 const THEME_OPTIONS: readonly { value: ThemePreference; label: string; shortLabel: string }[] = [

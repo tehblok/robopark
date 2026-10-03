@@ -1,9 +1,13 @@
-FROM python:3.12-slim@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
 ARG UV_VERSION=0.11.31
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends postgresql-client-17 \
     && rm -rf /var/lib/apt/lists/*
+ARG PIP_VERSION=26.2.1
+RUN pip install --no-cache-dir --upgrade "pip==${PIP_VERSION}"
+
 RUN pip install --no-cache-dir "uv==${UV_VERSION}"
 
 WORKDIR /app
@@ -21,6 +25,10 @@ COPY alembic.ini ./
 COPY alembic ./alembic
 COPY data/emergency_sections.json ./data/emergency_sections.json
 RUN uv sync --frozen --no-dev
+
+# Dependency installation is finished; the runtime does not need pip or its
+# vendored dependency tree. Keep the application environment locked by uv.
+RUN /usr/local/bin/python -m pip uninstall --yes pip
 
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh

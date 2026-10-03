@@ -1,5 +1,5 @@
-import { act, render, screen } from '@testing-library/react'
-import { StrictMode, useEffect } from 'react'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode, useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, ApiTimeoutError, api, type User } from './api'
 import { AuthProvider } from './auth'
@@ -8,9 +8,14 @@ import { resourceStore } from './lib/resource'
 import { IDBFactory } from 'fake-indexeddb'
 import { openOfflineDb, purgeOfflineScope } from './pwa/offlineDb'
 import { offlineScopeForUser } from './lib/deviceResourceCache'
-import { openShareTargetInbox } from './pwa/ShareTargetInbox'
+import * as deviceCache from './lib/deviceResourceCache'
+import { storageRegistry } from './pwa/storageRegistry'
+import { openShareTargetInbox } from './pwa/shareTargetStore'
 import { registerServiceWorker } from './pwa/registerServiceWorker'
 import { operationReservationKey } from './domains/system/operationReservation'
+import { clearProtectedBrowserStorage } from './shared/auth/protectedBrowserStorage'
+import { readReportPhotoDraft, writeReportPhotoDraft } from './domains/reports/reportPhotoDrafts'
+import { reportsAccessIdentity } from './domains/reports/reports'
 
 const oldAccount: User = {
   id: 3,
@@ -49,7 +54,9 @@ function deferred<T>() {
 
 function AuthProbe() {
   const auth = useAuth()
-  useEffect(() => {
+  // Keep assertions on the context synchronized with the committed DOM;
+  // passive effects can still expose the previous loading snapshot.
+  useLayoutEffect(() => {
     currentAuth = auth
     return () => {
       currentAuth = null
@@ -104,7 +111,10 @@ async function activationSafetyProbe(): Promise<() => boolean> {
   })
   return () => {
     let safe = false
-    const port = { postMessage: (reply: unknown) => { safe = (reply as { safe: boolean }).safe }, onmessage: undefined as undefined | ((event: { data?: unknown }) => void) }
+    const port = { postMessage: (reply: unknown) => {
+      const next = (reply as { safe?: unknown }).safe
+      if (typeof next === 'boolean') safe = next
+    }, onmessage: undefined as undefined | ((event: { data?: unknown }) => void) }
     listeners.get('message')?.({ data: { type: 'PREPARE_ACTIVATION' }, ports: [port] })
     port.onmessage?.({ data: { type: 'RELEASE_ACTIVATION' } })
     return safe
@@ -112,6 +122,201 @@ async function activationSafetyProbe(): Promise<() => boolean> {
 }
 
 describe('AuthProvider session boundaries', () => {
+  it('recovers claimed share cleanup after logout already removed the offline identity', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    const park = { id: 7, name: 'Recovery park', tag: 'recovery', timezone: 'Europe/Moscow' }
+    const owner = { ...oldAccount, parks: [park] }
+    const photoKey = 'robopark:report-draft:3:7:recovery'
+    await writeReportPhotoDraft({ key: photoKey, ownerKey: reportsAccessIdentity(owner, park), revision: 'recovery', activeForm: 'problem', trackerKey: '', title: 'Repair photo', body: '', createdReportId: null, attachmentKind: 'device_photo', attachment: { blob: new Blob(['private']), name: 'private.jpg', lastModified: 1 } })
+    const inbox = await openShareTargetInbox()
+    for (const id of ['claimed', 'unclaimed']) await inbox.save({ id, createdAt: Date.now(), name: 'private.jpg', type: 'image/jpeg', blob: new Blob(['private']), assignment: null })
+    await inbox.claim('claimed', oldAccount.id)
+    localStorage.setItem('robopark:local-signout:v1', JSON.stringify({ accountId: owner.id, scope: offlineScopeForUser(owner, 'all'), parks: ['all', '7'] }))
+    clearProtectedBrowserStorage()
+    vi.spyOn(api, 'me').mockResolvedValue(oldAccount)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('anonymous')
+    expect(await inbox.list(oldAccount.id)).toEqual([])
+    expect(await readReportPhotoDraft(photoKey)).toBeNull()
+    expect(await inbox.claim('unclaimed', 41)).toMatchObject({ id: 'unclaimed', ownerAccountId: 41 })
+    inbox.close?.()
+  })
+  it('finishes interrupted local logout cleanup and permits safe activation while signed out', async () => {
+    const safeToActivate = await activationSafetyProbe()
+    localStorage.setItem('robopark:local-signout:v1', '1')
+    seedProtectedState()
+    const me = vi.spyOn(api, 'me')
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('anonymous')
+    expect(me).not.toHaveBeenCalled()
+    expectProtectedStateCleared()
+    expect(safeToActivate()).toBe(true)
+  })
+  it('keeps identity after a scoped 403 but drops denied resource data before an offline restart', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    resourceStore.set('denied-resource', { forbidden: true }, false)
+    act(() => window.dispatchEvent(new CustomEvent('robopark:authorization-failure', { detail: { status: 403 } })))
+    expect(resourceStore.get('denied-resource')).toBeUndefined()
+    first.unmount()
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(await screen.findByText('old-account')).toBeVisible()
+  })
+  it('verifies the changed cookie before adopting another tab account', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockResolvedValueOnce(replacementAccount)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'robopark:auth-transition', newValue: JSON.stringify({ phase: 'verified', nonce: 'test-transition' }) })))
+    expect(await screen.findByText('replacement-account')).toBeVisible()
+  })
+  it('retries another tab verification on reconnect after a transient failure', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValueOnce(replacementAccount)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'robopark:auth-transition', newValue: JSON.stringify({ phase: 'verified', nonce: 'retry-transition' }) })))
+    await screen.findByText('anonymous')
+    act(() => window.dispatchEvent(new Event('online')))
+    expect(await screen.findByText('replacement-account')).toBeVisible()
+  })
+  it('invalidates the old tab identity when another tab changes authentication', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'robopark:auth-transition', newValue: 'another-tab-transition' })))
+    expect(await screen.findByText('anonymous')).toBeVisible()
+  })
+  it.each([new ApiError(503), new SyntaxError('Invalid JSON')])('retains a confirmed identity through a transient proxy or parse failure', async failure => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockRejectedValueOnce(failure)
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    first.unmount()
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(await screen.findByText('old-account')).toBeVisible()
+  })
+  it('restores a previously confirmed identity after an offline cold start without logging in again', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    first.unmount()
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(await screen.findByText('old-account')).toBeVisible()
+    expect(currentAuth!.offlineSession).toBe(true)
+    vi.mocked(api.me).mockResolvedValueOnce(oldAccount)
+    await act(async () => { await currentAuth!.refreshUser() })
+    expect(currentAuth!.offlineSession).toBe(false)
+  })
+
+  it.each([false, true])('settles a disconnected cold start immediately (saved identity: %s) and revalidates on reconnect', async saved => {
+    const me = vi.spyOn(api, 'me').mockResolvedValue(oldAccount)
+    if (saved) {
+      const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+      await screen.findByText('old-account')
+      first.unmount()
+    }
+    me.mockClear().mockImplementation(() => new Promise(() => {}))
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(await screen.findByText(saved ? 'old-account' : 'anonymous')).toBeVisible()
+    expect(me).not.toHaveBeenCalled()
+    expect(currentAuth!.offlineSession).toBe(saved)
+    me.mockRejectedValue(new ApiError(401))
+    await act(async () => window.dispatchEvent(new Event('online')))
+    await waitFor(() => expect(me).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText('anonymous')).toBeVisible()
+  })
+
+  it('clears revoked scopes when reconnect overlaps offline cache activation', async () => {
+    const revoked = { ...oldAccount, username: 'restricted-account', permissions: [] }
+    const me = vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockResolvedValue(revoked)
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    first.unmount()
+    seedProtectedState()
+    const bootCache = deferred<void>()
+    const verifiedCache = deferred<void>()
+    const activate = vi.spyOn(deviceCache, 'activateDeviceResourceCache')
+      .mockImplementationOnce(() => bootCache.promise)
+      .mockImplementationOnce(() => verifiedCache.promise)
+    const purge = vi.spyOn(storageRegistry, 'purgeScope')
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await waitFor(() => expect(activate).toHaveBeenCalledTimes(1))
+    await act(async () => { window.dispatchEvent(new Event('online')) })
+    await waitFor(() => expect(me).toHaveBeenCalledTimes(2))
+    await act(async () => { bootCache.resolve() })
+    await waitFor(() => expect(activate).toHaveBeenCalledTimes(2))
+    await act(async () => { verifiedCache.resolve() })
+    expect(await screen.findByText('restricted-account')).toBeVisible()
+    expect(me).toHaveBeenCalledTimes(2)
+    expect(purge).toHaveBeenCalledWith(offlineScopeForUser(oldAccount, 'all'))
+    expect(resourceStore.get(resourceKey)).toBeUndefined()
+    expect(localStorage.getItem(operationKey)).toBeNull()
+    expect(currentAuth!.offlineSession).toBe(false)
+  })
+
+  it('activates saved cache before publishing a transient reconnect fallback', async () => {
+    const me = vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockRejectedValue(new ApiError(503))
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    first.unmount()
+    const bootCache = deferred<void>()
+    const fallbackCache = deferred<void>()
+    const activate = vi.spyOn(deviceCache, 'activateDeviceResourceCache')
+      .mockImplementationOnce(() => bootCache.promise)
+      .mockImplementationOnce(() => fallbackCache.promise)
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await act(async () => { window.dispatchEvent(new Event('online')) })
+    await waitFor(() => expect(me).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(activate).toHaveBeenCalledTimes(2))
+    expect(screen.getByText('loading')).toBeVisible()
+    await act(async () => { bootCache.resolve() })
+    expect(screen.getByText('loading')).toBeVisible()
+    await act(async () => { fallbackCache.resolve() })
+    expect(await screen.findByText('old-account')).toBeVisible()
+    expect(currentAuth!.offlineSession).toBe(true)
+  })
+
+  it('applies reconnect revocation before a blocked offline bootstrap settles', async () => {
+    const me = vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockRejectedValue(new ApiError(401))
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    first.unmount()
+    const bootCache = deferred<void>()
+    vi.spyOn(deviceCache, 'activateDeviceResourceCache').mockImplementationOnce(() => bootCache.promise)
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await act(async () => { window.dispatchEvent(new Event('online')) })
+    await waitFor(() => expect(me).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('anonymous')).toBeVisible()
+    await act(async () => { bootCache.resolve() })
+    expect(screen.getByText('anonymous')).toBeVisible()
+    expect(currentAuth!.user).toBeNull()
+  })
+
+  it('does not restore an offline identity after an authoritative session denial', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockRejectedValueOnce(new ApiError(401)).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    first.unmount()
+    const denied = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('anonymous')
+    denied.unmount()
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(await screen.findByText('anonymous')).toBeVisible()
+  })
+
+  it('rechecks the restored session when connectivity returns and applies server revocation', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockRejectedValueOnce(new TypeError('Failed to fetch')).mockRejectedValueOnce(new ApiError(401))
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    first.unmount()
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    act(() => window.dispatchEvent(new Event('online')))
+    expect(await screen.findByText('anonymous')).toBeVisible()
+  })
   afterEach(async () => {
     await purgeOfflineScope()
     currentAuth = null
@@ -119,6 +324,24 @@ describe('AuthProvider session boundaries', () => {
     localStorage.clear()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+  })
+
+  it('reclaims retired share storage even when the device is signed out', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    const request = indexedDB.open('robopark-share-inbox', 1)
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    db.close()
+    localStorage.setItem('robopark:legacy-share-inbox-retired-at', String(Date.now() - 25 * 60 * 60 * 1000))
+    vi.spyOn(api, 'me').mockRejectedValue(new ApiError(401, 'unauthorized'))
+
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('anonymous')
+    await waitFor(async () => {
+      expect(await indexedDB.databases()).not.toContainEqual(expect.objectContaining({ name: 'robopark-share-inbox' }))
+    })
   })
 
   it('removes legacy private resource snapshots when an existing session resumes', async () => {
@@ -156,15 +379,71 @@ describe('AuthProvider session boundaries', () => {
     expect(currentAuth!.refreshUser).toBe(refresh)
   })
 
-  it('purges unclaimed global share-target photos when refresh replaces the account', async () => {
+  it('drops in-memory protected resources when a refresh changes permissions', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount)
+      .mockResolvedValueOnce({ ...oldAccount, permissions: [] })
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    resourceStore.set('operator:parks', [{ id: 7, name: 'previous access' }], false)
+
+    await act(async () => { await currentAuth!.refreshUser() })
+
+    expect(resourceStore.get('operator:parks')).toBeUndefined()
+  })
+
+  it('drops protected resources when account approval is revoked', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount)
+      .mockResolvedValueOnce({ ...oldAccount, access_status: 'rejected' })
+      .mockResolvedValueOnce(oldAccount)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    resourceStore.set('operator:parks', [{ id: 7, name: 'approved-only' }], false)
+    localStorage.setItem('robopark:report-draft:3:all', 'unfinished')
+
+    await act(async () => { await currentAuth!.refreshUser() })
+
+    expect(resourceStore.get('operator:parks')).toBeUndefined()
+    expect(localStorage.getItem('robopark:report-draft:3:all')).toBeNull()
+    await act(async () => { await currentAuth!.refreshUser() })
+    expect(localStorage.getItem('robopark:report-draft:3:all')).toBe('unfinished')
+  })
+
+  it('retains warm resources when a refresh confirms the same authorization', async () => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockResolvedValueOnce({ ...oldAccount })
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    resourceStore.set('operator:parks', [{ id: 7, name: 'current access' }], false)
+
+    await act(async () => { await currentAuth!.refreshUser() })
+
+    expect(resourceStore.get('operator:parks')).toEqual([{ id: 7, name: 'current access' }])
+  })
+
+  it('purges the previous account share-target photo when refresh replaces the account', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory())
     vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockResolvedValueOnce(replacementAccount)
     render(<AuthProvider><AuthProbe /></AuthProvider>)
     await screen.findByText('old-account')
     const inbox = await openShareTargetInbox()
     await inbox.save({ id: 'unclaimed', createdAt: Date.now(), name: 'private.jpg', type: 'image/jpeg', blob: new Blob(['private']), assignment: null })
+    await inbox.claim('unclaimed', oldAccount.id)
     await act(async () => { await currentAuth!.refreshUser() })
-    expect(await inbox.list()).toEqual([])
+    expect(await inbox.list(oldAccount.id)).toEqual([])
+    inbox.close?.()
+  })
+
+  it('keeps a newly shared photo through login until this account claims it', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.spyOn(api, 'me').mockRejectedValueOnce(new ApiError(401)).mockResolvedValueOnce(oldAccount)
+    vi.spyOn(api, 'login').mockResolvedValue(undefined)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('anonymous')
+    const inbox = await openShareTargetInbox()
+    await inbox.save({ id: 'fresh-share', createdAt: Date.now(), name: 'new-photo.jpg', type: 'image/jpeg',
+      blob: new Blob(['photo'], { type: 'image/jpeg' }), assignment: null, ownerAccountId: null })
+
+    await act(async () => { await currentAuth!.login('old-account', 'password') })
+    expect(await inbox.claim('fresh-share', oldAccount.id)).toMatchObject({ name: 'new-photo.jpg', ownerAccountId: oldAccount.id })
     inbox.close?.()
   })
 
@@ -213,10 +492,11 @@ describe('AuthProvider session boundaries', () => {
     localStorage.setItem('robopark:report-draft:3:all', 'unfinished')
     const inbox = await openShareTargetInbox()
     await inbox.save({ id: 'unclaimed', createdAt: Date.now(), name: 'photo.jpg', type: 'image/jpeg', blob: new Blob(['photo']), assignment: null })
+    await inbox.claim('unclaimed', oldAccount.id)
 
     await act(async () => { await currentAuth!.logout() })
     expect(localStorage.getItem('robopark:report-draft:3:all')).toBeNull()
-    expect(await inbox.list()).toEqual([])
+    expect(await inbox.list(oldAccount.id)).toEqual([])
     inbox.close?.()
     await act(async () => { await currentAuth!.login('old-account', 'password') })
     expect(localStorage.getItem('robopark:report-draft:3:all')).toBe('unfinished')
@@ -378,6 +658,21 @@ describe('AuthProvider session boundaries', () => {
 
     expect(screen.getByText('anonymous')).toBeInTheDocument()
     expectProtectedStateCleared()
+  })
+
+  it('does not silently sign back in after offline logout when the server cookie is still valid', async () => {
+    vi.spyOn(api, 'me').mockResolvedValue(oldAccount)
+    vi.spyOn(api, 'logout').mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    await act(async () => { await expect(currentAuth!.logout()).rejects.toBeInstanceOf(TypeError) })
+    first.unmount()
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(await screen.findByText('anonymous')).toBeVisible()
+    expect(api.me).toHaveBeenCalledTimes(1)
+    vi.spyOn(api, 'login').mockResolvedValueOnce(undefined)
+    await act(async () => { await currentAuth!.login('old-account', 'test-only-password') })
+    expect(screen.getByText('old-account')).toBeVisible()
   })
 
   it('prevents a replacement account with a reused numeric ID from inheriting stale payloads', async () => {

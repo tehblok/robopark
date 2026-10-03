@@ -40,3 +40,15 @@ it('closes a deleted custom-role editor and opens a clean creator only explicitl
   expect(screen.getByLabelText('Название')).toHaveValue('')
   expect(screen.getByLabelText('Slug (латиница)')).toHaveValue('')
 })
+
+it('omits an empty permission group instead of leaving a blank section in the role editor', async () => {
+  vi.spyOn(api, 'adminRoles').mockResolvedValue([{ id: 1, slug: 'mechanic', name: 'Механик', description: '', is_system: true, is_active: true, permissions: ['nav.inventory'], user_count: 1 }])
+  vi.spyOn(api, 'adminRolePermissionCatalog').mockResolvedValue([{ key: 'nav.inventory', category: 'nav', label: 'Склад', sort_order: 1 }])
+  const actor = { id: 1, username: 'owner', role: 'royal', access_status: 'approved', permissions: ['roles.manage'], parks: [] } as User
+  render(<AuthContext.Provider value={{ user: actor, loading: false, login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn() }}><AdminRolesPanel /></AuthContext.Provider>)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Открыть роль Механик' }))
+  expect(screen.getByRole('heading', { name: 'Разделы меню' })).toBeVisible()
+  expect(screen.queryByRole('heading', { name: 'Действия' })).not.toBeInTheDocument()
+  expect(screen.getByText('Итоговые доступы · 1')).toBeVisible()
+})

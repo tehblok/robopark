@@ -61,6 +61,94 @@ def test_expired_entry_triggers_refetch():
     assert cache.get_or_load("k", lambda: 2) == 2
 
 
+def test_strict_open_refresh_rechecks_older_shared_result_and_reports_failure(tmp_path):
+    store = LiveMergeStore(tmp_path)
+    first: ResponseCache[int] = ResponseCache(60, name="open-refresh", shared=store)
+    second: ResponseCache[int] = ResponseCache(60, name="open-refresh", shared=store)
+    assert first.get_or_load("park", lambda: 1) == 1
+    time.sleep(0.02)
+    calls = 0
+
+    def refreshed() -> int:
+        nonlocal calls
+        calls += 1
+        return 2
+
+    assert second.get_or_load("park", refreshed, max_age_seconds=0.01, allow_stale=False) == 2
+    assert calls == 1
+    assert (
+        first.get_or_load(
+            "park",
+            lambda: (_ for _ in ()).throw(AssertionError("duplicate refresh")),
+            max_age_seconds=1.0,
+            allow_stale=False,
+        )
+        == 2
+    )
+    time.sleep(0.02)
+    with pytest.raises(RuntimeError, match="Tracker down"):
+        first.get_or_load(
+            "park",
+            lambda: (_ for _ in ()).throw(RuntimeError("Tracker down")),
+            max_age_seconds=0.01,
+            allow_stale=False,
+        )
+
+
+def test_strict_refresh_failure_does_not_disable_other_consumers_stale_policy(tmp_path):
+    store = LiveMergeStore(tmp_path)
+    strict = ResponseCache[int](0.01, name="shared-policy", shared=store)
+    regular = ResponseCache[int](0.01, name="shared-policy", shared=store)
+    assert strict.get_or_load("park", lambda: 1) == 1
+    time.sleep(0.02)
+
+    with pytest.raises(RuntimeError, match="Tracker down"):
+        strict.get_or_load(
+            "park",
+            lambda: (_ for _ in ()).throw(RuntimeError("Tracker down")),
+            allow_stale=False,
+        )
+    assert (
+        regular.get_or_load(
+            "park",
+            lambda: (_ for _ in ()).throw(AssertionError("duplicate request")),
+        )
+        == 1
+    )
+
+
+def test_strict_waiter_does_not_inherit_regular_waiters_stale_fallback():
+    cache = ResponseCache[int](0.01, name="mixed-policy", shared=False)
+    assert cache.get_or_load("park", lambda: 1) == 1
+    time.sleep(0.02)
+    started = threading.Event()
+    release = threading.Event()
+    regular_result = []
+
+    def regular_loader():
+        started.set()
+        assert release.wait(timeout=1)
+        raise RuntimeError("Tracker down")
+
+    regular = threading.Thread(
+        target=lambda: regular_result.append(cache.get_or_load("park", regular_loader))
+    )
+    regular.start()
+    assert started.wait(timeout=1)
+    timer = threading.Timer(0.1, release.set)
+    timer.start()
+    with pytest.raises(RuntimeError, match="Tracker down"):
+        cache.get_or_load(
+            "park",
+            lambda: (_ for _ in ()).throw(RuntimeError("Tracker down")),
+            allow_stale=False,
+        )
+    regular.join(timeout=1)
+    timer.join(timeout=1)
+
+    assert regular_result == [1]
+
+
 def test_shared_stale_bound_is_not_extended_by_merge_default(tmp_path):
     cache: ResponseCache[int] = ResponseCache(
         0.01,

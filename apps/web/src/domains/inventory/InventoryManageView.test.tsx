@@ -61,6 +61,45 @@ function expectFluidInventoryPhoto(image: HTMLElement) {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('InventoryManageView', () => {
+  it('clears a selected catalog item after a later access denial', async () => {
+    const searchInventory = vi.fn()
+      .mockResolvedValueOnce({ items: [part], limit: 25, offset: 0, total: 1 })
+      .mockRejectedValueOnce(new ApiError(403, 'forbidden'))
+    const apiClient = client({ searchInventory })
+    const view = render(<InventoryManageView apiClient={apiClient} parkId={1} role="royal" refreshVersion={0} />)
+    await screen.findByRole('option', { name: 'Тяга · ABC-01' })
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Позиция каталога' }), '31')
+    await userEvent.click(screen.getByRole('button', { name: 'Редактировать глобально' }))
+    expect(screen.getByRole('form', { name: 'Глобальная позиция' })).toBeVisible()
+
+    view.rerender(<InventoryManageView apiClient={apiClient} parkId={1} role="royal" refreshVersion={1} />)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Недостаточно прав')
+    expect(screen.queryByRole('form', { name: 'Глобальная позиция' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Тяга · ABC-01' })).not.toBeInTheDocument()
+  })
+
+  it('does not restore a catalog item from a late edit response after access denial', async () => {
+    const update = deferred<Pick<InventoryCatalogSearchItem, 'id' | 'component_id' | 'name' | 'article' | 'is_active' | 'has_photo'>>()
+    const searchInventory = vi.fn()
+      .mockResolvedValueOnce({ items: [part], limit: 25, offset: 0, total: 1 })
+      .mockRejectedValueOnce(new ApiError(403, 'forbidden'))
+    const apiClient = client({ searchInventory, updateInventoryCatalogPart: vi.fn(() => update.promise) })
+    const view = render(<InventoryManageView apiClient={apiClient} parkId={1} role="royal" refreshVersion={0} />)
+    await screen.findByRole('option', { name: 'Тяга · ABC-01' })
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Позиция каталога' }), '31')
+    await userEvent.click(screen.getByRole('button', { name: 'Редактировать глобально' }))
+    await userEvent.click(within(screen.getByRole('form', { name: 'Глобальная позиция' })).getByRole('button', { name: 'Сохранить' }))
+    await waitFor(() => expect(apiClient.updateInventoryCatalogPart).toHaveBeenCalled())
+
+    view.rerender(<InventoryManageView apiClient={apiClient} parkId={1} role="royal" refreshVersion={1} />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Недостаточно прав')
+    await act(async () => update.resolve({ id: 31, component_id: 4, name: 'Старая тяга', article: 'ABC-01', is_active: true, has_photo: false }))
+
+    expect(screen.queryByRole('option', { name: 'Старая тяга · ABC-01' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Тяга · ABC-01' })).not.toBeInTheDocument()
+  })
+
   it('uses semantic mobile stacks and action bars without inline geometry', async () => {
     render(<InventoryManageView apiClient={client()} parkId={1} role="mechanic" />)
     await userEvent.click(await screen.findByRole('button', { name: 'Добавить позицию' }))
