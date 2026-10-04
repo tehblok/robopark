@@ -119,3 +119,22 @@ test('unsupported host only requests status and stays read-only', async ({ page 
   await assertNoSeriousA11yViolations(page)
   await page.screenshot({ path: testInfo.outputPath('unsupported-host.png'), fullPage: true, animations: 'disabled' })
 })
+
+test('admin cleans old history and sees accurate conversation and job counts', async ({ page }) => {
+  let cleanupBody: unknown
+  await openAssistant(page, adminUser, [
+    { method: 'GET', path: '/api/ai/status', handler: () => ({ json: { ...readyStatus, can_manage: true } }) },
+    { method: 'GET', path: '/api/ai/conversations', handler: () => ({ json: [] }) },
+    { method: 'POST', path: '/api/ai/maintenance', handler: async request => {
+      cleanupBody = await request.json()
+      return { json: { deleted: 1, conversations_deleted: 1, jobs_deleted: 5, messages_deleted: 2 } }
+    } },
+    ...emptyManagementRoutes(),
+  ])
+  await page.getByRole('tab', { name: 'Настройки и журнал' }).click()
+  await page.getByText('Очистка журналов', { exact: true }).click()
+  await page.getByRole('button', { name: 'Очистить историю старше 30 дней' }).click()
+
+  await expect(page.getByText('Удалено бесед: 1; заданий: 5; сообщений: 2')).toBeVisible()
+  expect(cleanupBody).toEqual({ kind: 'history', before_days: 30 })
+})

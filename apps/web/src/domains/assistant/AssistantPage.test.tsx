@@ -492,6 +492,22 @@ describe('AssistantPage', () => {
     confirm.mockRestore()
   })
 
+  it('reports separate history cleanup counts including completed script jobs', async () => {
+    const apiClient = client({ ...ready, can_manage: true })
+    vi.mocked(apiClient.config).mockResolvedValue({ enabled: true, learning_enabled: true, revision: 1 })
+    vi.mocked(apiClient.prompts).mockResolvedValue([])
+    vi.mocked(apiClient.runs).mockResolvedValue([])
+    vi.mocked(apiClient.maintenance).mockResolvedValue({ deleted: 1, conversations_deleted: 1, jobs_deleted: 5, messages_deleted: 2 })
+    renderPage(apiClient, admin)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('tab', { name: 'Настройки и журнал' }))
+    await user.click(screen.getByText('Очистка журналов'))
+    await user.click(screen.getByRole('button', { name: 'Очистить историю старше 30 дней' }))
+
+    expect(apiClient.maintenance).toHaveBeenCalledWith('history', 30)
+    expect(await screen.findByText('Удалено бесед: 1; заданий: 5; сообщений: 2')).toBeVisible()
+  })
+
   it('guards runtime actions, confirms model removal, and reports cleanup failures', async () => {
     const apiClient = client({ ...ready, can_manage: true })
     vi.mocked(apiClient.config).mockResolvedValue({ enabled: true, learning_enabled: true, revision: 1 })

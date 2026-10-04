@@ -35,6 +35,7 @@ export type AutomationFilters = { component_ids: string[]; defect_codes: string[
 export type AutomationAction = { connector_id?: string; script_id?: string; body: unknown }
 export type Automation = { id: string; name: string; park_id: number; enabled: boolean; revision: number; filters: AutomationFilters; action: AutomationAction; updated_at: string }
 export type AutomationRun = { id: string; automation_id: string; event_key: string; state: string; error: string | null; created_at: string; updated_at: string; result: unknown }
+export type CleanupResult = { deleted: number; conversations_deleted?: number; jobs_deleted?: number; messages_deleted?: number; events_cleaned?: number }
 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 const mutation = (method: 'POST' | 'PATCH' | 'PUT' | 'DELETE', body?: unknown): RequestInit => ({ method, ...(body === undefined ? {} : json(body)) })
@@ -89,8 +90,8 @@ export const assistantApi = {
   deleteAutomation: (id: string) => request<void>(`/ai/automations/${encoded(id)}`, mutation('DELETE')),
   previewAutomation: (id: string, event: unknown) => request<{ matches: boolean; payload: unknown }>(`/ai/automations/${encoded(id)}/preview`, mutation('POST', { event })),
   runs: (limit = 50, signal?: AbortSignal) => request<AutomationRun[]>(`/ai/runs?limit=${limit}`, { signal }),
-  purgeRuns: (before_days = 30) => request<{ deleted: number }>(`/ai/runs?before_days=${before_days}`, mutation('DELETE')),
-  maintenance: (kind: 'history' | 'failed_jobs', before_days = 30) => request<{ deleted: number }>('/ai/maintenance', mutation('POST', { kind, before_days })),
+  purgeRuns: (before_days = 30) => request<CleanupResult>(`/ai/runs?before_days=${before_days}`, mutation('DELETE')),
+  maintenance: (kind: 'history' | 'failed_jobs', before_days = 30) => request<CleanupResult>('/ai/maintenance', mutation('POST', { kind, before_days })),
 }
 
 const MAX_IMPORT_BYTES = 64 * 1024 * 1024

@@ -282,30 +282,64 @@ def purge_runs(db: DB, user: Manager, before_days: int = Query(default=30, ge=1,
 @router.post("/maintenance")
 def maintenance(value: S.MaintenanceIn, db: DB, user: Manager):
     cutoff = time.time() - value.before_days * 86400
-    with database_idempotency_lock(db, "ai-controls"):
+    # Enqueue holds ai-queue: it cannot append a message/job after we select an
+    # idle conversation and before its contents are deleted.
+    with (
+        database_idempotency_lock(db, "ai-controls"),
+        database_idempotency_lock(db, "ai-queue"),
+    ):
         if value.kind == "failed_jobs":
             count = db.execute(
-                delete(AIJob).where(
-                    AIJob.state.in_(("failed", "cancelled")), AIJob.updated_at < cutoff
-                )
+                delete(AIJob)
+                .where(AIJob.state.in_(("failed", "cancelled")), AIJob.updated_at < cutoff)
+                .execution_options(synchronize_session=False)
             ).rowcount
+            result = {"deleted": count}
         else:
-            ids = list(
-                db.scalars(
-                    select(AIConversation.id).where(
-                        AIConversation.updated_at < cutoff,
-                        ~AIConversation.id.in_(
-                            select(AIJob.conversation_id).where(
-                                AIJob.state.in_(("queued", "running")),
-                                AIJob.conversation_id.is_not(None),
-                            )
-                        ),
-                    )
-                )
-            )
-            db.execute(delete(AIMessage).where(AIMessage.conversation_id.in_(ids)))
-            db.execute(delete(AIJob).where(AIJob.conversation_id.in_(ids)))
-            count = db.execute(delete(AIConversation).where(AIConversation.id.in_(ids))).rowcount
+            result = _purge_history(db, cutoff)
         db.commit()
     policy.changed(db, user, "history_cleaned", value.kind)
-    return {"deleted": count}
+    return result
+
+
+def _purge_history(db, cutoff):
+    # Keep selection and deletion in SQL. In particular, avoid ORM RETURNING
+    # synchronization materializing every deleted id for a large history.
+    ids = select(AIConversation.id).where(
+        AIConversation.updated_at < cutoff,
+        ~AIConversation.id.in_(
+            select(AIJob.conversation_id).where(
+                AIJob.state.in_(("queued", "running")), AIJob.conversation_id.is_not(None)
+            )
+        ),
+    )
+    messages = db.execute(
+        delete(AIMessage)
+        .where(AIMessage.conversation_id.in_(ids))
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    job_count = db.execute(
+        delete(AIJob)
+        .where(AIJob.conversation_id.in_(ids))
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    job_count += db.execute(
+        delete(AIJob)
+        .where(
+            AIJob.conversation_id.is_(None),
+            AIJob.state.in_(jobs.FINAL),
+            AIJob.updated_at < cutoff,
+        )
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    conversations = db.execute(
+        delete(AIConversation)
+        .where(AIConversation.id.in_(ids))
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    return {
+        "deleted": conversations,
+        "conversations_deleted": conversations,
+        "jobs_deleted": job_count,
+        "messages_deleted": messages,
+    }
