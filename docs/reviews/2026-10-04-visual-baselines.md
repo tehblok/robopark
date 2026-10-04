@@ -18,9 +18,11 @@ Removed 80 unused screenshot files (8,422,022 bytes): legacy `a-` baselines and
 the removed `classic-map` route. The current test enumerates 21 routes, two
 themes and two snapshot widths, resolving exactly 84 filenames. All 84 remain
 present. Searches found no other producer or consumer of the deleted baselines.
-Design mockups are separate and are unchanged. These files are excluded from
-OTA payloads already; this reduces checkout/CI workspace clutter, not host disk
-usage. Git history retains previous images.
+Design mockups are separate and are unchanged. The clean-install workspace builder already excludes browser tests, but the
+regular OTA builder includes tracked source files. Inspecting the previous OTA
+confirmed that these 80 files were also shipped there; deleting them reduces
+checkout, transfer and installed release storage. Git history retains previous
+images.
 
 The final pinned Linux regeneration run passed 125 selected visual scenarios,
 including responsive geometry and accessibility assertions. Fresh 320px light

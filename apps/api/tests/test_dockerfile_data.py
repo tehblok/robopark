@@ -219,7 +219,7 @@ def test_ci_uses_only_the_pinned_verification_entrypoints():
     assert "timeout-minutes: 90" in workflow
     assert "shard: [1, 2, 3, 4]" in workflow
     assert "needs: [verify-core, responsive, browser-workflows]" in workflow
-    assert 'if: ${{ always() }}' in workflow
+    assert "if: ${{ always() }}" in workflow
     assert 'job["result"] != "success"' in workflow
     assert re.findall(r"^[ \t]+(?:- )?run:[ \t]+(.+)$", workflow, flags=re.MULTILINE) == [
         "python3 scripts/check-tech-debt.py && python3 scripts/check-module-boundaries.py",
