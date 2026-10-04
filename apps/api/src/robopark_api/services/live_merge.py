@@ -21,6 +21,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -61,6 +62,14 @@ class LiveMergeUpstreamError(RuntimeError):
 
 class _LiveMergeSuperseded(RuntimeError):
     """Internal signal that invalidation retired the leader's claim."""
+
+
+@dataclass(frozen=True)
+class LiveMergeRevision:
+    """Identity and timestamp of one immutable result-file revision."""
+
+    identity: tuple[int, int, int, int]
+    mtime: float
 
 
 def _sqlite_parent() -> Path | None:
@@ -162,11 +171,16 @@ class LiveMergeStore:
         return self._paths(namespace, key)[3]
 
     def result_mtime(self, namespace: str, key: str) -> float | None:
+        revision = self.result_revision(namespace, key)
+        return revision.mtime if revision is not None else None
+
+    def result_revision(self, namespace: str, key: str) -> LiveMergeRevision | None:
         path = self.result_path(namespace, key)
         try:
-            return path.stat().st_mtime
-        except FileNotFoundError:
+            info = path.stat()
+        except OSError:
             return None
+        return LiveMergeRevision(self._result_identity(info), info.st_mtime)
 
     @contextmanager
     def _exclusive(self, namespace: str, key: str, *, timeout: float) -> Iterator[None]:
@@ -237,9 +251,8 @@ class LiveMergeStore:
             return None
         return data if isinstance(data, dict) else None
 
-    def _read_fresh(self, namespace: str, key: str, ttl: float) -> object:
-        path = self.result_path(namespace, key)
-        data = self._read_json(path)
+    @staticmethod
+    def _fresh_payload(data: dict[str, Any] | None, key: str, ttl: float) -> object:
         if data is None or data.get("ok") is not True:
             return _MISSING
         if data.get("schema") != LIVE_MERGE_SCHEMA:
@@ -252,6 +265,10 @@ class LiveMergeStore:
         if data.get("key") != key:
             return _MISSING
         return data.get("payload")
+
+    @staticmethod
+    def _result_identity(info: os.stat_result) -> tuple[int, int, int, int]:
+        return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
 
     def _read_inflight(self, namespace: str, key: str) -> dict[str, Any] | None:
         data = self._read_json(self.inflight_path(namespace, key))
@@ -335,8 +352,8 @@ class LiveMergeStore:
             removed += 1
         return removed
 
-    def _read_stale_payload(self, namespace: str, key: str, max_age: float) -> object:
-        data = self._read_json(self.result_path(namespace, key))
+    @staticmethod
+    def _stale_payload(data: dict[str, Any] | None, key: str, max_age: float) -> object:
         if data is None or data.get("ok") is not True or data.get("key") != key:
             return _MISSING
         if data.get("schema") != LIVE_MERGE_SCHEMA:
@@ -445,10 +462,46 @@ class LiveMergeStore:
         Returns ``(True, payload)`` including a JSON ``null`` payload, or
         ``(False, None)`` on miss / stale / corrupt.
         """
-        value = self._read_fresh(namespace, key, ttl)
+        found, value, _revision = self.try_fresh_with_revision(namespace, key, ttl)
+        return found, value
+
+    def _read_result_snapshot(
+        self,
+        namespace: str,
+        key: str,
+        decode: Callable[[dict[str, Any] | None], object],
+    ) -> tuple[object, LiveMergeRevision | None]:
+        path = self.result_path(namespace, key)
+        for _attempt in range(2):
+            try:
+                before = path.stat()
+            except OSError:
+                return _MISSING, None
+            data = self._read_json(path)
+            try:
+                after = path.stat()
+            except OSError:
+                continue
+            if self._result_identity(before) != self._result_identity(after):
+                continue
+            value = decode(data)
+            if value is _MISSING:
+                return _MISSING, None
+            return value, LiveMergeRevision(self._result_identity(after), after.st_mtime)
+        return _MISSING, None
+
+    def try_fresh_with_revision(
+        self, namespace: str, key: str, ttl: float
+    ) -> tuple[bool, Any, LiveMergeRevision | None]:
+        """Read a fresh payload and revision from one stable file snapshot."""
+        value, revision = self._read_result_snapshot(
+            namespace,
+            key,
+            lambda data: self._fresh_payload(data, key, ttl),
+        )
         if value is _MISSING:
-            return False, None
-        return True, value
+            return False, None, None
+        return True, value, revision
 
     def merge_load(
         self,
@@ -463,6 +516,32 @@ class LiveMergeStore:
         on_stale: Callable[[], None] | None = None,
         shared_payload: Callable[[T], Any] | None = None,
     ) -> T:
+        value, _revision = self._merge_load_with_revision(
+            namespace,
+            key,
+            ttl,
+            loader,
+            is_current,
+            max_stale_seconds=max_stale_seconds,
+            stale_if=stale_if,
+            on_stale=on_stale,
+            shared_payload=shared_payload,
+        )
+        return value
+
+    def _merge_load_with_revision(
+        self,
+        namespace: str,
+        key: str,
+        ttl: float,
+        loader: Callable[[], T],
+        is_current: Callable[[], bool] | None = None,
+        *,
+        max_stale_seconds: float = 60.0,
+        stale_if: Callable[[BaseException], bool] | None = None,
+        on_stale: Callable[[], None] | None = None,
+        shared_payload: Callable[[T], Any] | None = None,
+    ) -> tuple[T, LiveMergeRevision | None]:
         deadline = time.monotonic() + self.waiter_timeout
         for _attempt in range(_MAX_SUPERSEDED_ATTEMPTS):
             try:
@@ -497,7 +576,7 @@ class LiveMergeStore:
         stale_if: Callable[[BaseException], bool] | None,
         on_stale: Callable[[], None] | None,
         shared_payload: Callable[[T], Any] | None,
-    ) -> T:
+    ) -> tuple[T, LiveMergeRevision | None]:
         from robopark_api.db import release_request_session
 
         # Both file-lock contention and another process's upstream flight can
@@ -512,16 +591,20 @@ class LiveMergeStore:
                 raise LiveMergeTimeout(key)
             claimed = False
             with self._exclusive(namespace, key, timeout=remaining):
-                cached = self._read_fresh(namespace, key, ttl)
-                if cached is not _MISSING:
-                    return cached  # type: ignore[return-value]
+                found, cached, revision = self.try_fresh_with_revision(namespace, key, ttl)
+                if found:
+                    return cached, revision  # type: ignore[return-value]
                 err = self._read_error(namespace, key, ttl)
                 if err is not None:
-                    stale = self._read_stale_payload(namespace, key, max_stale_seconds)
+                    stale, stale_revision = self._read_result_snapshot(
+                        namespace,
+                        key,
+                        lambda data: self._stale_payload(data, key, max_stale_seconds),
+                    )
                     if err.get("stale_allowed") is not False and stale is not _MISSING:
                         if on_stale is not None:
                             on_stale()
-                        return stale  # type: ignore[return-value]
+                        return stale, stale_revision  # type: ignore[return-value]
                     self._raise_shared_error(err)
                 inflight = self._read_inflight(namespace, key)
                 if inflight is None:
@@ -562,13 +645,17 @@ class LiveMergeStore:
                         stale_allowed=stale_allowed,
                     )
                     self._clear_inflight(namespace, key, claim)
-                    stale = self._read_stale_payload(namespace, key, max_stale_seconds)
+                    stale, stale_revision = self._read_result_snapshot(
+                        namespace,
+                        key,
+                        lambda data: self._stale_payload(data, key, max_stale_seconds),
+                    )
             if superseded:
                 raise _LiveMergeSuperseded from None
             if stale_allowed and stale is not _MISSING:
                 if on_stale is not None:
                     on_stale()
-                return stale  # type: ignore[return-value]
+                return stale, stale_revision  # type: ignore[return-value]
             raise
         superseded = False
         with (
@@ -583,14 +670,15 @@ class LiveMergeStore:
                 superseded = True
             elif is_current is not None and not is_current():
                 self._clear_inflight(namespace, key, claim)
-                return value
+                return value, None
             else:
                 self._write_result(namespace, key, persisted_value)
+                revision = self.result_revision(namespace, key)
                 self._clear_error(namespace, key)
                 self._clear_inflight(namespace, key, claim)
         if superseded:
             raise _LiveMergeSuperseded
-        return value
+        return value, revision
 
     def _prune_lock(
         self,

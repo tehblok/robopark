@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -51,6 +52,95 @@ def test_shared_payload_transform_keeps_leader_value_and_projects_follower(tmp_p
 
     assert leader_value["opaque"] is opaque
     assert follower_value == {"key": "SD-1"}
+
+
+def test_leader_l1_does_not_pair_rich_value_with_replacement_revision(tmp_path):
+    class ReplacingStore(LiveMergeStore):
+        replaced = False
+
+        def _replace_result(self, namespace, key):
+            if not self.replaced:
+                self.replaced = True
+                self._write_result(namespace, key, {"key": "new"})
+
+        def merge_load(self, namespace, key, ttl, loader, *args, **kwargs):
+            value = super().merge_load(namespace, key, ttl, loader, *args, **kwargs)
+            self._replace_result(namespace, key)
+            return value
+
+        def _merge_load_with_revision(self, namespace, key, ttl, loader, *args, **kwargs):
+            observed = super()._merge_load_with_revision(
+                namespace, key, ttl, loader, *args, **kwargs
+            )
+            self._replace_result(namespace, key)
+            return observed
+
+    store = ReplacingStore(tmp_path)
+    leader: ResponseCache[dict] = ResponseCache(
+        60,
+        name="leader-snapshot",
+        shared=store,
+        shared_payload=lambda value: {"key": value["key"]},
+    )
+    observer: ResponseCache[dict] = ResponseCache(
+        60,
+        name="leader-snapshot",
+        shared=store,
+    )
+    opaque = object()
+
+    leader_value = leader.get_or_load("key", lambda: {"key": "old", "opaque": opaque})
+
+    assert leader_value["opaque"] is opaque
+    assert observer.get_if_fresh("key") == (True, {"key": "new"})
+    assert leader.get_if_fresh("key") == (True, {"key": "new"})
+
+
+@pytest.mark.parametrize("read_method", ["get_if_fresh", "get_or_load"])
+def test_fast_shared_read_retries_result_replaced_during_snapshot(
+    tmp_path, monkeypatch, read_method
+):
+    store = LiveMergeStore(tmp_path)
+    writer: ResponseCache[str] = ResponseCache(60, name="snapshot", shared=store)
+    reader: ResponseCache[str] = ResponseCache(60, name="snapshot", shared=store)
+    assert writer.get_or_load("key", lambda: "old") == "old"
+    result_path = store.result_path("snapshot", "key")
+    original_read_json = store._read_json
+    replaced = False
+
+    def read_then_replace(path):
+        nonlocal replaced
+        data = original_read_json(path)
+        if path == result_path and not replaced:
+            replaced = True
+            store._write_result("snapshot", "key", "new")
+        return data
+
+    monkeypatch.setattr(store, "_read_json", read_then_replace)
+
+    if read_method == "get_if_fresh":
+        assert reader.get_if_fresh("key") == (True, "new")
+        assert reader.get_if_fresh("key") == (True, "new")
+    else:
+
+        def unexpected_loader():
+            raise AssertionError("shared cache missed")
+
+        assert reader.get_or_load("key", unexpected_loader) == "new"
+        assert reader.get_or_load("key", unexpected_loader) == "new"
+
+
+def test_l1_rejects_replacement_with_same_mtime(tmp_path):
+    store = LiveMergeStore(tmp_path)
+    cache: ResponseCache[str] = ResponseCache(60, name="same-mtime", shared=store)
+    assert cache.get_or_load("key", lambda: "old") == "old"
+    result_path = store.result_path("same-mtime", "key")
+    old_stat = result_path.stat()
+
+    store._write_result("same-mtime", "key", "new")
+    os.utime(result_path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+
+    assert cache.get_if_fresh("key") == (True, "new")
 
 
 def test_expired_entry_triggers_refetch():
@@ -186,6 +276,23 @@ def test_invalidate_prefix_drops_matching_keys():
     assert cache.get_or_load("other", lambda: 999) == 9
 
 
+def test_invalidate_prefix_does_not_retain_generation_metadata_for_cached_keys():
+    cache: ResponseCache[int] = ResponseCache(
+        60,
+        name="prefix-metadata",
+        max_entries=5000,
+        shared=False,
+    )
+    for index in range(5000):
+        cache.get_or_load(f"history:{index}", lambda index=index: index)
+
+    cache.invalidate_prefix("history:")
+
+    assert cache._store == {}
+    assert cache._flights == {}
+    assert cache._key_generations == {}
+
+
 def test_single_flight_dedupes_concurrent_misses():
     cache: ResponseCache[int] = ResponseCache(60, name="unit")
     calls = 0
@@ -216,7 +323,7 @@ def test_single_flight_dedupes_concurrent_misses():
     assert calls == 1
 
 
-@pytest.mark.parametrize("retire", ["invalidate", "clear"])
+@pytest.mark.parametrize("retire", ["invalidate", "invalidate_prefix", "clear"])
 def test_post_invalidation_caller_never_joins_old_flight(retire):
     cache: ResponseCache[str] = ResponseCache(60, name=f"retire-{retire}", shared=False)
     started = threading.Event()
@@ -236,6 +343,8 @@ def test_post_invalidation_caller_never_joins_old_flight(retire):
 
     if retire == "invalidate":
         cache.invalidate("k")
+    elif retire == "invalidate_prefix":
+        cache.invalidate_prefix("k")
     else:
         cache.clear()
 

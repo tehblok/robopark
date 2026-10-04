@@ -29,7 +29,12 @@ from typing import Any, Generic, TypeVar
 
 from robopark_api.services.cache_metrics import CacheMetricsSnapshot, family
 from robopark_api.services.cache_policy import CachePolicy
-from robopark_api.services.live_merge import LiveMergeStore, LiveMergeTimeout, get_live_merge_store
+from robopark_api.services.live_merge import (
+    LiveMergeRevision,
+    LiveMergeStore,
+    LiveMergeTimeout,
+    get_live_merge_store,
+)
 
 T = TypeVar("T")
 
@@ -86,7 +91,9 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         self._max_stale = max_stale_seconds
         self._max_bytes = max_bytes
         self._lock = threading.Lock()
-        self._store: OrderedDict[str, tuple[float, T, float | None, int]] = OrderedDict()
+        self._store: OrderedDict[str, tuple[float, T, LiveMergeRevision | None, int]] = (
+            OrderedDict()
+        )
         self._bytes = 0
         self._metrics = family(name)
         self._flights: dict[str, _Flight[T]] = {}
@@ -115,7 +122,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
     def _l1_valid(
         self,
         key: str,
-        hit: tuple[float, T, float | None, int],
+        hit: tuple[float, T, LiveMergeRevision | None, int],
         now: float,
         ttl: float | None = None,
     ) -> bool:
@@ -124,7 +131,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         merge = self._merge()
         if merge is None:
             return True
-        return hit[2] is not None and merge.result_mtime(self._name, key) == hit[2]
+        return hit[2] is not None and merge.result_revision(self._name, key) == hit[2]
 
     def _prune_expired_locked(self, now: float) -> None:
         retention = max(self._ttl, self._max_stale)
@@ -147,7 +154,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
     def _update_gauges_locked(self) -> None:
         self._metrics.gauge(entries=len(self._store), bytes_=self._bytes)
 
-    def _store_locked(self, key: str, hit: tuple[float, T, float | None]) -> None:
+    def _store_locked(self, key: str, hit: tuple[float, T, LiveMergeRevision | None]) -> None:
         self._remove_locked(key)
         sized = (*hit, self._entry_bytes(hit[1]))
         self._store[key] = sized
@@ -160,10 +167,10 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         self._update_gauges_locked()
 
     @staticmethod
-    def _shared_loaded_at(mtime: float | None, now: float) -> float:
-        if mtime is None:
+    def _shared_loaded_at(revision: LiveMergeRevision | None, now: float) -> float:
+        if revision is None:
             return now
-        return now - max(0.0, time.time() - mtime)
+        return now - max(0.0, time.time() - revision.mtime)
 
     def invalidate(self, key: str, *, reason: str = "key") -> None:
         with self._lock:
@@ -187,7 +194,9 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                     flight = self._flights.pop(key, None)
                     if flight is not None:
                         flight.retired = True
-                    self._key_generations[key] = self._key_generations.get(key, 0) + 1
+                        self._key_generations[key] = self._key_generations.get(key, 0) + 1
+                    else:
+                        self._key_generations.pop(key, None)
             stale = [k for k in self._store if k.startswith(prefix)]
             for key in stale:
                 self._remove_locked(key)
@@ -238,14 +247,13 @@ class ResponseCache(Generic[T]):  # noqa: UP046
 
         if merge is None:
             return False, None
-        found, blob = merge.try_fresh(self._name, key, self._ttl)
+        found, blob, revision = merge.try_fresh_with_revision(self._name, key, self._ttl)
         if not found:
             self._metrics.increment("misses")
             return False, None
-        mtime = merge.result_mtime(self._name, key)
         with self._lock:
-            loaded_at = self._shared_loaded_at(mtime, time.monotonic())
-            self._store_locked(key, (loaded_at, blob, mtime))
+            loaded_at = self._shared_loaded_at(revision, time.monotonic())
+            self._store_locked(key, (loaded_at, blob, revision))
         self._metrics.increment("hits")
         return True, blob  # type: ignore[return-value]
 
@@ -265,7 +273,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
         merge = self._merge()
         for _attempt in range(2):
             now = time.monotonic()
-            stale: tuple[float, T, float | None, int] | None = None
+            stale: tuple[float, T, LiveMergeRevision | None, int] | None = None
             with self._lock:
                 self._prune_expired_locked(now)
                 hit = self._store.get(key)
@@ -278,12 +286,11 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                     self._remove_locked(key)
 
             if merge is not None:
-                found, blob = merge.try_fresh(self._name, key, ttl)
+                found, blob, revision = merge.try_fresh_with_revision(self._name, key, ttl)
                 if found:
-                    mtime = merge.result_mtime(self._name, key)
                     with self._lock:
-                        loaded_at = self._shared_loaded_at(mtime, time.monotonic())
-                        self._store_locked(key, (loaded_at, blob, mtime))
+                        loaded_at = self._shared_loaded_at(revision, time.monotonic())
+                        self._store_locked(key, (loaded_at, blob, revision))
                     self._metrics.increment("hits")
                     return blob
 
@@ -322,12 +329,13 @@ class ResponseCache(Generic[T]):  # noqa: UP046
             raise LiveMergeTimeout(key)
 
         value: object = _MISSING
+        revision: LiveMergeRevision | None = None
         error: BaseException | None = None
         load_started = time.monotonic()
         load_had_error = False
         try:
             if merge is not None:
-                value = merge.merge_load(
+                value, revision = merge._merge_load_with_revision(
                     self._name,
                     key,
                     ttl,
@@ -346,6 +354,7 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                 and time.monotonic() - stale[0] < self._max_stale
             ):
                 value = stale[1]
+                revision = stale[2]
             else:
                 error = exc
                 self._metrics.observe_load(time.monotonic() - load_started, error=True)
@@ -364,15 +373,14 @@ class ResponseCache(Generic[T]):  # noqa: UP046
                     and not flight.retired
                     and flight.generation == current_generation
                 ):
-                    mtime = merge.result_mtime(self._name, key) if merge is not None else None
                     stored_at = (
                         stale[0]
                         if stale is not None and value is stale[1]
-                        else self._shared_loaded_at(mtime, time.monotonic())
+                        else self._shared_loaded_at(revision, time.monotonic())
                     )
                     self._store_locked(  # type: ignore[arg-type]
                         key,
-                        (stored_at, value, mtime),
+                        (stored_at, value, revision),
                     )
                 if self._flights.get(key) is flight:
                     self._flights.pop(key, None)
