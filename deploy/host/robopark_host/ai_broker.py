@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import selectors
 import signal
 import socket
 import socketserver
@@ -36,50 +37,139 @@ def authorize_peer(uid: int) -> bool:
 
 
 def _run_container(argv, *, input_bytes, timeout, max_output):
+    started = time.monotonic()
     process = subprocess.Popen(
         argv,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        bufsize=0,
         start_new_session=True,
     )
     stdout, stderr = bytearray(), bytearray()
+    selector = None
+    streams = {}
+    open_fds = set()
+    input_offset = 0
 
-    def drain(stream, retained):
-        while chunk := stream.read(4096):
-            remaining = max_output + 1 - len(retained)
-            if remaining > 0:
-                retained.extend(chunk[:remaining])
+    def register(stream, events, kind):
+        fd = stream.fileno()
+        os.set_blocking(fd, False)
+        streams[fd] = (stream, kind)
+        open_fds.add(fd)
+        selector.register(fd, events, kind)
 
-    readers = [
-        threading.Thread(target=drain, args=(process.stdout, stdout), daemon=True),
-        threading.Thread(target=drain, args=(process.stderr, stderr), daemon=True),
-    ]
+    def close_fd(fd):
+        if fd not in open_fds:
+            return
+        open_fds.remove(fd)
+        with suppress(KeyError, ValueError):
+            selector.unregister(fd)
+        stream, _kind = streams[fd]
+        with suppress(OSError, ValueError):
+            stream.close()
+
+    reason = None
+    force_cleanup = False
     try:
+        selector = selectors.DefaultSelector()
         assert process.stdin is not None
-        process.stdin.write(input_bytes)
-        process.stdin.close()
-        for reader in readers:
-            reader.start()
-        deadline = time.monotonic() + timeout
-        while process.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.02)
+        assert process.stdout is not None
+        assert process.stderr is not None
+        register(process.stdout, selectors.EVENT_READ, "stdout")
+        register(process.stderr, selectors.EVENT_READ, "stderr")
+        if input_bytes:
+            register(process.stdin, selectors.EVENT_WRITE, "stdin")
+        else:
+            process.stdin.close()
+        deadline = started + timeout
+        while True:
+            if len(stdout) > max_output or len(stderr) > max_output:
+                reason = "output"
+                break
+            if process.poll() is not None and not open_fds:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                reason = "timeout"
+                break
+            try:
+                events = selector.select(min(0.05, remaining))
+            except OSError:
+                reason = "io"
+                break
+            for key, _events in events:
+                fd, kind = key.fd, key.data
+                try:
+                    if kind == "stdin":
+                        written = os.write(fd, input_bytes[input_offset : input_offset + 65536])
+                        if written <= 0:
+                            reason = "io"
+                            break
+                        input_offset += written
+                        if input_offset == len(input_bytes):
+                            close_fd(fd)
+                    else:
+                        chunk = os.read(fd, 4096)
+                        if not chunk:
+                            close_fd(fd)
+                            continue
+                        retained = stdout if kind == "stdout" else stderr
+                        available = max_output + 1 - len(retained)
+                        if available > 0:
+                            retained.extend(chunk[:available])
+                except BlockingIOError:
+                    continue
+                except BrokenPipeError:
+                    close_fd(fd)
+                except OSError:
+                    reason = "io"
+                    break
+            if reason is not None:
+                break
+        if reason is not None:
+            force_cleanup = True
+        if force_cleanup:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
         if process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=2)
-            name = argv[argv.index("--name") + 1]
-            subprocess.run(
-                ["docker", "rm", "-f", name], stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=5, check=False,
-            )
-            raise BrokerError("sandbox_timeout")
-        for reader in readers:
-            reader.join(timeout=2)
+    except BaseException:
+        force_cleanup = True
+        raise
     finally:
-        for stream in (process.stdout, process.stderr):
+        if force_cleanup or process.poll() is None or open_fds:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=2)
+        for fd in tuple(open_fds):
+            close_fd(fd)
+        # Also close pipes whose registration was never reached after an error.
+        for stream in (process.stdin, process.stdout, process.stderr):
             if stream is not None:
-                stream.close()
+                with suppress(OSError, ValueError):
+                    stream.close()
+        if selector is not None:
+            selector.close()
+        if force_cleanup:
+            try:
+                name = argv[argv.index("--name") + 1]
+            except (ValueError, IndexError):
+                name = None
+            if name is not None:
+                with suppress(OSError, subprocess.TimeoutExpired):
+                    subprocess.run(
+                        ["docker", "rm", "-f", name], stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        timeout=5, check=False,
+                    )
+    if reason == "timeout":
+        raise BrokerError("sandbox_timeout")
+    if reason == "output":
+        raise BrokerError("sandbox_output_limit")
+    if reason == "io":
+        raise BrokerError("sandbox_failed")
     if len(stdout) > max_output or len(stderr) > max_output:
         raise BrokerError("sandbox_output_limit")
     return process.returncode, bytes(stdout), bytes(stderr)
