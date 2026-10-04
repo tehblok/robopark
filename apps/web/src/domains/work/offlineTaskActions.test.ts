@@ -49,3 +49,12 @@ describe('offline task actions', () => {
     })
   })
 })
+
+it('preserves component choices and field snapshot through durable offline commands', () => {
+  const repairFields = { componentIds: ['wheel'], solutionMethod: 'CHANGE', expected: { component_ids: ['old-wheel'], defect_code: null, solution_method: null } }
+  expect(buildClaimAction({ ...common, componentIds: ['wheel'] }).payload).toEqual({ park_id: 7, component_ids: ['wheel'] })
+  expect(buildSubmitReviewAction({ ...common, defectCode: 'CH-03', mediaActionId: 'photo-1', repairFields, comment: 'Проверено под нагрузкой' }).payload).toEqual({
+    park_id: 7, defect_code: 'CH-03', media_id: 'photo-1', comment: 'Проверено под нагрузкой',
+    repair_fields: { component_ids: ['wheel'], solution_method: 'CHANGE', expected: repairFields.expected },
+  })
+})

@@ -271,6 +271,8 @@ def test_route_action_http_permission_matrix(
             "status_key": "open",
             "tags": [seed_park_with_tracker.tag],
             "assignee": None,
+            "components": ["Лидар"],
+            "component_ids": ["lidar"],
         }
         monkeypatch.setattr(platform_settings, "get_tracker_token", lambda _db: "token")
         monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: issue)

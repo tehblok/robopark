@@ -48,6 +48,15 @@ def _prepare_tracker(db_session, monkeypatch, *, with_operator=True, operator_on
     from robopark_api.services import tracker_client
 
     monkeypatch.setattr(tracker_client, "get_issue", lambda **_kwargs: _issue())
+    monkeypatch.setattr(
+        tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: [
+            {"id": "robot-447", "label": "447"},
+            {"id": "robot-51", "label": "ROBOPARK-51"},
+            {"id": "robot-52", "label": "ROBOPARK-52"},
+        ],
+    )
     if with_operator:
         park = db_session.scalar(select(UserPark.park_id).where(UserPark.user_id.is_not(None)))
         assert park is not None
@@ -979,6 +988,9 @@ def test_concurrent_claims_serialize_at_issue_boundary(
                     issue_key=ISSUE_KEY,
                     park=db.get(Park, park_id),
                     idempotency_key=idempotency_key,
+                    issue=_issue(),
+                    component_ids=["robot-447"],
+                    component_options=[{"id": "robot-447", "label": "447"}],
                 )
             except HTTPException as exc:
                 return ("conflict", exc.status_code, exc.detail)

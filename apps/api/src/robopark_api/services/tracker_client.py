@@ -16,12 +16,14 @@ import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from itertools import islice
 from typing import Any
 from zoneinfo import ZoneInfoNotFoundError
 
 import httpx
 
 from robopark_api.services import sla_clock
+from robopark_api.services.repair_fields import MAX_COMPONENTS
 from robopark_api.services.response_cache import ResponseCache
 from robopark_api.services.tracker_api import (
     NOTIFICATION_SEARCH_CALL_TIMEOUT_SEC,
@@ -510,6 +512,27 @@ def _tags_from(raw: Any) -> list[str]:
     return out
 
 
+def _ids_from(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    try:
+        items = list(raw) if not isinstance(raw, str) else [raw]
+    except TypeError:
+        return []
+    result: list[str] = []
+    for item in items:
+        item = _loaded_value(item)
+        value = (
+            item.get("id") or item.get("key")
+            if isinstance(item, dict)
+            else getattr(item, "id", None) or getattr(item, "key", None) or item
+        )
+        text = str(value or "").strip()
+        if text:
+            result.append(text)
+    return result
+
+
 def _attachments_from(raw: Any) -> list[dict[str, Any]]:
     if raw is None:
         return []
@@ -648,7 +671,19 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
     reporter = _person(_field(issue, "createdBy"), login_cache)
     priority = _plain(_field(issue, "priority"))
     issue_type = _plain(_field(issue, "type"))
-    components = _tags_from(_field(issue, "components"))
+    raw_components = _field(issue, "components")
+    components = _tags_from(raw_components)
+    component_ids = _ids_from(raw_components)
+    defect_code = (
+        _plain(
+            _field(issue, "60df26695151a36df681d67b--theDefectCode")
+            or _field(issue, "theDefectCode")
+        )
+        or None
+    )
+    solution_method = (
+        _plain(_field(issue, "solutionMethod") or _field(issue, "solution_method")) or None
+    )
     attachments = _attachments_from(_field(issue, "attachment") or _field(issue, "attachments"))
 
     hours_created = _hours_since(created)
@@ -671,6 +706,9 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
         "type": issue_type,
         "type_key": str(_field(_field(issue, "type"), "key") or ""),
         "components": components,
+        "component_ids": component_ids,
+        "defect_code": defect_code,
+        "solution_method": solution_method,
         "attachments": attachments,
         "queue": queue,
         "tags": tags,
@@ -1350,6 +1388,52 @@ def set_issue_components(*, token: str, key: str, components: list[str]) -> None
 
     def _run() -> None:
         client.issues[key].update(components=components)
+
+    _run_mutation(_run)
+
+
+def list_queue_components(*, token: str, queue: str) -> list[dict[str, str]]:
+    client = _client(token)
+
+    def _run() -> list[dict[str, str]]:
+        resource = client.queues[queue]
+        result: list[dict[str, str]] = []
+        for raw in islice(resource.components, MAX_COMPONENTS):
+            value = _loaded_value(raw)
+            component_id = str(_field(value, "id") or _field(value, "key") or "").strip()
+            label = str(_field(value, "display") or _field(value, "name") or component_id).strip()
+            archived = bool(
+                _field(value, "archived")
+                or _field(value, "isArchived")
+                or _field(value, "is_archived")
+            )
+            if component_id and label and not archived:
+                result.append({"id": component_id, "label": label})
+        return result
+
+    return _run_tracked(_run, max_attempts=1, call_timeout=15.0)
+
+
+def set_repair_fields(
+    *,
+    token: str,
+    key: str,
+    component_ids: list[str],
+    defect_code: str,
+    solution_method: str,
+    issue_resource: Any | None = None,
+) -> None:
+    client = _client(token)
+
+    def _run() -> None:
+        issue = issue_resource or client.issues[key]
+        issue.update(
+            **{
+                "components": component_ids,
+                "60df26695151a36df681d67b--theDefectCode": defect_code,
+                "solutionMethod": solution_method,
+            }
+        )
 
     _run_mutation(_run)
 

@@ -231,7 +231,7 @@ def retry_needs_attention(db: Session, *, resource_id: str, now: float | None = 
         ReliableAction.state == "needs_attention",
         or_(
             ReliableAction.error_code.is_(None),
-            ReliableAction.error_code != "task_already_closed",
+            ~ReliableAction.error_code.in_({"task_already_closed", "repair_report_superseded"}),
         ),
     )
     if closure_at is not None:

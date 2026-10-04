@@ -451,6 +451,8 @@ def test_claim_without_park_operator_keeps_local_assignment_and_defers_upstream_
         "status_key": "open",
         "queue": "ROBOPARK",
         "tags": ["Alpha"],
+        "components": ["Лидар"],
+        "component_ids": ["lidar"],
     }
     monkeypatch.setattr(tracker_client, "get_issue", lambda **kwargs: dict(issue))
     monkeypatch.setattr(

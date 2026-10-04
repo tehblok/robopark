@@ -1,4 +1,4 @@
-import type { TaskTimelineItem } from '../../api'
+import { repairFieldsPayload, type TaskRepairFields, type TaskTimelineItem } from '../../api'
 import type { OfflineActionInput } from '../../pwa/syncEngine'
 
 type ActionBase = {
@@ -22,8 +22,8 @@ function action(base: ActionBase, name: string, payload: Record<string, unknown>
   }
 }
 
-export function buildClaimAction(base: ActionBase): OfflineActionInput {
-  return action(base, 'claim', {})
+export function buildClaimAction(base: ActionBase & { componentIds?: string[] }): OfflineActionInput {
+  return action(base, 'claim', base.componentIds ? { component_ids: base.componentIds } : {})
 }
 
 export function buildCommentAction(base: ActionBase & { author: string, text: string }): {
@@ -84,10 +84,14 @@ export function buildSubmitReviewAction(base: ActionBase & {
   defectCode: string
   mediaActionId: string
   commentActionId?: string | null
+  repairFields?: TaskRepairFields
+  comment?: string
 }): OfflineActionInput {
   const dependencies = [base.mediaActionId, base.commentActionId].filter((value): value is string => Boolean(value))
   return action(base, 'submit_review', {
     defect_code: base.defectCode,
     media_id: base.mediaActionId,
+    ...(base.comment?.trim() ? { comment: base.comment.trim() } : {}),
+    ...(base.repairFields ? { repair_fields: repairFieldsPayload(base.repairFields) } : {}),
   }, dependencies)
 }

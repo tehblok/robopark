@@ -26,13 +26,18 @@ describe('SyncEngine', () => {
     await db.putMedia({ id: 'lease-photo', actionId: 'lease-review', issueKey: 'TASK-1',
       name: 'robot.jpg', blob: new Blob(['photo']), mimeType: 'image/jpeg', sha256: 'a',
       sizeBytes: 5, state: 'ready', attempts: 0, createdAt: 1, updatedAt: 1 })
-    vi.spyOn(db, 'renewLease').mockResolvedValueOnce(true).mockResolvedValue(false)
     let uploadSignal: AbortSignal | undefined
+    // Lose the lease during upload, independent of time spent loading IndexedDB.
+    vi.spyOn(db, 'renewLease').mockImplementation(async () => uploadSignal === undefined)
     const engine = new SyncEngine({ db, coordinator: new SyncCoordinator({ ownerId: 'tab', leaseStore: db, leaseMs: 30, now: () => 0 }),
       deviceId: 'phone', scheduleRetry: vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>),
       uploadMedia: async (_media, signal) => {
+        if (!signal) throw new Error('Upload must have an abort signal')
         uploadSignal = signal
-        await new Promise(resolve => setTimeout(resolve, 80))
+        await new Promise<void>(resolve => {
+          if (signal.aborted) resolve()
+          else signal.addEventListener('abort', () => resolve(), { once: true })
+        })
       },
       sendBatch: async () => ({ results: [], deltas: {}, revisions: {}, revoked_scopes: [] }),
     })

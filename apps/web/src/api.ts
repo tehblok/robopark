@@ -505,6 +505,23 @@ export type TaskAttachmentStaged = {
   sha256: string; action_id: string; sync_state: 'pending' | 'needs_attention'
 }
 export type DefectCode = { code: string; label: string; description: string | null }
+export type RepairFieldSnapshot = { component_ids: string[]; defect_code: string | null; solution_method: string | null }
+export type RepairComponent = { id: string; label: string }
+export type TaskRepairOptions = {
+  issue_key: string
+  components: RepairComponent[]
+  selected_component_ids: string[]
+  suggested_component_ids: string[]
+  suggestion_reason: string | null
+  defect_code: string | null
+  solution_method: string | null
+  solution_methods: { code: string; label: string }[]
+  field_snapshot: RepairFieldSnapshot
+}
+export type TaskRepairFields = { componentIds: string[]; solutionMethod: string; expected: RepairFieldSnapshot }
+export function repairFieldsPayload(fields: TaskRepairFields) {
+  return { component_ids: fields.componentIds, solution_method: fields.solutionMethod, expected: fields.expected }
+}
 
 export type DashboardMovingItem = {
   key: string
@@ -1929,6 +1946,7 @@ export const api = {
   taskAttachmentContent: (url: string) => requestTaskAttachmentBlob(url),
   taskAttachmentAuthorization: (url: string) => authorizeTaskAttachment(url),
   taskDefectCodes: () => request<DefectCode[]>('/tracker/defect-codes'),
+  taskRepairOptions: (key: string) => request<TaskRepairOptions>(`/tracker/issues/${encodeURIComponent(key)}/repair-options`),
   createMediaUpload: (value: { media_id: string, issue_key: string, dependent_action_id: string, device_id: string, name: string, mime_type: string, size_bytes: number, sha256: string }, signal?: AbortSignal) =>
     request<MediaUploadSession>('/media/uploads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value), signal }),
   putMediaChunk: (uploadId: string, offset: number, chunk: Blob, sha256: string, signal?: AbortSignal) =>
@@ -1950,10 +1968,14 @@ export const api = {
       ...(expectedAccountId === undefined ? {} : { 'X-Expected-Account-Id': String(expectedAccountId) }),
     })
   },
-  taskClaim: (key: string, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/claim`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } }),
+  taskClaim: (key: string, idempotencyKey: string, componentIds?: string[]) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/claim`, {
+    method: 'POST', headers: { 'Idempotency-Key': idempotencyKey, ...(componentIds ? { 'Content-Type': 'application/json' } : {}) },
+    ...(componentIds ? { body: JSON.stringify({ component_ids: componentIds }) } : {}),
+  }),
   taskHandoff: (key: string, value: { assignee: string; reason: string; done?: string; remaining?: string; obstacles?: string }, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/handoff`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(value) }),
-  taskSubmitReview: (key: string, value: { defectCode: string; photo: File; comment?: string }, idempotencyKey: string) => {
+  taskSubmitReview: (key: string, value: { defectCode: string; photo: File; comment?: string; repairFields?: TaskRepairFields }, idempotencyKey: string) => {
     const form = new FormData(); form.append('defect_code', value.defectCode); form.append('photo', value.photo, value.photo.name); if (value.comment?.trim()) form.append('comment', value.comment.trim())
+    if (value.repairFields) form.append('repair_fields', JSON.stringify(repairFieldsPayload(value.repairFields)))
     return requestForm<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/submit-review`, form, { 'Idempotency-Key': idempotencyKey })
   },
   taskReturnReview: (key: string, reason: string, assignee: string | undefined, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/review/return`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ reason, assignee }) }),

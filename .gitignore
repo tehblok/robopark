@@ -32,6 +32,8 @@ dist/
 coverage/
 
 # Local runtime / data
+# Private repair manuals, chat exports and imported AI knowledge.
+/Данные для базы/
 data/
 !apps/api/data/
 apps/api/data/*

@@ -2599,3 +2599,50 @@ it('refreshes a conflicting workflow immediately and preserves the message draft
   await screen.findByText('На проверке')
   expect(screen.getByRole('textbox', { name: ru.tracker.comments })).toHaveValue('Не потерять этот черновик')
 })
+
+it('asks for a component only when no current value or unambiguous suggestion exists', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic' }
+  const taskClaim = vi.fn(async () => taskActionResult('claim'))
+  const taskRepairOptions = vi.fn(async () => ({
+    issue_key: issue.key, components: [{ id: 'wheel', label: 'Мотор-колесо' }, { id: 'camera', label: 'Камера' }],
+    selected_component_ids: [], suggested_component_ids: [], suggestion_reason: null,
+    defect_code: null, solution_method: null, solution_methods: [],
+    field_snapshot: { component_ids: [], defect_code: null, solution_method: null },
+  }))
+  renderWorkbench({ currentUser: mechanic, selectedIssue: '', client: apiClient({ taskClaim, taskRepairOptions }) })
+  fireEvent.click(await screen.findByRole('button', { name: 'Взять в работу' }))
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'Мотор-колесо' }))
+  expect(taskClaim).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить и взять' }))
+  await waitFor(() => expect(taskClaim).toHaveBeenCalledWith(issue.key, expect.any(String), ['wheel']))
+})
+
+it('claims with an exact backend component suggestion in a single user action', async () => {
+  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic' }
+  const taskClaim = vi.fn(async () => taskActionResult('claim'))
+  renderWorkbench({ currentUser: mechanic, selectedIssue: '', client: apiClient({ taskClaim, taskRepairOptions: vi.fn(async () => ({
+    issue_key: issue.key, components: [{ id: 'wheel', label: 'Мотор-колесо' }],
+    selected_component_ids: [], suggested_component_ids: ['wheel'], suggestion_reason: 'Название в задаче',
+    defect_code: null, solution_method: null, solution_methods: [],
+    field_snapshot: { component_ids: [], defect_code: null, solution_method: null },
+  })) }) })
+  fireEvent.click(await screen.findByRole('button', { name: 'Взять в работу' }))
+  await waitFor(() => expect(taskClaim).toHaveBeenCalledWith(issue.key, expect.any(String), ['wheel']))
+  expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+})
+
+it.each([[502, true], [403, false]] as const)('queues a claim only on a transient catalog failure (%s)', async (status, queued) => {
+  const mechanic: User = { ...user, username: 'mech', role: 'mechanic', tracker_login: 'mech' }
+  const taskClaim = vi.fn(async () => taskActionResult('claim'))
+  const enqueueAction = vi.fn(async () => undefined)
+  const sync: SyncContextValue = {
+    state: { status: 'idle', pending: 0, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(),
+    syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction: vi.fn(async () => undefined), subscribeAction: vi.fn(() => () => undefined),
+  }
+  const taskRepairOptions = vi.fn(async () => { throw new ApiError(status, status === 502 ? 'tracker_upstream_error' : 'tracker_issue_out_of_scope') })
+  renderWorkbench({ client: apiClient({ taskClaim, taskRepairOptions }), selectedIssue: '', currentUser: mechanic, sync })
+  fireEvent.click(await screen.findByRole('button', { name: 'Взять в работу' }))
+  if (queued) await waitFor(() => expect(enqueueAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'claim', payload: { park_id: park.id } })))
+  else { await screen.findByRole('alert'); expect(enqueueAction).not.toHaveBeenCalled() }
+  expect(taskClaim).not.toHaveBeenCalled()
+})

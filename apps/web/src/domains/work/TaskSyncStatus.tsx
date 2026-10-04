@@ -2,6 +2,11 @@ import type { TaskSyncState } from '../../api'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 
 const reasons: Record<string, string> = {
+  repair_fields_conflict: 'Поля ремонта изменились в Tracker. Проверьте актуальные значения и передайте отчёт на проверку ещё раз.',
+  repair_component_invalid: 'Выбранная компонента больше недоступна. Выберите актуальную компоненту и передайте отчёт на проверку ещё раз.',
+  task_component_selection_required: 'Нужно выбрать компоненту ремонта. Обновите задачу и повторите взятие в работу.',
+  task_component_invalid: 'Компонента больше недоступна. Обновите задачу и выберите актуальное значение.',
+
   task_already_closed: 'Тикет закрыт в Tracker. Отложенное действие сохранено в системе и не будет отправлено в новый цикл ремонта.',
   tracker_transition_missing: 'В Трекере нет доступного перехода в нужный статус. Администратору нужно проверить процесс очереди.',
   authentication: 'Проверьте токен бота и его доступ к Трекеру.',

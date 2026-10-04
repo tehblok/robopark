@@ -216,6 +216,8 @@ def test_mechanic_claims_locally_without_tracker_login_or_upstream_assignment(
         "status_key": "open",
         "queue": "ROBOPARK",
         "tags": ["Alpha"],
+        "components": ["Лидар"],
+        "component_ids": ["lidar"],
     }
     from robopark_api.services import tracker_client
 
@@ -285,6 +287,8 @@ def test_mechanic_cannot_take_over_a_shiftmates_local_claim(
         "status_key": "open",
         "queue": "ROBOPARK",
         "tags": ["Alpha"],
+        "components": ["Лидар"],
+        "component_ids": ["lidar"],
     }
     from robopark_api.services import tracker_client
     from robopark_api.services.tracker_claims import claim_issue

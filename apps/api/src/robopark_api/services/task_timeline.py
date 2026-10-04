@@ -330,6 +330,8 @@ def _sync_state(row: TaskMessage, action: ReliableAction | None) -> str:
     if action.state == "succeeded":
         return "synced"
     if action.state == "needs_attention":
+        if action.error_code == "repair_report_superseded":
+            return "saved"
         return "needs_attention"
     return "pending"
 

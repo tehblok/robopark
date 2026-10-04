@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright'
 import type { Page } from '@playwright/test'
 import { expect, test } from '../support/persistentWebKit'
 import { startHttpFixture } from '../support/httpFixture'
@@ -60,7 +61,7 @@ async function installLifecycle(page: Page, session: Session, origin: string) {
 
 async function snapshot(bridge: Bridge) {
   const response = await bridgeCall(bridge, { control: 'snapshot' })
-  return response.json as { counts: Record<string, number>; field_values: Record<string, string>; actions: Array<{ id: string; action: string; state: string; error_code: string | null }>; claims: Array<{ issue_key: string; owner_user_id: number; state: string; start_action_id: string }>; timeline: string[] }
+  return response.json as { counts: Record<string, number>; field_values: Record<string, string | string[]>; actions: Array<{ id: string; action: string; state: string; error_code: string | null }>; claims: Array<{ issue_key: string; owner_user_id: number; state: string; start_action_id: string }>; timeline: string[] }
 }
 
 async function drain(bridge: Bridge) {
@@ -135,15 +136,18 @@ async function handoff(page: Page, assignee: string, reason: string) {
   await expectChatText(page, reason)
 }
 
-async function submitReview(page: Page, input: { clarification?: string; camera?: boolean }) {
+async function submitReview(page: Page, input: { clarification?: string; camera?: boolean; method?: string }) {
   await page.getByRole('tab', { name: 'Задача', exact: true }).click()
   await page.getByRole('button', { name: 'Передать на проверку', exact: true }).click()
-  const form = page.locator('form').filter({ has: page.getByLabel('Код дефекта') })
-  await form.getByLabel('Код дефекта').fill('BD-01')
+  const form = page.locator('form').filter({ has: page.getByLabel('Что случилось?') })
+  await form.getByLabel('Что случилось?').selectOption('BD-01')
+  await form.getByRole('button', { name: input.method ?? 'Заменил', exact: true }).click()
   await form.getByRole('textbox', { name: /Добавить уточнение|Комментарий о выполненной работе/ })
     .fill(input.clarification ?? 'Крепление колеса заменено')
-  await (input.camera ? form.getByLabel('Сделать фото') : form.getByLabel('Выбрать файл')).setInputFiles(PHOTO)
+  await form.getByLabel('Сделать фото или выбрать файл').setInputFiles(PHOTO)
   await expect(form.getByRole('img', { name: 'Предпросмотр wheel.png' })).toBeVisible()
+  expect((await new AxeBuilder({ page }).include('form').analyze()).violations).toEqual([])
+  await form.screenshot({ path: test.info().outputPath(`repair-form-${input.method ? 'returned' : 'initial'}.png`) })
   await form.getByRole('button', { name: 'Передать на проверку', exact: true }).click()
   await expect(form).not.toBeVisible()
 }
@@ -204,16 +208,16 @@ async function runLifecycle(page: Page, width: number) {
       await page.reload()
     } else await page.getByRole('button', { name: 'Взять в работу', exact: true }).dblclick()
     await openIssue(page)
+    await expect.poll(
+      async () => (await snapshot(bridge)).actions.some(action => action.action === 'start'),
+      { timeout: 15_000 },
+    ).toBe(true)
     if (mobile) {
       await bridgeCall(bridge, { control: 'tracker', available: false })
       await drain(bridge)
       expect((await snapshot(bridge)).actions.some(action => action.state === 'retry_wait')).toBe(true)
       await bridgeCall(bridge, { control: 'tracker', available: true })
     }
-    await expect.poll(
-      async () => (await snapshot(bridge)).actions.some(action => action.action === 'start'),
-      { timeout: 15_000 },
-    ).toBe(true)
     const pendingClaimSnapshot = await snapshot(bridge)
     expect(pendingClaimSnapshot.claims).toEqual([
       expect.objectContaining({ issue_key: 'ROBOPARK-42', state: 'pending' }),
@@ -238,8 +242,12 @@ async function runLifecycle(page: Page, width: number) {
     await switchUser(page, 'mechanic-browser', bridge.password)
     await comment(page, 'Проверено после передачи')
     await waitForServerMessage(bridge, 'Проверено после передачи')
+    const unavailableOptions = '**/api/tracker/issues/ROBOPARK-42/repair-options'
+    if (mobile) await page.route(unavailableOptions, route => route.fulfill({ status: 503, json: { detail: 'tracker_upstream_error' } }))
     await page.reload()
+    // Mobile reload restores scoped cached options even while the catalog is down.
     await submitReview(page, { camera: mobile })
+    if (mobile) await page.unroute(unavailableOptions)
     await waitForServerMessage(bridge, 'Передано на проверку')
     await drain(bridge)
     expect((await snapshot(bridge)).actions.filter(action => action.action === 'assign_operator'))
@@ -252,7 +260,7 @@ async function runLifecycle(page: Page, width: number) {
     await comment(page, 'Исправлено после возврата')
     await waitForServerMessage(bridge, 'Исправлено после возврата')
     await page.reload()
-    await submitReview(page, { clarification: 'Уточнение после возврата', camera: mobile })
+    await submitReview(page, { clarification: 'Уточнение после возврата', camera: mobile, method: 'Отремонтировал' })
     await waitForServerMessage(bridge, 'Передано на проверку', 2)
     await drain(bridge)
 
@@ -274,7 +282,9 @@ async function runLifecycle(page: Page, width: number) {
     const evidence = await snapshot(bridge)
     expect(evidence.field_values[DEFECT_FIELD]).toBe('BD-01')
     expect(evidence.counts.upload).toBe(2)
-    expect(evidence.counts[`field:${DEFECT_FIELD}`]).toBe(2)
+    expect(evidence.field_values.components).toEqual(['wheels'])
+    expect(evidence.field_values.solutionMethod).toBe('REPAIR')
+    expect(evidence.counts.repair_fields).toBe(2)
     expect(evidence.counts['transition:start']).toBe(1)
     expect(evidence.counts['transition:review']).toBe(2)
     expect(evidence.counts['transition:return']).toBe(1)

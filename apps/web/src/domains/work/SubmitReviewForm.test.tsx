@@ -70,3 +70,60 @@ it('uses the mobile form stack and Button file actions with stable labels', () =
   expect(screen.getByRole('button', { name: 'Заменить' })).toHaveClass('rp-button--secondary')
   expect(screen.getByRole('button', { name: 'Удалить' })).toHaveClass('rp-button--ghost')
 })
+
+const repairOptions = {
+  issue_key: 'RP-77', components: [{ id: 'wheel', label: 'Мотор-колесо' }, { id: 'camera', label: 'Камера' }],
+  selected_component_ids: ['wheel'], suggested_component_ids: [], suggestion_reason: null,
+  defect_code: 'BD-01', solution_method: null,
+  solution_methods: [{ code: 'CHANGE', label: 'Заменил' }, { code: 'REPAIR', label: 'Отремонтировал' }],
+  field_snapshot: { component_ids: ['wheel'], defect_code: 'BD-01', solution_method: null },
+}
+
+it('submits explicit repair choices without making the mechanic retype the structured report', async () => {
+  const onSubmit = vi.fn(async (_value: import('./SubmitReviewForm').SubmitReviewValue) => undefined)
+  render(<SubmitReviewForm defectCodes={codes} hasQualifyingComment={false} repairOptions={repairOptions} onSubmit={onSubmit} />)
+  expect(screen.getByRole('combobox', { name: 'Что случилось?' })).toHaveValue('BD-01')
+  expect(screen.getByRole('button', { name: 'Передать на проверку' })).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', { name: 'Заменил' }))
+  const photo = new File(['image'], 'fixed.jpg', { type: 'image/jpeg' })
+  fireEvent.change(screen.getByLabelText('Сделать фото или выбрать файл'), { target: { files: [photo] } })
+  expect(screen.getByRole('textbox', { name: 'Добавить уточнение' })).not.toBeRequired()
+  fireEvent.click(screen.getByRole('button', { name: 'Передать на проверку' }))
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
+    defectCode: 'BD-01', photo, comment: undefined,
+    repairFields: { componentIds: ['wheel'], solutionMethod: 'CHANGE', expected: repairOptions.field_snapshot },
+  }))
+})
+
+it('keeps chosen fields and their original snapshot on a catalog refresh and failed submission', async () => {
+  const onSubmit = vi.fn(async (_value: import('./SubmitReviewForm').SubmitReviewValue) => { throw new ApiError(409, 'repair_fields_conflict') })
+  const view = render(<SubmitReviewForm defectCodes={codes} hasQualifyingComment={false} repairOptions={repairOptions} onSubmit={onSubmit} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Отремонтировал' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Добавить уточнение' }), { target: { value: 'Проверил под нагрузкой' } })
+  fireEvent.change(screen.getByLabelText('Сделать фото или выбрать файл'), { target: { files: [new File(['photo'], 'result.jpg', { type: 'image/jpeg' })] } })
+  view.rerender(<SubmitReviewForm defectCodes={codes} hasQualifyingComment={false} repairOptions={{ ...repairOptions, solution_method: 'CHANGE', field_snapshot: { ...repairOptions.field_snapshot, solution_method: 'CHANGE' } }} onSubmit={onSubmit} />)
+  expect(screen.getByRole('button', { name: 'Отремонтировал' })).toHaveAttribute('aria-pressed', 'true')
+  fireEvent.click(screen.getByRole('button', { name: 'Передать на проверку' }))
+  await screen.findByRole('alert')
+  expect(screen.getByRole('textbox', { name: 'Добавить уточнение' })).toHaveValue('Проверил под нагрузкой')
+  expect(screen.getByRole('img', { name: 'Предпросмотр result.jpg' })).toBeVisible()
+  expect(onSubmit.mock.calls[0][0].repairFields?.expected).toEqual(repairOptions.field_snapshot)
+})
+
+it('reloads conflicting fields explicitly without losing photo or clarification', async () => {
+  const onSubmit = vi.fn(async () => { throw new ApiError(409, 'repair_fields_conflict') })
+  const latest = { ...repairOptions, selected_component_ids: ['camera'], solution_method: 'REPAIR', field_snapshot: { ...repairOptions.field_snapshot, component_ids: ['camera'], solution_method: 'REPAIR' } }
+  const onRefreshOptions = vi.fn(async () => latest)
+  render(<SubmitReviewForm defectCodes={codes} hasQualifyingComment={false} repairOptions={repairOptions} onSubmit={onSubmit} onRefreshOptions={onRefreshOptions} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Заменил' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Добавить уточнение' }), { target: { value: 'Проверено' } })
+  fireEvent.change(screen.getByLabelText('Сделать фото или выбрать файл'), { target: { files: [new File(['photo'], 'result.jpg', { type: 'image/jpeg' })] } })
+  fireEvent.click(screen.getByRole('button', { name: 'Передать на проверку' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Загрузить актуальные поля' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Отремонтировал' })).toHaveAttribute('aria-pressed', 'true'))
+  expect(screen.getByText(/Что ремонтируем: Камера/)).toBeVisible()
+  expect(screen.getByRole('textbox', { name: 'Добавить уточнение' })).toHaveValue('Проверено')
+  expect(screen.getByRole('img', { name: 'Предпросмотр result.jpg' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Передать на проверку' }))
+  await waitFor(() => expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({ repairFields: expect.objectContaining({ expected: latest.field_snapshot }) })))
+})

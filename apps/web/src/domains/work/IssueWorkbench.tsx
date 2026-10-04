@@ -17,6 +17,7 @@ import {
   type Paged,
   type TrackerIssue,
   type TaskTimelineItem,
+  type TaskRepairOptions,
   type TrackerIssueDetail,
   type User,
 } from '../../api'
@@ -49,6 +50,7 @@ import { TaskPartsPanel } from '../inventory/TaskPartsPanel'
 import { WorkFilters } from './WorkFilters'
 import { RepairSla } from './RepairSla'
 import { SubmitReviewForm } from './SubmitReviewForm'
+import { RepairComponentPicker } from './RepairComponentPicker'
 import { ReturnReviewForm } from './ReturnReviewForm'
 import { TaskSyncStatus } from './TaskSyncStatus'
 import { TaskTimeline } from './TaskTimeline'
@@ -85,7 +87,7 @@ export type IssueWorkbenchApiClient = Pick<
   | 'inventoryComponentPhotoUrl'
   | 'inventoryPartPhotoUrl'
 > & Partial<Pick<typeof api,
-  | 'taskTimeline' | 'taskDefectCodes' | 'taskMessage' | 'taskPhoto' | 'taskClaim' | 'taskHandoff'
+  | 'taskRepairOptions' | 'taskTimeline' | 'taskDefectCodes' | 'taskMessage' | 'taskPhoto' | 'taskClaim' | 'taskHandoff'
   | 'taskSubmitReview' | 'taskReturnReview' | 'taskApproveReview'
   | 'taskRetryNow' | 'taskHide' | 'taskRestore'
 >>
@@ -307,6 +309,10 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, claimsVerifie
   const findQueuedAction = sync?.findAction
   const [claiming, setClaiming] = useState(false)
   const [claimError, setClaimError] = useState('')
+  const [claimOptions, setClaimOptions] = useState<TaskRepairOptions | null>(null)
+  const [claimComponents, setClaimComponents] = useState<string[]>([])
+  const claimScope = useRef(0)
+  const claimInFlight = useRef(false)
   const [queuedClaim, setQueuedClaim] = useState<OfflineAction | null>(null)
   const [claimHydrated, setClaimHydrated] = useState(false)
   const mutationKey = useRef(new StableMutationKey())
@@ -321,6 +327,11 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, claimsVerifie
     setQueuedClaim(null)
     setClaimError('')
     setClaimHydrated(false)
+    setClaimOptions(null)
+    setClaimComponents([])
+    setClaiming(false)
+    claimInFlight.current = false
+    return () => { claimScope.current += 1 }
   }, [item.key, mechanicLogin, parkId, sync?.scopeKey])
 
   useEffect(() => {
@@ -357,31 +368,62 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, claimsVerifie
     })
   }, [onClaimed, queuedClaimId, sync])
 
-  const claim = async () => {
-    if (!apiClient || !mechanicLogin || claiming || claimPending || claimNeedsAttention || queueInitializing || !claimsVerified || !claimHydrated) return
+  const claim = async (selectedComponents?: string[]) => {
+    if (!apiClient || !mechanicLogin || claimInFlight.current || claimPending || claimNeedsAttention || queueInitializing || !claimsVerified || !claimHydrated) return
+    const scope = claimScope.current
+    claimInFlight.current = true
     setClaiming(true); setClaimError('')
     try {
+      let componentIds = selectedComponents
+      if (apiClient.taskRepairOptions && componentIds === undefined) {
+        let options: TaskRepairOptions | undefined
+        try { options = await apiClient.taskRepairOptions(item.key) }
+        catch (cause) {
+          // Preserve durable claiming during outages. The server will read fresh
+          // fields on replay and ask for a choice if the component is ambiguous.
+          const unavailable = cause instanceof TypeError || (cause instanceof ApiError && [0, 502, 503, 504].includes(cause.status))
+          if (!unavailable || !sync || sync.actionTrackingReady === false || parkId == null) throw cause
+        }
+        if (scope !== claimScope.current) return
+        if (options) {
+          if (options.issue_key !== item.key) throw new Error('repair_options_mismatch')
+          componentIds = options.selected_component_ids.length ? options.selected_component_ids : options.suggested_component_ids
+          if (!componentIds.length) {
+            setClaimOptions(options)
+            setClaimComponents([])
+            return
+          }
+        }
+      }
+      const identity = componentIds ? JSON.stringify({ mechanicLogin, componentIds }) : mechanicLogin
       if (sync && sync.actionTrackingReady !== false && parkId != null) {
-        const key = mutationKey.current.get('claim', mechanicLogin)
-        await sync.enqueueAction(buildClaimAction({ issueKey: item.key, parkId, id: key }))
-        mutationKey.current.succeeded('claim', mechanicLogin)
+        const key = mutationKey.current.get('claim', identity)
+        await sync.enqueueAction(buildClaimAction({ issueKey: item.key, parkId, id: key, componentIds }))
+        mutationKey.current.succeeded('claim', identity)
+        if (scope !== claimScope.current) return
+        setClaimOptions(null)
         const pending = await sync.findAction(item.key, 'claim')
+        if (scope !== claimScope.current) return
         if (pending) setQueuedClaim(pending)
         else onClaimed?.()
         return
       }
       if (apiClient.taskClaim) {
-        const payload = mechanicLogin
+        const payload = identity
         const key = mutationKey.current.get('claim', payload)
-        await apiClient.taskClaim(item.key, key)
+        if (componentIds) await apiClient.taskClaim(item.key, key, componentIds)
+        else await apiClient.taskClaim(item.key, key)
         mutationKey.current.succeeded('claim', payload)
       }
       else await apiClient.trackerAssign(item.key, mechanicLogin)
+      if (scope !== claimScope.current) return
+      setClaimOptions(null)
       onClaimed?.()
       onOpen(item.key)
     } catch (error) {
+      if (scope !== claimScope.current) return
       setClaimError(classifyApiError(error, 'Не удалось взять задачу в работу.').description)
-    } finally { setClaiming(false) }
+    } finally { if (scope === claimScope.current) { claimInFlight.current = false; setClaiming(false) } }
   }
   const openButton = <Button
     aria-current={item.key === selected ? 'page' : undefined}
@@ -397,16 +439,28 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, claimsVerifie
       ? <>{openButton}<span role="status">Взятие ожидает подтверждения</span></>
       : claimNeedsAttention
         ? <>{openButton}<span aria-label="Взятие задачи требует внимания" role="alert">Взятие не подтверждено. Проверьте синхронизацию.</span></>
+    : claimOptions ? openButton
     : assigned
       ? <>{openButton}<Button busy={claiming} disabled={!mechanicLogin || queueInitializing} onClick={() => void claim()}>Взять вместо сменщика</Button></>
       : <>{openButton}<Button busy={claiming} disabled={!mechanicLogin || queueInitializing} onClick={() => void claim()}>Взять в работу</Button></>
-  return <EntityRow
+  return <><EntityRow
     className={possibleRepeat ? 'rp-work-possible-repeat' : undefined}
     actions={<>{action}{claimError ? <span role="alert">{claimError}</span> : null}</>}
     meta={issueMeta(item, now, timezone)} status={<StatusBadge tone={issueStatusTone(item)}>{trackerStatusLabel(item.status, item.status_key)}</StatusBadge>}
     statusLabel={`Статус задачи ${item.key}`}
     title={<><strong>{item.key}</strong><span> · {item.summary}</span>{possibleRepeat ? <StatusBadge tone="warning">Возможный повтор проблемы</StatusBadge> : null}</>}
   />
+    {claimOptions ? <fieldset aria-label={`Компоненты для ${item.key}`} className="rp-repair-claim-choice" disabled={claiming}>
+      <legend>Что ремонтируем?</legend>
+      <p>Выберите компоненту — её сохраним в задаче.</p>
+      <RepairComponentPicker options={claimOptions.components} value={claimComponents} onChange={setClaimComponents} />
+      <div className="rp-action-bar">
+        <Button busy={claiming} disabled={!claimComponents.length} onClick={() => void claim(claimComponents)}>Подтвердить и взять</Button>
+        <Button onClick={() => setClaimOptions(null)} variant="secondary">Отмена</Button>
+      </div>
+      {!claimOptions.components.length ? <p role="alert">В очереди нет доступных компонент. Попросите оператора проверить справочник.</p> : null}
+    </fieldset> : null}
+  </>
 }
 
 function RelatedTaskGroup({
@@ -780,6 +834,11 @@ export function TaskController({
     // The catalog changes far less often than a task. Route exit marks its
     // settled cache stale, so reopening Work still checks for new codes.
     { enabled: Boolean(issueKey && user.role === 'mechanic'), staleTimeMs: 300_000, refreshIntervalMs: 300_000, refreshOnResume: true },
+  )
+  const repairOptions = useCachedResource<TaskRepairOptions>(
+    `${accessPrefix}repair-options:${issueKey}`,
+    () => guarded(() => apiClient.taskRepairOptions!(issueKey as string)),
+    { enabled: Boolean(issueKey && (reviewOpen || detail.data?.claim) && user.role === 'mechanic' && apiClient.taskRepairOptions && !hiddenDetail), staleTimeMs: 30_000, refreshOnResume: true },
   )
   const robotNumber = normalizedRobotNumber(detail.data?.robot)
   const relatedQueue = detail.data?.queue?.trim()
@@ -1244,12 +1303,18 @@ export function TaskController({
                         await mutate(() => lifecycleMutation('return-review', { reason }, key => apiClient.taskReturnReview!(detail.data!.key, reason, undefined, key)))
                         setReturnReviewOpen(false)
                       }} /> : null}
-                    {reviewOpen && detail.data && user.role === 'mechanic' ? <SubmitReviewForm key={detail.data.key}
+                    {reviewOpen && detail.data && user.role === 'mechanic' && apiClient.taskRepairOptions && (!repairOptions.data || repairOptions.data.issue_key !== detail.data.key) ? <>
+                      {repairOptions.error ? <ErrorState title="Не удалось подготовить отчёт" description="Проверьте соединение и повторите. Поля задачи загрузим автоматически." onRetry={() => void repairOptions.refresh()} /> : <LoadingState label="Подготовка отчёта о ремонте" />}
+                      <Button onClick={() => setReviewOpen(false)} variant="secondary">Отмена</Button>
+                    </> : null}
+                    {reviewOpen && detail.data && user.role === 'mechanic' && (!apiClient.taskRepairOptions || repairOptions.data?.issue_key === detail.data.key) ? <SubmitReviewForm key={detail.data.key}
+                      repairOptions={apiClient.taskRepairOptions ? repairOptions.data ?? undefined : undefined}
+                      onRefreshOptions={apiClient.taskRepairOptions ? () => guarded(() => apiClient.taskRepairOptions!(detail.data!.key)) : undefined}
                       onCancel={() => { setReviewOpen(false); mutationKeys.current.cancel('submit-review') }}
                       defectCodes={defectCodes.data ?? []} hasQualifyingComment={Boolean(hasQualifyingComment)}
                       onSubmit={async value => {
                         if (!apiClient.taskSubmitReview) return
-                        const payload = { defectCode: value.defectCode, comment: value.comment ?? '', photo: {
+                        const payload = { defectCode: value.defectCode, comment: value.comment ?? '', ...(value.repairFields ? { repairFields: value.repairFields } : {}), photo: {
                           name: value.photo.name, type: value.photo.type, size: value.photo.size, lastModified: value.photo.lastModified,
                         } }
                         if (sync?.enqueueMedia && taskParkId != null) {
@@ -1258,12 +1323,14 @@ export function TaskController({
                           const mediaId = `media-${reviewId}`
                           const prepared = await prepareImage(value.photo)
                           try {
-                            const commentId = value.comment?.trim() ? await enqueueComment(value.comment) : null
+                            const commentId = !value.repairFields && value.comment?.trim() ? await enqueueComment(value.comment) : null
                             const reviewAction = buildSubmitReviewAction({
                               issueKey: detail.data!.key,
                               parkId: taskParkId,
                               id: reviewId,
                               defectCode: value.defectCode,
+                              repairFields: value.repairFields,
+                              comment: value.repairFields ? value.comment : undefined,
                               mediaActionId: mediaId,
                               commentActionId: commentId,
                             })

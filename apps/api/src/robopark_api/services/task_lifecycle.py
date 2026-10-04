@@ -12,11 +12,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from robopark_api.models import AuditLog, Park, User, UserPark
-from robopark_api.services import rbac, schedules, tracker_client, tracker_signatures
+from robopark_api.services import rbac, repair_fields, schedules, tracker_client, tracker_signatures
 from robopark_api.services.database_locks import database_idempotency_lock
 from robopark_api.services.defect_codes import validate_defect_code
 from robopark_api.services.reliable_actions import (
@@ -39,6 +39,8 @@ from robopark_api.task_workflow_models import (
 _IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp"})
 _REVIEW_ROLES = frozenset({rbac.RoleSlug.OPERATOR, rbac.RoleSlug.ADMIN, rbac.RoleSlug.ROYAL})
 _TRANSITION_ACTIONS = frozenset({"start", "review", "return", "close"})
+_REPAIR_FAILURE_CODES = frozenset({"repair_fields_conflict", "repair_component_invalid"})
+_REPAIR_SUPERSEDED = "repair_report_superseded"
 
 
 def _role(user: User) -> str:
@@ -118,6 +120,13 @@ def _transition_action(
         if closure_at is not None:
             previous_query = previous_query.where(ReliableAction.created_at > closure_at)
         previous = db.scalar(previous_query)
+        if (
+            action == "review"
+            and previous is not None
+            and previous.state == "needs_attention"
+            and previous.error_code in {*_REPAIR_FAILURE_CODES, _REPAIR_SUPERSEDED}
+        ):
+            previous = None
         if previous is not None:
             dependencies = list(effective_payload.get("depends_on_action_ids", []))
             effective_payload["depends_on_action_ids"] = [*dependencies, previous.id]
@@ -229,6 +238,10 @@ def _sync_state(db: Session, issue_key: str, *, after: float | None = None) -> s
     query = select(ReliableAction.state).where(
         ReliableAction.resource_type == "tracker_issue",
         ReliableAction.resource_id == issue_key,
+        or_(
+            ReliableAction.error_code.is_(None),
+            ReliableAction.error_code != _REPAIR_SUPERSEDED,
+        ),
     )
     if after is not None:
         query = query.where(ReliableAction.created_at > after)
@@ -408,6 +421,7 @@ def workflow(
             ReliableAction.resource_type == "tracker_issue",
             ReliableAction.resource_id == issue_key,
             ReliableAction.state == "needs_attention",
+            ReliableAction.error_code != _REPAIR_SUPERSEDED,
         )
         .order_by(
             case((ReliableAction.error_code == "prerequisite_failed", 1), else_=0),
@@ -438,6 +452,8 @@ def workflow(
         "duplicate_remote_action",
         "tracker_operator_assignment_failed",
         "tracker_error",
+        "repair_fields_conflict",
+        "repair_component_invalid",
     }:
         sync_error = None
     return {
@@ -495,6 +511,8 @@ def claim(
     park: Park,
     idempotency_key: str | None,
     issue: dict | None = None,
+    component_ids: list[str] | None = None,
+    component_options: list[dict[str, str]] | None = None,
 ) -> dict:
     with database_idempotency_lock(db, f"tracker-claim:{issue_key.strip()}"):
         return _claim_locked(
@@ -504,6 +522,8 @@ def claim(
             park=park,
             idempotency_key=idempotency_key,
             issue=issue,
+            component_ids=component_ids,
+            component_options=component_options or [],
         )
 
 
@@ -515,6 +535,8 @@ def _claim_locked(
     park: Park,
     idempotency_key: str | None,
     issue: dict | None,
+    component_ids: list[str] | None,
+    component_options: list[dict[str, str]],
 ) -> dict:
     if _role(actor) != rbac.RoleSlug.MECHANIC:
         raise HTTPException(403, "task_claim_mechanic_required")
@@ -621,6 +643,9 @@ def _claim_locked(
             )
         )
     elif not (issue or {}).get("components"):
+        selected_components = repair_fields.resolve_claim_components(
+            issue or {}, component_options, component_ids
+        )
         component = _action(
             db,
             actor=actor,
@@ -628,13 +653,14 @@ def _claim_locked(
             action="ensure_components",
             idempotency_key=idempotency_key,
             payload={
-                "value": ["ROBOT_SUSPENSION"],
+                "value": selected_components,
                 "depends_on_action_ids": [tag.row.id],
             },
         ).row
     payload = {
         "owner_user_id": actor.id,
         "park_id": park.id,
+        "component_policy": "catalog",
         "depends_on_action_ids": [component.id if component is not None else tag.row.id],
     }
     if existing_assign is not None and existing_start is not None:
@@ -898,6 +924,60 @@ def reviewer_for_review_replay(
     return db.get(User, claim.operator_user_id)
 
 
+def _supersede_failed_repair_chain(
+    db: Session,
+    *,
+    review_actor_user_id: int,
+    issue_key: str,
+    superseded_by: str | None,
+) -> None:
+    failed_fields = db.scalar(
+        select(ReliableAction)
+        .where(
+            ReliableAction.actor_user_id == review_actor_user_id,
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == issue_key,
+            ReliableAction.action == "set_repair_fields",
+            ReliableAction.state == "needs_attention",
+            ReliableAction.error_code.in_(_REPAIR_FAILURE_CODES),
+        )
+        .order_by(ReliableAction.created_at.desc(), ReliableAction.id.desc())
+    )
+    if failed_fields is None:
+        return
+    rows = db.scalars(
+        select(ReliableAction).where(
+            ReliableAction.actor_user_id == failed_fields.actor_user_id,
+            ReliableAction.resource_type == failed_fields.resource_type,
+            ReliableAction.resource_id == failed_fields.resource_id,
+            ReliableAction.idempotency_key == failed_fields.idempotency_key,
+            ReliableAction.state != "succeeded",
+        )
+    ).all()
+    now = time.time()
+    for row in rows:
+        row.state = "needs_attention"
+        row.error_code = _REPAIR_SUPERSEDED
+        row.next_attempt_at = now
+        row.lease_until = None
+        row.updated_at = now
+        result = {"superseded": True}
+        if superseded_by:
+            result["superseded_by"] = superseded_by
+        row.result_json = json.dumps(result, sort_keys=True, separators=(",", ":"))
+        messages = db.scalars(select(TaskMessage).where(TaskMessage.action_id == row.id)).all()
+        if row.action == "attach":
+            attachment = db.get(TaskAttachment, row.id)
+            if attachment is not None:
+                attached_message = db.get(TaskMessage, attachment.message_id)
+                if attached_message is not None and attached_message not in messages:
+                    messages.append(attached_message)
+        for message in messages:
+            message.sync_state = "saved"
+            message.updated_at = now
+    db.flush()
+
+
 def submit_review(
     db: Session,
     *,
@@ -908,6 +988,9 @@ def submit_review(
     content: bytes,
     content_type: str | None,
     comment: str | None,
+    repair_fields_payload: dict | None = None,
+    component_options: list[dict[str, str]] | None = None,
+    current_issue: dict | None = None,
     reviewer: User | None = None,
     operator_login: str | None = None,
     idempotency_key: str | None,
@@ -968,9 +1051,28 @@ def submit_review(
     name, mime_type = _validate_photo(filename, content, content_type)
     clean_comment = (comment or "").strip()
     digest = hashlib.sha256(content).hexdigest()
-    dependencies = (["comment"] if clean_comment else []) + ["attach", "set_field"]
+    structured = (
+        repair_fields.validate_payload(repair_fields_payload)
+        if repair_fields_payload is not None
+        else None
+    )
+    if structured is not None:
+        if (
+            current_issue is None
+            or repair_fields.field_snapshot(current_issue) != structured["expected"]
+        ):
+            raise HTTPException(409, "repair_fields_conflict")
+        repair_fields.validate_component_selection(structured, component_options or [])
+    generated_report = (
+        repair_fields.report_text(structured, component_options or []) if structured else None
+    )
+    dependencies = (
+        ["comment", "attach", "set_repair_fields"]
+        if structured
+        else (["comment"] if clean_comment else []) + ["attach", "set_field"]
+    )
     prior_comment = None
-    if not clean_comment and existing_review is None:
+    if not clean_comment and structured is None and existing_review is None:
         prior_comment = _current_comment_action(
             db,
             issue_key=issue_key,
@@ -985,8 +1087,22 @@ def submit_review(
         "depends_on_actions": dependencies,
         "photo_sha256": digest,
     }
+    if structured is not None:
+        payload["repair_fields"] = structured
     if prior_comment is not None:
         payload["depends_on_action_ids"] = [prior_comment.id]
+    if (
+        existing_review is None
+        and current_review is not None
+        and current_review.state == "returned"
+        and current_review.return_reason in _REPAIR_FAILURE_CODES
+    ):
+        _supersede_failed_repair_chain(
+            db,
+            review_actor_user_id=current_review.actor_user_id,
+            issue_key=issue_key,
+            superseded_by=idempotency_key,
+        )
     deferred_assignment = None
     if claim_row.operator_user_id != reviewer.id:
         deferred_assignment = _action(
@@ -1026,7 +1142,40 @@ def submit_review(
     try:
         if deferred_assignment is not None:
             claim_row.operator_user_id = reviewer.id
-        if clean_comment:
+        structured_action = None
+        if structured is not None:
+            structured_action = _action(
+                db,
+                actor=actor,
+                issue_key=issue_key,
+                action="set_repair_fields",
+                idempotency_key=idempotency_key,
+                payload=structured,
+            ).row
+        if generated_report is not None:
+            report_body = generated_report
+            if clean_comment:
+                report_body = f"{report_body}\nУточнение: {clean_comment}"
+            clarification = _action(
+                db,
+                actor=actor,
+                issue_key=issue_key,
+                action="comment",
+                idempotency_key=idempotency_key,
+                payload={
+                    "text": report_body,
+                    "depends_on_action_ids": [structured_action.id],
+                },
+            )
+            _message(
+                db,
+                issue_key=issue_key,
+                actor=actor,
+                text=report_body,
+                action=clarification.row,
+                kind="system",
+            )
+        elif clean_comment:
             clarification = _action(
                 db,
                 actor=actor,
@@ -1054,6 +1203,11 @@ def submit_review(
                 "mime_type": mime_type,
                 "sha256": digest,
                 "size_bytes": len(content),
+                **(
+                    {"depends_on_action_ids": [structured_action.id]}
+                    if structured_action is not None
+                    else {}
+                ),
             },
         )
         automatic = _message(
@@ -1077,14 +1231,15 @@ def submit_review(
                 created_at=time.time(),
             )
         )
-        _action(
-            db,
-            actor=actor,
-            issue_key=issue_key,
-            action="set_field",
-            idempotency_key=idempotency_key,
-            payload={"field": "theDefectCode", "value": code},
-        )
+        if structured is None:
+            _action(
+                db,
+                actor=actor,
+                issue_key=issue_key,
+                action="set_field",
+                idempotency_key=idempotency_key,
+                payload={"field": "theDefectCode", "value": code},
+            )
         current_review = _active_review(db, issue_key)
         now = time.time()
         if current_review is None:

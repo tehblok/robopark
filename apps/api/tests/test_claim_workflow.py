@@ -14,6 +14,18 @@ from robopark_api.task_workflow_models import ReliableAction
 from test_task_lifecycle import ISSUE_KEY, _claim, _issue, _operator
 
 
+@pytest.fixture(autouse=True)
+def repair_component_catalog(monkeypatch):
+    monkeypatch.setattr(
+        tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: [
+            {"id": "robot-447", "label": "447"},
+            {"id": "robot-448", "label": "448"},
+        ],
+    )
+
+
 @pytest.mark.parametrize(
     ("components", "expected_actions"),
     [

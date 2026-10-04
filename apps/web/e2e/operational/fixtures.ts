@@ -4,7 +4,7 @@ import type {
   InventoryCatalogComponent, InventoryCatalogSearchItem, InventoryCount, InventoryCountLineInput,
   InventoryCountScope, InventoryOverview, InventoryReceipt, InventoryReceiptInput, InventoryStockView,
   OperationsOverview, OperatorBlockers, Paged, Park, TrackerActionResult, TrackerComment,
-  TrackerIssueDetail, TrackerTransition, User,
+  TrackerIssueDetail, TrackerTransition, TaskRepairOptions, User,
 } from '../../src/api'
 import { installMockApi, type MockRoute } from '../support/mockApi'
 
@@ -176,6 +176,17 @@ export function operationalRoutes(options: OperationalOptions = {}): MockRoute[]
       created_at: comment.created_at, sync_state: 'synced', attachments: comment.attachments ?? [],
     })) }) },
     { method: 'GET', path: /^\/api\/tracker\/issues\/ROBOPARK-42\/comments$/, handler: () => ({ json: comments }) },
+    { method: 'GET', path: /^\/api\/tracker\/issues\/[^/]+\/repair-options$/, handler: request => {
+      const components = (currentIssue.components ?? ['Колёса']).map((label, index) => ({ id: `fixture-${index}`, label }))
+      const ids = components.map(item => item.id)
+      return { json: {
+        issue_key: new URL(request.url).pathname.split('/').at(-2)!, components,
+        selected_component_ids: ids, suggested_component_ids: [], suggestion_reason: null,
+        defect_code: null, solution_method: null,
+        solution_methods: [{ code: 'CHANGE', label: 'Заменил' }, { code: 'REPAIR', label: 'Отремонтировал' }, { code: 'MAINTENANCE', label: 'Обслужил' }],
+        field_snapshot: { component_ids: ids, defect_code: null, solution_method: null },
+      } satisfies TaskRepairOptions }
+    } },
     { method: 'GET', path: '/api/tracker/defect-codes', handler: () => ({ json: [] }) },
     { method: 'GET', path: /^\/api\/tracker\/issues\/ROBOPARK-42\/handoff$/, handler: () => ({ json: { revision: 0, done: '', remaining: '', obstacles: '', author: null, updated_at: null } }) },
     { method: 'GET', path: /^\/api\/tracker\/transitions\/ROBOPARK-42$/, handler: () => ({ json: [{ id: 'resolve', display: 'Решить' }] satisfies TrackerTransition[] }) },

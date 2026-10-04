@@ -617,6 +617,38 @@ class TrackerIssueClaimOut(BaseModel):
     state: Literal["pending", "active"]
 
 
+class TrackerClaimIn(BaseModel):
+    component_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
+class RepairComponentOptionOut(BaseModel):
+    id: str
+    label: str
+
+
+class RepairFieldSnapshotOut(BaseModel):
+    component_ids: list[str]
+    defect_code: str | None = None
+    solution_method: str | None = None
+
+
+class RepairSolutionMethodOut(BaseModel):
+    code: str
+    label: str
+
+
+class RepairOptionsOut(BaseModel):
+    issue_key: str
+    components: list[RepairComponentOptionOut]
+    selected_component_ids: list[str]
+    suggested_component_ids: list[str]
+    suggestion_reason: str | None = None
+    defect_code: str | None = None
+    solution_method: str | None = None
+    solution_methods: list[RepairSolutionMethodOut]
+    field_snapshot: RepairFieldSnapshotOut
+
+
 class TaskHiddenOut(BaseModel):
     reason: str
     actor: str

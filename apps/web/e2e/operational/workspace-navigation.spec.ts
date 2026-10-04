@@ -33,7 +33,7 @@ for (const width of [390, 1440]) {
       await expect(page.locator('.rp-shell__bottom-nav')).toBeInViewport()
     }
     await page.getByRole('button', { name: 'Передать на проверку', exact: true }).click()
-    await expect(page.getByLabel('Код дефекта')).toBeVisible()
+    await expect(page.getByLabel('Что случилось?')).toBeVisible()
     await page.getByRole('button', { name: 'Отмена', exact: true }).click()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   })

@@ -91,6 +91,9 @@ def run():
             "assignee": None,
             "tags": ["north"],
             "components": ["Колёса"],
+            "component_ids": ["wheels"],
+            "defect_code": None,
+            "solution_method": None,
             "transitions": [
                 {"id": "start", "display": "В работу"},
                 {"id": "review", "display": "На проверку"},
@@ -123,6 +126,9 @@ def run():
                 "type": "repair",
                 "type_key": "repair",
                 "components": list(tracker["components"]),
+                "component_ids": list(tracker["component_ids"]),
+                "defect_code": tracker["defect_code"],
+                "solution_method": tracker["solution_method"],
                 "attachments": [],
             }
 
@@ -189,6 +195,29 @@ def run():
             tracker["counts"]["components"] += 1
             tracker["components"] = list(components)
 
+        def list_queue_components(**_kwargs):
+            require_tracker()
+            tracker["counts"]["component_catalog"] += 1
+            return [
+                {"id": "wheels", "label": "Колёса"},
+                {"id": "lidar", "label": "Лидар"},
+            ]
+
+        def set_repair_fields(*, component_ids, defect_code, solution_method, **_kwargs):
+            require_tracker()
+            tracker["counts"]["repair_fields"] += 1
+            tracker["counts"]["repair_fields:components"] += 1
+            tracker["counts"]["repair_fields:defect_code"] += 1
+            tracker["counts"]["repair_fields:solution_method"] += 1
+            tracker["component_ids"] = list(component_ids)
+            labels = {"wheels": "Колёса", "lidar": "Лидар"}
+            tracker["components"] = [labels.get(value, value) for value in component_ids]
+            tracker["defect_code"] = defect_code
+            tracker["solution_method"] = solution_method
+            tracker["field_values"]["components"] = list(component_ids)
+            tracker["field_values"]["60df26695151a36df681d67b--theDefectCode"] = defect_code
+            tracker["field_values"]["solutionMethod"] = solution_method
+
         for name, replacement in {
             "get_issue": tracker_issue,
             "search_issues": lambda **_kwargs: [tracker_issue()],
@@ -203,6 +232,8 @@ def run():
             "assign_issue": assign_issue,
             "set_issue_tags": set_issue_tags,
             "set_issue_components": set_issue_components,
+            "list_queue_components": list_queue_components,
+            "set_repair_fields": set_repair_fields,
         }.items():
             stack.enter_context(patch.object(tracker_client, name, replacement))
         stack.enter_context(

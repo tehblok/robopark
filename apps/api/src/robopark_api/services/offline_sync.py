@@ -93,8 +93,8 @@ def _issue(db: Session, user: User, item: SyncActionIn, *, fresh: bool = False) 
     return issue
 
 
-def _authorize_review(db: Session, user: User, item: SyncActionIn) -> dict:
-    issue = _issue(db, user, item)
+def _authorize_review(db: Session, user: User, item: SyncActionIn, *, fresh: bool = False) -> dict:
+    issue = _issue(db, user, item, fresh=fresh)
     for action in ("comment", "attach", "transition"):
         tracker_policy.ensure_action_allowed(db, user, issue, action)
     return issue
@@ -125,6 +125,8 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
         return {"message_id": row.id, "sync_state": row.sync_state}
     if item.action == "claim":
         issue = _issue(db, user, item, fresh=True)
+        if rbac.role_slug(user) != rbac.RoleSlug.MECHANIC:
+            raise HTTPException(403, "task_claim_mechanic_required")
         if task_lifecycle.tracker_issue_is_closed(issue):
             raise HTTPException(409, "task_already_closed")
         if item.park_id is None:
@@ -134,6 +136,15 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
             raise HTTPException(404, "park_not_found")
         if task_lifecycle.issue_park(db, issue).id != park.id:
             raise HTTPException(409, "sync_park_mismatch")
+        components = []
+        if not issue.get("components"):
+            try:
+                components = tracker_client.list_queue_components(
+                    token=platform_settings.get_tracker_token(db) or "",
+                    queue=str(issue.get("queue") or ""),
+                )
+            except tracker_client.TrackerError as exc:
+                raise HTTPException(503, "tracker_upstream_error") from exc
         return task_lifecycle.claim(
             db,
             actor=user,
@@ -141,6 +152,8 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
             park=park,
             idempotency_key=item.idempotency_key,
             issue=issue,
+            component_ids=item.payload.get("component_ids"),
+            component_options=components,
         )
     if item.action == "handoff":
         _issue(db, user, item)
@@ -168,7 +181,7 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
         )
         return {"movement_id": row.id, "balance_after": row.balance_after}
     if item.action == "submit_review":
-        issue = _authorize_review(db, user, item)
+        issue = _authorize_review(db, user, item, fresh=True)
         park = task_lifecycle.issue_park(db, issue)
         if item.park_id is not None and item.park_id != park.id:
             raise HTTPException(409, "sync_park_mismatch")
@@ -191,6 +204,20 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
             raise HTTPException(409, "media_dependency_pending")
         context = tracker_signatures.build_signature_context(db, user, issue)
         path = media_uploads.content_path(upload)
+        structured = item.payload.get("repair_fields")
+        if structured is not None and not isinstance(structured, dict):
+            raise HTTPException(422, "repair_fields_invalid")
+        try:
+            components = (
+                tracker_client.list_queue_components(
+                    token=platform_settings.get_tracker_token(db) or "",
+                    queue=str(issue.get("queue") or ""),
+                )
+                if structured is not None
+                else None
+            )
+        except tracker_client.TrackerError as exc:
+            raise HTTPException(503, "tracker_upstream_error") from exc
         return task_lifecycle.submit_review(
             db,
             actor=user,
@@ -200,6 +227,13 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
             content=path.read_bytes(),
             content_type=upload.mime_type,
             comment=str(item.payload.get("comment") or "") or None,
+            repair_fields_payload=(
+                {**structured, "defect_code": str(item.payload.get("defect_code") or "")}
+                if isinstance(structured, dict)
+                else structured
+            ),
+            component_options=components,
+            current_issue=issue,
             operator_login=context.operator_login,
             reviewer=reviewer,
             idempotency_key=item.idempotency_key,

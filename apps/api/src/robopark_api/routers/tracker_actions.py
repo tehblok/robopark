@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import UTC, datetime
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     Form,
@@ -22,11 +24,13 @@ from robopark_api.db import get_db
 from robopark_api.deps import require_user
 from robopark_api.models import Park, User
 from robopark_api.schemas import (
+    RepairOptionsOut,
     TaskHandoffIn,
     TaskHideIn,
     TaskReviewReturnIn,
     TrackerActionOut,
     TrackerAssignIn,
+    TrackerClaimIn,
     TrackerCommentIn,
     TrackerTransitionIn,
 )
@@ -35,6 +39,7 @@ from robopark_api.services import (
     operator_comment_notifications,
     rbac,
     reliable_actions,
+    repair_fields,
     schedules,
     task_lifecycle,
     tracker_cache,
@@ -95,6 +100,15 @@ def _get_issue_or_404(token: str, key: str, *, fresh: bool = False) -> dict:
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return issue
+
+
+def _repair_components(token: str, issue: dict) -> list[dict[str, str]]:
+    try:
+        return tracker_client.list_queue_components(
+            token=token, queue=str(issue.get("queue") or "")
+        )
+    except tracker_client.TrackerError as exc:
+        raise HTTPException(502, "tracker_upstream_error") from exc
 
 
 def _authorize(db: Session, user: User, issue: dict, action: str, request: Request) -> None:
@@ -233,17 +247,33 @@ def _lifecycle_issue(
     return issue
 
 
+@router.get("/issues/{key}/repair-options", response_model=RepairOptionsOut)
+def get_repair_options(
+    key: str,
+    request: Request,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> RepairOptionsOut:
+    issue = _lifecycle_issue(db, user, key, request=request, fresh=True)
+    components = _repair_components(_require_token(db), issue)
+    return RepairOptionsOut(**repair_fields.options(issue, components))
+
+
 @router.post("/issues/{key}/claim", response_model=TrackerActionOut)
 def claim_task(
     key: str,
     request: Request,
+    payload: TrackerClaimIn | None = Body(default=None),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
     issue = _lifecycle_issue(db, user, key, request=request, actions=("assign",), fresh=True)
+    if rbac.role_slug(user) != RoleSlug.MECHANIC:
+        raise HTTPException(403, "task_claim_mechanic_required")
     if task_lifecycle.tracker_issue_is_closed(issue):
         raise HTTPException(status_code=409, detail="task_already_closed")
+    components = [] if issue.get("components") else _repair_components(_require_token(db), issue)
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.claim(
@@ -253,6 +283,8 @@ def claim_task(
                 park=task_lifecycle.issue_park(db, issue),
                 idempotency_key=idempotency_key,
                 issue=issue,
+                component_ids=payload.component_ids if payload is not None else None,
+                component_options=components,
             )
         )
 
@@ -290,18 +322,35 @@ def submit_task_review(
     defect_code: str = Form(...),
     photo: list[UploadFile] = File(...),
     comment: str | None = Form(default=None),
+    repair_fields_json: str | None = Form(default=None, alias="repair_fields"),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
     issue = _lifecycle_issue(
-        db, user, key, request=request, actions=("comment", "attach", "transition")
+        db,
+        user,
+        key,
+        request=request,
+        actions=("comment", "attach", "transition"),
+        fresh=True,
     )
     park = task_lifecycle.issue_park(db, issue)
     if len(photo) != 1:
         raise HTTPException(400, "task_review_exactly_one_photo")
     upload = photo[0]
     content = upload.file.read(tracker_client.MAX_ATTACHMENT_BYTES + 1)
+    structured = None
+    components = None
+    if repair_fields_json is not None:
+        try:
+            raw_fields = json.loads(repair_fields_json)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "repair_fields_invalid") from exc
+        if not isinstance(raw_fields, dict):
+            raise HTTPException(422, "repair_fields_invalid")
+        structured = {**raw_fields, "defect_code": defect_code}
+        components = _repair_components(_require_token(db), issue)
     with submissions.task_mutation_lease(db, key):
         reviewer = task_lifecycle.reviewer_for_review_replay(
             db,
@@ -321,6 +370,9 @@ def submit_task_review(
                 content=content,
                 content_type=upload.content_type,
                 comment=comment,
+                repair_fields_payload=structured,
+                component_options=components,
+                current_issue=issue,
                 reviewer=reviewer,
                 idempotency_key=idempotency_key,
                 notification_hook=lambda tx, performed_at: (

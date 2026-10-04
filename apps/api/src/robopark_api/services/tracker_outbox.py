@@ -20,6 +20,7 @@ from robopark_api.models import CampaignSubmission, Report, User
 from robopark_api.services import (
     audit,
     operator_comment_notifications,
+    repair_fields,
     tracker_cache,
     tracker_client,
     tracker_signatures,
@@ -42,7 +43,12 @@ from robopark_api.services.tracker_transitions import (
     resolve_transition,
     target_status_reached,
 )
-from robopark_api.task_workflow_models import ReliableAction, TaskAttachment, TaskMessage
+from robopark_api.task_workflow_models import (
+    ReliableAction,
+    TaskAttachment,
+    TaskMessage,
+    TaskReview,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +63,20 @@ class DeliveryError(Exception):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def _is_tracker_version_conflict(exc: tracker_client.TrackerError) -> bool:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        response = getattr(current, "response", None)
+        status = getattr(response, "status_code", None) or getattr(current, "status_code", None)
+        if status in {409, 412, 428}:
+            return True
+        current = current.__cause__ or current.__context__
+    text = str(exc).casefold()
+    return "version" in text or re.search(r"\b(?:409|412|428)\b", text) is not None
 
 
 def _dependency_state(db: Session, action: ReliableAction) -> str:
@@ -258,7 +278,14 @@ def _deliver_transition(
         tracker_issue_is_closed(issue) or target_status_reached(issue, "close")
     ):
         raise DeliveryError("task_already_closed")
-    if purpose == "start" and not components_prepared and not issue.get("components"):
+    if (
+        purpose == "start"
+        and payload.get("component_policy") != "catalog"
+        and not components_prepared
+        and not issue.get("components")
+    ):
+        # Deliver already queued legacy starts exactly as persisted. New starts
+        # carry component_policy=catalog and never synthesize this value.
         _set_issue_field(
             token=token,
             key=action.resource_id,
@@ -378,7 +405,13 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
     if issue is None:
         raise DeliveryError("invalid_payload")
     closed_issue = tracker_issue_is_closed(issue)
-    if closed_issue and action.action in {"comment", "attach", "campaign_review", "set_field"}:
+    if closed_issue and action.action in {
+        "comment",
+        "attach",
+        "campaign_review",
+        "set_field",
+        "set_repair_fields",
+    }:
         raise DeliveryError("task_already_closed")
 
     if action.action == "comment":
@@ -483,6 +516,42 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
             value=payload["value"],
         )
         return {"field": field}
+    if action.action == "set_repair_fields":
+        try:
+            values = repair_fields.validate_payload(payload)
+        except Exception as exc:  # validation failures are permanent outbox failures
+            raise DeliveryError("invalid_payload") from exc
+        current = repair_fields.field_snapshot(issue)
+        target = {
+            "component_ids": values["component_ids"],
+            "defect_code": values["defect_code"],
+            "solution_method": values["solution_method"],
+        }
+        if current == target:
+            return {"already_applied": True}
+        if current != values["expected"]:
+            raise DeliveryError("repair_fields_conflict")
+        catalog = tracker_client.list_queue_components(
+            token=token, queue=str(issue.get("queue") or "")
+        )
+        try:
+            repair_fields.validate_component_selection(values, catalog)
+        except Exception as exc:
+            raise DeliveryError("repair_component_invalid") from exc
+        try:
+            tracker_client.set_repair_fields(
+                token=token,
+                key=action.resource_id,
+                component_ids=values["component_ids"],
+                defect_code=values["defect_code"],
+                solution_method=values["solution_method"],
+                issue_resource=issue.get("_tracker_resource"),
+            )
+        except tracker_client.TrackerError as exc:
+            if _is_tracker_version_conflict(exc):
+                raise DeliveryError("repair_fields_conflict") from exc
+            raise
+        return {"fields": target}
     raise DeliveryError("invalid_payload")
 
 
@@ -638,6 +707,43 @@ def _sync_claim(db: Session, action: ReliableAction) -> None:
         claim.updated_at = action.updated_at
 
 
+def _return_repair_failure(db: Session, action: ReliableAction, *, error_code: str) -> None:
+    if action.action != "set_repair_fields":
+        return
+    primary = db.scalar(
+        select(ReliableAction).where(
+            ReliableAction.actor_user_id == action.actor_user_id,
+            ReliableAction.resource_type == action.resource_type,
+            ReliableAction.resource_id == action.resource_id,
+            ReliableAction.action == "review",
+            ReliableAction.idempotency_key == action.idempotency_key,
+        )
+    )
+    latest_primary = db.scalar(
+        select(ReliableAction)
+        .where(
+            ReliableAction.resource_type == action.resource_type,
+            ReliableAction.resource_id == action.resource_id,
+            ReliableAction.action == "review",
+        )
+        .order_by(ReliableAction.created_at.desc(), ReliableAction.id.desc())
+    )
+    if primary is None or latest_primary is None or latest_primary.id != primary.id:
+        return
+    review = db.scalar(
+        select(TaskReview)
+        .where(TaskReview.issue_key == action.resource_id, TaskReview.state == "pending")
+        .order_by(TaskReview.created_at.desc())
+    )
+    if review is None:
+        return
+    if primary is not None and primary.state not in {"succeeded", "needs_attention"}:
+        mark_needs_attention(db, primary, error_code=error_code)
+    review.state = "returned"
+    review.return_reason = error_code
+    review.updated_at = time.time()
+
+
 def _process_batch(session_factory) -> int:
     with session_factory() as db:
         actions = claim_due_batch(db)
@@ -689,6 +795,8 @@ def _process_batch(session_factory) -> int:
                 tracker_cache.invalidate_issue(action.resource_id)
             except DeliveryError as exc:
                 mark_needs_attention(db, action, error_code=exc.code)
+                if exc.code in {"repair_fields_conflict", "repair_component_invalid"}:
+                    _return_repair_failure(db, action, error_code=exc.code)
                 _sync_message(db, action)
                 _sync_campaign_submission(db, action)
                 _sync_claim(db, action)

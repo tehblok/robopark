@@ -12,7 +12,7 @@ from conftest import login_as, role_id_for
 from robopark_api.models import AccessStatus, Park, User, UserPark
 from robopark_api.schedule_models import NotificationEvent, ScheduleEntry
 from robopark_api.security import hash_password
-from robopark_api.task_workflow_models import MediaUploadSession, TaskReview
+from robopark_api.task_workflow_models import MediaUploadSession, ReliableAction, TaskReview
 
 
 def test_sync_transport_failure_does_not_expose_exception_text():
@@ -508,6 +508,101 @@ def test_offline_claim_uses_fresh_closed_state_instead_of_cached_open_state(
     assert response.json()["results"][0]["code"] == "task_already_closed"
 
 
+def test_offline_claim_preserves_existing_component_without_catalog_lookup(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import platform_settings, tracker_client
+
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-51",
+            "summary": "blocker [447]",
+            "status": "В очереди",
+            "status_key": "queued",
+            "queue": "ROBOPARK",
+            "tags": [seed_park_with_tracker.tag],
+            "components": ["Существующая"],
+            "component_ids": ["existing"],
+        },
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Existing component must not require catalog")
+        ),
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.post(
+        "/sync/batch",
+        json=_batch(
+            _action(
+                "existing-component-claim",
+                action="claim",
+                park_id=seed_park_with_tracker.id,
+                payload={},
+            )
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["state"] == "confirmed", response.json()
+
+
+def test_offline_nonmechanic_claim_is_rejected_before_catalog_lookup(
+    client, db_session, seed_royal, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import platform_settings, tracker_client
+
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-51",
+            "summary": "blocker [447]",
+            "status": "В очереди",
+            "status_key": "queued",
+            "queue": "ROBOPARK",
+            "tags": [seed_park_with_tracker.tag],
+            "components": [],
+            "component_ids": [],
+        },
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Denied role must not require component catalog")
+        ),
+    )
+    login_as(client, seed_royal.username, "secret")
+
+    response = client.post(
+        "/sync/batch",
+        json=_batch(
+            _action(
+                "royal-claim",
+                action="claim",
+                park_id=seed_park_with_tracker.id,
+                payload={},
+            )
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0] == {
+        "client_action_id": "royal-claim",
+        "state": "rejected",
+        "code": "task_claim_mechanic_required",
+        "result": None,
+    }
+
+
 def test_offline_review_persists_operator_notification_with_review(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch, tmp_path
 ):
@@ -552,6 +647,21 @@ def test_offline_review_persists_operator_notification_with_review(
             expires_at=time.time() + 3600,
         )
     )
+    db_session.add(
+        MediaUploadSession(
+            actor_user_id=seed_mechanic.id,
+            media_id="offline-review-invalid-photo",
+            issue_key="ROBOPARK-51",
+            original_name="review.png",
+            mime_type="image/png",
+            size_bytes=len(photo),
+            sha256=hashlib.sha256(photo).hexdigest(),
+            received_offset=len(photo),
+            blob_name="review-invalid-photo",
+            completed=True,
+            expires_at=time.time() + 3600,
+        )
+    )
     db_session.commit()
     platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
     monkeypatch.setattr(media_uploads, "content_path", lambda _row: photo_path)
@@ -565,9 +675,41 @@ def test_offline_review_persists_operator_notification_with_review(
             "status_key": "in_progress",
             "queue": "ROBOPARK",
             "tags": [seed_park_with_tracker.tag],
+            "components": ["Лидар"],
+            "component_ids": ["lidar"],
+            "defect_code": None,
+            "solution_method": None,
         },
     )
+    monkeypatch.setattr(
+        tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: [{"id": "lidar", "label": "Лидар"}],
+    )
     login_as(client, seed_mechanic.username, "secret")
+
+    invalid = client.post(
+        "/sync/batch",
+        json=_batch(
+            _action(
+                "offline-review-invalid-fields",
+                action="submit_review",
+                park_id=seed_park_with_tracker.id,
+                payload={
+                    "media_id": "offline-review-invalid-photo",
+                    "defect_code": "BD-01",
+                    "repair_fields": "not-an-object",
+                },
+            )
+        ),
+    )
+    assert invalid.status_code == 200
+    assert invalid.json()["results"][0] == {
+        "client_action_id": "offline-review-invalid-fields",
+        "state": "rejected",
+        "code": "repair_fields_invalid",
+        "result": None,
+    }
 
     response = client.post(
         "/sync/batch",
@@ -579,18 +721,33 @@ def test_offline_review_persists_operator_notification_with_review(
                 payload={
                     "media_id": "offline-review-photo",
                     "defect_code": "BD-01",
-                    "comment": "Исправлено",
+                    "repair_fields": {
+                        "component_ids": ["lidar"],
+                        "solution_method": "REPAIR",
+                        "expected": {
+                            "component_ids": ["lidar"],
+                            "defect_code": None,
+                            "solution_method": None,
+                        },
+                    },
                 },
             )
         ),
     )
 
     assert response.status_code == 200
-    assert response.json()["results"][0]["state"] == "confirmed"
+    assert response.json()["results"][0]["state"] == "confirmed", response.json()
     assert (
         db_session.scalar(select(TaskReview).where(TaskReview.issue_key == "ROBOPARK-51"))
         is not None
     )
+    fields_action = db_session.scalar(
+        select(ReliableAction).where(
+            ReliableAction.resource_id == "ROBOPARK-51",
+            ReliableAction.action == "set_repair_fields",
+        )
+    )
+    assert json.loads(fields_action.payload_json)["solution_method"] == "REPAIR"
     assert (
         db_session.scalar(
             select(NotificationEvent).where(
