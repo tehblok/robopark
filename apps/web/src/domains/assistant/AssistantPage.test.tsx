@@ -410,6 +410,46 @@ describe('AssistantPage', () => {
     expect(apiClient.cancelJob).not.toHaveBeenCalled()
   })
 
+  it('waits for the initial conversation list before accepting a message or creating a new conversation', async () => {
+    const apiClient = client()
+    let finishList!: (value: Awaited<ReturnType<AssistantApiClient['conversations']>>) => void
+    let finishDetail!: (value: Awaited<ReturnType<AssistantApiClient['conversation']>>) => void
+    const existing = { id: 'c-existing', title: 'Текущий ремонт', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    vi.mocked(apiClient.conversations).mockImplementation(() => new Promise(resolve => { finishList = resolve }))
+    vi.mocked(apiClient.conversation).mockImplementation(() => new Promise(resolve => { finishDetail = resolve }))
+    renderPage(apiClient)
+    const input = await screen.findByLabelText('Сообщение помощнику')
+    expect(input).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Новый' })).toBeDisabled()
+    fireEvent.submit(input.closest('form')!)
+    expect(apiClient.createConversation).not.toHaveBeenCalled()
+    expect(apiClient.sendMessage).not.toHaveBeenCalled()
+
+    await act(async () => finishList([existing]))
+    expect(input).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Отправить' })).toBeDisabled()
+    await act(async () => finishDetail(existing))
+    expect(input).toBeEnabled()
+    await userEvent.type(input, 'Как проверить лидар?')
+    expect(input).toHaveValue('Как проверить лидар?')
+    expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled()
+    expect(apiClient.createConversation).not.toHaveBeenCalled()
+  })
+
+  it('keeps message creation unavailable after the initial conversation list fails and recovers on retry', async () => {
+    const apiClient = client()
+    vi.mocked(apiClient.conversations).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([])
+    renderPage(apiClient)
+    await screen.findByText('Не удалось загрузить разговоры')
+    const input = screen.getByLabelText('Сообщение помощнику')
+    expect(input).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Новый' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Повторить' }))
+    await waitFor(() => expect(input).toBeEnabled())
+    expect(screen.getByRole('button', { name: 'Новый' })).toBeEnabled()
+    expect(apiClient.createConversation).not.toHaveBeenCalled()
+  })
+
   it('disables message submission while a newly selected conversation is loading', async () => {
     const apiClient = client()
     const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type DashboardSummary, type User } from '../../api'
 import { useAuth } from '../../auth-context'
@@ -47,6 +47,10 @@ function WorkPageOwner({
   const [params] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
+  const navigationOwner = useRef({ key: location.key, pending: false })
+  useLayoutEffect(() => {
+    navigationOwner.current = { key: location.key, pending: false }
+  }, [location.key])
   const { parkId, selectedPark, loading } = useParkScope()
   const refreshStarted = useRef(false)
   const now = useMinuteClock()
@@ -114,10 +118,19 @@ function WorkPageOwner({
   const state = user.role === 'driver' && parsedState.filters.status != null && parsedState.filters.status !== 'new' && parsedState.filters.status !== 'moving'
     ? { ...parsedState, filters: { ...parsedState.filters, status: 'new' } }
     : parsedState
+  const ownsNavigation = () => !navigationOwner.current.pending && navigationOwner.current.key === location.key
+  const navigateIssue = (href: string) => {
+    if (!ownsNavigation()) return
+    // Browser history changes before React necessarily replaces the old task's
+    // controls. Retire their callbacks immediately, then admit the new route.
+    navigationOwner.current.pending = true
+    navigate(href)
+  }
   const writeState = (
     next: WorkUrlState,
     options: { replace?: boolean } = {},
   ) => {
+    if (!ownsNavigation()) return
     navigate(
       {
         pathname: issueKey
@@ -152,11 +165,11 @@ function WorkPageOwner({
         apiClient={apiClient}
         issueKey={issueKey}
         onAuthorizationFailure={observeAuthorizationFailure}
-        onCloseIssue={() => navigate(state.rootIssue
+        onCloseIssue={() => navigateIssue(state.rootIssue
           ? workIssueHref(state.rootIssue, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, parkId)
           : workListHref({ ...state, detailTab: undefined, checkTab: undefined }, parkId))}
-        onOpenIssue={(key) => navigate(workIssueHref(key, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, parkId))}
-        onOpenRelatedIssue={(key) => navigate(workIssueHref(key, { ...state, rootIssue: key === (state.rootIssue ?? issueKey) ? undefined : state.rootIssue ?? issueKey, detailTab: undefined, checkTab: undefined }, parkId))}
+        onOpenIssue={(key) => navigateIssue(workIssueHref(key, { ...state, rootIssue: undefined, detailTab: undefined, checkTab: undefined }, parkId))}
+        onOpenRelatedIssue={(key) => navigateIssue(workIssueHref(key, { ...state, rootIssue: key === (state.rootIssue ?? issueKey) ? undefined : state.rootIssue ?? issueKey, detailTab: undefined, checkTab: undefined }, parkId))}
         onStateChange={writeState}
         now={now}
         selectedPark={selectedPark}
