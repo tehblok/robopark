@@ -1,5 +1,6 @@
 from datetime import datetime
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     Boolean,
@@ -13,9 +14,33 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 from robopark_api.models import Base
+
+
+class ScheduleDateTime(TypeDecorator[datetime]):
+    """Keep SQLite schedule boundaries in their historical Moscow wall time."""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+    _moscow = ZoneInfo("Europe/Moscow")
+
+    def process_bind_param(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        if value is None or dialect.name != "sqlite" or value.tzinfo is None:
+            return value
+        # This also normalizes query bounds. Reinterpreting old rows as UTC
+        # would move existing shifts, so preserve their established convention.
+        return value.astimezone(self._moscow).replace(tzinfo=None)
+
+    def process_result_value(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        if value is None or dialect.name != "sqlite":
+            return value
+        if value.tzinfo is None:
+            return value.replace(tzinfo=self._moscow)
+        return value.astimezone(self._moscow)
 
 
 class ScheduleEntry(Base):
@@ -33,8 +58,8 @@ class ScheduleEntry(Base):
     )
     park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
     kind: Mapped[str] = mapped_column(String(16))
-    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    start_at: Mapped[datetime] = mapped_column(ScheduleDateTime())
+    end_at: Mapped[datetime] = mapped_column(ScheduleDateTime())
     source: Mapped[str] = mapped_column(String(16), default="self")
     series_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))

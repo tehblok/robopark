@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from alembic import command
@@ -407,7 +408,7 @@ def test_postgresql_http_concurrent_media_completion_returns_one_stable_result(
 def test_postgresql_http_schedule_and_push_subscription_persist_for_same_user(
     migrated_engine: Engine, tmp_path: Path, monkeypatch
 ) -> None:
-    from robopark_api.schedule_models import PushSubscription
+    from robopark_api.schedule_models import PushSubscription, ScheduleEntry
 
     endpoint = "https://push.example/postgres"
     with _postgres_http_client(migrated_engine, tmp_path, monkeypatch) as (client, factory):
@@ -419,13 +420,15 @@ def test_postgresql_http_schedule_and_push_subscription_persist_for_same_user(
             == 204
         )
         now = datetime.now(UTC)
+        local_start = (now - timedelta(minutes=1)).astimezone(ZoneInfo("America/New_York"))
+        local_end = (now + timedelta(hours=1)).astimezone(ZoneInfo("America/New_York"))
         schedule = client.post(
             "/schedules",
             json={
                 "park_id": park_id,
                 "kind": "shift",
-                "start_at": (now - timedelta(minutes=1)).isoformat(),
-                "end_at": (now + timedelta(hours=1)).isoformat(),
+                "start_at": local_start.isoformat(),
+                "end_at": local_end.isoformat(),
             },
         )
         subscription = client.post(
@@ -436,7 +439,12 @@ def test_postgresql_http_schedule_and_push_subscription_persist_for_same_user(
             event_type="new_task", park_id=park_id, protected_text="private task"
         )
         inbox = client.get("/push/inbox")
+        assert schedule.status_code == 201
         with factory() as db:
+            persisted_schedule = db.get(ScheduleEntry, schedule.json()["id"])
+            assert persisted_schedule.start_at == local_start
+            assert persisted_schedule.end_at == local_end
+            assert persisted_schedule.start_at.tzinfo is not None
             persisted_subscription = db.scalar(
                 select(PushSubscription).where(
                     PushSubscription.endpoint_hash == sha256(endpoint.encode()).hexdigest()

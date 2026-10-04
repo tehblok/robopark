@@ -24,12 +24,12 @@
   {
     "id": "TD-003",
     "module": "schedules",
-    "impact": "В legacy SQLite даты расписания содержат локальное wall-time представление; механическая нормализация существующих строк в UTC меняет смысл смен.",
+    "impact": "В legacy SQLite границы смен явно хранятся как Moscow wall time; параметры записи и сравнения нормализуются одинаково, PostgreSQL сохраняет timestamptz.",
     "risk": "maintainability",
     "owner": "backend",
     "target_version": "0.3.0",
-    "acceptance": "Подготовить явную миграцию и проверки границ суток для исторических SQLite данных; сохранить PostgreSQL timestamptz и часовой пояс устройства в редакторе.",
-    "status": "open",
-    "evidence": null
+    "acceptance": "Сохранить смысл исторических SQLite строк без переписывания, проверить смены других часовых поясов после чтения, границы маршрутизации и неизменность PostgreSQL/схемы.",
+    "status": "closed",
+    "evidence": "docs/reviews/2026-10-04-sqlite-schedule-time.md"
   }
 ]
