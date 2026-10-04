@@ -1,27 +1,47 @@
 import { expect, test } from '../support/persistentWebKit'
 import { startHttpFixture } from '../support/httpFixture'
-import { installOperational } from './fixtures'
+import { parkNorth, parkSouth, userForRole } from './fixtures'
 
-test('photo draft survives browser reload and resumes an incomplete attachment on the same report', async ({ page }) => {
+test('photo draft survives browser reload and resumes an incomplete attachment on the same report', async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error('playwright_base_url_missing')
   let creates = 0
   let uploads = 0
   const uploaded: string[] = []
-  const attachments = await startHttpFixture(async request => {
-    uploads += 1
-    uploaded.push(await request.text())
-    if (uploads === 1) return Response.json({ detail: 'offline' }, { status: 503 })
-    return Response.json({ id: 11, kind: 'device_photo', filename: 'robot.jpg', content_type: 'image/jpeg', size_bytes: 11 })
+  const mechanic = userForRole('mechanic')
+  const fixture = await startHttpFixture(async request => {
+    const url = new URL(request.url)
+    if (!url.pathname.startsWith('/api/')) {
+      if (!['GET', 'HEAD'].includes(request.method)) return Response.json({ detail: 'method_not_allowed' }, { status: 405 })
+      const response = await fetch(new URL(url.pathname + url.search, baseURL))
+      const headers = new Headers(response.headers)
+      // Node fetch decodes the upstream body, so forwarding its encoded length
+      // or content-encoding would corrupt the browser response.
+      headers.delete('content-length')
+      headers.delete('content-encoding')
+      return new Response(request.method === 'HEAD' ? null : await response.arrayBuffer(), { status: response.status, headers })
+    }
+    if (request.method === 'GET' && url.pathname === '/api/auth/me') return Response.json(mechanic)
+    if (request.method === 'GET' && url.pathname === '/api/parks') return Response.json([parkNorth, parkSouth])
+    if (request.method === 'GET' && url.pathname === '/api/ops/maintenance') return Response.json({ active: false, kind: null, operator: false })
+    if (request.method === 'POST' && url.pathname === '/api/presence/heartbeat') return new Response(null, { status: 204 })
+    if (request.method === 'GET' && url.pathname === '/api/reports/badge') return Response.json({ count: 0 })
+    if (request.method === 'GET' && url.pathname === '/api/reports/mine') return Response.json([])
+    if (request.method === 'POST' && url.pathname === '/api/reports') {
+      creates += 1
+      return Response.json({ id: 42, kind: 'mechanic_problem', status: 'open', park_id: 7, author_user_id: 100, target_role: 'operator', title: 'С фото', body: '', tracker_key: null, tracker_url: null, created_at: '2026-09-06T00:00:00Z', updated_at: '2026-09-06T00:00:00Z', resolved_at: null, parent_report_id: null, return_comment: null })
+    }
+    if (request.method === 'POST' && url.pathname === '/api/reports/42/attachments') {
+      uploads += 1
+      const form = await request.formData()
+      const file = form.get('file')
+      uploaded.push(file instanceof Blob ? await file.text() : '')
+      if (uploads === 1) return Response.json({ detail: 'offline' }, { status: 503 })
+      return Response.json({ id: 11, kind: 'device_photo', filename: 'robot.jpg', content_type: 'image/jpeg', size_bytes: 11 })
+    }
+    return Response.json({ detail: 'mock_not_configured' }, { status: 404 })
   })
   try {
-    await installOperational(page, { role: 'mechanic', routes: [
-      { method: 'GET', path: '/api/reports/mine', handler: () => ({ json: [] }) },
-      { method: 'POST', path: '/api/reports', handler: () => {
-        creates += 1
-        return { json: { id: 42, kind: 'mechanic_problem', status: 'open', park_id: 7, author_user_id: 100, target_role: 'operator', title: 'С фото', body: '', tracker_key: null, tracker_url: null, created_at: '2026-09-06T00:00:00Z', updated_at: '2026-09-06T00:00:00Z', resolved_at: null, parent_report_id: null, return_comment: null } }
-      } },
-    ] })
-    await page.route('**/api/reports/42/attachments', route => route.continue({ url: `${attachments.origin}/api/reports/42/attachments` }))
-    await page.goto('/reports/new?park=7')
+    await page.goto(`${fixture.origin}/reports/new?park=7`)
     await page.getByRole('button', { name: 'Проблема', exact: true }).click()
     await page.getByRole('textbox', { name: 'Заголовок *' }).fill('С фото')
     await page.getByLabel('Файл', { exact: true }).setInputFiles({ name: 'robot.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('photo bytes') })
@@ -40,17 +60,18 @@ test('photo draft survives browser reload and resumes an incomplete attachment o
     await expect(page.getByText(/Репорт №42/)).toBeVisible()
     await expect(page.getByRole('button', { name: 'Создать', exact: true })).toBeDisabled()
     await page.getByRole('button', { name: 'Прикрепить файл', exact: true }).click()
+    await expect.poll(() => uploads).toBe(2)
     await expect(page.getByText('Файл прикреплён к созданному репорту.', { exact: true })).toBeVisible()
     expect(creates).toBe(1)
     expect(uploads).toBe(2)
     expect(uploaded).toHaveLength(2)
-    expect(uploaded.every(body => body.includes('photo bytes'))).toBe(true)
+    expect(uploaded).toEqual(['photo bytes', 'photo bytes'])
     await page.getByRole('button', { name: 'Удалить черновик', exact: true }).click()
     await page.reload()
     await expect(page.getByText(/Выбран файл:/)).toHaveCount(0)
     await expect(page.getByText(/Репорт №42/)).toHaveCount(0)
   } finally {
-    await attachments.close()
+    await fixture.close()
   }
 })
 
