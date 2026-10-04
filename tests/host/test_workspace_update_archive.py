@@ -71,6 +71,13 @@ def test_local_update_archive_preserves_exact_compatibility_and_checksums(tmp_pa
     ota_path.write_bytes(data[ota_name])
     verified = verify_ota(ota_path)
     assert verified.manifest.compatible_from == (previous,)
+    snapshot = json.loads(data["SOURCE-SNAPSHOT.json"])
+    release_notes = json.loads((ROOT / "deploy/release-metadata.json").read_text())[
+        "update_notes"
+    ].strip()
+    assert release_notes in " ".join(verified.manifest.changes[:-1])
+    assert snapshot["source_sha256"] in verified.manifest.changes[-1]
+    assert all(len(item) <= 500 for item in verified.manifest.changes)
     parsed_previous = ReleaseVersion.parse(previous)
     next_rc = int(parsed_previous.prerelease.split('.')[1]) + 1
     core = f"{parsed_previous.major}.{parsed_previous.minor}.{parsed_previous.patch}"

@@ -29,6 +29,7 @@ from scripts.build_workspace_install import (
     _stage_snapshot,
     _tar_member,
     snapshot_version,
+    workspace_manifest_changes,
     workspace_source_files,
 )
 from scripts.robopark_version import ReleaseVersion
@@ -301,16 +302,21 @@ def build_workspace_update_archive(
         metadata_path = stage / "deploy/release-metadata.json"
         metadata = json.loads(metadata_path.read_text())
         metadata["compatible_from_versions"] = versions
-        metadata["update_notes"] = (
-            "Исправлено определение IP клиента за Tuna: лимиты входа получают адрес клиента "
-            "вместо общего loopback-адреса. Список доверенных прокси не расширен. "
-            "Сохранены данные, терминал с отдельным TOTP для root, формат OTA и миграция 0056. "
-            f"Workspace source SHA-256: {source_digest}."
-        )
         metadata_path.write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2) + "\n"
         )
-        ota = build_ota(stage, scratch / "ota", git_sha=base_sha)
+        ota = build_ota(
+            stage,
+            scratch / "ota",
+            git_sha=base_sha,
+            manifest_changes=workspace_manifest_changes(
+                metadata["update_notes"],
+                source_digest=source_digest,
+                snapshot_note=(
+                    "Uncommitted local-update snapshot; inspect SOURCE-SNAPSHOT.json."
+                ),
+            ),
+        )
         snapshot = {
             "kind": "local-update-worktree",
             "version": version,
