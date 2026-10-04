@@ -23,7 +23,7 @@ from scripts.build_workspace_install import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_workspace_snapshot_includes_new_runtime_modules_without_local_data(tmp_path: Path):
+def test_workspace_snapshot_includes_staged_runtime_modules_without_local_data(tmp_path: Path):
     repository = tmp_path / "repo"
     repository.mkdir()
     subprocess.run(["git", "init", "-q", str(repository)], check=True)
@@ -44,7 +44,7 @@ def test_workspace_snapshot_includes_new_runtime_modules_without_local_data(tmp_
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(content)
     subprocess.run(
-        ["git", "-C", str(repository), "add", "VERSION", "README.md", "apps/api/src/app.py", "apps/web/src/design-system/data/EntityRow.tsx", "deploy/tuna.env"],
+        ["git", "-C", str(repository), "add", "VERSION", "README.md", "apps/api/src/app.py", "apps/web/src/design-system/data/EntityRow.tsx", "apps/web/src/domains/map/MapPage.tsx", "deploy/host/robopark_host/storage_inventory.py", "deploy/tuna.env"],
         check=True,
     )
 
@@ -67,6 +67,23 @@ def test_unreviewed_new_runtime_file_blocks_snapshot(tmp_path: Path):
 
     with pytest.raises(BuildError, match="unreviewed_untracked_source"):
         workspace_source_files(repository)
+
+
+@pytest.mark.parametrize("name", [
+    "apps/web/src/domains/map/MapPage.tsx",
+    "apps/bot/legacy/app/local_experiment.py",
+])
+def test_historical_allowlist_does_not_publish_untracked_runtime_files(tmp_path, name):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    source = repository / name
+    source.parent.mkdir(parents=True)
+    source.write_text("unreviewed_local_content = True\n")
+    with pytest.raises(BuildError, match="unreviewed_untracked_source"):
+        workspace_source_files(repository)
+    subprocess.run(["git", "-C", str(repository), "add", name], check=True)
+    assert source.relative_to(repository) in workspace_source_files(repository)
 
 
 def test_workspace_snapshot_includes_optional_bot_and_primary_tracker_bridge():
@@ -103,7 +120,7 @@ def test_snapshot_version_is_newer_than_stable_or_rc_base():
     assert snapshot_version("0.2.0-rc.21.dev18446744073709551615", "0" * 64) == "0.2.0-rc.22.dev0"
 
 
-def test_workspace_archive_contains_current_untracked_runtime_and_no_tests(tmp_path: Path):
+def test_workspace_archive_contains_current_indexed_runtime_and_no_tests(tmp_path: Path):
     archive = build_workspace_install_archive(ROOT, tmp_path / "out")
 
     with tarfile.open(archive, "r:gz") as package:

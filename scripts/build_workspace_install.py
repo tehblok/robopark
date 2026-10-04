@@ -14,8 +14,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import tomllib
 from pathlib import Path
+
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -43,129 +44,8 @@ _UNTRACKED_EXTENSIONS = {
     ".json", ".sh", ".service", ".timer",
 }
 _MAX_FILE_BYTES = 32 * 1024 * 1024
-# This is a one-off dirty-worktree package. New untracked source requires review
-# and an explicit entry; broad globbing could accidentally publish credentials.
-_REVIEWED_UNTRACKED = {
-    "apps/web/src/domains/assistant/assistantUi.ts",
-    'apps/api/alembic/versions/0057_local_ai.py',
-    'apps/api/src/robopark_api/ai_models.py',
-    'apps/api/src/robopark_api/ai_schemas.py',
-    'apps/api/src/robopark_api/routers/ai.py',
-    'apps/api/src/robopark_api/routers/ai_admin.py',
-    'apps/api/src/robopark_api/services/ai/__init__.py',
-    'apps/api/src/robopark_api/services/ai/automations.py',
-    'apps/api/src/robopark_api/services/ai/connectors.py',
-    'apps/api/src/robopark_api/services/ai/issue_context.py',
-    'apps/api/src/robopark_api/services/ai/jobs.py',
-    'apps/api/src/robopark_api/services/ai/knowledge.py',
-    'apps/api/src/robopark_api/services/ai/learning.py',
-    'apps/api/src/robopark_api/services/ai/policy.py',
-    'apps/api/src/robopark_api/services/ai/prompts.py',
-    'apps/api/src/robopark_api/services/ai/runtime.py',
-    'apps/web/src/domains/assistant/AssistantPage.tsx',
-    'apps/web/src/domains/assistant/assistant.css',
-    'apps/web/src/domains/assistant/assistantApi.ts',
-    'deploy/host/robopark_host/ai_broker.py',
-    'deploy/host/robopark_host/ai_install.py',
-    'deploy/host/robopark_host/ai_runtime.py',
-    'deploy/systemd/robopark-ai-broker.service',
-    'deploy/systemd/robopark-ai-setup.service',
-    'deploy/systemd/robopark-ai.service',
-
-    'apps/api/alembic/versions/0056_host_terminal.py',
-    'apps/api/src/robopark_api/routers/admin_terminal.py',
-    'apps/api/src/robopark_api/services/terminal/__init__.py',
-    'apps/api/src/robopark_api/services/terminal/authorization.py',
-    'apps/api/src/robopark_api/services/terminal/broker.py',
-    'apps/api/src/robopark_api/services/terminal/notifications.py',
-    'apps/api/src/robopark_api/services/terminal/sessions.py',
-    'apps/api/src/robopark_api/services/terminal/stream.py',
-    'apps/api/src/robopark_api/terminal_models.py',
-    'apps/api/src/robopark_api/terminal_schemas.py',
-    'apps/web/src/domains/system/terminal/TerminalPage.tsx',
-    'apps/web/src/domains/system/terminal/TerminalViewport.tsx',
-    'apps/web/src/domains/system/terminal/terminal.css',
-    'apps/web/src/domains/system/terminal/terminalApi.ts',
-    'apps/web/src/domains/system/terminal/terminalSnapshot.ts',
-    'apps/web/src/domains/system/terminal/terminalTransport.ts',
-    'apps/web/src/terminal-main.tsx',
-    'apps/web/terminal.html',
-    'deploy/host/robopark_host/terminal_broker.py',
-    'deploy/host/robopark_host/terminal_protocol.py',
-    'deploy/host/robopark_host/terminal_runtime.py',
-    'deploy/host/robopark_host/terminal_setup.py',
-    'deploy/host/robopark_host/terminal_state.py',
-    'deploy/host/robopark_host/terminal_worker.py',
-    'deploy/systemd/robopark-terminal-broker.service',
-    'deploy/systemd/robopark-terminal-maintenance@.service',
-    'deploy/systemd/robopark-terminal-root@.service',
-    'deploy/systemd/robopark-terminal-setup.service',
-
-    "deploy/host/robopark_host/terminal_install.py",
-    "scripts/audit-dependencies.sh",
-    "apps/web/scripts/install-dependencies.sh",
-    "apps/api/src/robopark_api/middleware/csrf.py",
-    "apps/web/docker-entrypoint.d/15-robopark-trusted-proxy.sh",
-    "apps/api/alembic/versions/0051_park_timezone.py",
-    "apps/api/alembic/versions/0052_tracker_issue_history.py",
-    "apps/api/alembic/versions/0053_tracker_history_backfill.py",
-    "apps/api/alembic/versions/0054_park_coordinates.py",
-    "apps/api/alembic/versions/0055_media_upload_park.py",
-    "apps/api/src/robopark_api/services/ops/scheduled_snapshot.py",
-    "apps/api/src/robopark_api/routers/admin_bot.py",
-    "apps/api/src/robopark_api/routers/admin_bot_config.py",
-    "apps/api/src/robopark_api/routers/internal_bot.py",
-    "apps/api/src/robopark_api/services/bot_import.py",
-    "apps/api/src/robopark_api/services/bot_settings.py",
-    "apps/api/src/robopark_api/services/bot_shared_settings.py",
-    "apps/api/src/robopark_api/services/bot_tracker_gateway.py",
-    "apps/api/src/robopark_api/services/sla_clock.py",
-    "apps/api/src/robopark_api/services/task_cycle.py",
-    "apps/api/src/robopark_api/services/tracker_history.py",
-    "apps/api/src/robopark_api/worker_healthcheck.py",
-    "apps/web/src/components/admin/ParkMultiSelect.css",
-    "apps/web/src/components/ui/rolePickerModel.ts",
-    "apps/web/src/design-system/inputs/FileField.css",
-    "apps/web/src/design-system/inputs/FileField.tsx",
-    "apps/web/src/design-system/navigation/PageNavigation.css",
-    "apps/web/src/design-system/navigation/PageNavigation.tsx",
-    "apps/web/src/design-system/theme/themeContext.ts",
-    "apps/web/src/domains/diagnostics/diagnosticRuleDraft.ts",
-    "apps/web/src/domains/campaigns/overviewCampaignRequestLimit.ts",
-    "apps/web/src/domains/map/MapPage.css",
-    "apps/web/src/domains/map/MapPage.tsx",
-    "apps/web/src/domains/map/ParkMapCanvas.tsx",
-    "apps/web/src/domains/map/parkMapBounds.ts",
-    "apps/web/src/domains/robots/robotReturnAssessment.ts",
-    "apps/web/src/domains/shift/scheduleOffline.ts",
-    "apps/web/src/domains/system/PrivilegedSecurityPanel.tsx",
-    "apps/web/src/domains/system/BotSettingsPanel.tsx",
-    "apps/web/src/domains/system/BotConfigPanel.tsx",
-    "apps/web/src/domains/system/botApi.ts",
-    "apps/web/src/domains/system/botConfigApi.ts",
-    "apps/web/src/domains/system/privilegedAuthApi.ts",
-    "apps/web/src/domains/system/totpQr.ts",
-    "apps/web/src/domains/work/repairSlaFormat.ts",
-    "apps/web/src/pwa/shareTargetIntent.ts",
-    "apps/web/src/pwa/shareTargetStore.ts",
-    "apps/web/src/pwa/syncContext.ts",
-    "apps/web/src/shared/auth/offlineIdentity.ts",
-    "apps/web/src/lib/useMinuteClock.ts",
-    "deploy/host/robopark_host/builder_cleanup.py",
-    "deploy/host/robopark_host/owned_builder.py",
-    "deploy/host/robopark_host/scheduled_backup.py",
-    "deploy/host/robopark_host/storage_inventory.py",
-    "deploy/systemd/robopark-backup.service",
-    "deploy/systemd/robopark-backup.timer",
-    "deploy/systemd/robopark-bot.path",
-    "deploy/systemd/robopark-bot.service",
-    "deploy/host/robopark-bot-runtime",
-    "apps/bot/.dockerignore",
-    "apps/bot/Dockerfile",
-    "apps/bot/requirements.txt",
-    "apps/bot/requirements.lock",
-    "apps/bot/entrypoint.py",
-}
+# New runtime files must be reviewed and staged in Git before packaging. This
+# also covers files whose names were allowlisted during initial development.
 _SECRET_FILE_NAMES = {
     "credentials.json", "secrets.json", "secret.json", "tokens.json",
     "token.json", "passwords.json", "private.json",
@@ -205,24 +85,8 @@ def _allowed_source(relative: Path) -> bool:
     return not name.startswith("deploy/install-archive/")
 
 
-def _allowed_untracked(relative: Path) -> bool:
-    name = relative.as_posix()
-    bot_source = (
-        name.startswith("apps/bot/legacy/app/")
-        and relative.suffix == ".py"
-        and len(relative.parts) in {5, 6}
-        and (len(relative.parts) == 5 or relative.parts[4] in {"admin", "store"})
-    )
-    return (
-        _allowed_source(relative)
-        and name.startswith(_UNTRACKED_PREFIXES)
-        and (bot_source or name in _REVIEWED_UNTRACKED)
-        and relative.suffix != ".json"
-    )
-
-
 def workspace_source_files(repository: Path) -> list[Path]:
-    """Select source, including only explicitly scoped new runtime files."""
+    """Select reviewed/indexed source and reject unstaged new runtime files."""
     tracked = {path for path in _git_paths(repository) if _allowed_source(path)}
     untracked_paths = _git_paths(repository, "--others", "--exclude-standard")
     unexpected = {
@@ -230,16 +94,11 @@ def workspace_source_files(repository: Path) -> list[Path]:
         if _allowed_source(path)
         and path.as_posix().startswith(_UNTRACKED_PREFIXES)
         and (path.suffix in _UNTRACKED_EXTENSIONS or path.as_posix().startswith("apps/bot/") or path.suffix == ".path" or path.name == "robopark-bot-runtime")
-        and not _allowed_untracked(path)
     }
     if unexpected:
         raise BuildError("unreviewed_untracked_source")
-    untracked = {
-        path for path in untracked_paths
-        if _allowed_untracked(path)
-    }
     selected: list[Path] = []
-    for relative in sorted(tracked | untracked, key=lambda path: path.as_posix()):
+    for relative in sorted(tracked, key=lambda path: path.as_posix()):
         source = repository / relative
         if source.is_symlink() or not source.is_file():
             continue
