@@ -308,6 +308,7 @@ async function runLifecycle(page: Page, width: number) {
     await drain(bridge)
 
     await openIssue(page)
+    await expect(page.locator('.issue-detail .rp-status-badge[data-tone="success"]', { hasText: 'Закрыта' })).toBeVisible()
     await openTaskConversation(page)
     const timeline = page.getByRole('region', { name: 'Чат задачи' }).locator('.task-message .issue-comment-text')
     const expected = ['Задача взята в работу', 'Заменено крепление колеса', 'Конец смены', 'Проверка второй сменой завершена', 'Проверено после передачи', 'Заменил мотор-колесо BD-01', 'Передано на проверку', 'Повторить проверку', 'Исправлено после возврата', 'Уточнение после возврата', 'Передано на проверку']
