@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
-import type { User } from '../../api'
+import { ApiError, type User } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { AssistantPage } from './AssistantPage'
@@ -143,6 +143,64 @@ describe('AssistantPage', () => {
     interval.mockRestore()
   })
 
+  it.each([401, 403])('hides protected assistant panels after a %s status poll', async statusCode => {
+    const apiClient = client()
+    vi.mocked(apiClient.status).mockResolvedValueOnce(ready).mockRejectedValue(new ApiError(statusCode, 'forbidden'))
+    let tick!: () => Promise<void>
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation((handler, delay) => {
+      if (delay === 5000) tick = handler as () => Promise<void>
+      return 123 as unknown as ReturnType<typeof setInterval>
+    })
+    try {
+      renderPage(apiClient)
+      const draft = await screen.findByRole('textbox', { name: 'Сообщение помощнику' })
+      fireEvent.change(draft, { target: { value: 'Private repair context' } })
+      await act(async () => tick())
+      expect(screen.queryByRole('textbox', { name: 'Сообщение помощнику' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: 'Локальный помощник' })).not.toBeInTheDocument()
+      expect(screen.getByRole('alert')).toBeVisible()
+    } finally { interval.mockRestore() }
+  })
+
+  it('keeps the current draft after a transient status poll error', async () => {
+    const apiClient = client()
+    vi.mocked(apiClient.status).mockResolvedValueOnce(ready).mockRejectedValue(new ApiError(503, 'unavailable'))
+    let tick!: () => Promise<void>
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation((handler, delay) => {
+      if (delay === 5000) tick = handler as () => Promise<void>
+      return 123 as unknown as ReturnType<typeof setInterval>
+    })
+    try {
+      renderPage(apiClient)
+      const draft = await screen.findByRole('textbox', { name: 'Сообщение помощнику' })
+      fireEvent.change(draft, { target: { value: 'Pending repair question' } })
+      await act(async () => tick())
+      expect(draft).toHaveValue('Pending repair question')
+      expect(screen.getByRole('heading', { name: 'Локальный помощник' })).toBeVisible()
+    } finally { interval.mockRestore() }
+  })
+
+  it('does not reuse a previous identity status when the next identity is denied', async () => {
+    const apiClient = client()
+    const nextUser = { ...operator, id: 9, username: 'next-operator' }
+    vi.mocked(apiClient.status).mockResolvedValueOnce(ready).mockRejectedValueOnce(new ApiError(403, 'forbidden'))
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation(() => 123 as unknown as ReturnType<typeof setInterval>)
+    try {
+      const view = render(page(apiClient, operator))
+      expect(await screen.findByRole('textbox', { name: 'Сообщение помощнику' })).toBeVisible()
+      expect(apiClient.conversations).toHaveBeenCalledTimes(1)
+      expect(apiClient.documents).toHaveBeenCalledTimes(1)
+      const initialStatusIntervalCalls = interval.mock.calls.filter(([, delay]) => delay === 5000).length
+
+      view.rerender(page(apiClient, nextUser))
+      expect(await screen.findByRole('alert')).toBeVisible()
+      expect(screen.queryByRole('heading', { name: 'Локальный помощник' })).not.toBeInTheDocument()
+      expect(apiClient.conversations).toHaveBeenCalledTimes(1)
+      expect(apiClient.documents).toHaveBeenCalledTimes(1)
+      expect(interval.mock.calls.filter(([, delay]) => delay === 5000)).toHaveLength(initialStatusIntervalCalls)
+    } finally { interval.mockRestore() }
+  })
+
   it('aborts the initial status request when the page unmounts', () => {
     const apiClient = client()
     vi.mocked(apiClient.status).mockImplementation(() => new Promise(() => {}))
@@ -172,6 +230,24 @@ describe('AssistantPage', () => {
     expect(signal).toBeInstanceOf(AbortSignal)
     expect(signal.aborted).toBe(true)
     interval.mockRestore()
+  })
+
+  it('does not run a queued status poll after the page unmounts', async () => {
+    const apiClient = client()
+    let tick!: () => Promise<void>
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation((handler, delay) => {
+      if (delay === 5000) tick = handler as () => Promise<void>
+      return 123 as unknown as ReturnType<typeof setInterval>
+    })
+    try {
+      const view = renderPage(apiClient)
+      await screen.findByRole('tab', { name: 'Помощник' })
+      await waitFor(() => expect(tick).toBeTypeOf('function'))
+      view.unmount()
+
+      await act(async () => tick())
+      expect(apiClient.status).toHaveBeenCalledTimes(1)
+    } finally { interval.mockRestore() }
   })
 
   it('keeps the newest park documents when an older load resolves late', async () => {

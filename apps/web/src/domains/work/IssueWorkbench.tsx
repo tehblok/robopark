@@ -1199,7 +1199,6 @@ export function TaskController({
                       }))} issue={detail.data ?? null} loading={detail.isLoading && !detail.data}
                       showRobotCheck={false} robotReadOnly={!mechanicCanCheck}
                       onOpenRobotCheck={mechanicCanCheck ? () => changeTab('check') : undefined} />}
-                    {detail.data && ['mechanic', 'operator', 'admin', 'royal'].includes(user.role) ? <Link className="btn btn-secondary" to={`/assistant?issue_key=${encodeURIComponent(detail.data.key)}&park_id=${selectedPark.id}`}>Спросить помощника</Link> : null}
                     {detail.data && user.role === 'mechanic' && !mechanicCanWork ? (
                       <p className="panel-hint" role="status">
                         {detail.data.assignee
@@ -1386,6 +1385,7 @@ export function TaskController({
                         transitions={[]}
                       /> : null}
                     </ClosedDisclosure> : null}
+                    {detail.data && ['mechanic', 'operator', 'admin', 'royal'].includes(user.role) ? <Link className="btn btn-secondary" to={`/assistant?issue_key=${encodeURIComponent(detail.data.key)}&park_id=${selectedPark.id}`}>Спросить помощника</Link> : null}
                     </ClassicTaskLayout>
                     </TabPanel>
                     {(['open', 'closed'] as const).map(kind => <TabPanel key={kind} id={`work-panel-${kind}`} labelledBy={`tab-${kind}`} active={activeTab === kind}>
