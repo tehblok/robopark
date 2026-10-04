@@ -17,6 +17,7 @@ from scripts.build_ota import BuildError
 from scripts.build_workspace_install import (
     build_workspace_install_archive,
     snapshot_version,
+    workspace_manifest_changes,
     workspace_source_files,
 )
 
@@ -140,6 +141,36 @@ def test_snapshot_version_is_newer_than_stable_or_rc_base():
     assert snapshot_version("0.2.0-rc.21.dev18446744073709551615", "0" * 64) == "0.2.0-rc.22.dev0"
 
 
+def test_workspace_manifest_changes_preserve_boundary_notes_and_provenance():
+    digest = "a" * 64
+    changes = workspace_manifest_changes(
+        "x" * 500,
+        source_digest=digest,
+        snapshot_note="Inspect SOURCE-SNAPSHOT.json.",
+    )
+
+    assert changes[0] == "x" * 500
+    assert digest in changes[-1]
+    assert all(0 < len(item) <= 500 for item in changes)
+
+
+def test_workspace_manifest_changes_split_version_replacement_growth_without_loss():
+    base_version = "0.2.0-rc.29"
+    snapshot = "0.2.0-rc.30.dev18446744073709551615"
+    notes = f"{'x' * (500 - len(base_version))}{base_version}"
+    rewritten = notes.replace(base_version, snapshot, 1)
+
+    changes = workspace_manifest_changes(
+        rewritten,
+        source_digest="b" * 64,
+        snapshot_note="Inspect SOURCE-SNAPSHOT.json.",
+    )
+
+    assert "".join(changes[:-1]) == rewritten
+    assert len(changes[:-1]) == 2
+    assert all(0 < len(item) <= 500 for item in changes)
+
+
 def test_workspace_archive_contains_current_indexed_runtime_and_no_tests(tmp_path: Path):
     archive = build_workspace_install_archive(ROOT, tmp_path / "out")
 
@@ -177,6 +208,11 @@ def test_workspace_archive_contains_current_indexed_runtime_and_no_tests(tmp_pat
     assert f'APP_VERSION = "{source["version"]}"' in context
     assert source["kind"] == "uncommitted-worktree"
     assert source["source_sha256"] in verified.manifest.changes[-1]
+    release_notes = json.loads((ROOT / "deploy/release-metadata.json").read_text())[
+        "update_notes"
+    ].strip()
+    assert release_notes in " ".join(verified.manifest.changes[:-1])
+    assert all(len(item) <= 500 for item in verified.manifest.changes)
     install_hashes = {
         "INSTALL.sh": hashlib.sha256(install_data).hexdigest(),
         "README-RU.md": hashlib.sha256(readme_data).hexdigest(),

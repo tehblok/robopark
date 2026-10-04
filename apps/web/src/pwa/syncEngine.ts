@@ -99,6 +99,7 @@ export class SyncEngine {
   private wakeAfterCancellation = false
   private activeRun: Promise<unknown> | null = null
   private wakeAfterCurrent = false
+  private manualAttentionRetryRequested = false
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private retryGeneration = 0
   private abortController: AbortController | null = null
@@ -305,24 +306,35 @@ export class SyncEngine {
 
   async syncNow(reason: string): Promise<boolean> {
     if (this.disposed) return false
+    if (reason === 'manual') this.manualAttentionRetryRequested = true
     if (this.cancelling) { this.wakeAfterCancellation = true; return false }
     if (this.running) { this.wakeAfterCurrent = true; return false }
     this.cancelScheduledRetry()
     this.batcher.cancelScheduled()
     let performed = false
+    let consumedManualAttentionRetry = false
     this.running = true
     try {
       const work = this.coordinator.runExclusive(async (leaseSignal, ensureLease, fence) => {
-        performed = await this.pump(reason === 'manual', leaseSignal, ensureLease, fence)
+        const retryAttentionMedia = this.manualAttentionRetryRequested
+        consumedManualAttentionRetry = retryAttentionMedia
+        this.manualAttentionRetryRequested = false
+        performed = await this.pump(retryAttentionMedia, leaseSignal, ensureLease, fence)
       })
       this.activeRun = work
-      return await work && performed
+      const acquired = await work
+      if (!acquired && consumedManualAttentionRetry && !this.disposed) this.manualAttentionRetryRequested = true
+      if (!acquired && !this.disposed && await this.hasWorkAwaitingLease(this.manualAttentionRetryRequested) && !this.disposed) {
+        this.scheduleSyncRetry(this.manualAttentionRetryRequested ? 'manual' : 'lease-retry', 1_000)
+      }
+      return acquired && performed
     } catch (error) {
       if (!(error instanceof SyncLeaseLostError)) throw error
       if (!this.disposed) {
+        if (consumedManualAttentionRetry) this.manualAttentionRetryRequested = true
         await this.refreshState()
         this.setState({ ...this.durableState, status: 'offline' })
-        this.scheduleSyncRetry('lease-retry', 1_000)
+        this.scheduleSyncRetry(this.manualAttentionRetryRequested ? 'manual' : 'lease-retry', 1_000)
       }
       return false
     } finally {
@@ -340,6 +352,7 @@ export class SyncEngine {
     if (this.disposed) return
     this.disposed = true
     this.started = false
+    this.manualAttentionRetryRequested = false
     this.environment?.removeEventListener('online', this.wake)
     this.environment?.removeEventListener('focus', this.wake)
     this.cancelScheduledRetry()
@@ -367,6 +380,13 @@ export class SyncEngine {
       this.retryTimer = null
       void this.syncNow(reason).catch(() => {})
     }, delay)
+  }
+
+  private async hasWorkAwaitingLease(retryAttentionMedia: boolean): Promise<boolean> {
+    const [actions, media] = await Promise.all([this.db.listActions(), this.db.listMedia()])
+    return actions.some(item => ['local', 'ready', 'sending'].includes(item.state))
+      || media.some(item => ['local', 'ready', 'uploading'].includes(item.state)
+        || (retryAttentionMedia && item.state === 'attention'))
   }
 
   private async writeUnderLease(fence: LeaseFence, mutator: (writer: SyncTransactionWriter) => unknown): Promise<void> {

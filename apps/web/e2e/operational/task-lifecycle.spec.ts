@@ -197,11 +197,23 @@ async function runLifecycle(page: Page, width: number) {
   const mobile = width === 390
   let tearingDown = false
   const handlers = trackerRoutes(bridge, session)
+  const syncExchanges: Array<Record<string, unknown>> = []
   const http = await startHttpFixture(async request => {
     if (tearingDown) return new Response(null, { status: 503 })
     const handler = handlers.find(item => item.method === request.method)
     if (!handler) return new Response(null, { status: 405 })
+    const isSyncBatch = new URL(request.url).pathname === '/api/sync/batch'
+    const exchange: Record<string, unknown> = { at: Date.now(), actor: session.actor }
+    if (isSyncBatch) {
+      syncExchanges.push(exchange)
+      if (syncExchanges.length > 100) syncExchanges.shift()
+    }
     const response = await handler.handler(request)
+    if (isSyncBatch) {
+      exchange.status = response.status ?? 200
+      const result = response.json as { results?: unknown } | undefined
+      exchange.results = result?.results
+    }
     const status = response.status ?? 200
     const headers = new Headers(response.headers)
     // The bridge returns decoded bytes; framing belongs to this HTTP server.
@@ -328,6 +340,37 @@ async function runLifecycle(page: Page, width: number) {
     expect(new Set(evidence.actions.map(action => action.id)).size).toBe(evidence.actions.length)
     expect(evidence.actions.every(action => action.state === 'succeeded')).toBe(true)
     if (mobile) await assertMobileContract(page)
+  } catch (error) {
+    // Keep the original assertion; collect bounded evidence before teardown can
+    // close the bridge or discard the queue. No extra synchronization on success.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const evidence = await Promise.race([
+        Promise.allSettled([
+          snapshot(bridge),
+          page.evaluate(() => new Promise<unknown>((resolve, reject) => {
+            const open = indexedDB.open('robopark-offline')
+            open.onerror = () => reject(open.error)
+            open.onsuccess = () => {
+              const db = open.result
+              if (!db.objectStoreNames.contains('actions')) { db.close(); resolve([]); return }
+              const transaction = db.transaction('actions', 'readonly')
+              const request = transaction.objectStore('actions').getAll()
+              request.onsuccess = () => resolve(request.result)
+              request.onerror = () => reject(request.error)
+              transaction.oncomplete = transaction.onabort = () => db.close()
+            }
+          })),
+        ]),
+        new Promise<string>(resolve => { timer = setTimeout(() => resolve('diagnostics timed out'), 2000) }),
+      ])
+      await test.info().attach('task-lifecycle-sync.json', {
+        body: JSON.stringify({ actor: session.actor, syncExchanges, evidence }, null, 2),
+        contentType: 'application/json',
+      })
+    } catch { /* Diagnostic collection must not replace the original failure. */ }
+    finally { clearTimeout(timer) }
+    throw error
   } finally {
     tearingDown = true
     await page.context().setOffline(true).catch(() => {})
@@ -337,6 +380,8 @@ async function runLifecycle(page: Page, width: number) {
     await bridge.close()
   }
 }
+
+test.use({ trace: 'retain-on-failure' })
 
 test.beforeEach(() => { process.env.DIAGNOSTIC_E2E_MUTATION = 'task-lifecycle' })
 test.afterEach(() => { delete process.env.DIAGNOSTIC_E2E_MUTATION })

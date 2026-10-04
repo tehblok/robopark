@@ -155,7 +155,13 @@ def _payload(repository: Path) -> dict[str, bytes]:
     return payload
 
 
-def build_ota(repository: Path, output: Path, *, git_sha: str | None = None) -> Path:
+def build_ota(
+    repository: Path,
+    output: Path,
+    *,
+    git_sha: str | None = None,
+    manifest_changes: list[str] | None = None,
+) -> Path:
     repository = repository.resolve()
     output = output.resolve(strict=False)
     output.mkdir(parents=True, exist_ok=True)
@@ -178,6 +184,7 @@ def build_ota(repository: Path, output: Path, *, git_sha: str | None = None) -> 
         raise BuildError("invalid_release_metadata") from error
     if not isinstance(notes, str) or not notes.strip():
         raise BuildError("invalid_release_metadata")
+    changes = [notes.strip()] if manifest_changes is None else manifest_changes
 
     payload = _payload(repository)
     expanded = sum(len(data) for data in payload.values())
@@ -189,7 +196,7 @@ def build_ota(repository: Path, output: Path, *, git_sha: str | None = None) -> 
         "compatible_from": compatible,
         "required_free_bytes": max(2 * expanded, 512 * 1024 * 1024),
         "max_expanded_bytes": max(expanded, 1),
-        "changes": [notes.strip()],
+        "changes": changes,
         "requirements": requirements,
         "files": [
             {"path": name, "size": len(data), "sha256": _digest(data)}
