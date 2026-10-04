@@ -5,6 +5,7 @@ import base from './playwright.config'
 // user-visible behavior on all three engines with the same assertions.
 export default defineConfig(base, {
   testMatch: [
+    '**/assistant.spec.ts',
     '**/mock-api-contract.spec.ts',
     '**/operational/{work,work-tabs,task-lifecycle,task-collaboration,task-robot-composition}.spec.ts',
     '**/operational/{robots,robot-qr,diagnostic-rules,diagnostic-editor,diagnostic-unknowns}.spec.ts',

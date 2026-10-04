@@ -1,13 +1,8 @@
-import { mkdirSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { expect, test, type Page } from '@playwright/test'
 import type { User } from '../src/api'
 import { assertNoSeriousA11yViolations } from './support/assertA11y'
 import { installMockApi, type MockRoute } from './support/mockApi'
 import { mechanicUser, northPark, operatorUser } from './support/users'
-
-const screenshotDir = fileURLToPath(new URL('../../../output/verification/local-ai/browser/', import.meta.url))
-mkdirSync(screenshotDir, { recursive: true })
 
 const readyStatus = {
   supported: true, installed: true, enabled: true, ready: true, reason: null,
@@ -39,7 +34,7 @@ async function openAssistant(page: Page, user: User, routes: MockRoute[]) {
   await expect(page.getByRole('heading', { name: 'Локальный помощник' })).toBeVisible()
 }
 
-test('desktop mechanic receives a sourced answer and opens the cited document', async ({ page }) => {
+test('desktop mechanic receives a sourced answer and opens the cited document', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   let answered = false
   await openAssistant(page, mechanicUser, [
@@ -59,14 +54,14 @@ test('desktop mechanic receives a sourced answer and opens the cited document', 
   await page.getByRole('button', { name: 'Отправить' }).click()
   const source = page.getByRole('link', { name: 'Проверка лидара' })
   await expect(source).toBeVisible()
-  await page.screenshot({ path: `${screenshotDir}/mechanic-chat-desktop.png`, fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: testInfo.outputPath('mechanic-chat-desktop.png'), fullPage: true, animations: 'disabled' })
   await source.click()
   await expect(page.getByRole('heading', { name: 'Проверка лидара' })).toBeVisible()
   await expect(page.getByText('Перед осмотром отключите питание.')).toBeVisible()
   await assertNoSeriousA11yViolations(page)
 })
 
-test('admin imports knowledge at 320px with explicit activation choices', async ({ page }) => {
+test('admin imports knowledge at 320px with explicit activation choices', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 800 })
   let importBody: Record<string, unknown> | null = null
   await openAssistant(page, adminUser, [
@@ -90,18 +85,18 @@ test('admin imports knowledge at 320px with explicit activation choices', async 
   await page.getByText('Использовать тикеты, переписку и заметки как непроверенный опыт').click()
   await page.getByRole('button', { name: 'Импортировать' }).click()
 
-  await expect(page.getByRole('status')).toContainText('Добавлено: 2')
+  await expect(page.getByRole('status').filter({ hasText: 'Добавлено: 2' })).toBeVisible()
   expect(importBody).toMatchObject({ park_id: 7, activate_manuals: true, activate_unverified: true })
   expect((importBody?.documents as unknown[])).toHaveLength(2)
   await page.locator('.rp-assistant-knowledge').screenshot({
-    path: `${screenshotDir}/admin-import-mobile-320.png`, animations: 'disabled',
+    path: testInfo.outputPath('admin-import-mobile-320.png'), animations: 'disabled',
     style: '.rp-shell__skip-link, .rp-shell__topbar, .rp-shell__bottom-nav { visibility: hidden !important; }',
   })
   await expect(page.locator('html')).toHaveJSProperty('scrollWidth', 320)
   await assertNoSeriousA11yViolations(page)
 })
 
-test('unsupported host only requests status and stays read-only', async ({ page }) => {
+test('unsupported host only requests status and stays read-only', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1024, height: 768 })
   const aiRequests: string[] = []
   page.on('request', request => {
@@ -122,5 +117,5 @@ test('unsupported host only requests status and stays read-only', async ({ page 
   expect(new Set(aiRequests)).toEqual(new Set(['GET /api/ai/status']))
   await expect(page.getByRole('button', { name: 'Отправить' })).toHaveCount(0)
   await assertNoSeriousA11yViolations(page)
-  await page.screenshot({ path: `${screenshotDir}/unsupported-host.png`, fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: testInfo.outputPath('unsupported-host.png'), fullPage: true, animations: 'disabled' })
 })
