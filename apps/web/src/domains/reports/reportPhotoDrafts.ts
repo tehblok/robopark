@@ -115,17 +115,23 @@ export function writeReportPhotoDraft(draft: ReportPhotoDraft): Promise<void> {
         const request = store.getAll()
         request.onsuccess = () => {
           if (requestedEpoch !== epoch || requestedScope !== scopeEpoch.get(draft.key)) { done(); return }
-          const others = (request.result as ReportPhotoDraft[]).filter((item) => item.key !== draft.key)
+          const stored = request.result as ReportPhotoDraft[]
+          const occupied = stored.find(item => item.key === draft.key)
+          const archiveKey = occupied && occupied.ownerKey !== draft.ownerKey
+            ? retiredKey(draft.key, occupied.ownerKey) : null
+          // Account for the records that this transaction will actually retain.
+          // A principal change preserves the occupied slot under its retired key.
+          const others = stored.filter(item => item.key !== draft.key && item.key !== archiveKey)
+          if (archiveKey && occupied) others.push(occupied)
           const total = others.reduce((sum, item) => sum + (item.attachment?.blob.size ?? 0), bytes)
           if (others.length >= 8 || total > 60 * 1024 * 1024) {
             fail(new Error('Хранилище черновиков заполнено. Удалите ненужные черновики.'))
             return
           }
-          const occupied = (request.result as ReportPhotoDraft[]).find(item => item.key === draft.key)
-          if (occupied && occupied.ownerKey !== draft.ownerKey) {
+          if (occupied && archiveKey) {
             // A new principal may inherit the physical account/park key after
             // a browser restart. Preserve the previous owner before replacing it.
-            store.put({ ...occupied, key: retiredKey(draft.key, occupied.ownerKey) })
+            store.put({ ...occupied, key: archiveKey })
             const nextScopeLease = crypto.randomUUID()
             meta.put(nextScopeLease, `scope:${draft.key}`)
             const [globalLease] = JSON.parse(lease) as [string, string]

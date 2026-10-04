@@ -98,4 +98,44 @@ describe('persistent report photos', () => {
     expect((await readReportPhotoDraft('robopark:report-draft:1:7'))?.title).toBe('Новый сеанс после выхода')
   })
 
+  it('counts the preserved previous owner against the record budget', async () => {
+    for (let i = 0; i < 8; i++) await writeReportPhotoDraft(draft(`owner-count:${i}`))
+    const replacement = { ...draft('owner-count:0'), ownerKey: 'new-owner', title: 'New principal' }
+    await expect(writeReportPhotoDraft(replacement)).rejects.toThrow(/Удалите/)
+    expect(await readReportPhotoDraft('owner-count:0')).toMatchObject({ ownerKey: 'user-1-park-7' })
+    expect(await readReportPhotoDraft('owner-count:0:retired:user-1-park-7')).toBeNull()
+  })
+
+  it('counts the preserved previous owner photo against the byte budget', async () => {
+    const photo = new Blob([new Uint8Array(15 * 1024 * 1024)])
+    for (let i = 0; i < 4; i++) {
+      await writeReportPhotoDraft({ ...draft(`owner-bytes:${i}`), attachment: { name: 'photo.jpg', lastModified: 0, blob: photo } })
+    }
+    await expect(writeReportPhotoDraft({ ...draft('owner-bytes:0'), ownerKey: 'new-owner' })).rejects.toThrow(/Удалите/)
+    expect((await readReportPhotoDraft('owner-bytes:0'))?.attachment?.blob.size).toBe(photo.size)
+  })
+
+  it('preserves the previous owner when the replacement fits the budget', async () => {
+    await writeReportPhotoDraft(draft('owner-fits'))
+    await writeReportPhotoDraft({ ...draft('owner-fits'), ownerKey: 'new-owner', title: 'New principal' })
+    expect(await readReportPhotoDraft('owner-fits')).toMatchObject({ ownerKey: 'new-owner', title: 'New principal' })
+    expect(await readReportPhotoDraft('owner-fits:retired:user-1-park-7')).toMatchObject({ ownerKey: 'user-1-park-7' })
+  })
+
+  it('does not double count an archived slot overwritten by the owner handoff', async () => {
+    const active = draft('archive-replaced')
+    await writeReportPhotoDraft({ ...active, key: 'archive-replaced:retired:user-1-park-7', title: 'Older archive' })
+    await writeReportPhotoDraft({ ...active, title: 'Latest previous owner' })
+    for (let i = 0; i < 6; i++) await writeReportPhotoDraft(draft(`other:${i}`))
+    await writeReportPhotoDraft({ ...active, ownerKey: 'new-owner' })
+    expect(await readReportPhotoDraft('archive-replaced:retired:user-1-park-7')).toMatchObject({ title: 'Latest previous owner' })
+    await expect(writeReportPhotoDraft(draft('ninth-slot'))).rejects.toThrow(/Удалите/)
+  })
+
+  it('allows the same owner to replace a photo when all record slots are used', async () => {
+    for (let i = 0; i < 8; i++) await writeReportPhotoDraft(draft(`same-owner:${i}`))
+    await writeReportPhotoDraft({ ...draft('same-owner:0'), title: 'Updated in place' })
+    expect(await readReportPhotoDraft('same-owner:0')).toMatchObject({ title: 'Updated in place' })
+  })
+
 })
