@@ -2181,6 +2181,35 @@ describe('IssueWorkbench', () => {
     expect(clearAll).not.toHaveBeenCalled()
   })
 
+  it('does not let a pre-mutation detail refresh replace the saved task', async () => {
+    const pending = deferred<TrackerIssueDetail>()
+    const saved = { ...queuedWorkflowIssue, summary: 'Изменение сохранено' }
+    const trackerIssue = vi.fn()
+      .mockResolvedValueOnce(queuedWorkflowIssue)
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue(saved)
+    const client = apiClient({
+      trackerIssue,
+      taskMessage: vi.fn(async () => taskMessageResult('Новая деталь')),
+    })
+    renderWorkbench({ client })
+
+    await screen.findByRole('heading', { name: queuedWorkflowIssue.summary })
+    await openTaskChat()
+    act(() => resourceStore.revalidate(`${accessPrefix()}issue:${issue.key}`))
+    await waitFor(() => expect(trackerIssue).toHaveBeenCalledTimes(2))
+
+    fireEvent.change(screen.getByLabelText(ru.tracker.comments), {
+      target: { value: 'Новая деталь' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
+    expect(await screen.findByRole('heading', { name: saved.summary })).toBeInTheDocument()
+
+    await act(async () => pending.resolve(queuedWorkflowIssue))
+    expect(screen.getByRole('heading', { name: saved.summary })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: queuedWorkflowIssue.summary })).not.toBeInTheDocument()
+  })
+
   it('keeps cached protected work visible only for a transient revalidation failure', async () => {
     seedCurrentWork(user, queuedWorkflowIssue)
     const transient = new TypeError('offline')
