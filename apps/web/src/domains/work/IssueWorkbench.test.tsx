@@ -691,7 +691,7 @@ it('displays and writes task parts from the backend claim park despite tag and u
 
   expect(await screen.findByRole('option', { name: 'Колёса' })).toBeInTheDocument()
   fireEvent.change(screen.getByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   expect(screen.getByText('Склад парка A')).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
 
@@ -728,7 +728,7 @@ it('announces a write-off and collapses the form after success', async () => {
   renderWorkbench({ client, currentUser: mechanic })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
 
   expect(await screen.findByText('Запчасть списана', { selector: '[role="status"]' })).toBeVisible()
@@ -841,7 +841,7 @@ it('blocks an early write-off until durable pending-action hydration completes',
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
 
   expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
   fireEvent.submit(screen.getByRole('form', { name: 'Списание запчасти' }))
@@ -868,7 +868,7 @@ it('fails closed when durable write-off hydration fails and retries the original
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
 
   expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось проверить ожидающее списание')
   expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
@@ -893,7 +893,7 @@ it('clears a confirmed legacy desktop write-off while mounted and creates a fres
   const sync: SyncContextValue = { state: { status: 'idle', pending: 0, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction: vi.fn(async () => current), subscribeAction }
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => legacyIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
   expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
@@ -935,7 +935,7 @@ it('keeps legacy phone write-off durable across close and confirms through the s
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => legacyIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Использовать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(sync.subscribeAction).toHaveBeenCalled())
   fireEvent.click(screen.getByRole('button', { name: 'Использовать запчасть' }))
@@ -961,7 +961,7 @@ it('retires a terminal claim conflict and confirms an explicit retry with a fres
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
   await waitFor(() => expect(sync.subscribeAction).toHaveBeenCalled())

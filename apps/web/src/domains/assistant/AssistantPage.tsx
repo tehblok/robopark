@@ -174,6 +174,7 @@ function UnsupportedStatus({ status }: { status: AiStatus }) {
 function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient; enabled: boolean; parkId: number | null; issueKey: string | null }) {
   const sessions = useLoader(signal => api.conversations(signal), [api])
   const sessionData = sessions.data; const sessionsLoading = sessions.loading; const setSessionData = sessions.setData
+  const sessionsReady = !sessionsLoading && sessionData !== null
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [draft, setDraft] = useState('')
@@ -274,7 +275,7 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
     }
   }
   const submit = async (event: FormEvent) => {
-    event.preventDefault(); if (!draft.trim() || !enabled || sending || opening) return
+    event.preventDefault(); if (!draft.trim() || !enabled || !sessionsReady || sending || opening) return
     const controller = new AbortController()
     submitPollController.current?.abort()
     submitPollController.current = controller
@@ -301,7 +302,7 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
   const selectedSession = sessions.data?.find(item => item.id === selectedId)
 
   return <div className="rp-assistant-chat-layout">
-    <Panel title="Разговоры" actions={<Button disabled={!enabled || parkId == null} onClick={() => void create()} size="compact">Новый</Button>}>
+    <Panel title="Разговоры" actions={<Button disabled={!enabled || !sessionsReady || opening || parkId == null} onClick={() => void create()} size="compact">Новый</Button>}>
       {sessions.loading ? <LoadingState label="Загружаем разговоры" /> : sessions.error ? <ErrorState title="Не удалось загрузить разговоры" description={sessions.error} onRetry={() => void sessions.refresh()} /> :
         sessions.data?.length ? <ul className="rp-assistant-list">{sessions.data.map(item => <li key={item.id}><button aria-current={selectedId === item.id} onClick={() => void open(item.id)} type="button"><strong>{item.title}</strong>{item.issue_key ? <span>{item.issue_key}</span> : null}</button><Button aria-label={`Удалить ${item.title}`} onClick={() => void remove(item)} size="compact" variant="ghost">×</Button></li>)}</ul> : <p>Начните новый разговор.</p>}
     </Panel>
@@ -309,7 +310,7 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
       {error ? <Alert tone="error">{error}</Alert> : null}
       <div aria-live="polite" className="rp-assistant-messages">{opening ? <LoadingState label="Открываем разговор" /> : detail?.messages.length ? detail.messages.map(message => <article className={`rp-assistant-message rp-assistant-message--${message.role}`} key={message.id}><strong>{message.role === 'assistant' ? 'Помощник' : 'Вы'}</strong><p>{message.content}</p>{message.sources.length ? <div className="rp-assistant-sources"><span>Источники</span>{message.sources.map(source => <Link key={source.id} title={source.excerpt} to={`/assistant?document=${encodeURIComponent(source.id)}`}>{source.title}</Link>)}</div> : null}</article>) : <EmptyState title="Задайте вопрос по ремонту" description={issueKey ? `Контекст задачи ${issueKey} будет приложен к разговору.` : 'Выберите парк и опишите симптом или нужную процедуру.'} />}</div>
       {activeJob && (activeJob.state === 'queued' || activeJob.state === 'running') ? <div className="rp-assistant-job" role="status"><span>{sending ? 'Готовим ответ…' : 'Ответ ещё готовится. Можно вернуться позже.'}</span><Button onClick={() => void api.cancelJob(activeJob.id).then(setActiveJob)} size="compact" variant="secondary">Отменить</Button></div> : null}
-      <form className="rp-assistant-compose" onSubmit={submit}><FormField id="assistant-message" label="Сообщение помощнику"><textarea disabled={!enabled || sending || opening} onChange={event => setDraft(event.target.value)} rows={3} value={draft} /></FormField><Button busy={sending} disabled={!enabled || !draft.trim() || parkId == null || opening} type="submit">Отправить</Button></form>
+      <form className="rp-assistant-compose" onSubmit={submit}><FormField id="assistant-message" label="Сообщение помощнику"><textarea disabled={!enabled || !sessionsReady || sending || opening} onChange={event => setDraft(event.target.value)} rows={3} value={draft} /></FormField><Button busy={sending} disabled={!enabled || !sessionsReady || !draft.trim() || parkId == null || opening} type="submit">Отправить</Button></form>
     </Panel>
   </div>
 }
