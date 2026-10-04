@@ -1285,16 +1285,14 @@ export function TaskController({
                           const mediaId = `media-${reviewId}`
                           const prepared = await prepareImage(value.photo)
                           try {
-                            const commentId = !value.repairFields && value.comment?.trim() ? await enqueueComment(value.comment) : null
                             const reviewAction = buildSubmitReviewAction({
                               issueKey: detail.data!.key,
                               parkId: taskParkId,
                               id: reviewId,
                               defectCode: value.defectCode,
                               repairFields: value.repairFields,
-                              comment: value.repairFields ? value.comment : undefined,
+                              comment: value.comment,
                               mediaActionId: mediaId,
-                              commentActionId: commentId,
                             })
                             await sync.enqueueMedia({
                               id: mediaId,

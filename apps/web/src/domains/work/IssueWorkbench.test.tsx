@@ -935,7 +935,7 @@ it('keeps legacy phone write-off durable across close and confirms through the s
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => legacyIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Использовать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(sync.subscribeAction).toHaveBeenCalled())
   fireEvent.click(screen.getByRole('button', { name: 'Использовать запчасть' }))
@@ -1221,11 +1221,11 @@ describe('IssueWorkbench', () => {
     expect(await screen.findByRole('textbox', { name: 'Добавить уточнение' })).not.toBeRequired()
   })
 
-  it('stores exactly one review photo locally before queueing the review', async () => {
+  it.each([true, false])('stores the review photo and completion comment together (existing comment: %s)', async hasComment => {
     const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
     const workflowIssue: TrackerIssueDetail = {
       ...issue, claim: { park_id: park.id },
-      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: true },
+      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: hasComment },
     }
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:review')
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
@@ -1253,6 +1253,7 @@ describe('IssueWorkbench', () => {
     await screen.findByRole('button', { name: 'Передать на проверку' })
     fireEvent.click(screen.getAllByRole('button', { name: 'Передать на проверку' }).at(-1)!)
     fireEvent.change(screen.getByLabelText('Код дефекта'), { target: { value: 'BD-01' } })
+    if (!hasComment) fireEvent.change(screen.getByLabelText('\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439 \u043e \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u043d\u043e\u0439 \u0440\u0430\u0431\u043e\u0442\u0435'), { target: { value: '  Repair completed  ' } })
     const photo = new File(['photo'], 'robot.jpg', { type: 'image/jpeg' })
     fireEvent.change(screen.getByLabelText('Сделать фото или выбрать файл'), { target: { files: [photo] } })
     fireEvent.click(screen.getAllByRole('button', { name: 'Передать на проверку' }).at(-1)!)
@@ -1260,7 +1261,9 @@ describe('IssueWorkbench', () => {
     await waitFor(() => expect(enqueueMedia).toHaveBeenCalledOnce())
     expect(enqueueMedia).toHaveBeenCalledWith(
       expect.objectContaining({ issueKey: issue.key, name: 'robot.jpg', blob: expect.any(Blob) }),
-      expect.objectContaining({ action: 'submit_review', dependencies: [expect.stringMatching(/^media-/)] }),
+      expect.objectContaining({ action: 'submit_review', dependencies: [expect.stringMatching(/^media-/)],
+        ...(!hasComment ? { payload: expect.objectContaining({ comment: 'Repair completed' }) } : {}),
+      }),
     )
     expect(enqueueAction).not.toHaveBeenCalled()
     expect(taskSubmitReview).not.toHaveBeenCalled()
