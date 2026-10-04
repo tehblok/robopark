@@ -36,6 +36,10 @@ for (const width of [390, 1440]) {
     await page.evaluate(() => window.dispatchEvent(new Event('online')))
     // Empty reconciliation batches are allowed; the user's command is sent once.
     await expect.poll(() => submittedActions.length).toBe(1)
+    // Request receipt is not durable acknowledgement: reloading earlier legitimately retries its ID.
+    await expect(page.getByRole('button', {
+      name: 'Открыть центр синхронизации. Синхронизация выполняется автоматически', exact: true,
+    })).toBeVisible()
     await page.reload()
     await page.getByRole('button', { name: 'История и сообщения' }).click()
     await expect(page.getByRole('textbox', { name: 'Комментарии', exact: true })).toBeVisible()

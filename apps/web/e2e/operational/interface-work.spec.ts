@@ -117,6 +117,7 @@ test('review keeps defect code and one photo through an upload failure and reloa
   const reviews: Review[] = []
   const lifecycle: string[] = []
   let completions = 0
+  let receivedOffset = 0
   const media = await startHttpFixture(async request => {
     const path = new URL(request.url).pathname
     if (request.method === 'POST' && path === '/api/media/uploads') {
@@ -128,13 +129,15 @@ test('review keeps defect code and one photo through an upload failure and reloa
       if (starts.length) expect(input).toEqual(starts[0])
       starts.push(input)
       if (unavailable) return Response.json({ detail: 'offline' }, { status: 503 })
-      return Response.json({ upload_id: 'review-photo', received_offset: 0, completed: false, status: 'active' })
+      // The host retains accepted bytes even when reload interrupts their acknowledgement.
+      return Response.json({ upload_id: 'review-photo', received_offset: receivedOffset, completed: false, status: 'active' })
     }
     if (request.method === 'PUT' && path === '/api/media/uploads/review-photo/chunks/0') {
       const chunk = Buffer.from(await request.arrayBuffer())
       chunks.push(chunk)
       expect(createHash('sha256').update(chunk).digest('hex')).toBe(request.headers.get('X-Chunk-SHA256'))
-      return Response.json({ received_offset: chunk.length })
+      receivedOffset += chunk.length
+      return Response.json({ received_offset: receivedOffset })
     }
     if (request.method === 'POST' && path === '/api/media/uploads/review-photo/complete') {
       completions++
