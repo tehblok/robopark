@@ -1270,6 +1270,7 @@ export function TaskController({
                     </> : null}
                     {reviewOpen && detail.data && user.role === 'mechanic' && (!apiClient.taskRepairOptions || repairOptions.data?.issue_key === detail.data.key) ? <SubmitReviewForm key={detail.data.key}
                       repairOptions={apiClient.taskRepairOptions ? repairOptions.data ?? undefined : undefined}
+                      repairContext={{ summary: detail.data.summary, description: detail.data.description, comments: comments.data ?? [] }}
                       onRefreshOptions={apiClient.taskRepairOptions ? () => guarded(() => apiClient.taskRepairOptions!(detail.data!.key)) : undefined}
                       onCancel={() => { setReviewOpen(false); mutationKeys.current.cancel('submit-review') }}
                       defectCodes={defectCodes.data ?? []} hasQualifyingComment={Boolean(hasQualifyingComment)}

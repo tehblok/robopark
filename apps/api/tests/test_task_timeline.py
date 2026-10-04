@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.security import hash_password
 from robopark_api.services import platform_settings
@@ -60,6 +61,18 @@ def test_tracker_attachment_url_rejects_untrusted_schemes_and_paths(url):
 
     with pytest.raises(ValueError, match="tracker_attachment_url_invalid"):
         TrackerAttachmentOut(id="photo", name="photo.png", url=url)
+
+
+def test_repair_component_schema_preserves_ranked_defect_method_hints():
+    from robopark_api.schemas import RepairComponentOptionOut
+
+    component = RepairComponentOptionOut(
+        id="motorcontrol",
+        label="Контроллер двигателя",
+        defect_method_suggestions={"EL-02": ["CHANGE", "DIAG"]},
+    )
+
+    assert component.defect_method_suggestions == {"EL-02": ["CHANGE", "DIAG"]}
 
 
 def test_timeline_orders_merges_deduplicates_and_hides_action_secrets(
@@ -935,6 +948,181 @@ def test_timeline_explains_unsent_message_from_previous_repair_cycle(
     old = next(item for item in items if item["id"] == "old-cycle-message")
     assert old["delivery_note"] == "previous_cycle_not_sent"
     assert old["text"] == "Сохранено локально"
+
+
+def test_timeline_marks_only_current_cycle_user_comments_as_repair_context(
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+):
+    from robopark_api.services.task_timeline import merge_timeline
+
+    start = ReliableAction(
+        id="current-cycle-start",
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-1",
+        action="start",
+        idempotency_key="current-cycle-start",
+        payload_hash="a" * 64,
+        payload_json="{}",
+        state="succeeded",
+        next_attempt_at=0,
+        created_at=10,
+        updated_at=10,
+    )
+    comment = ReliableAction(
+        id="current-cycle-comment",
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-1",
+        action="comment",
+        idempotency_key="current-cycle-comment",
+        payload_hash="b" * 64,
+        payload_json="{}",
+        state="succeeded",
+        next_attempt_at=0,
+        created_at=12,
+        updated_at=12,
+    )
+    db_session.add_all(
+        [
+            start,
+            comment,
+            TrackerClaim(
+                issue_key="ROBOPARK-1",
+                park_id=seed_park_with_tracker.id,
+                owner_user_id=seed_mechanic.id,
+                updated_by_user_id=seed_mechanic.id,
+                state="active",
+                # Handoff clears this pointer; action history remains authoritative.
+                start_action_id=None,
+                updated_at=20,
+            ),
+            TaskMessage(
+                id="current-cycle-user",
+                issue_key="ROBOPARK-1",
+                kind="user",
+                author_user_id=seed_mechanic.id,
+                author_name=seed_mechanic.username,
+                text="Камера не даёт сигнал",
+                action_id=comment.id,
+                sync_state="synced",
+                visibility="participants",
+                created_at=12,
+                updated_at=12,
+            ),
+            TaskMessage(
+                id="generated-report",
+                issue_key="ROBOPARK-1",
+                kind="system",
+                author_user_id=seed_mechanic.id,
+                author_name=seed_mechanic.username,
+                text="Выполненные работы: замена камеры",
+                action_id=comment.id,
+                sync_state="synced",
+                visibility="participants",
+                created_at=13,
+                updated_at=13,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    items = merge_timeline(db_session, issue_key="ROBOPARK-1", comments=[])
+
+    assert (
+        next(item for item in items if item["id"] == "current-cycle-user")[
+            "repair_context_eligible"
+        ]
+        is True
+    )
+    assert (
+        next(item for item in items if item["id"] == "generated-report")["repair_context_eligible"]
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    ("action_state", "error_code", "text"),
+    [
+        ("needs_attention", "tracker_unavailable", "Камера сломана"),
+        ("needs_attention", "repair_report_superseded", "Камера сломана"),
+        ("succeeded", None, "Фото"),
+    ],
+)
+def test_timeline_rejects_unsafe_user_messages_from_repair_context(
+    db_session,
+    seed_mechanic,
+    seed_park_with_tracker,
+    action_state,
+    error_code,
+    text,
+):
+    from robopark_api.services.task_timeline import merge_timeline
+
+    start = ReliableAction(
+        id="safe-start",
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-1",
+        action="start",
+        idempotency_key="safe-start",
+        payload_hash="c" * 64,
+        payload_json="{}",
+        state="succeeded",
+        next_attempt_at=0,
+        created_at=10,
+        updated_at=10,
+    )
+    comment = ReliableAction(
+        id="unsafe-comment",
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id="ROBOPARK-1",
+        action="comment",
+        idempotency_key="unsafe-comment",
+        payload_hash="d" * 64,
+        payload_json="{}",
+        state=action_state,
+        error_code=error_code,
+        next_attempt_at=0,
+        created_at=11,
+        updated_at=11,
+    )
+    db_session.add_all(
+        [
+            start,
+            comment,
+            TrackerClaim(
+                issue_key="ROBOPARK-1",
+                park_id=seed_park_with_tracker.id,
+                owner_user_id=seed_mechanic.id,
+                updated_by_user_id=seed_mechanic.id,
+                state="active",
+                start_action_id=start.id,
+                updated_at=10,
+            ),
+            TaskMessage(
+                id="unsafe-user-message",
+                issue_key="ROBOPARK-1",
+                kind="user",
+                author_user_id=seed_mechanic.id,
+                author_name=seed_mechanic.username,
+                text=text,
+                action_id=comment.id,
+                sync_state="pending",
+                visibility="participants",
+                created_at=11,
+                updated_at=11,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    item = merge_timeline(db_session, issue_key="ROBOPARK-1", comments=[])[0]
+
+    assert item["repair_context_eligible"] is False
 
 
 def test_attachment_projection_falls_back_per_action_without_losing_remote_evidence(

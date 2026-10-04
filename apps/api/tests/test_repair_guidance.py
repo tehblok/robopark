@@ -28,6 +28,22 @@ def test_guidance_does_not_invent_meaning_or_a_completed_action():
     assert "solution_method" not in result[2]
 
 
+def test_conditioned_history_ranks_actions_without_claiming_the_work_was_done():
+    from robopark_api.services.repair_guidance import decorate_components
+
+    control, flag, unknown = decorate_components(
+        [
+            {"id": "a", "label": "ROBOT_BOARDS_MOTORCONTROL"},
+            {"id": "b", "label": "ROBOT_BODY_FLAG"},
+            {"id": "c", "label": "CUSTOM_PART"},
+        ]
+    )
+    assert control["defect_method_suggestions"]["EL-02"][0] == "CHANGE"
+    assert flag["defect_method_suggestions"]["BD-02"][0] == "CHANGE"
+    assert unknown["defect_method_suggestions"] == {}
+    assert "solution_method" not in control
+
+
 def test_suggestions_only_reference_existing_defects_and_actions():
     from robopark_api.services.defect_codes import DEFECT_CODES
     from robopark_api.services.repair_fields import SOLUTION_METHODS
@@ -42,5 +58,10 @@ def test_suggestions_only_reference_existing_defects_and_actions():
     result = decorate_components([{"id": name, "label": name} for name in COMPONENT_LABELS])
     assert all(set(item["defect_codes"]) <= codes for item in result)
     assert all(set(item["solution_methods"]) <= methods.keys() for item in result)
+    for item in result:
+        assert set(item["defect_method_suggestions"]) <= codes
+        assert all(
+            set(values) <= methods.keys() for values in item["defect_method_suggestions"].values()
+        )
     assert set(DEFECT_METHOD_SUGGESTIONS) <= codes
     assert all(set(values) <= methods.keys() for values in DEFECT_METHOD_SUGGESTIONS.values())

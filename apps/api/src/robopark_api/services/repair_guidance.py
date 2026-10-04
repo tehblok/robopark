@@ -101,6 +101,14 @@ DEFECT_METHOD_SUGGESTIONS = {
     "PP-03": ["DIAG", "CONFIG"],
 }
 
+# Reviewed closed-ticket pairs; only rank choices, never select a performed action.
+# Other methods stay available. No ticket text or person data ships in the catalog.
+COMPONENT_DEFECT_METHOD_SUGGESTIONS = {
+    "ROBOT_BOARDS_MOTORCONTROL": {"EL-02": ["CHANGE", "DIAG", "REPAIR"]},
+    "ROBOT_SUSPENSION_WHEELS_FRONT_LEFT": {"CH-03": ["CHANGE", "REPAIR"]},
+    "ROBOT_BODY_FLAG": {"BD-02": ["CHANGE", "REPAIR"]},
+}
+
 
 def _suggestions(name: str) -> tuple[list[str], list[str]]:
     if name not in COMPONENT_LABELS:
@@ -147,6 +155,10 @@ def decorate_components(components: list[dict[str, Any]]) -> list[dict[str, Any]
                 "aliases": list(_ALIASES.get(name, [])),
                 "defect_codes": defects,
                 "solution_methods": methods,
+                "defect_method_suggestions": {
+                    defect: list(values)
+                    for defect, values in COMPONENT_DEFECT_METHOD_SUGGESTIONS.get(name, {}).items()
+                },
             }
         )
     return result

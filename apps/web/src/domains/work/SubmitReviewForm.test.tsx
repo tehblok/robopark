@@ -79,6 +79,70 @@ const repairOptions = {
   field_snapshot: { component_ids: ['wheel'], defect_code: 'BD-01', solution_method: null },
 }
 
+const wireOptions = {
+  ...repairOptions, selected_component_ids: [], suggested_component_ids: [], defect_code: null, solution_method: null,
+  components: [{ id: 'wire', label: 'Кабель камеры', tracker_name: 'ROBOT_SENSORS_CAMERA_WIRE', aliases: ['провод камеры'], defect_codes: ['WH-05'] }, ...repairOptions.components],
+}
+const wireCodes = [...codes, { code: 'WH-05', label: 'Повреждение провода', description: null }]
+
+it('offers a text-based preview and applies it only on request, with undo and photo retention', async () => {
+  render(<SubmitReviewForm defectCodes={wireCodes} hasQualifyingComment repairOptions={wireOptions} onSubmit={vi.fn()} />)
+  const note = screen.getByRole('textbox', { name: 'Добавить уточнение' })
+  fireEvent.change(note, { target: { value: 'Заменил кабель камеры с повреждением провода WH-05' } })
+  fireEvent.change(screen.getByLabelText('Сделать фото или выбрать файл'), { target: { files: [new File(['photo'], 'result.jpg', { type: 'image/jpeg' })] } })
+  const suggestions = await screen.findByRole('region', { name: 'Подсказки по тексту' })
+  expect(suggestions).toHaveTextContent('Кабель камеры')
+  expect(screen.getByRole('combobox', { name: 'Что случилось?' })).toHaveValue('')
+  fireEvent.click(screen.getByRole('button', { name: 'Подставить поля' }))
+  expect(screen.getByRole('combobox', { name: 'Что случилось?' })).toHaveValue('WH-05')
+  expect(screen.getByRole('button', { name: /^Заменил$/ })).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('img', { name: 'Предпросмотр result.jpg' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Отменить подстановку' }))
+  expect(screen.getByRole('combobox', { name: 'Что случилось?' })).toHaveValue('')
+  expect(note).toHaveValue('Заменил кабель камеры с повреждением провода WH-05')
+})
+
+it('shows existing values before an explicit replacement and never overwrites a manual edit on refresh', async () => {
+  const opts = { ...wireOptions, selected_component_ids: ['wheel'], defect_code: 'BD-01', solution_method: 'REPAIR' }
+  const view = render(<SubmitReviewForm defectCodes={wireCodes} hasQualifyingComment repairOptions={opts} onSubmit={vi.fn()} />)
+  fireEvent.change(screen.getByRole('textbox', { name: 'Добавить уточнение' }), { target: { value: 'Заменил кабель камеры WH-05' } })
+  expect(await screen.findByRole('button', { name: 'Заменить выбранные поля' })).toBeVisible()
+  expect(screen.getByRole('region', { name: 'Подсказки по тексту' })).toHaveTextContent('Мотор-колесо')
+  expect(screen.getByRole('combobox', { name: 'Что случилось?' })).toHaveValue('BD-01')
+  fireEvent.click(screen.getByRole('button', { name: 'Заменить выбранные поля' }))
+  fireEvent.change(screen.getByRole('combobox', { name: 'Что случилось?' }), { target: { value: 'BD-01' } })
+  view.rerender(<SubmitReviewForm defectCodes={wireCodes} hasQualifyingComment repairOptions={opts} onSubmit={vi.fn()} repairContext={{ summary: 'Кабель камеры WH-05' }} />)
+  expect(screen.getByRole('combobox', { name: 'Что случилось?' })).toHaveValue('BD-01')
+  expect(screen.queryByRole('button', { name: 'Отменить подстановку' })).not.toBeInTheDocument()
+})
+
+it('uses eligible comments for context but does not treat earlier comments as completed work', async () => {
+  render(<SubmitReviewForm defectCodes={wireCodes} hasQualifyingComment repairOptions={wireOptions} onSubmit={vi.fn()} repairContext={{
+    summary: '', comments: [
+      { id: 'old', kind: 'user', author: 'mech', text: 'Заменил камеру BD-01', created_at: '2026-10-04T10:00:00Z', sync_state: 'synced', attachments: [], repair_context_eligible: false },
+      { id: 'current', kind: 'user', author: 'mech', text: 'Заменил кабель камеры WH-05', created_at: '2026-10-04T11:00:00Z', sync_state: 'synced', attachments: [], repair_context_eligible: true },
+    ],
+  }} />)
+  const suggestions = await screen.findByRole('region', { name: 'Подсказки по тексту' })
+  expect(suggestions).not.toHaveTextContent('Заменил ·')
+  fireEvent.click(screen.getByRole('button', { name: 'Подставить поля' }))
+  expect(screen.getByRole('combobox', { name: 'Что случилось?' })).toHaveValue('WH-05')
+  expect(screen.getByRole('button', { name: /^Заменил$/ })).toHaveAttribute('aria-pressed', 'false')
+})
+
+it('ranks a historical component-defect pair above generic hints without selecting the action', () => {
+  const options = { ...repairOptions, defect_code: 'EL-02', solution_method: null,
+    selected_component_ids: ['control'],
+    components: [{ id: 'control', label: 'Контроллер двигателя', defect_method_suggestions: { 'EL-02': ['CHANGE'] } }],
+    solution_methods: [...repairOptions.solution_methods, { code: 'DIAG', label: 'Провёл диагностику' }],
+    defect_method_suggestions: { 'EL-02': ['DIAG', 'REPAIR', 'CHANGE'] },
+  }
+  render(<SubmitReviewForm defectCodes={[{ code: 'EL-02', label: 'Обрыв цепи', description: null }]} hasQualifyingComment repairOptions={options} onSubmit={vi.fn()} />)
+  const actions = screen.getByRole('group', { name: 'Что сделали?' }).querySelectorAll('button')
+  expect(actions[0]).toHaveTextContent('Заменил')
+  expect([...actions].every(action => action.getAttribute('aria-pressed') === 'false')).toBe(true)
+})
+
 it('links component and defect suggestions without inventing or resetting the performed action', () => {
   const linkedCodes = [...codes, { code: 'EL-06', label: 'Не откалибровано', description: null }, { code: 'EL-10', label: 'Нет изображения с камеры', description: null }]
   const options = { ...repairOptions, defect_code: null, selected_component_ids: ['camera'], components: [

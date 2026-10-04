@@ -624,6 +624,7 @@ class RepairComponentOptionOut(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     defect_codes: list[str] = Field(default_factory=list)
     solution_methods: list[str] = Field(default_factory=list)
+    defect_method_suggestions: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class RepairFieldSnapshotOut(BaseModel):
@@ -728,6 +729,7 @@ class TaskTimelineItemOut(BaseModel):
     text: str
     created_at: str
     sync_state: Literal["saved", "pending", "synced", "needs_attention"]
+    repair_context_eligible: bool = False
     delivery_note: Literal["previous_cycle_not_sent"] | None = None
     attachments: list[TrackerAttachmentOut] = Field(default_factory=list)
 

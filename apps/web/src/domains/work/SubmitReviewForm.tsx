@@ -1,6 +1,8 @@
-import { type ChangeEvent, type FormEvent, useEffect, useId, useRef, useState } from 'react'
-import { ApiError, type DefectCode, type TaskRepairFields, type TaskRepairOptions } from '../../api'
+import { type ChangeEvent, type FormEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { ApiError, type DefectCode, type TaskRepairFields, type TaskRepairOptions, type TaskTimelineItem } from '../../api'
 import { RepairComponentPicker } from './RepairComponentPicker'
+import { RepairPrefillSuggestions, type RepairDraftFields } from './RepairPrefillSuggestions'
+import { suggestRepairFields, type RepairPrefillSuggestion, type RepairTextSource } from './repairPrefill'
 import { Button } from '../../design-system/actions/Button'
 import { mapApiError } from '../../i18n/errors'
 
@@ -9,11 +11,13 @@ const MAX_BYTES = 15 * 1024 * 1024
 const COMMON_METHODS = new Set(['CHANGE', 'REPAIR', 'MAINTENANCE'])
 
 export type SubmitReviewValue = { defectCode: string; photo: File; comment?: string; repairFields?: TaskRepairFields }
+export type RepairTextContext = { summary: string; description?: string | null; errors?: readonly string[]; comments?: readonly TaskTimelineItem[] }
 
-export function SubmitReviewForm({ defectCodes, hasQualifyingComment, repairOptions, onRefreshOptions, onSubmit, onCancel }: {
+export function SubmitReviewForm({ defectCodes, hasQualifyingComment, repairOptions, repairContext, onRefreshOptions, onSubmit, onCancel }: {
   defectCodes: readonly DefectCode[]
   hasQualifyingComment: boolean
   repairOptions?: TaskRepairOptions
+  repairContext?: RepairTextContext
   onRefreshOptions?: () => Promise<TaskRepairOptions>
   onSubmit: (value: SubmitReviewValue) => Promise<void>
   onCancel?: () => void
@@ -36,10 +40,36 @@ export function SubmitReviewForm({ defectCodes, hasQualifyingComment, repairOpti
   const methodLabelId = useId()
   const submitting = useRef(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  const [prefillHidden, setPrefillHidden] = useState(false)
+  const [undoPrefill, setUndoPrefill] = useState<RepairDraftFields | null>(null)
+  const suggestions = useMemo(() => {
+    if (!initialOptions || prefillHidden) return []
+    const sources: RepairTextSource[] = [
+      { kind: 'draft', text: comment, label: 'Ваше уточнение', allowAction: true },
+      { kind: 'title', text: repairContext?.summary ?? '', label: 'Название задачи' },
+      { kind: 'description', text: repairContext?.description ?? '', label: 'Описание задачи' },
+      ...(repairContext?.errors ?? []).map(text => ({ kind: 'error' as const, text, label: 'Ошибка в задаче' })),
+      ...(repairContext?.comments ?? []).filter(item => item.kind === 'user' && item.repair_context_eligible === true && !item.delivery_note && item.sync_state !== 'needs_attention').slice(-8).reverse().map(item => ({ kind: 'comment' as const, text: item.text, label: `Комментарий: ${item.author}`, allowAction: false })),
+    ]
+    return suggestRepairFields({ options: initialOptions, defectCodes, sources })
+  }, [initialOptions, defectCodes, repairContext, comment, prefillHidden])
+  const applyPrefill = (suggestion: RepairPrefillSuggestion) => {
+    setUndoPrefill({ componentIds, defectCode: code, solutionMethod: method })
+    if (suggestion.componentIds?.length) setComponentIds(suggestion.componentIds)
+    if (suggestion.defectCode) setCode(suggestion.defectCode)
+    if (suggestion.solutionMethod) setMethod(suggestion.solutionMethod)
+  }
+  const undo = () => {
+    if (!undoPrefill) return
+    setComponentIds(undoPrefill.componentIds); setCode(undoPrefill.defectCode); setMethod(undoPrefill.solutionMethod); setUndoPrefill(null)
+  }
+  const chooseComponents = (ids: string[]) => { setComponentIds(ids); setUndoPrefill(null) }
+  const chooseMethod = (value: string) => { setMethod(value); setUndoPrefill(null) }
   const selectedParts = initialOptions?.components.filter(item => componentIds.includes(item.id)) ?? []
   const recommendedCodes = new Set(selectedParts.flatMap(item => item.defect_codes ?? []))
   const recommendedDefects = [...recommendedCodes].map(id => defectCodes.find(item => item.code === id)).filter((item): item is DefectCode => Boolean(item))
   const preferredMethods = [...new Set([
+    ...selectedParts.flatMap(item => item.defect_method_suggestions?.[code] ?? []),
     ...(initialOptions?.defect_method_suggestions?.[code] ?? []),
     ...selectedParts.flatMap(item => item.solution_methods ?? []), ...COMMON_METHODS,
   ])]
@@ -93,6 +123,7 @@ export function SubmitReviewForm({ defectCodes, hasQualifyingComment, repairOpti
       const next = await onRefreshOptions()
       if (next.issue_key !== initialOptions?.issue_key) throw new Error('repair_options_mismatch')
       setInitialOptions(next)
+      setUndoPrefill(null)
       setComponentIds(next.selected_component_ids.length ? next.selected_component_ids : next.suggested_component_ids)
       setCode(next.defect_code ?? '')
       setMethod(next.solution_method ?? '')
@@ -105,12 +136,14 @@ export function SubmitReviewForm({ defectCodes, hasQualifyingComment, repairOpti
     <fieldset className="form-grid rp-form-stack--mobile" disabled={busy}>
     {commentRequired ? <p>Напишите, что было сделано перед передачей на проверку</p> : null}
     {initialOptions ? <>
+      <RepairPrefillSuggestions suggestions={suggestions} options={initialOptions} defectCodes={defectCodes} values={{ componentIds, defectCode: code, solutionMethod: method }} onApply={applyPrefill} onDismiss={() => setPrefillHidden(true)} />
+      {undoPrefill ? <div className="rp-repair-prefill-feedback"><p role="status">Поля подставлены. Проверьте их перед отправкой.</p><Button type="button" variant="ghost" onClick={undo}>Отменить подстановку</Button></div> : null}
       <details className="rp-repair-components" open={componentIds.length === 0 ? true : undefined}>
         <summary>Что ремонтируем: {componentIds.map(id => initialOptions.components.find(item => item.id === id)?.label ?? 'Текущая деталь').join(', ') || 'выберите деталь или узел'} · изменить</summary>
-        <RepairComponentPicker options={initialOptions.components} value={componentIds} onChange={setComponentIds} />
+        <RepairComponentPicker options={initialOptions.components} value={componentIds} onChange={chooseComponents} />
       </details>
       <label className="field"><span>Что случилось?</span>
-        <select aria-label="Что случилось?" onChange={event => setCode(event.target.value)} required value={code}>
+        <select aria-label="Что случилось?" onChange={event => { setCode(event.target.value); setUndoPrefill(null) }} required value={code}>
           <option value="">Выберите неисправность</option>
           {recommendedDefects.length ? <optgroup label="Для выбранной детали">
             {recommendedDefects.map(item => <option key={item.code} value={item.code}>{item.label} · {item.code}</option>)}
@@ -122,12 +155,12 @@ export function SubmitReviewForm({ defectCodes, hasQualifyingComment, repairOpti
       </label>
       <div className="field"><span id={methodLabelId}>Что сделали?</span>
         <div aria-labelledby={methodLabelId} className="rp-action-bar rp-repair-methods" role="group">
-          {primaryMethods.map(item => <Button aria-pressed={method === item.code} key={item.code} onClick={() => setMethod(item.code)} type="button" variant={method === item.code ? 'primary' : 'secondary'}>{item.label}</Button>)}
+          {primaryMethods.map(item => <Button aria-pressed={method === item.code} key={item.code} onClick={() => chooseMethod(item.code)} type="button" variant={method === item.code ? 'primary' : 'secondary'}>{item.label}</Button>)}
         </div>
         {otherMethods.length ? <details className="rp-repair-other-methods" open={otherMethods.some(item => item.code === method) ? true : undefined}>
           <summary>Другое действие{otherMethods.some(item => item.code === method) ? `: ${initialOptions.solution_methods.find(item => item.code === method)?.label ?? ''}` : ''}</summary>
           <div aria-label="Другие выполненные действия" className="rp-repair-methods" role="group">
-            {otherMethods.map(item => <Button aria-pressed={method === item.code} key={item.code} onClick={() => setMethod(item.code)} type="button" variant={method === item.code ? 'primary' : 'secondary'}>{item.label}</Button>)}
+            {otherMethods.map(item => <Button aria-pressed={method === item.code} key={item.code} onClick={() => chooseMethod(item.code)} type="button" variant={method === item.code ? 'primary' : 'secondary'}>{item.label}</Button>)}
           </div>
         </details> : null}
       </div>

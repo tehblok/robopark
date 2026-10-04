@@ -140,15 +140,34 @@ async function submitReview(page: Page, input: { clarification?: string; camera?
   await page.getByRole('tab', { name: 'Задача', exact: true }).click()
   await page.getByRole('button', { name: 'Передать на проверку', exact: true }).click()
   const form = page.locator('form').filter({ has: page.getByLabel('Что случилось?') })
-  const componentChoice = form.getByRole('checkbox', { name: 'Мотор-колесо', exact: true })
-  if (!input.method) await componentChoice.check()
+  const note = form.getByRole('textbox', { name: /Добавить уточнение|Комментарий о выполненной работе/ })
+  await form.getByLabel('Сделать фото или выбрать файл').setInputFiles(PHOTO)
+  if (!input.method) {
+    await note.fill('Заменил мотор-колесо BD-01')
+    const hints = form.getByRole('region', { name: 'Подсказки по тексту' })
+    await expect(hints).toBeVisible()
+    await expect(form.getByLabel('Что случилось?')).toHaveValue('')
+    await expect(form.getByRole('button', { name: 'Заменил', exact: true })).toHaveAttribute('aria-pressed', 'false')
+    await hints.getByText(/почему этот вариант/).first().click()
+    expect((await new AxeBuilder({ page }).include('form').analyze()).violations).toEqual([])
+    // Hide fixed shell chrome only in the artifact: it overlaps an element capture
+    // while Playwright scrolls a form taller than the viewport into view.
+    await form.screenshot({ path: test.info().outputPath('repair-prefill-preview.png'), style: '.rp-shell__topbar, .rp-shell__bottom-nav { visibility: hidden !important; }' })
+    await hints.getByRole('button', { name: 'Подставить поля', exact: true }).click()
+    await expect(form.getByLabel('Что случилось?')).toHaveValue('BD-01')
+    await expect(form.getByRole('button', { name: 'Заменил', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await form.getByRole('button', { name: 'Отменить подстановку', exact: true }).click()
+    await expect(form.getByLabel('Что случилось?')).toHaveValue('')
+    await expect(note).toHaveValue('Заменил мотор-колесо BD-01')
+    await expect(form.getByRole('img', { name: 'Предпросмотр wheel.png' })).toBeVisible()
+    await hints.getByRole('button', { name: 'Подставить поля', exact: true }).click()
+  } else {
+    await form.getByLabel('Что случилось?').selectOption('BD-01')
+    await form.getByRole('button', { name: input.method, exact: true }).click()
+    await note.fill(input.clarification ?? '')
+  }
   await expect(form.getByText(/Что ремонтируем: Мотор-колесо/)).toBeVisible()
   await expect(form.getByRole('checkbox', { name: /ROBOT_UNSORTED/ })).toHaveCount(0)
-  await form.getByLabel('Что случилось?').selectOption('BD-01')
-  await form.getByRole('button', { name: input.method ?? 'Заменил', exact: true }).click()
-  await form.getByRole('textbox', { name: /Добавить уточнение|Комментарий о выполненной работе/ })
-    .fill(input.clarification ?? 'Крепление колеса заменено')
-  await form.getByLabel('Сделать фото или выбрать файл').setInputFiles(PHOTO)
   await expect(form.getByRole('img', { name: 'Предпросмотр wheel.png' })).toBeVisible()
   expect((await new AxeBuilder({ page }).include('form').analyze()).violations).toEqual([])
   await form.screenshot({ path: test.info().outputPath(`repair-form-${input.method ? 'returned' : 'initial'}.png`) })
@@ -277,7 +296,7 @@ async function runLifecycle(page: Page, width: number) {
     await openIssue(page)
     await openTaskConversation(page)
     const timeline = page.getByRole('region', { name: 'Чат задачи' }).locator('.task-message .issue-comment-text')
-    const expected = ['Задача взята в работу', 'Заменено крепление колеса', 'Конец смены', 'Проверка второй сменой завершена', 'Проверено после передачи', 'Крепление колеса заменено', 'Передано на проверку', 'Повторить проверку', 'Исправлено после возврата', 'Уточнение после возврата', 'Передано на проверку']
+    const expected = ['Задача взята в работу', 'Заменено крепление колеса', 'Конец смены', 'Проверка второй сменой завершена', 'Проверено после передачи', 'Заменил мотор-колесо BD-01', 'Передано на проверку', 'Повторить проверку', 'Исправлено после возврата', 'Уточнение после возврата', 'Передано на проверку']
     await expect.poll(async () => {
       const texts = await timeline.allTextContents()
       let cursor = -1

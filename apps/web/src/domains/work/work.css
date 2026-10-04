@@ -658,3 +658,9 @@ fieldset.rp-form-stack--mobile {
 
 .rp-repair-other-methods summary { min-height: 44px; padding-block: .75rem; cursor: pointer; }
 .rp-repair-methods > .rp-button { min-width: 0; white-space: normal; }
+.rp-repair-prefill, .rp-repair-prefill-feedback { grid-column: 1 / -1; min-width: 0; }
+.rp-repair-prefill-heading { display: flex; justify-content: space-between; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.rp-repair-prefill-card { border: 1px solid var(--border-subtle, #8893a0); border-radius: .75rem; padding: .75rem; margin-block: .5rem; overflow-wrap: anywhere; }
+.rp-repair-prefill-card ul { margin: 0; padding-inline-start: 1.1rem; }
+.rp-repair-prefill-card summary { cursor: pointer; min-height: 44px; padding-block: .6rem; }
+.rp-repair-prefill-card blockquote { margin: .5rem 0; padding-inline-start: .6rem; border-inline-start: 2px solid var(--border-subtle, #8893a0); }

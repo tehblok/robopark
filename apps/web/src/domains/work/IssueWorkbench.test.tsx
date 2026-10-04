@@ -389,6 +389,9 @@ it('restores a queued claim after reopening work and refreshes only after confir
   expect(await screen.findByText('Взятие ожидает подтверждения')).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Взять в работу' })).not.toBeInTheDocument()
   expect(sync.enqueueAction).not.toHaveBeenCalled()
+  // The visible pending state can precede the subscription effect. Send the
+  // mocked confirmation only after there is a subscriber to receive it.
+  await waitFor(() => expect(notify).toBeTypeOf('function'))
   const readsBeforeConfirmation = trackerIssues.mock.calls.length
   await act(async () => {
     stored = undefined

@@ -100,6 +100,7 @@ def test_repair_options_return_queue_catalog_snapshot_and_exact_title_suggestion
                 "aliases": [],
                 "defect_codes": [],
                 "solution_methods": [],
+                "defect_method_suggestions": {},
             },
             {
                 "id": "camera",
@@ -108,6 +109,7 @@ def test_repair_options_return_queue_catalog_snapshot_and_exact_title_suggestion
                 "aliases": [],
                 "defect_codes": [],
                 "solution_methods": [],
+                "defect_method_suggestions": {},
             },
         ],
         "selected_component_ids": [],
@@ -213,6 +215,7 @@ def test_repair_options_hide_temporary_component_but_keep_it_in_snapshot(
             "aliases": [],
             "defect_codes": [],
             "solution_methods": [],
+            "defect_method_suggestions": {},
         }
     ]
     assert response.json()["selected_component_ids"] == []

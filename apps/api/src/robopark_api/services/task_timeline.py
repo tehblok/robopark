@@ -19,6 +19,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.config import get_settings
 from robopark_api.models import TaskMessageVisibility, User
 from robopark_api.services.reliable_actions import begin_action, canonical_payload
@@ -534,6 +535,23 @@ def merge_timeline(
     )
 
     closure_at = last_confirmed_closure_at(db, issue_key)
+    claim = db.get(TrackerClaim, issue_key)
+    start_query = (
+        select(ReliableAction)
+        .where(
+            ReliableAction.resource_type == "tracker_issue",
+            ReliableAction.resource_id == issue_key,
+            ReliableAction.action == "start",
+            ReliableAction.state == "succeeded",
+        )
+        .order_by(ReliableAction.created_at.desc(), ReliableAction.id.desc())
+        .limit(1)
+    )
+    if closure_at is not None:
+        start_query = start_query.where(ReliableAction.created_at > closure_at)
+    current_start = (
+        db.scalar(start_query) if claim is not None and claim.state == "active" else None
+    )
     items = []
     for row in local_rows:
         action = actions.get(row.action_id)
@@ -543,13 +561,25 @@ def merge_timeline(
             and closure_at is not None
             and action.created_at <= closure_at
         )
+        sync_state = "needs_attention" if old_unsent else _sync_state(row, action)
+        repair_context_eligible = (
+            current_start is not None
+            and row.kind == "user"
+            and row.created_at >= current_start.created_at
+            and row.text.strip().casefold() != "фото"
+            and action is not None
+            and action.action == "comment"
+            and action.error_code != "repair_report_superseded"
+            and sync_state != "needs_attention"
+        )
         item = {
             "id": row.id,
             "kind": row.kind,
             "author": row.author_name,
             "text": _strip_action_marker(row.text) if row.kind == "tracker" else row.text,
             "created_at": _iso(row.created_at),
-            "sync_state": "needs_attention" if old_unsent else _sync_state(row, action),
+            "sync_state": sync_state,
+            "repair_context_eligible": repair_context_eligible,
             "attachments": _remote_attachments(
                 external_attachments.get(row.external_id or "", []),
                 *[

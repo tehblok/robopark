@@ -76,7 +76,9 @@ describe('AppRouter', () => {
       expect(screen.getByRole('link', { name: 'Перезагрузить страницу' })).toHaveAttribute('href', window.location.href)
       await userEvent.click(screen.getAllByRole('link', { name: 'Обзор' })[0])
       expect(await screen.findByRole('heading', { name: 'Что требует решения сейчас' })).toBeVisible()
-      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      // Overview requests are deliberately rejected by this routing fixture;
+      // their independent alerts must not be confused with the route boundary.
+      expect(screen.queryByText('Не удалось открыть экран')).not.toBeInTheDocument()
     } finally {
       ROUTE_ELEMENTS.work = original
     }

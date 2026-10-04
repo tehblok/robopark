@@ -499,6 +499,7 @@ export type TaskTimelineItem = {
   id: string; kind: 'user' | 'system' | 'tracker'; author: string; text: string
   created_at: string; sync_state: TaskSyncState; attachments: TrackerAttachment[]
   delivery_note?: 'previous_cycle_not_sent'
+  repair_context_eligible?: boolean
 }
 export type TaskAttachmentStaged = {
   id: string; message_id: string; name: string; mimetype: string; size: number
@@ -509,6 +510,7 @@ export type RepairFieldSnapshot = { component_ids: string[]; defect_code: string
 export type RepairComponent = {
   id: string; label: string; tracker_name?: string; aliases?: string[]
   defect_codes?: string[]; solution_methods?: string[]
+  defect_method_suggestions?: Record<string, string[]>
 }
 export type TaskRepairOptions = {
   issue_key: string
