@@ -181,6 +181,47 @@ def test_native_context_preflight_rejects_prompt_plus_completion_over_8192(host_
     ]
 
 
+def test_chat_token_count_uses_native_template_and_tokenizer(host_paths, monkeypatch):
+    from robopark_host import ai_broker
+
+    secret = host_paths.var / "ai/api-key"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("private-token" * 3)
+    secret.chmod(0o600)
+    requested = []
+
+    class Response:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            return json.dumps(self.payload).encode()
+
+    def open_request(request, timeout):
+        requested.append(request.full_url)
+        if request.full_url.endswith("/apply-template"):
+            return Response({"prompt": "formatted prompt"})
+        return Response({"tokens": [1, 2, 3, 4]})
+
+    monkeypatch.setattr(ai_broker.urllib.request, "urlopen", open_request)
+    assert ai_broker._chat_token_count(
+        host_paths,
+        json.dumps({"messages": [{"role": "user", "content": "hello"}]}).encode(),
+    ) == {"prompt_tokens": 4, "context_tokens": 8192}
+    assert requested == [
+        "http://127.0.0.1:18081/apply-template",
+        "http://127.0.0.1:18081/tokenize",
+    ]
+
+
 def test_native_forward_uses_private_api_key(host_paths, monkeypatch):
     from robopark_host import ai_broker
 

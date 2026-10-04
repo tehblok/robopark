@@ -170,6 +170,7 @@ def test_chat_queue_idempotence_sources_and_inert_injection(
 ):
     from sqlalchemy.orm import sessionmaker
 
+    from robopark_api.ai_models import AIJob
     from robopark_api.services.ai import jobs
 
     enable_host(test_settings, tmp_path)
@@ -197,10 +198,15 @@ def test_chat_queue_idempotence_sources_and_inert_injection(
         == 409
     )
 
+    sent_sources = []
+
     def complete(settings, messages):
         assert [m["role"] for m in messages].count("system") == 1
         assert "Ignore system" in messages[0]["content"]
         assert "У тебя нет инструментов" in messages[0]["content"]
+        sent_sources.extend(
+            json.loads(messages[0]["content"].split(jobs.prompts.SOURCES_HEADER, 1)[1])
+        )
         return f"Проверьте кабель [источник: {doc['id']}]. [источник: fabricated-id]"
 
     monkeypatch.setattr(jobs.runtime, "complete", complete)
@@ -208,7 +214,9 @@ def test_chat_queue_idempotence_sources_and_inert_injection(
     final = client.get(f"/ai/conversations/{convo['id']}").json()
     assert len(final["messages"]) == 2
     assert "fabricated" not in final["messages"][-1]["content"]
-    assert final["messages"][-1]["sources"][0]["id"] == doc["id"]
+    assert final["messages"][-1]["sources"] == sent_sources
+    with sessionmaker(bind=db_engine)() as db:
+        assert db.get(AIJob, job["id"]).payload["sources"] == sent_sources
     assert client.get(f"/ai/jobs/{job['id']}").json()["state"] == "succeeded"
     client.delete(f"/ai/documents/{doc['id']}")
     assert client.get(f"/ai/conversations/{convo['id']}").json()["messages"][-1]["sources"] == []

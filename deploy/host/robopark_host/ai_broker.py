@@ -18,6 +18,7 @@ from contextlib import suppress
 from http.server import BaseHTTPRequestHandler
 
 MAX_BODY = 65536
+CONTEXT_TOKENS = 8192
 RESULT_MARKER = b"__ROBOPARK_RESULT__="
 class BrokerError(ValueError):
     pass
@@ -197,7 +198,7 @@ def _native_json(paths, path: str, payload: dict, *, timeout: int = 15) -> dict:
     return value
 
 
-def _ensure_context_fits(paths, payload: dict) -> None:
+def _context_token_count(paths, payload: dict) -> int:
     template = _native_json(paths, "/apply-template", payload)
     prompt = template.get("prompt")
     if not isinstance(prompt, str):
@@ -206,8 +207,20 @@ def _ensure_context_fits(paths, payload: dict) -> None:
     tokens = tokenized.get("tokens")
     if not isinstance(tokens, list):
         raise BrokerError("native_response_invalid")
-    if len(tokens) + payload["max_tokens"] > 8192:
+    return len(tokens)
+
+
+def _ensure_context_fits(paths, payload: dict) -> None:
+    if _context_token_count(paths, payload) + payload["max_tokens"] > CONTEXT_TOKENS:
         raise BrokerError("context_limit")
+
+
+def _chat_token_count(paths, body: bytes):
+    payload = _strict_json(bounded_chat_body(body))
+    return {
+        "prompt_tokens": _context_token_count(paths, payload),
+        "context_tokens": CONTEXT_TOKENS,
+    }
 
 
 def _forward_chat(paths, body: bytes):
@@ -267,6 +280,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/v1/chat/completions":
                 status, data = _forward_chat(self.server.paths, body)
                 self._reply(status, data)
+                return
+            if self.path == "/v1/chat/tokens":
+                self._reply(200, _chat_token_count(self.server.paths, body))
                 return
             payload = _strict_json(body)
             if self.path == "/sandbox":

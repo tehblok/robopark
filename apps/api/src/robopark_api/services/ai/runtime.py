@@ -10,7 +10,13 @@ class RuntimeFailure(Exception):
 
 
 def broker(settings, path, payload=None, *, timeout=120):
-    if path not in {"/health", "/v1/chat/completions", "/sandbox", "/control"}:
+    if path not in {
+        "/health",
+        "/v1/chat/completions",
+        "/v1/chat/tokens",
+        "/sandbox",
+        "/control",
+    }:
         raise RuntimeFailure("ai_invalid_operation")
     try:
         transport = httpx.HTTPTransport(uds=settings.ai_broker_socket, retries=0)
@@ -43,6 +49,25 @@ def broker(settings, path, payload=None, *, timeout=120):
         return value
     except (httpx.HTTPError, OSError, ValueError) as exc:
         raise RuntimeFailure("ai_runtime_unavailable") from exc
+
+
+def context_tokens(settings, messages):
+    value = broker(
+        settings,
+        "/v1/chat/tokens",
+        {"messages": messages, "max_tokens": 1400},
+        timeout=30,
+    )
+    prompt_tokens = value.get("prompt_tokens")
+    context_tokens = value.get("context_tokens")
+    if (
+        type(prompt_tokens) is not int
+        or prompt_tokens < 0
+        or type(context_tokens) is not int
+        or context_tokens < 1
+    ):
+        raise RuntimeFailure("ai_invalid_response")
+    return prompt_tokens, context_tokens
 
 
 def complete(settings, messages):

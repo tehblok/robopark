@@ -161,10 +161,22 @@ def reconcile_ai_installation(paths, release, runner, *, auto_install=False):
         model_sha256=MODEL_SHA256 if present else None,
     )
     runner.run(["systemctl", "daemon-reload"], timeout=30)
+    # enable --now does not reload an already running Python broker. Refresh
+    # it after release cutover/rollback so API and broker contracts agree,
+    # without restarting it on every idempotent reconciliation.
+    receipt_path = paths.state / "ai-broker-release.json"
+    expected_receipt = {"schema": 1, "release": str(release.resolve())}
+    try:
+        previous_receipt = json.loads(receipt_path.read_text())
+    except (OSError, ValueError):
+        previous_receipt = None
+    runner.run(["systemctl", "enable", "robopark-ai-broker.service"], timeout=60)
     runner.run(
-        ["systemctl", "enable", "--now", "robopark-ai-broker.service"],
+        ["systemctl", "start" if previous_receipt == expected_receipt else "restart", "robopark-ai-broker.service"],
         timeout=60,
     )
+    if previous_receipt != expected_receipt:
+        atomic_write_json(receipt_path, expected_receipt)
     if auto_install:
         from .ai_runtime import ensure_service_account
         ensure_service_account(paths)

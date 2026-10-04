@@ -71,11 +71,15 @@ def test_future_release_can_explicitly_accept_this_base(tmp_path):
     assert plan.recovery == "snapshot"
 
 
-def test_rc21_has_an_explicit_local_ai_upgrade_path():
+@pytest.mark.parametrize(("version", "head"), [
+    ("0.2.0-rc.21.dev13181400260723547202", "0056_host_terminal"),
+    ("0.2.0-rc.24", "0057_local_ai"),
+])
+def test_existing_hosts_have_an_explicit_local_ai_upgrade_path(version, head):
     policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
     metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
-    version = "0.2.0-rc.21.dev13181400260723547202"
     assert version in metadata["compatible_from_versions"]
-    plan = plan_upgrade(version, "0056_host_terminal", {"app_version": "0.2.0-rc.24", "migration_head": "0057_local_ai"}, policy)
-    assert plan.releases == ("0.2.0-rc.24",)
+    target_version = (ROOT / "VERSION").read_text().strip()
+    plan = plan_upgrade(version, head, {"app_version": target_version, "migration_head": "0057_local_ai"}, policy)
+    assert plan.releases == (target_version,)
     assert plan.recovery == "snapshot"

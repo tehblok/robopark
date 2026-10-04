@@ -34,7 +34,7 @@ def test_real_postgres_knowledge_index_dedupe_and_tombstone(migrated_engine):  #
         db.flush()
         value = DocumentIn(
             title="Камера " + unique,
-            content="Проверьте кабель камеры " + unique,
+            content="Камера: EL-2. Проверьте кабель камеры " + unique,
             kind="manual",
             state="active",
             park_id=park.id,
@@ -44,6 +44,7 @@ def test_real_postgres_knowledge_index_dedupe_and_tombstone(migrated_engine):  #
         db.commit()
         assert created
         assert knowledge.search(db, user, unique, park_id=park.id)[0]["id"] == doc.id
+        assert knowledge.search(db, user, "Камера EL2", park_id=park.id)[0]["id"] == doc.id
         assert knowledge.add(db, user, value)[1] is False
         event = AIEvent(key=unique, park_id=park.id, payload={"issue_key": "R-1"}, occurred_at=1)
         db.add(event)

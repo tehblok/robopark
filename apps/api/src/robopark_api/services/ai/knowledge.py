@@ -8,10 +8,10 @@ from collections import Counter
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import case, delete, func, or_, select
 
 from robopark_api.ai_models import AIChunk, AIDocument, AITerm
-from robopark_api.services.ai import policy
+from robopark_api.services.ai import policy, retrieval
 
 STOP = {
     "это",
@@ -172,29 +172,96 @@ def get(db, user, document_id):
     return row
 
 
-def search(db, user, query, *, park_id=None, limit=6):
-    terms = list(dict.fromkeys(tokens(query)))[:32]
-    if not terms:
+def search(db, user, query, *, park_id=None, limit=6, context=""):
+    request = retrieval.prepare(query, tokens, context)
+    if not request.keys or not request.terms:
         return []
-    score = func.sum(AITerm.weight)
-    rows = db.execute(
+    scope = scoped(db, user, park_id)
+    filters = [scope, AIDocument.state == "active", AITerm.term.in_(request.terms)]
+    frequencies = dict(
+        db.execute(
+            select(AITerm.term, func.count())
+            .join(AIChunk, AIChunk.id == AITerm.chunk_id)
+            .join(AIDocument, AIDocument.id == AIChunk.document_id)
+            .where(*filters)
+            .group_by(AITerm.term)
+        ).all()
+    )
+    if not frequencies:
+        return []
+    idf = retrieval.frequency_weights(frequencies)
+    term_weight = case(idf, value=AITerm.term, else_=1.0)
+    # Scope before both frequency calculation and bounded candidate selection.
+    # A manual reserve prevents common chat words from crowding out procedures.
+    score = func.sum(term_weight * case((AITerm.weight > 2, 2), else_=AITerm.weight))
+    statement = (
         select(AIChunk, AIDocument, score.label("score"))
         .join(AITerm, AITerm.chunk_id == AIChunk.id)
         .join(AIDocument, AIDocument.id == AIChunk.document_id)
-        .where(AITerm.term.in_(terms), scoped(db, user, park_id), AIDocument.state == "active")
+        .where(*filters)
         .group_by(AIChunk.id, AIDocument.id)
-        .order_by(score.desc(), AIDocument.id, AIChunk.ordinal)
-        .limit(40)
-    ).all()
-    # At most two chunks from one source; diversity keeps a long manual from
-    # consuming the whole prompt. SQL filtering happens before rank/limit.
-    result, seen = [], Counter()
+        .order_by(score.desc(), AIDocument.source_key, AIChunk.ordinal)
+    )
+    # Hard requirements apply before the candidate cap. Otherwise unrelated
+    # high-frequency chunks can evict the only exact match before reranking.
+    for code in request.exact_codes:
+        statement = statement.where(
+            func.lower(AIDocument.title + "\n" + AIChunk.content).regexp_match(
+                retrieval.code_pattern(code)
+            )
+        )
+    for entity in request.entities:
+        statement = statement.having(
+            func.sum(case((AITerm.term.in_(retrieval.alias_terms(tokens)[entity]), 1), else_=0)) > 0
+        )
+    rows = list(db.execute(statement.limit(160)).all())
+    if request.procedure:
+        rows.extend(
+            db.execute(
+                statement.where(
+                    or_(
+                        AIDocument.kind == "manual",
+                        AIDocument.title.startswith("Неполная инструкция:"),
+                    )
+                ).limit(40)
+            ).all()
+        )
+    if request.mapping:
+        rows.extend(db.execute(statement.where(AIDocument.kind == "note").limit(40)).all())
+    ranked, seen_chunks = [], set()
     for chunk, doc, _ in rows:
-        if seen[doc.id] >= 2:
+        if chunk.id in seen_chunks:
             continue
-        seen[doc.id] += 1
+        seen_chunks.add(chunk.id)
+        relevance = retrieval.rank(
+            request,
+            doc.title,
+            chunk.content,
+            kind=doc.kind,
+            trust=doc.trust,
+            tokenize=tokens,
+            idf=idf,
+        )
+        if relevance > 0:
+            ranked.append((relevance, doc.source_key, chunk.ordinal, chunk, doc))
+    ranked.sort(key=lambda row: (-row[0], row[1], row[2]))
+    result, seen = [], set()
+    for _, _, _, chunk, doc in ranked:
+        if doc.id in seen:
+            continue
+        seen.add(doc.id)
         result.append(
-            {"id": doc.id, "title": doc.title, "excerpt": chunk.content, "trust": doc.trust}
+            {
+                "id": doc.id,
+                "title": doc.title,
+                "excerpt": retrieval.excerpt(
+                    doc.content,
+                    chunk.content,
+                    include_start=doc.kind == "manual"
+                    or doc.title.startswith("Неполная инструкция:"),
+                ),
+                "trust": doc.trust,
+            }
         )
         if len(result) >= limit:
             break

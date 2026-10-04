@@ -47,6 +47,11 @@ API `/ai` JSON contract (snake_case; errors use detail string):
 
 Planning: design/contract self-reviewed; decisions follow prior approved requirements and autonomous instruction. Baseline 6afbb5c9. Implementation completed in rc.24. Host and web workers implemented their isolated areas; independent host/API reviews were resolved before release. The private seed contains 12,598 documents (344 manuals, 4,180 tickets, 1,500 chat segments, 6,574 notes), with deduplicated ticket renderings and an ignored manifest. It remains outside Git/OTA.
 
+The counts above describe the original v1 artifact, not expert quality. A subsequent
+audit found bare ticket keys, fragmented manuals, noisy conversations and omitted
+spreadsheets. The rc.25 preparation/retrieval update supersedes that artifact with
+v2; see [quality verification](../reviews/2026-10-04-knowledge-quality.md).
+
 Confirmed-close events are recorded durably even if the host projection is temporarily absent; RAG ingestion and rule execution remain AGX-only. Approval captures the park before releasing the claim, and learning requires both successful local operator approval and confirmed external closure.
 
 Verification evidence and remaining hardware acceptance are recorded in [the release review](../reviews/2026-10-04-local-ai.md). Completion of implementation does not mean physical AGX acceptance: native CUDA build, model smoke, throughput, peak shared memory, and Wi-Fi recovery must still be checked on GEACX1. No eight-hour soak was run.

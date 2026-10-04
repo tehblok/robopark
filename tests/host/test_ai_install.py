@@ -85,6 +85,32 @@ def test_ota_preserves_disabled_ai_without_reenabling_installed_model(host_paths
     assert json.loads(state.read_text())["enabled"] is False
 
 
+def test_ota_restarts_broker_once_per_release_and_again_on_rollback(host_paths, monkeypatch):
+    from robopark_host import ai_install, ai_runtime
+
+    release = _release(host_paths)
+    ai_runtime.write_enabled_intent(host_paths, False)
+    monkeypatch.setattr(ai_install, "probe_support", lambda paths: (True, None))
+    monkeypatch.setattr(ai_runtime, "installed", lambda paths, **kwargs: False)
+    calls = []
+
+    class Runner:
+        def run(self, argv, **kwargs):
+            calls.append(argv)
+
+    restart = ["systemctl", "restart", "robopark-ai-broker.service"]
+    ai_install.reconcile_ai_installation(host_paths, release, Runner())
+    ai_install.reconcile_ai_installation(host_paths, release, Runner())
+    assert calls.count(restart) == 1
+    previous = host_paths.releases / "previous-ai"
+    (previous / "deploy/systemd").mkdir(parents=True)
+    for unit in ai_install.AI_UNITS:
+        (previous / "deploy/systemd" / unit).write_text("[Service]\n")
+    ai_install.reconcile_ai_installation(host_paths, previous, Runner())
+    assert calls.count(restart) == 2
+    assert ai_runtime.read_enabled_intent(host_paths) is False
+
+
 def test_ai_native_unit_is_nonroot_cuda_bounded_and_loopback_only():
     from test_systemd_units import unit
 

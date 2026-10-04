@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { get } from 'node:http'
@@ -47,6 +47,9 @@ test('nginx serves prebuilt gzip bytes with negotiated identity fallback and unc
     }).on('error', reject).on('timeout', function () { this.destroy(new Error('HTTP timeout')) })
   })
   try {
+    // mkdtemp uses 0700; the unprivileged nginx worker must traverse this mount
+    // on native Linux too (some desktop Docker filesystems mask the problem).
+    await chmod(dist, 0o755)
     await mkdir(join(dist, 'assets'))
     const source = 'const immutable = "static gzip negotiation";\n'.repeat(100)
     await writeFile(join(dist, 'assets', 'app-a1.js'), source)
