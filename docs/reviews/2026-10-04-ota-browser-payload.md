@@ -16,7 +16,10 @@ Independent consumer review found no installer/updater or production-build
 dependency on these folders. Developer browser-test/demo commands require a
 full Git checkout; the runbook documents this. Acceptance digest behavior is
 unchanged and separately tested: changes to either browser suite still alter
-the source fingerprint. Build from the extracted OTA remains an integration
-check before publication.
+the source fingerprint. The candidate built from commit `7ca0ec39` was extracted without either browser
+folder. A separate locked `npm ci --ignore-scripts --no-audit` and production
+`npm run build` passed using Node 24. Vite preview served both HTML entry points,
+the service worker and 14 referenced assets successfully (17 HTTP checks).
+This verifies the extracted source build; it is not a physical host installation.
 
 Acceptance-scope and evidence tests passed: 17/17. No digest exclusion was added for browser test sources.
