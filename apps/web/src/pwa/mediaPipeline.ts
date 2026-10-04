@@ -68,6 +68,7 @@ export async function prepareImage(source: File, options: PrepareImageOptions = 
   const blob = kind === 'photo'
     ? await transformOffThread(source, options.maxEdge ?? 1920, options.quality ?? 0.82).catch(() => source)
     : source
+  const checksum = await sha256(blob)
   const previewUrl = URL.createObjectURL(blob)
   let released = false
   return {
@@ -75,7 +76,7 @@ export async function prepareImage(source: File, options: PrepareImageOptions = 
     originalBlob: blob === source ? undefined : source,
     mimeType: blob.type || source.type,
     sizeBytes: blob.size,
-    sha256: await sha256(blob),
+    sha256: checksum,
     previewUrl,
     releasePreview() {
       if (released) return

@@ -75,6 +75,22 @@ describe('prepareImage', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:preview')
   })
 
+  it('does not retain a preview when checksum calculation fails', async () => {
+    const liveUrls = new Set<string>()
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => {
+      const url = `blob:preview-${liveUrls.size}`
+      liveUrls.add(url)
+      return url
+    })
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(url => { liveUrls.delete(url) })
+    vi.spyOn(crypto.subtle, 'digest').mockRejectedValue(new Error('checksum_failed'))
+    const source = new File(['photo'], 'robot.jpg', { type: 'image/jpeg' })
+
+    await expect(prepareImage(source, { kind: 'qr' })).rejects.toThrow('checksum_failed')
+
+    expect(liveUrls.size).toBe(0)
+  })
+
   it('rejects an oversized source before allocating a preview', async () => {
     const source = new File([new Uint8Array(16)], 'robot.jpg', { type: 'image/jpeg' })
     await expect(prepareImage(source, { maxSourceBytes: 8 })).rejects.toThrow('media_too_large')
