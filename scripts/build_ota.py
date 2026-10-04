@@ -36,6 +36,8 @@ _EXCLUDED_PARTS = {
     ".ruff_cache",
     ".venv",
     "__pycache__",
+    "e2e",
+    "e2e-production",
     "node_modules",
     "output",
 }

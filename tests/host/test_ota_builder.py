@@ -89,6 +89,8 @@ def test_manifest_is_readable_by_installed_browser_without_decompression(tmp_pat
         ".git/",
         ".pnpm-store/",
         "output/",
+        "/e2e/",
+        "/e2e-production/",
         "__pycache__/",
         ".pyc",
         ".log",
@@ -117,6 +119,31 @@ def test_artifact_excludes_runtime_environment_files_but_keeps_examples(tmp_path
 def test_source_filter_distinguishes_secret_env_from_public_example():
     assert include_source_path(Path("deploy/.env")) is False
     assert include_source_path(Path("deploy/host.env.example")) is True
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "apps/web/e2e/app-shell.spec.ts",
+        "apps/web/e2e/operational/interface-visual-acceptance.spec.ts-snapshots/classic-work-light-1440.png",
+        "apps/web/e2e-production/pwa-production.spec.ts",
+    ],
+)
+def test_ota_source_filter_omits_browser_acceptance_files(relative: str):
+    assert include_source_path(Path(relative)) is False
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "apps/web/src/pwa/offlineDb.ts",
+        "apps/web/src/domains/assistant/AssistantPage.tsx",
+        "apps/web/public/manifest.webmanifest",
+        "apps/api/knowledge/repair-v1/seed.jsonl",
+    ],
+)
+def test_ota_source_filter_retains_runtime_and_knowledge(relative: str):
+    assert include_source_path(Path(relative)) is True
 
 
 def test_output_directory_must_be_absolute_and_outside_repository(tmp_path: Path):

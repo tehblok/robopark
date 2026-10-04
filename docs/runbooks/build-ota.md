@@ -59,3 +59,12 @@ python3 scripts/build_workspace_update.py /absolute/output/directory --from-arch
 снимком происхождения и контрольными суммами. Запуск на хосте: `sh UPDATE.sh`;
 скрипт вызывает только обновление после проверки и явного подтверждения.
 Сборка выполняется вне репозитория и не меняет исходные версии рабочего дерева.
+
+## Browser development files
+
+The regular OTA omits `apps/web/e2e` and `apps/web/e2e-production`, including
+PNG baselines. Installation, production web builds and host updates retain all
+required runtime files. Run `test:e2e*`, the production PWA fixture and
+`demo:operational` from a full Git checkout, not an installed OTA source tree.
+Release acceptance still hashes those browser test definitions, so changing a
+test invalidates its evidence even though the test is not shipped to the host.

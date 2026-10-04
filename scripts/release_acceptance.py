@@ -35,8 +35,9 @@ RELEASE_ROOT_FILES = {
     ".gitignore",
     ".github/workflows/ci.yml",
 }
-# Keep release payload exclusions aligned with scripts/build_ota.py. Acceptance
-# also sees untracked source, so explicitly omit the web test artifact directory.
+# Omit local caches/artifacts, but retain browser test definitions in the
+# acceptance digest even though the OTA payload omits them. Changing a gate
+# must invalidate its evidence. Acceptance also sees untracked source.
 RELEASE_EXCLUDED_PARTS = {
     ".git",
     ".pnpm-store",
