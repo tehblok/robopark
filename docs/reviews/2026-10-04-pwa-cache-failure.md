@@ -28,6 +28,8 @@ hashed-asset admission, and API/private attachment exclusions remain intact.
   navigation without readable cache, readable offline fallback and terminal
   bundle bypass.
 - All 53 frontend script tests, lint, production build and diff checks pass.
+- All 48 production PWA checks passed in Chromium, Firefox and WebKit
+  using the pinned Linux image (3.6 minutes); the test container was removed.
 - Independent static review found no blockers; its suggested HTTP 401/503
   preservation cases were added and pass.
 - No live host installation or hardware performance claim is involved.
