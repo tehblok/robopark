@@ -213,6 +213,21 @@ def _draft(content, kind):
         raise runtime.RuntimeFailure("ai_draft_invalid") from exc
 
 
+def _validate_claim(db, settings, job, sources):
+    """Re-read mutable controls at the serialized execution boundary."""
+
+    actor = db.get(User, job.owner_id, populate_existing=True)
+    authorize(db, actor, job)
+    policy.available(db, settings, ready=job.kind != "script_test")
+    if not sources_valid(db, actor, sources):
+        raise HTTPException(409, "ai_sources_changed")
+    if job.kind == "script_test":
+        request = job.payload["request"]
+        script = policy.get_row(db, AIScript, request["script_id"])
+        if script.revision != request["revision"]:
+            raise HTTPException(409, "ai_script_changed")
+
+
 def process_job(session_factory, settings):
     with session_factory() as db:
         job = db.scalar(
@@ -227,21 +242,35 @@ def process_job(session_factory, settings):
         try:
             request, sources = _prepare(db, settings, job)
             draft_kind = job.payload["request"].get("kind")
-            claimed = db.execute(
-                update(AIJob)
-                .where(AIJob.id == job_id, AIJob.state == "queued")
-                .values(
-                    payload={**job.payload, "sources": sources},
-                    state="running",
-                    updated_at=time.time(),
-                )
-                .execution_options(synchronize_session=False)
-            ).rowcount
-            if claimed != 1:
+            # Do not retain preparation's read transaction while bounded lock
+            # acquisition waits for a concurrent administrative operation.
+            db.rollback()
+            with database_idempotency_lock(db, "ai-controls"):
+                # Preparation can overlap cancel/delete/disable. End its read
+                # identity map before deciding whether execution may begin
+                # under the shared controls lock.
+                job = db.get(AIJob, job_id, populate_existing=True)
+                if job is None or job.state != "queued":
+                    return True
+                _validate_claim(db, settings, job, sources)
+                claimed = db.execute(
+                    update(AIJob)
+                    .where(AIJob.id == job_id, AIJob.state == "queued")
+                    .values(
+                        payload={**job.payload, "sources": sources},
+                        state="running",
+                        updated_at=time.time(),
+                    )
+                    .execution_options(synchronize_session=False)
+                ).rowcount
+                if claimed != 1:
+                    db.rollback()
+                    return True
+                db.commit()
+        except (HTTPException, prompts.ContextTooLarge) as exc:
+            if isinstance(exc, HTTPException) and exc.detail == "idempotency_lock_busy":
                 db.rollback()
                 return True
-            db.commit()
-        except (HTTPException, prompts.ContextTooLarge) as exc:
             error = (
                 "ai_context_too_large"
                 if isinstance(exc, prompts.ContextTooLarge)
