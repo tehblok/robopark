@@ -6,7 +6,7 @@
 кандидат выпуска rc.25, сверяет SHA-256 и запускает меню установки:
 
 ```sh
-d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.25/robopark-0.2.0-rc.25.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' '3137b6d0a2e1b0e5aff93e8feb4bf2b0ad08105733ce2c1c371eac5b0d45a3a6  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
+d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.26/robopark-0.2.0-rc.26.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' '475d175f66d465e447ca608b599da71d18606e774946e68a03a778da335eb9a3  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
 ```
 
 Выберите «Чистая установка» на новом хосте. Установщик интерактивно запросит
@@ -16,7 +16,7 @@ Tuna token, домен и пароль первого владельца. При
 ARM64/AMD64, поддерживаемые ОС и требования к памяти/диску перечислены в
 [руководстве установки](docs/runbooks/usb-clean-install.md).
 Происхождение и границы проверки опубликованного пакета — в
-[описании rc.25](docs/releases/0.2.0-rc.25.md) и
+[описании rc.26](docs/releases/0.2.0-rc.26.md) и
 [отчёте о проверке](docs/reviews/2026-10-04-knowledge-quality.md).
 
 > **GEACX1 и NVMe:** rc.25 поддерживает NVMe с ОС и eMMC с ОС + NVMe для данных.
