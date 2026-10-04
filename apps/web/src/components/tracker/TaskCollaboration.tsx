@@ -15,6 +15,7 @@ export type LifecycleHandoff = {
 function LifecycleHandoffForm({ canWrite, onHandoff }: { canWrite: boolean; onHandoff: (value: LifecycleHandoff) => Promise<void> }) {
   const [value, setValue] = useState<LifecycleHandoff>({ assignee: '', reason: '', done: '', remaining: '', obstacles: '' })
   const [busy, setBusy] = useState(false)
+  const submitting = useRef(false)
   const [error, setError] = useState('')
   const [suggestions, setSuggestions] = useState<TrackerUserSuggestion[]>([])
   useEffect(() => {
@@ -28,12 +29,21 @@ function LifecycleHandoffForm({ canWrite, onHandoff }: { canWrite: boolean; onHa
   }, [canWrite, value.assignee])
   const submit = async () => {
     const next = Object.fromEntries(Object.entries(value).map(([key, text]) => [key, text.trim()])) as LifecycleHandoff
-    if (!next.assignee || !next.reason || busy) return
+    if (!canWrite || !next.assignee || !next.reason || submitting.current) return
+    submitting.current = true
+    const submittedDraft = value
     setBusy(true)
     setError('')
-    try { await onHandoff(next) }
+    try {
+      await onHandoff(next)
+      // A fast durable enqueue can finish between two click events. Consume
+      // the accepted draft, while preserving edits made during the request.
+      setValue(current => current === submittedDraft
+        ? { assignee: '', reason: '', done: '', remaining: '', obstacles: '' }
+        : current)
+    }
     catch { setError('Не удалось передать смену. Повторите попытку.') }
-    finally { setBusy(false) }
+    finally { submitting.current = false; setBusy(false) }
   }
   return <section className="issue-collaboration">
     {error ? <p role="alert">{error}</p> : null}
@@ -235,6 +245,6 @@ type TaskCollaborationProps = React.ComponentProps<typeof Content> & {
 }
 
 export function TaskCollaboration(props: TaskCollaborationProps) {
-  if (props.lifecycle && props.onHandoff) return <LifecycleHandoffForm canWrite={props.canWrite} onHandoff={props.onHandoff} />
+  if (props.lifecycle && props.onHandoff) return <LifecycleHandoffForm key={JSON.stringify([props.owner, props.issueKey])} canWrite={props.canWrite} onHandoff={props.onHandoff} />
   return <Content {...props} key={JSON.stringify([props.owner, props.issueKey])} />
 }
