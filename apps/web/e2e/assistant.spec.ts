@@ -138,3 +138,45 @@ test('admin cleans old history and sees accurate conversation and job counts', a
   await expect(page.getByText('Удалено бесед: 1; заданий: 5; сообщений: 2')).toBeVisible()
   expect(cleanupBody).toEqual({ kind: 'history', before_days: 30 })
 })
+
+
+test('conversation creation retries once and ignores a late response after another selection', async ({ page }) => {
+  const first = { id: 'c-1', title: 'Первый разговор', park_id: 7, issue_key: null, updated_at: '', messages: [], jobs: [] }
+  const second = { ...first, id: 'c-2', title: 'Второй разговор' }
+  let creations = 0
+  let finishCreate!: () => void
+  const pendingCreate = new Promise<void>(resolve => { finishCreate = resolve })
+  await openAssistant(page, mechanicUser, [
+    { method: 'GET', path: '/api/ai/status', handler: () => ({ json: readyStatus }) },
+    { method: 'GET', path: '/api/ai/conversations', handler: () => ({ json: [first, second] }) },
+    { method: 'GET', path: '/api/ai/conversations/c-1', handler: () => ({ json: first }) },
+    { method: 'GET', path: '/api/ai/conversations/c-2', handler: () => ({ json: second }) },
+    { method: 'POST', path: '/api/ai/conversations', handler: async () => {
+      creations += 1
+      if (creations === 1) return { status: 503, json: { detail: 'temporarily_unavailable' } }
+      await pendingCreate
+      return { json: { ...first, id: 'c-late', title: 'Поздний разговор' } }
+    } },
+  ])
+  const create = page.getByRole('button', { name: 'Новый', exact: true })
+  const draft = page.getByLabel('Сообщение помощнику')
+  await draft.fill('Проверить питание')
+  await create.click()
+  await expect(page.getByRole('alert')).toContainText('Не удалось создать разговор')
+  await expect(create).toBeEnabled()
+  await expect(draft).toHaveValue('Проверить питание')
+  await create.click()
+  await expect(create).toBeDisabled()
+  await expect(draft).toBeDisabled()
+  expect(creations).toBe(2)
+  await page.getByRole('button', { name: 'Второй разговор', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+  const response = page.waitForResponse(value => value.request().method() === 'POST' && new URL(value.url()).pathname === '/api/ai/conversations' && value.status() === 200)
+  finishCreate()
+  await response
+  await expect(page.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Поздний разговор', exact: true })).toHaveCount(0)
+  await expect(draft).toBeEnabled()
+  await expect(draft).toHaveValue('Проверить питание')
+  expect(creations).toBe(2)
+})

@@ -180,6 +180,7 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [opening, setOpening] = useState(false)
+  const [creating, setCreating] = useState(false)
   const [activeJob, setActiveJob] = useState<AiJob | null>(null)
   const [error, setError] = useState<string | null>(null)
   const initializedContext = useRef<string | null>(null)
@@ -191,6 +192,7 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
 
   const open = useCallback(async (id: string) => {
     const currentGeneration = ++openGeneration.current
+    createController.current?.abort(); createController.current = null; setCreating(false)
     openController.current?.abort()
     submitPollController.current?.abort()
     submitPollController.current = null
@@ -209,6 +211,30 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
       }
     }
   }, [api])
+  const create = useCallback(async (parentSignal?: AbortSignal) => {
+    if (createController.current || parentSignal?.aborted) return null
+    if (parkId == null) { setError('Сначала выберите парк.'); return null }
+    const controller = new AbortController()
+    const generation = openGeneration.current
+    createController.current = controller
+    setCreating(true); setError(null)
+    const current = () => !controller.signal.aborted && !parentSignal?.aborted && generation === openGeneration.current
+    try {
+      const conversation = await api.createConversation({ park_id: parkId, ...(issueKey ? { issue_key: issueKey, title: issueKey } : {}) })
+      if (!current()) return null
+      setSessionData(previous => [conversation, ...(previous ?? []).filter(item => item.id !== conversation.id)])
+      setSelectedId(conversation.id); setDetail({ ...conversation, messages: [], jobs: [] })
+      return conversation
+    } catch (caught) {
+      if (current()) setError(`Не удалось создать разговор: ${errorText(caught)}`)
+      return null
+    } finally {
+      if (createController.current === controller) {
+        createController.current = null
+        if (current()) setCreating(false)
+      }
+    }
+  }, [api, issueKey, parkId, setSessionData])
   useEffect(() => () => {
     openGeneration.current += 1
     openController.current?.abort()
@@ -219,26 +245,26 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
     const context = issueKey && parkId != null ? `${parkId}:${issueKey}` : 'default'
     if (sessionsLoading || !sessionData) return
     if (initializedContext.current === context) return
-    let active = true
     initializedContext.current = context
-    openGeneration.current += 1
+    const generation = ++openGeneration.current
     openController.current?.abort()
+    createController.current?.abort(); createController.current = null
+    submitPollController.current?.abort(); submitPollController.current = null
     setSelectedId(null); setDetail(null); setActiveJob(null); setError(null)
+    setCreating(false); setOpening(false); setSending(false)
     resumedJobs.current.clear()
     if (issueKey && parkId != null) {
       const match = sessionData.find(item => item.issue_key === issueKey && item.park_id === parkId)
       if (match) void open(match.id)
       else if (enabled) {
-        void api.createConversation({ park_id: parkId, issue_key: issueKey, title: issueKey }).then(conversation => {
-          if (!active || initializedContext.current !== context) return
-          setSessionData([conversation, ...sessionData]); void open(conversation.id)
-        }).catch(caught => { if (active && initializedContext.current === context) setError(errorText(caught)) })
+        void create().then(conversation => {
+          if (conversation && generation === openGeneration.current && initializedContext.current === context) void open(conversation.id)
+        })
       }
     } else if (sessionData.length) {
       void open(sessionData[0].id)
     }
-    return () => { active = false }
-  }, [api, enabled, issueKey, open, parkId, sessionData, sessionsLoading, setSessionData])
+  }, [create, enabled, issueKey, open, parkId, sessionData, sessionsLoading])
 
   const pendingJob = detail?.jobs.findLast(job => job.state === 'queued' || job.state === 'running')
   useEffect(() => {
@@ -261,23 +287,9 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
     return () => controller.abort()
   }, [api, detail, pendingJob])
 
-  const create = async (parentSignal?: AbortSignal) => {
-    if (parkId == null) { setError('Сначала выберите парк.'); return null }
-    const controller = parentSignal ? null : new AbortController()
-    if (controller) { createController.current?.abort(); createController.current = controller }
-    const signal = parentSignal ?? controller!.signal
-    try {
-      const conversation = await api.createConversation({ park_id: parkId, ...(issueKey ? { issue_key: issueKey, title: issueKey } : {}) })
-      if (signal.aborted) return null
-      sessions.setData([conversation, ...(sessions.data ?? [])]); setSelectedId(conversation.id); setDetail({ ...conversation, messages: [], jobs: [] }); return conversation
-    } finally {
-      if (controller && createController.current === controller) createController.current = null
-    }
-  }
   const submit = async (event: FormEvent) => {
-    event.preventDefault(); if (!draft.trim() || !enabled || !sessionsReady || sending || opening) return
+    event.preventDefault(); if (!draft.trim() || !enabled || !sessionsReady || creating || sending || opening || submitPollController.current) return
     const controller = new AbortController()
-    submitPollController.current?.abort()
     submitPollController.current = controller
     setSending(true); setError(null)
     try {
@@ -302,15 +314,15 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
   const selectedSession = sessions.data?.find(item => item.id === selectedId)
 
   return <div className="rp-assistant-chat-layout">
-    <Panel title="Разговоры" actions={<Button disabled={!enabled || !sessionsReady || opening || parkId == null} onClick={() => void create()} size="compact">Новый</Button>}>
+    <Panel title="Разговоры" actions={<Button busy={creating} disabled={!enabled || !sessionsReady || creating || sending || opening || parkId == null} onClick={() => void create()} size="compact">Новый</Button>}>
       {sessions.loading ? <LoadingState label="Загружаем разговоры" /> : sessions.error ? <ErrorState title="Не удалось загрузить разговоры" description={sessions.error} onRetry={() => void sessions.refresh()} /> :
         sessions.data?.length ? <ul className="rp-assistant-list">{sessions.data.map(item => <li key={item.id}><button aria-current={selectedId === item.id} onClick={() => void open(item.id)} type="button"><strong>{item.title}</strong>{item.issue_key ? <span>{item.issue_key}</span> : null}</button><Button aria-label={`Удалить ${item.title}`} onClick={() => void remove(item)} size="compact" variant="ghost">×</Button></li>)}</ul> : <p>Начните новый разговор.</p>}
     </Panel>
     <Panel title={detail?.title ?? selectedSession?.title ?? (issueKey ? `Помощник по ${issueKey}` : 'Новый разговор')}>
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <div aria-live="polite" className="rp-assistant-messages">{opening ? <LoadingState label="Открываем разговор" /> : detail?.messages.length ? detail.messages.map(message => <article className={`rp-assistant-message rp-assistant-message--${message.role}`} key={message.id}><strong>{message.role === 'assistant' ? 'Помощник' : 'Вы'}</strong><p>{message.content}</p>{message.sources.length ? <div className="rp-assistant-sources"><span>Источники</span>{message.sources.map(source => <Link key={source.id} title={source.excerpt} to={`/assistant?document=${encodeURIComponent(source.id)}`}>{source.title}</Link>)}</div> : null}</article>) : <EmptyState title="Задайте вопрос по ремонту" description={issueKey ? `Контекст задачи ${issueKey} будет приложен к разговору.` : 'Выберите парк и опишите симптом или нужную процедуру.'} />}</div>
+      <div aria-live="polite" className="rp-assistant-messages">{creating ? <LoadingState label="Создаём разговор" /> : opening ? <LoadingState label="Открываем разговор" /> : detail?.messages.length ? detail.messages.map(message => <article className={`rp-assistant-message rp-assistant-message--${message.role}`} key={message.id}><strong>{message.role === 'assistant' ? 'Помощник' : 'Вы'}</strong><p>{message.content}</p>{message.sources.length ? <div className="rp-assistant-sources"><span>Источники</span>{message.sources.map(source => <Link key={source.id} title={source.excerpt} to={`/assistant?document=${encodeURIComponent(source.id)}`}>{source.title}</Link>)}</div> : null}</article>) : <EmptyState title="Задайте вопрос по ремонту" description={issueKey ? `Контекст задачи ${issueKey} будет приложен к разговору.` : 'Выберите парк и опишите симптом или нужную процедуру.'} />}</div>
       {activeJob && (activeJob.state === 'queued' || activeJob.state === 'running') ? <div className="rp-assistant-job" role="status"><span>{sending ? 'Готовим ответ…' : 'Ответ ещё готовится. Можно вернуться позже.'}</span><Button onClick={() => void api.cancelJob(activeJob.id).then(setActiveJob)} size="compact" variant="secondary">Отменить</Button></div> : null}
-      <form className="rp-assistant-compose" onSubmit={submit}><FormField id="assistant-message" label="Сообщение помощнику"><textarea disabled={!enabled || !sessionsReady || sending || opening} onChange={event => setDraft(event.target.value)} rows={3} value={draft} /></FormField><Button busy={sending} disabled={!enabled || !sessionsReady || !draft.trim() || parkId == null || opening} type="submit">Отправить</Button></form>
+      <form className="rp-assistant-compose" onSubmit={submit}><FormField id="assistant-message" label="Сообщение помощнику"><textarea disabled={!enabled || !sessionsReady || creating || sending || opening} onChange={event => setDraft(event.target.value)} rows={3} value={draft} /></FormField><Button busy={sending} disabled={!enabled || !sessionsReady || creating || !draft.trim() || parkId == null || opening} type="submit">Отправить</Button></form>
     </Panel>
   </div>
 }
