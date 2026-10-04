@@ -621,9 +621,7 @@ def test_sqlite_bucket_locks_exclude_same_bucket_and_allow_different_bucket(tmp_
     assert all(process.exitcode == 0 for process in (holder, same, different))
 
 
-def test_sqlite_nested_same_bucket_is_reentrant_only_for_the_holding_thread(
-    tmp_path, monkeypatch
-):
+def test_sqlite_nested_same_bucket_is_reentrant_only_for_the_holding_thread(tmp_path, monkeypatch):
     """Nested workflows must not deadlock when their distinct keys share a bucket."""
     database = tmp_path / "robopark.db"
     db = _SqliteDb(database)
