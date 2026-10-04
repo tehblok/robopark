@@ -22,4 +22,4 @@ ruff check --no-cache (changed Python files): passed
 
 If the result file changes during both bounded snapshot attempts, the operation reports a cache miss and continues through the existing merge/load path. L1 compares the complete file identity, so an atomic replacement with the same `mtime` is still rejected. Local invalidation retains its existing generation and retired-flight fence.
 
-Independent review found the leader-return race during this work; it was reproduced and fixed. The final reviewed diff has no remaining reproducible findings in the examined scope. The full API suite is running separately.
+Independent review found the leader-return race during this work; it was reproduced and fixed. The final reviewed diff has no remaining reproducible findings in the examined scope. The complete API suite for the combined slice passed: 2,808 passed, 29 skipped, 1 deselected (load), 761.67 s.
