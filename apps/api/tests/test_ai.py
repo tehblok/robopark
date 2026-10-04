@@ -364,8 +364,8 @@ def test_cancel_while_preparing_cannot_resurrect_job(
     _, job = chat_fixture(client, test_settings, tmp_path, seed_park_with_tracker)
     prepare = jobs._prepare
 
-    def cancelled_prepare(db, settings, row):
-        result = prepare(db, settings, row)
+    def cancelled_prepare(db, settings, row, issue_snapshot):
+        result = prepare(db, settings, row, issue_snapshot)
         client.post(f"/ai/jobs/{job['id']}/cancel")
         return result
 

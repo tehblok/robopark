@@ -51,6 +51,12 @@ def conversation(db, user, row_id):
 
 
 def authorize(db, user, job):
+    row = _authorize_local(db, user, job)
+    if row is not None:
+        issue_context.load(db, user, row.issue_key, row.park_id)
+
+
+def _authorize_local(db, user, job):
     if user is None or job.owner_id != user.id:
         raise HTTPException(404, "ai_not_found")
     policy.staff(db, user)
@@ -59,7 +65,44 @@ def authorize(db, user, job):
     if job.park_id is not None:
         policy.park(db, user, job.park_id)
     if job.conversation_id:
-        conversation(db, user, job.conversation_id)
+        row = policy.get_row(db, AIConversation, job.conversation_id)
+        if row.owner_id != user.id:
+            raise HTTPException(404, "ai_not_found")
+        policy.park(db, user, row.park_id)
+        return row
+    return None
+
+
+def _validate_issue_snapshot(db, user, conversation_row, issue, issue_error=None):
+    if conversation_row is None:
+        if issue is not None or issue_error is not None:
+            raise HTTPException(409, "ai_sources_changed")
+        return
+    if issue_error is not None:
+        raise issue_error
+    issue_context.authorize_snapshot(
+        db,
+        user,
+        issue,
+        conversation_row.issue_key,
+        conversation_row.park_id,
+    )
+
+
+def _fresh_issue_snapshot(session_factory, job_id):
+    with session_factory() as db:
+        job = db.get(AIJob, job_id)
+        if job is None:
+            raise HTTPException(404, "ai_not_found")
+        if job.conversation_id is None:
+            return None
+        row = db.get(AIConversation, job.conversation_id)
+        if row is None:
+            raise HTTPException(404, "ai_not_found")
+        issue_key = row.issue_key
+        token = issue_context.platform_settings.get_tracker_token(db)
+        db.rollback()
+    return issue_context.fetch(token, issue_key)
 
 
 def sources_valid(db, user, sources):
@@ -137,10 +180,11 @@ def enqueue(db, user, *, kind, payload, park_id=None, conversation_id=None, key=
         return job
 
 
-def _prepare(db, settings, job):
+def _prepare(db, settings, job, issue_snapshot):
     user = db.get(User, job.owner_id, populate_existing=True)
-    authorize(db, user, job)
+    conversation_row = _authorize_local(db, user, job)
     policy.available(db, settings, ready=job.kind != "script_test")
+    _validate_issue_snapshot(db, user, conversation_row, issue_snapshot)
     request = job.payload["request"]
     if job.kind == "script_test":
         script = policy.get_row(db, AIScript, request["script_id"])
@@ -150,9 +194,7 @@ def _prepare(db, settings, job):
     question = request.get("content") or request["instruction"]
     issue_text = ""
     if job.conversation_id:
-        conversation_row = db.get(AIConversation, job.conversation_id)
-        issue = issue_context.load(db, user, conversation_row.issue_key, conversation_row.park_id)
-        issue_text = issue_context.context(db, user, issue)
+        issue_text = issue_context.context(db, user, issue_snapshot)
     sources = knowledge.search(
         db, user, question, context=issue_text[:1200], park_id=job.park_id, limit=3
     )
@@ -214,12 +256,13 @@ def _draft(content, kind):
         raise runtime.RuntimeFailure("ai_draft_invalid") from exc
 
 
-def _validate_claim(db, settings, job, sources):
+def _validate_claim(db, settings, job, sources, issue_snapshot):
     """Re-read mutable controls at the serialized execution boundary."""
 
     actor = db.get(User, job.owner_id, populate_existing=True)
-    authorize(db, actor, job)
+    conversation_row = _authorize_local(db, actor, job)
     policy.available(db, settings, ready=job.kind != "script_test")
+    _validate_issue_snapshot(db, actor, conversation_row, issue_snapshot)
     if not sources_valid(db, actor, sources):
         raise HTTPException(409, "ai_sources_changed")
     if job.kind == "script_test":
@@ -229,15 +272,30 @@ def _validate_claim(db, settings, job, sources):
             raise HTTPException(409, "ai_script_changed")
 
 
-def _publish_result(session_factory, settings, job_id, kind, sources, result, error):
-    with session_factory() as db, database_idempotency_lock(db, "ai-controls"):
+def _publish_result(
+    session_factory,
+    settings,
+    job_id,
+    kind,
+    sources,
+    result,
+    error,
+    issue_snapshot,
+    issue_error=None,
+):
+    with (
+        session_factory() as db,
+        database_idempotency_lock(db, "ai-controls"),
+        database_idempotency_lock(db, "ai-knowledge"),
+    ):
         job = db.get(AIJob, job_id, populate_existing=True)
         if job is None or job.state != "running":
             return
         try:
             actor = db.get(User, job.owner_id, populate_existing=True)
-            authorize(db, actor, job)
+            conversation_row = _authorize_local(db, actor, job)
             policy.available(db, settings)
+            _validate_issue_snapshot(db, actor, conversation_row, issue_snapshot, issue_error)
             if not sources_valid(db, actor, sources):
                 raise HTTPException(409, "ai_sources_changed")
             if error:
@@ -273,10 +331,30 @@ def _publish_result(session_factory, settings, job_id, kind, sources, result, er
         db.commit()
 
 
-def _finalize_result(session_factory, settings, job_id, kind, sources, result, error):
+def _finalize_result(
+    session_factory,
+    settings,
+    job_id,
+    kind,
+    sources,
+    result,
+    error,
+    issue_snapshot,
+    issue_error=None,
+):
     for _attempt in range(FINALIZE_LOCK_ATTEMPTS):
         try:
-            _publish_result(session_factory, settings, job_id, kind, sources, result, error)
+            _publish_result(
+                session_factory,
+                settings,
+                job_id,
+                kind,
+                sources,
+                result,
+                error,
+                issue_snapshot,
+                issue_error,
+            )
             return
         except HTTPException as exc:
             if exc.detail != "idempotency_lock_busy":
@@ -310,19 +388,32 @@ def process_job(session_factory, settings):
             return False
         job_id, kind = job.id, job.kind
         try:
-            request, sources = _prepare(db, settings, job)
+            # Tracker is fetched without an open request transaction. Mutable
+            # local authorization is repeated later under both AI locks.
+            db.rollback()
+            issue_snapshot = _fresh_issue_snapshot(session_factory, job_id)
+            job = db.get(AIJob, job_id, populate_existing=True)
+            if job is None or job.state != "queued":
+                return True
+            request, sources = _prepare(db, settings, job, issue_snapshot)
             draft_kind = job.payload["request"].get("kind")
             # Do not retain preparation's read transaction while bounded lock
             # acquisition waits for a concurrent administrative operation.
             db.rollback()
-            with database_idempotency_lock(db, "ai-controls"):
+            # Tokenization and context fitting can outlive Tracker's cache TTL.
+            # Claim against a fresh remote snapshot, still outside AI locks.
+            issue_snapshot = _fresh_issue_snapshot(session_factory, job_id)
+            with (
+                database_idempotency_lock(db, "ai-controls"),
+                database_idempotency_lock(db, "ai-knowledge"),
+            ):
                 # Preparation can overlap cancel/delete/disable. End its read
                 # identity map before deciding whether execution may begin
-                # under the shared controls lock.
+                # under both serialized mutation boundaries.
                 job = db.get(AIJob, job_id, populate_existing=True)
                 if job is None or job.state != "queued":
                     return True
-                _validate_claim(db, settings, job, sources)
+                _validate_claim(db, settings, job, sources, issue_snapshot)
                 claimed = db.execute(
                     update(AIJob)
                     .where(AIJob.id == job_id, AIJob.state == "queued")
@@ -373,7 +464,22 @@ def process_job(session_factory, settings):
     except Exception:
         result, error = None, "ai_execution_failed"
         logger.warning("Local AI execution failed")
-    _finalize_result(session_factory, settings, job_id, kind, sources, result, error)
+    try:
+        issue_snapshot = _fresh_issue_snapshot(session_factory, job_id)
+        issue_error = None
+    except HTTPException as exc:
+        issue_snapshot, issue_error = None, exc
+    _finalize_result(
+        session_factory,
+        settings,
+        job_id,
+        kind,
+        sources,
+        result,
+        error,
+        issue_snapshot,
+        issue_error,
+    )
     return True
 
 
@@ -409,16 +515,19 @@ def tick(session_factory, settings, *, first=False):
 
 
 async def run_loop(session_factory, stop, settings):
-    first = True
+    recovery_pending = True
     while not stop.is_set():
         try:
             if not host_maintenance_active(settings) and await asyncio.to_thread(
-                tick, session_factory, settings, first=first
+                tick, session_factory, settings, first=recovery_pending
             ):
-                first = False
+                recovery_pending = False
         except Exception:
             # Optional AI failures must not stop Tracker delivery or core jobs.
             # No prompts, private text or exception details enter normal logs.
+            # The exclusive worker never overlaps ticks, so any running row at
+            # the next iteration belongs to this interrupted iteration.
+            recovery_pending = True
             logger.warning("Local AI worker iteration failed")
         with suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=2)

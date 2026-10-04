@@ -13,12 +13,9 @@ from robopark_api.services.tracker_policy import enforce_issue_scope, issue_tags
 from robopark_api.task_workflow_models import TaskMessage
 
 
-def load(db, user, issue_key, park_id):
+def fetch(token, issue_key):
     if not issue_key:
         return None
-    if task_lifecycle.is_hidden(db, issue_key):
-        raise HTTPException(404, "ai_issue_unavailable")
-    token = platform_settings.get_tracker_token(db)
     if not token:
         raise HTTPException(503, "ai_issue_unavailable")
     try:
@@ -26,6 +23,18 @@ def load(db, user, issue_key, park_id):
     except tracker_client.TrackerError:
         raise HTTPException(503, "ai_issue_unavailable") from None
     if not issue:
+        raise HTTPException(404, "ai_issue_unavailable")
+    return issue
+
+
+def authorize_snapshot(db, user, issue, issue_key, park_id):
+    if not issue_key:
+        if issue is not None:
+            raise HTTPException(404, "ai_issue_unavailable")
+        return None
+    if task_lifecycle.is_hidden(db, issue_key):
+        raise HTTPException(404, "ai_issue_unavailable")
+    if not isinstance(issue, dict) or str(issue.get("key") or "") != issue_key:
         raise HTTPException(404, "ai_issue_unavailable")
     enforce_issue_scope(db, user, issue)
     if not mechanic_can_access_issue(db, user, issue):
@@ -38,6 +47,15 @@ def load(db, user, issue_key, park_id):
     ):
         raise HTTPException(403, "ai_issue_park_mismatch")
     return issue
+
+
+def load(db, user, issue_key, park_id):
+    if not issue_key:
+        return None
+    if task_lifecycle.is_hidden(db, issue_key):
+        raise HTTPException(404, "ai_issue_unavailable")
+    token = platform_settings.get_tracker_token(db)
+    return authorize_snapshot(db, user, fetch(token, issue_key), issue_key, park_id)
 
 
 def context(db, user, issue):
