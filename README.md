@@ -6,7 +6,7 @@
 кандидат выпуска rc.30, сверяет SHA-256 и запускает меню установки:
 
 ```sh
-d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.30/robopark-0.2.0-rc.30.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' '8aa12f64fad069ac0f08d5ca31dc7e1e8e54f1b249645b41b1e7c66605da010b  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
+d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.30/robopark-0.2.0-rc.30.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' '6444e689dabc3963aa92913dc49231ed570bb93aedfe86d31875bbb033dd91d9  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
 ```
 
 Выберите «Чистая установка» на новом хосте. Установщик интерактивно запросит
