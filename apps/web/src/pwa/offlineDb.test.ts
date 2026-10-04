@@ -1,4 +1,4 @@
-import { IDBFactory } from 'fake-indexeddb'
+import { IDBFactory, IDBIndex as FakeIDBIndex } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   OFFLINE_DATABASE_NAME,
@@ -304,6 +304,30 @@ describe('offline database', () => {
     expect(await reopened.getMedia('final')).toMatchObject({ state: 'confirmed', name: 'new.jpg', updatedAt: 9 })
     const lower = await openOfflineDb(scope())
     expect(await lower.getMedia('final')).toBeUndefined()
+  })
+
+  it('preserves a fresh entity written by another connection during cleanup', async () => {
+    const cleaning = await openOfflineDb(scope())
+    const writing = await openOfflineDb(scope())
+    await cleaning.putEntity('task:updated', { title: 'old' }, { updatedAt: 1 })
+    const originalGetAll = FakeIDBIndex.prototype.getAll
+    let concurrentWrite: Promise<boolean> | undefined
+    let intercepted = false
+    vi.spyOn(FakeIDBIndex.prototype, 'getAll').mockImplementation(function (this: IDBIndex, ...args) {
+      const request = originalGetAll.apply(this, args)
+      if (this.objectStore.name === 'entities' && !intercepted) {
+        intercepted = true
+        request.addEventListener('success', () => {
+          concurrentWrite = writing.putEntity('task:updated', { title: 'fresh' }, { updatedAt: 10_000 })
+        }, { once: true })
+      }
+      return request
+    })
+
+    await cleaning.cleanup({ maxBytes: 1_000_000, now: 10_000, entityTtlMs: 100 })
+    expect(concurrentWrite).toBeDefined()
+    expect(await concurrentWrite).toBe(true)
+    expect(await writing.getEntity('task:updated')).toEqual({ title: 'fresh' })
   })
 
   it('cleans expired confirmed data but never removes pending actions or media', async () => {

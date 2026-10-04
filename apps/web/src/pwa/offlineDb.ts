@@ -387,51 +387,69 @@ export class OfflineDb {
   }
 
   async cleanup(options: OfflineCleanupOptions): Promise<void> {
+    if (!this.isGenerationCurrent()) throw new Error('Offline scope is no longer active')
     const now = options.now ?? Date.now()
     const confirmedTtl = options.confirmedTtlMs ?? 7 * 24 * 60 * 60 * 1000
     const entityTtl = options.entityTtlMs ?? 14 * 24 * 60 * 60 * 1000
-    const entities = await this.scopedRecords<EntityRecord>('entities')
-    const actions = await this.scopedRecords<ActionRecord>('actions')
-    const media = await this.scopedRecords<MediaRecord>('media')
-    const dependenciesOfPendingActions = new Set(actions
-      .filter(item => item.state !== 'confirmed' && item.state !== 'cancelled')
-      .flatMap(item => item.dependencies))
-    const expiredEntities = entities.filter(item => now - item.updatedAt >= entityTtl)
-    const expiredActions = actions.filter(item => item.state === 'confirmed'
-      && !dependenciesOfPendingActions.has(item.id) && now - item.updatedAt >= confirmedTtl)
-    const actionsById = new Map(actions.map(item => [item.id, item]))
-    const dependentActionIsTerminal = (item: MediaRecord) => {
-      const action = actionsById.get(item.actionId)
-      return !action || action.state === 'confirmed' || action.state === 'cancelled'
+    // Keep eligibility reads and deletion in one transaction: a live tab may
+    // refresh a record while another tab runs startup cleanup.
+    const transaction = this.db.transaction(['entities', 'actions', 'media'], 'readwrite')
+    const done = transactionDone(transaction)
+    const removeRecords = (store: StoreName, records: ScopedRecord[]) => {
+      const objectStore = transaction.objectStore(store)
+      for (const record of records) objectStore.delete(record.dbId)
     }
-    const mediaRetentionAnchor = (item: MediaRecord) => Math.max(
-      item.updatedAt,
-      actionsById.get(item.actionId)?.updatedAt ?? item.updatedAt,
-    )
-    const expiredMedia = media.filter(item => item.state === 'confirmed'
-      && dependentActionIsTerminal(item) && now - mediaRetentionAnchor(item) >= confirmedTtl)
-    await this.deleteRecords('entities', expiredEntities)
-    await this.deleteRecords('actions', expiredActions)
-    await this.deleteRecords('media', expiredMedia)
+    try {
+      const [entities, actions, media] = await Promise.all([
+        requestResult(transaction.objectStore('entities').index('scope').getAll(this.scope)) as Promise<EntityRecord[]>,
+        requestResult(transaction.objectStore('actions').index('scope').getAll(this.scope)) as Promise<ActionRecord[]>,
+        requestResult(transaction.objectStore('media').index('scope').getAll(this.scope)) as Promise<MediaRecord[]>,
+      ])
+      const dependenciesOfPendingActions = new Set(actions
+        .filter(item => item.state !== 'confirmed' && item.state !== 'cancelled')
+        .flatMap(item => item.dependencies))
+      const expiredEntities = entities.filter(item => now - item.updatedAt >= entityTtl)
+      const expiredActions = actions.filter(item => item.state === 'confirmed'
+        && !dependenciesOfPendingActions.has(item.id) && now - item.updatedAt >= confirmedTtl)
+      const actionsById = new Map(actions.map(item => [item.id, item]))
+      const dependentActionIsTerminal = (item: MediaRecord) => {
+        const action = actionsById.get(item.actionId)
+        return !action || action.state === 'confirmed' || action.state === 'cancelled'
+      }
+      const mediaRetentionAnchor = (item: MediaRecord) => Math.max(
+        item.updatedAt,
+        actionsById.get(item.actionId)?.updatedAt ?? item.updatedAt,
+      )
+      const expiredMedia = media.filter(item => item.state === 'confirmed'
+        && dependentActionIsTerminal(item) && now - mediaRetentionAnchor(item) >= confirmedTtl)
+      removeRecords('entities', expiredEntities)
+      removeRecords('actions', expiredActions)
+      removeRecords('media', expiredMedia)
 
-    const remainingEntities = entities.filter(item => !expiredEntities.includes(item)).sort((a, b) => a.accessedAt - b.accessedAt)
-    const remainingActions = actions.filter(item => !expiredActions.includes(item))
-    const remainingMedia = media.filter(item => !expiredMedia.includes(item))
-    let bytes = [...remainingEntities, ...remainingActions, ...remainingMedia].reduce((sum, item) => sum + item.bytes, 0)
-    const evictable = [
-      ...remainingEntities.map(item => ({ store: 'entities' as const, item })),
-      ...remainingActions.filter(item => (item.state === 'confirmed' || item.state === 'cancelled')
-        && !dependenciesOfPendingActions.has(item.id))
-        .map(item => ({ store: 'actions' as const, item })),
-      ...remainingMedia.filter(item => item.state === 'confirmed' && dependentActionIsTerminal(item)
-        && now - mediaRetentionAnchor(item) >= confirmedTtl).map(item => ({ store: 'media' as const, item })),
-    ]
-    for (const candidate of evictable) {
-      if (bytes <= options.maxBytes) break
-      await this.deleteRecords(candidate.store, [candidate.item])
-      bytes -= candidate.item.bytes
+      const remainingEntities = entities.filter(item => !expiredEntities.includes(item)).sort((a, b) => a.accessedAt - b.accessedAt)
+      const remainingActions = actions.filter(item => !expiredActions.includes(item))
+      const remainingMedia = media.filter(item => !expiredMedia.includes(item))
+      let bytes = [...remainingEntities, ...remainingActions, ...remainingMedia].reduce((sum, item) => sum + item.bytes, 0)
+      const evictable = [
+        ...remainingEntities.map(item => ({ store: 'entities' as const, item })),
+        ...remainingActions.filter(item => (item.state === 'confirmed' || item.state === 'cancelled')
+          && !dependenciesOfPendingActions.has(item.id))
+          .map(item => ({ store: 'actions' as const, item })),
+        ...remainingMedia.filter(item => item.state === 'confirmed' && dependentActionIsTerminal(item)
+          && now - mediaRetentionAnchor(item) >= confirmedTtl).map(item => ({ store: 'media' as const, item })),
+      ]
+      for (const candidate of evictable) {
+        if (bytes <= options.maxBytes) break
+        removeRecords(candidate.store, [candidate.item])
+        bytes -= candidate.item.bytes
+      }
+      await done
+      if (bytes > options.maxBytes) throw new OfflineStorageFullError()
+    } catch (error) {
+      try { transaction.abort() } catch { /* The transaction may already be complete. */ }
+      await done.catch(() => undefined)
+      throw error
     }
-    if (bytes > options.maxBytes) throw new OfflineStorageFullError()
   }
 
   close(): void {
@@ -468,13 +486,6 @@ export class OfflineDb {
   private async deleteRecord(store: StoreName, id: string): Promise<void> {
     const transaction = this.db.transaction(store, 'readwrite')
     transaction.objectStore(store).delete(recordId(this.scope, id))
-    await transactionDone(transaction)
-  }
-  private async deleteRecords(store: StoreName, records: ScopedRecord[]): Promise<void> {
-    if (!records.length) return
-    const transaction = this.db.transaction(store, 'readwrite')
-    const objectStore = transaction.objectStore(store)
-    records.forEach(record => objectStore.delete(record.dbId))
     await transactionDone(transaction)
   }
 }
