@@ -93,8 +93,22 @@ def test_repair_options_return_queue_catalog_snapshot_and_exact_title_suggestion
     assert response.json() == {
         "issue_key": ISSUE_KEY,
         "components": [
-            {"id": "lidar", "label": "Лидар"},
-            {"id": "camera", "label": "Камера"},
+            {
+                "id": "lidar",
+                "label": "Лидар",
+                "tracker_name": "Лидар",
+                "aliases": [],
+                "defect_codes": [],
+                "solution_methods": [],
+            },
+            {
+                "id": "camera",
+                "label": "Камера",
+                "tracker_name": "Камера",
+                "aliases": [],
+                "defect_codes": [],
+                "solution_methods": [],
+            },
         ],
         "selected_component_ids": [],
         "suggested_component_ids": ["lidar"],
@@ -111,6 +125,22 @@ def test_repair_options_return_queue_catalog_snapshot_and_exact_title_suggestion
             {"code": "INSTALL", "label": "Установил"},
             {"code": "RESTART", "label": "Перезапустил"},
         ],
+        "defect_method_suggestions": {
+            "BD-06": ["REPAIR", "MAINTENANCE"],
+            "CH-01": ["MAINTENANCE", "REPAIR"],
+            "CH-03": ["CHANGE", "REPAIR"],
+            "EL-01": ["CONFIG", "DIAG"],
+            "EL-02": ["DIAG", "REPAIR", "CHANGE"],
+            "EL-03": ["CONFIG", "RESTART", "DIAG"],
+            "EL-04": ["DIAG", "REPAIR"],
+            "EL-06": ["CONFIG", "DIAG"],
+            "EL-10": ["DIAG", "CHANGE", "REPAIR"],
+            "WH-03": ["REPAIR", "INSTALL"],
+            "WH-05": ["REPAIR", "CHANGE"],
+            "PP-01": ["CHANGE", "INSTALL"],
+            "PP-02": ["INSTALL", "CHANGE"],
+            "PP-03": ["DIAG", "CONFIG"],
+        },
         "field_snapshot": {
             "component_ids": [],
             "defect_code": None,
@@ -119,35 +149,125 @@ def test_repair_options_return_queue_catalog_snapshot_and_exact_title_suggestion
     }
 
 
-def test_claim_requires_choice_when_empty_and_uses_selected_component_id(
+def test_claim_without_component_queues_temporary_name_without_catalog_lookup(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
     _operator(db_session, seed_park_with_tracker)
     issue = _issue(summary="Неисправность без названия компоненты")
     _prepare(db_session, monkeypatch, issue)
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Claim must not load the component catalog")
+        ),
+    )
     login_as(client, seed_mechanic.username, "secret")
 
-    missing = client.post(
+    response = client.post(
         f"/tracker/issues/{ISSUE_KEY}/claim",
         headers={"Idempotency-Key": "repair-claim-missing"},
     )
-    assert missing.status_code == 409
-    assert missing.json()["detail"] == "task_component_selection_required"
-
-    selected = client.post(
-        f"/tracker/issues/{ISSUE_KEY}/claim",
-        headers={"Idempotency-Key": "repair-claim-selected"},
-        json={"component_ids": ["lidar"]},
-    )
-    assert selected.status_code == 200, selected.text
+    assert response.status_code == 200, response.text
     action = db_session.scalar(
         select(ReliableAction).where(
             ReliableAction.resource_id == ISSUE_KEY,
             ReliableAction.action == "ensure_components",
         )
     )
-    assert json.loads(action.payload_json)["value"] == ["lidar"]
+    assert json.loads(action.payload_json) == {
+        "policy": "temporary_component",
+        "name": "ROBOT_UNSORTED",
+        "depends_on_action_ids": json.loads(action.payload_json)["depends_on_action_ids"],
+    }
     assert "ROBOT_SUSPENSION" not in action.payload_json
+
+
+def test_repair_options_hide_temporary_component_but_keep_it_in_snapshot(
+    client, db_session, seed_mechanic, monkeypatch
+):
+    issue = _issue(components=["ROBOT_UNSORTED"], component_ids=["162206"])
+    _prepare(db_session, monkeypatch, issue)
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: [
+            {"id": "162206", "label": "ROBOT_UNSORTED"},
+            {"id": "lidar", "label": "Лидар"},
+        ],
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.get(f"/tracker/issues/{ISSUE_KEY}/repair-options")
+
+    assert response.status_code == 200
+    assert response.json()["components"] == [
+        {
+            "id": "lidar",
+            "label": "Лидар",
+            "tracker_name": "Лидар",
+            "aliases": [],
+            "defect_codes": [],
+            "solution_methods": [],
+        }
+    ]
+    assert response.json()["selected_component_ids"] == []
+    assert response.json()["field_snapshot"]["component_ids"] == ["162206"]
+
+
+def test_repair_options_match_full_decorated_label_without_asserting_completed_work(
+    client, db_session, seed_mechanic, monkeypatch
+):
+    issue = _issue(summary="Проверить кабель камеры")
+    _prepare(db_session, monkeypatch, issue)
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: [{"id": "42", "label": "ROBOT_SENSORS_CAMERA_WIRE"}],
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.get(f"/tracker/issues/{ISSUE_KEY}/repair-options")
+
+    assert response.status_code == 200
+    assert response.json()["components"][0]["label"] == "Кабель камеры"
+    assert response.json()["components"][0]["tracker_name"] == "ROBOT_SENSORS_CAMERA_WIRE"
+    assert response.json()["suggested_component_ids"] == ["42"]
+    assert "solution_method" not in response.json()["components"][0]
+
+
+@pytest.mark.parametrize("summary", ["Переднее левое колесо", "Проблема с АКБ"])
+def test_repair_options_do_not_autoselect_from_broad_aliases(
+    client, db_session, seed_mechanic, monkeypatch, summary
+):
+    issue = _issue(summary=summary)
+    _prepare(db_session, monkeypatch, issue)
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: [
+            {"id": "wheel", "label": "ROBOT_SUSPENSION_WHEEL"},
+            {
+                "id": "front-left",
+                "label": "ROBOT_SUSPENSION_WHEELS_FRONT_LEFT",
+            },
+            {"id": "battery", "label": "ROBOT_BATTERY"},
+        ],
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.get(f"/tracker/issues/{ISSUE_KEY}/repair-options")
+
+    assert response.status_code == 200
+    assert response.json()["suggested_component_ids"] == []
 
 
 def test_structured_submit_needs_no_typed_comment_and_queues_one_field_action(
@@ -229,6 +349,293 @@ def test_structured_submit_needs_no_typed_comment_and_queues_one_field_action(
     assert json.loads(report.payload_json)["text"] == (
         "Выполненные работы\nКомпоненты: Лидар\nНеисправность: EL-02\nДействие: Отремонтировал"
     )
+
+
+def test_temporary_component_requires_structured_real_component_before_review(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _operator(db_session, seed_park_with_tracker)
+    issue = _issue(components=["ROBOT_UNSORTED"], component_ids=["162206"])
+    _prepare(db_session, monkeypatch, issue)
+    from robopark_api.services import tracker_client
+
+    monkeypatch.setattr(
+        tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: [{"id": "lidar", "label": "Лидар"}],
+    )
+    login_as(client, seed_mechanic.username, "secret")
+    assert (
+        client.post(
+            f"/tracker/issues/{ISSUE_KEY}/claim",
+            headers={"Idempotency-Key": "temporary-claim"},
+        ).status_code
+        == 200
+    )
+    db_session.get(TrackerClaim, ISSUE_KEY).state = "active"
+    db_session.commit()
+
+    legacy = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/submit-review",
+        headers={"Idempotency-Key": "temporary-legacy-review"},
+        data={"defect_code": "EL-02", "comment": "Готово"},
+        files=[("photo", ("robot.png", PNG, "image/png"))],
+    )
+    assert legacy.status_code == 409
+    assert legacy.json()["detail"] == "repair_fields_required"
+
+    temporary_target = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/submit-review",
+        headers={"Idempotency-Key": "temporary-target-review"},
+        data={
+            "defect_code": "EL-02",
+            "repair_fields": json.dumps(
+                {
+                    "component_ids": ["162206"],
+                    "solution_method": "REPAIR",
+                    "expected": {
+                        "component_ids": ["162206"],
+                        "defect_code": None,
+                        "solution_method": None,
+                    },
+                }
+            ),
+        },
+        files=[("photo", ("robot.png", PNG, "image/png"))],
+    )
+    assert temporary_target.status_code == 422
+    assert temporary_target.json()["detail"] == "task_component_invalid"
+    assert (
+        db_session.scalar(
+            select(ReliableAction.id).where(ReliableAction.action == "set_repair_fields")
+        )
+        is None
+    )
+
+    completed = client.post(
+        f"/tracker/issues/{ISSUE_KEY}/submit-review",
+        headers={"Idempotency-Key": "temporary-real-review"},
+        data={
+            "defect_code": "EL-02",
+            "repair_fields": json.dumps(
+                {
+                    "component_ids": ["lidar"],
+                    "solution_method": "REPAIR",
+                    "expected": {
+                        "component_ids": ["162206"],
+                        "defect_code": None,
+                        "solution_method": None,
+                    },
+                }
+            ),
+        },
+        files=[("photo", ("robot.png", PNG, "image/png"))],
+    )
+    assert completed.status_code == 200, completed.text
+
+
+def test_outbox_resolves_temporary_component_name_to_current_catalog_id(
+    db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    payload = {
+        "policy": "temporary_component",
+        "name": "ROBOT_UNSORTED",
+        "depends_on_action_ids": [],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    action = ReliableAction(
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id=ISSUE_KEY,
+        action="ensure_components",
+        idempotency_key="temporary-component-delivery",
+        payload_hash=hashlib.sha256(encoded.encode()).hexdigest(),
+        payload_json=encoded,
+        state="pending",
+        next_attempt_at=0,
+        created_at=1,
+        updated_at=1,
+    )
+    db_session.add(action)
+    db_session.commit()
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda _db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **_kwargs: {"key": ISSUE_KEY, "queue": "ROBOPARK", "components": []},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: [{"id": "162206", "label": "ROBOT_UNSORTED"}],
+    )
+    writes = []
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "set_issue_components",
+        lambda **kwargs: writes.append(kwargs["components"]),
+    )
+
+    assert tracker_outbox._deliver_action(db_session, action) == {"components": ["162206"]}
+    assert writes == [["162206"]]
+
+
+def test_outbox_temporary_component_preserves_concurrent_real_component(
+    db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import tracker_outbox
+
+    payload = {"policy": "temporary_component", "name": "ROBOT_UNSORTED"}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    action = ReliableAction(
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id=ISSUE_KEY,
+        action="ensure_components",
+        idempotency_key="temporary-component-preserve-real",
+        payload_hash=hashlib.sha256(encoded.encode()).hexdigest(),
+        payload_json=encoded,
+        state="pending",
+        next_attempt_at=0,
+        created_at=1,
+        updated_at=1,
+    )
+    db_session.add(action)
+    db_session.commit()
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda _db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": ISSUE_KEY,
+            "queue": "ROBOPARK",
+            "components": ["Лидар"],
+            "component_ids": ["lidar"],
+        },
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Existing real component must not require catalog")
+        ),
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "set_issue_components",
+        lambda **_kwargs: pytest.fail("Existing real component must not be overwritten"),
+    )
+
+    assert tracker_outbox._deliver_action(db_session, action) == {"already_applied": True}
+
+
+def test_outbox_temporary_component_cas_conflict_retries_then_preserves_real_component(
+    db_session, seed_mechanic, monkeypatch
+):
+    from robopark_api.services import reliable_actions, tracker_client, tracker_outbox
+
+    payload = {"policy": "temporary_component", "name": "ROBOT_UNSORTED"}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    action = ReliableAction(
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id=ISSUE_KEY,
+        action="ensure_components",
+        idempotency_key="temporary-component-cas-race",
+        payload_hash=hashlib.sha256(encoded.encode()).hexdigest(),
+        payload_json=encoded,
+        state="pending",
+        next_attempt_at=0,
+        created_at=1,
+        updated_at=1,
+    )
+    db_session.add(action)
+    db_session.commit()
+    issue = {
+        "key": ISSUE_KEY,
+        "queue": "ROBOPARK",
+        "components": [],
+        "component_ids": [],
+        "_tracker_resource": object(),
+    }
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda _db: "token")
+    monkeypatch.setattr(tracker_outbox.tracker_client, "get_issue", lambda **_kwargs: dict(issue))
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: [{"id": "162206", "label": "ROBOT_UNSORTED"}],
+    )
+    writes = []
+
+    class PreconditionError(Exception):
+        response = SimpleNamespace(status_code=412)
+
+    def race(**kwargs):
+        writes.append(kwargs)
+        try:
+            raise PreconditionError
+        except PreconditionError as cause:
+            raise tracker_client.TrackerError("precondition failed") from cause
+
+    monkeypatch.setattr(tracker_outbox.tracker_client, "set_issue_components", race)
+
+    with pytest.raises(tracker_client.TrackerError) as caught:
+        tracker_outbox._deliver_action(db_session, action)
+    assert str(caught.value) == "temporary_component_version_conflict"
+    reliable_actions.schedule_retry(
+        db_session,
+        action,
+        error_code=tracker_outbox._tracker_error_code(caught.value),
+    )
+    assert action.state == "retry_wait"
+    issue.update(components=["Лидар"], component_ids=["lidar"])
+
+    assert tracker_outbox._deliver_action(db_session, action) == {"already_applied": True}
+    assert len(writes) == 1
+    assert writes[0]["issue_resource"] is not None
+
+
+@pytest.mark.parametrize(
+    "catalog",
+    [[], [{"id": "1", "label": "ROBOT_UNSORTED"}, {"id": "2", "label": "ROBOT_UNSORTED"}]],
+)
+def test_outbox_requires_exactly_one_active_temporary_component(
+    db_session, seed_mechanic, monkeypatch, catalog
+):
+    from robopark_api.services import tracker_outbox
+
+    payload = {"policy": "temporary_component", "name": "ROBOT_UNSORTED"}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    action = ReliableAction(
+        actor_user_id=seed_mechanic.id,
+        resource_type="tracker_issue",
+        resource_id=ISSUE_KEY,
+        action="ensure_components",
+        idempotency_key=f"temporary-component-invalid-{len(catalog)}",
+        payload_hash=hashlib.sha256(encoded.encode()).hexdigest(),
+        payload_json=encoded,
+        state="pending",
+        next_attempt_at=0,
+        created_at=1,
+        updated_at=1,
+    )
+    db_session.add(action)
+    db_session.commit()
+    monkeypatch.setattr(tracker_outbox.settings_svc, "get_tracker_token", lambda _db: "token")
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client,
+        "get_issue",
+        lambda **_kwargs: {"key": ISSUE_KEY, "queue": "ROBOPARK", "components": []},
+    )
+    monkeypatch.setattr(
+        tracker_outbox.tracker_client, "list_queue_components", lambda **_kwargs: catalog
+    )
+
+    with pytest.raises(tracker_outbox.DeliveryError) as caught:
+        tracker_outbox._deliver_action(db_session, action)
+    assert caught.value.code == "temporary_component_unavailable"
 
 
 def test_outbox_structured_fields_detects_conflict_and_accepts_retry_after_timeout(
@@ -467,6 +874,26 @@ def test_tracker_catalog_excludes_archived_and_structured_update_uses_sdk_versio
     monkeypatch.setattr(sdk._connection, "patch", patch)
     monkeypatch.setattr(tracker_client, "_client", lambda _token: sdk)
     monkeypatch.setattr(tracker_client, "_run_mutation", lambda fn: fn())
+
+    tracker_client.set_issue_components(
+        token="token",
+        key=ISSUE_KEY,
+        components=["temporary"],
+        issue_resource=resource,
+    )
+    assert patches == [
+        {
+            "path": f"/v2/issues/{ISSUE_KEY}",
+            "version": 17,
+            "data": {"components": ["temporary"]},
+        }
+    ]
+    patches.clear()
+    resource = Resource(
+        sdk._connection,
+        f"/v2/issues/{ISSUE_KEY}",
+        {"key": ISSUE_KEY, "version": 17},
+    )
 
     tracker_client.set_repair_fields(
         token="token",

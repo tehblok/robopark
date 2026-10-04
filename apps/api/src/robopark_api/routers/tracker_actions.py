@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 
 from fastapi import (
     APIRouter,
-    Body,
     Depends,
     File,
     Form,
@@ -30,7 +29,6 @@ from robopark_api.schemas import (
     TaskReviewReturnIn,
     TrackerActionOut,
     TrackerAssignIn,
-    TrackerClaimIn,
     TrackerCommentIn,
     TrackerTransitionIn,
 )
@@ -263,7 +261,6 @@ def get_repair_options(
 def claim_task(
     key: str,
     request: Request,
-    payload: TrackerClaimIn | None = Body(default=None),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
@@ -273,7 +270,6 @@ def claim_task(
         raise HTTPException(403, "task_claim_mechanic_required")
     if task_lifecycle.tracker_issue_is_closed(issue):
         raise HTTPException(status_code=409, detail="task_already_closed")
-    components = [] if issue.get("components") else _repair_components(_require_token(db), issue)
     with submissions.task_mutation_lease(db, key):
         return TrackerActionOut(
             **task_lifecycle.claim(
@@ -283,8 +279,8 @@ def claim_task(
                 park=task_lifecycle.issue_park(db, issue),
                 idempotency_key=idempotency_key,
                 issue=issue,
-                component_ids=payload.component_ids if payload is not None else None,
-                component_options=components,
+                component_ids=None,
+                component_options=[],
             )
         )
 

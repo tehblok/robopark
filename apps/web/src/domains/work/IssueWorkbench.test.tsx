@@ -155,12 +155,15 @@ it('keeps transfer and review locked until Tracker confirms the mechanic claim',
     claim: { park_id: park.id, state: 'pending' },
     workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'pending', has_current_cycle_comment: true },
   }
-  renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => pending) }) })
+  const taskRepairOptions = vi.fn(async () => { throw new ApiError(502, 'tracker_upstream_error') })
+  renderWorkbench({ currentUser: mechanic, client: apiClient({ trackerIssue: vi.fn(async () => pending), taskRepairOptions }) })
 
   expect(await screen.findByText(/Tracker ещё подтверждает взятие задачи/)).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Передать на проверку' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Передать смену' })).not.toBeInTheDocument()
   expect(screen.getByRole('tab', { name: 'Проверка' })).toBeVisible()
+  // A pre-transition snapshot would be stale as soon as UNSORTED is written.
+  expect(taskRepairOptions).not.toHaveBeenCalled()
 })
 
 it('lets an admin retry a task needing attention once and announces recovery', async () => {
@@ -2600,38 +2603,17 @@ it('refreshes a conflicting workflow immediately and preserves the message draft
   expect(screen.getByRole('textbox', { name: ru.tracker.comments })).toHaveValue('Не потерять этот черновик')
 })
 
-it('asks for a component only when no current value or unambiguous suggestion exists', async () => {
+it('claims in one action without fetching or choosing the final repair component', async () => {
   const mechanic: User = { ...user, username: 'mech1', role: 'mechanic' }
   const taskClaim = vi.fn(async () => taskActionResult('claim'))
-  const taskRepairOptions = vi.fn(async () => ({
-    issue_key: issue.key, components: [{ id: 'wheel', label: 'Мотор-колесо' }, { id: 'camera', label: 'Камера' }],
-    selected_component_ids: [], suggested_component_ids: [], suggestion_reason: null,
-    defect_code: null, solution_method: null, solution_methods: [],
-    field_snapshot: { component_ids: [], defect_code: null, solution_method: null },
-  }))
+  const taskRepairOptions = vi.fn(async () => { throw new ApiError(502, 'tracker_upstream_error') })
   renderWorkbench({ currentUser: mechanic, selectedIssue: '', client: apiClient({ taskClaim, taskRepairOptions }) })
   fireEvent.click(await screen.findByRole('button', { name: 'Взять в работу' }))
-  fireEvent.click(await screen.findByRole('checkbox', { name: 'Мотор-колесо' }))
-  expect(taskClaim).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить и взять' }))
-  await waitFor(() => expect(taskClaim).toHaveBeenCalledWith(issue.key, expect.any(String), ['wheel']))
-})
-
-it('claims with an exact backend component suggestion in a single user action', async () => {
-  const mechanic: User = { ...user, username: 'mech1', role: 'mechanic' }
-  const taskClaim = vi.fn(async () => taskActionResult('claim'))
-  renderWorkbench({ currentUser: mechanic, selectedIssue: '', client: apiClient({ taskClaim, taskRepairOptions: vi.fn(async () => ({
-    issue_key: issue.key, components: [{ id: 'wheel', label: 'Мотор-колесо' }],
-    selected_component_ids: [], suggested_component_ids: ['wheel'], suggestion_reason: 'Название в задаче',
-    defect_code: null, solution_method: null, solution_methods: [],
-    field_snapshot: { component_ids: [], defect_code: null, solution_method: null },
-  })) }) })
-  fireEvent.click(await screen.findByRole('button', { name: 'Взять в работу' }))
-  await waitFor(() => expect(taskClaim).toHaveBeenCalledWith(issue.key, expect.any(String), ['wheel']))
+  await waitFor(() => expect(taskClaim).toHaveBeenCalledWith(issue.key, expect.any(String)))
   expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
 })
 
-it.each([[502, true], [403, false]] as const)('queues a claim only on a transient catalog failure (%s)', async (status, queued) => {
+it('queues a claim without requiring the repair catalog first', async () => {
   const mechanic: User = { ...user, username: 'mech', role: 'mechanic', tracker_login: 'mech' }
   const taskClaim = vi.fn(async () => taskActionResult('claim'))
   const enqueueAction = vi.fn(async () => undefined)
@@ -2639,10 +2621,9 @@ it.each([[502, true], [403, false]] as const)('queues a claim only on a transien
     state: { status: 'idle', pending: 0, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(),
     syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction: vi.fn(async () => undefined), subscribeAction: vi.fn(() => () => undefined),
   }
-  const taskRepairOptions = vi.fn(async () => { throw new ApiError(status, status === 502 ? 'tracker_upstream_error' : 'tracker_issue_out_of_scope') })
+  const taskRepairOptions = vi.fn(async () => { throw new ApiError(502, 'tracker_upstream_error') })
   renderWorkbench({ client: apiClient({ taskClaim, taskRepairOptions }), selectedIssue: '', currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Взять в работу' }))
-  if (queued) await waitFor(() => expect(enqueueAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'claim', payload: { park_id: park.id } })))
-  else { await screen.findByRole('alert'); expect(enqueueAction).not.toHaveBeenCalled() }
+  await waitFor(() => expect(enqueueAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'claim', payload: { park_id: park.id } })))
   expect(taskClaim).not.toHaveBeenCalled()
 })

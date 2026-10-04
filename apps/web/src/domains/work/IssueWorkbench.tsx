@@ -50,7 +50,6 @@ import { TaskPartsPanel } from '../inventory/TaskPartsPanel'
 import { WorkFilters } from './WorkFilters'
 import { RepairSla } from './RepairSla'
 import { SubmitReviewForm } from './SubmitReviewForm'
-import { RepairComponentPicker } from './RepairComponentPicker'
 import { ReturnReviewForm } from './ReturnReviewForm'
 import { TaskSyncStatus } from './TaskSyncStatus'
 import { TaskTimeline } from './TaskTimeline'
@@ -309,8 +308,6 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, claimsVerifie
   const findQueuedAction = sync?.findAction
   const [claiming, setClaiming] = useState(false)
   const [claimError, setClaimError] = useState('')
-  const [claimOptions, setClaimOptions] = useState<TaskRepairOptions | null>(null)
-  const [claimComponents, setClaimComponents] = useState<string[]>([])
   const claimScope = useRef(0)
   const claimInFlight = useRef(false)
   const [queuedClaim, setQueuedClaim] = useState<OfflineAction | null>(null)
@@ -327,8 +324,6 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, claimsVerifie
     setQueuedClaim(null)
     setClaimError('')
     setClaimHydrated(false)
-    setClaimOptions(null)
-    setClaimComponents([])
     setClaiming(false)
     claimInFlight.current = false
     return () => { claimScope.current += 1 }
@@ -368,40 +363,18 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, claimsVerifie
     })
   }, [onClaimed, queuedClaimId, sync])
 
-  const claim = async (selectedComponents?: string[]) => {
+  const claim = async () => {
     if (!apiClient || !mechanicLogin || claimInFlight.current || claimPending || claimNeedsAttention || queueInitializing || !claimsVerified || !claimHydrated) return
     const scope = claimScope.current
     claimInFlight.current = true
     setClaiming(true); setClaimError('')
     try {
-      let componentIds = selectedComponents
-      if (apiClient.taskRepairOptions && componentIds === undefined) {
-        let options: TaskRepairOptions | undefined
-        try { options = await apiClient.taskRepairOptions(item.key) }
-        catch (cause) {
-          // Preserve durable claiming during outages. The server will read fresh
-          // fields on replay and ask for a choice if the component is ambiguous.
-          const unavailable = cause instanceof TypeError || (cause instanceof ApiError && [0, 502, 503, 504].includes(cause.status))
-          if (!unavailable || !sync || sync.actionTrackingReady === false || parkId == null) throw cause
-        }
-        if (scope !== claimScope.current) return
-        if (options) {
-          if (options.issue_key !== item.key) throw new Error('repair_options_mismatch')
-          componentIds = options.selected_component_ids.length ? options.selected_component_ids : options.suggested_component_ids
-          if (!componentIds.length) {
-            setClaimOptions(options)
-            setClaimComponents([])
-            return
-          }
-        }
-      }
-      const identity = componentIds ? JSON.stringify({ mechanicLogin, componentIds }) : mechanicLogin
+      const identity = mechanicLogin
       if (sync && sync.actionTrackingReady !== false && parkId != null) {
         const key = mutationKey.current.get('claim', identity)
-        await sync.enqueueAction(buildClaimAction({ issueKey: item.key, parkId, id: key, componentIds }))
+        await sync.enqueueAction(buildClaimAction({ issueKey: item.key, parkId, id: key }))
         mutationKey.current.succeeded('claim', identity)
         if (scope !== claimScope.current) return
-        setClaimOptions(null)
         const pending = await sync.findAction(item.key, 'claim')
         if (scope !== claimScope.current) return
         if (pending) setQueuedClaim(pending)
@@ -411,13 +384,11 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, claimsVerifie
       if (apiClient.taskClaim) {
         const payload = identity
         const key = mutationKey.current.get('claim', payload)
-        if (componentIds) await apiClient.taskClaim(item.key, key, componentIds)
-        else await apiClient.taskClaim(item.key, key)
+        await apiClient.taskClaim(item.key, key)
         mutationKey.current.succeeded('claim', payload)
       }
       else await apiClient.trackerAssign(item.key, mechanicLogin)
       if (scope !== claimScope.current) return
-      setClaimOptions(null)
       onClaimed?.()
       onOpen(item.key)
     } catch (error) {
@@ -439,7 +410,6 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, claimsVerifie
       ? <>{openButton}<span role="status">Взятие ожидает подтверждения</span></>
       : claimNeedsAttention
         ? <>{openButton}<span aria-label="Взятие задачи требует внимания" role="alert">Взятие не подтверждено. Проверьте синхронизацию.</span></>
-    : claimOptions ? openButton
     : assigned
       ? <>{openButton}<Button busy={claiming} disabled={!mechanicLogin || queueInitializing} onClick={() => void claim()}>Взять вместо сменщика</Button></>
       : <>{openButton}<Button busy={claiming} disabled={!mechanicLogin || queueInitializing} onClick={() => void claim()}>Взять в работу</Button></>
@@ -450,16 +420,7 @@ function ClaimableIssueRow({ item, selected, onOpen, requireClaim, claimsVerifie
     statusLabel={`Статус задачи ${item.key}`}
     title={<><strong>{item.key}</strong><span> · {item.summary}</span>{possibleRepeat ? <StatusBadge tone="warning">Возможный повтор проблемы</StatusBadge> : null}</>}
   />
-    {claimOptions ? <fieldset aria-label={`Компоненты для ${item.key}`} className="rp-repair-claim-choice" disabled={claiming}>
-      <legend>Что ремонтируем?</legend>
-      <p>Выберите компоненту — её сохраним в задаче.</p>
-      <RepairComponentPicker options={claimOptions.components} value={claimComponents} onChange={setClaimComponents} />
-      <div className="rp-action-bar">
-        <Button busy={claiming} disabled={!claimComponents.length} onClick={() => void claim(claimComponents)}>Подтвердить и взять</Button>
-        <Button onClick={() => setClaimOptions(null)} variant="secondary">Отмена</Button>
-      </div>
-      {!claimOptions.components.length ? <p role="alert">В очереди нет доступных компонент. Попросите оператора проверить справочник.</p> : null}
-    </fieldset> : null}
+
   </>
 }
 
@@ -838,7 +799,7 @@ export function TaskController({
   const repairOptions = useCachedResource<TaskRepairOptions>(
     `${accessPrefix}repair-options:${issueKey}`,
     () => guarded(() => apiClient.taskRepairOptions!(issueKey as string)),
-    { enabled: Boolean(issueKey && (reviewOpen || detail.data?.claim) && user.role === 'mechanic' && apiClient.taskRepairOptions && !hiddenDetail), staleTimeMs: 30_000, refreshOnResume: true },
+    { enabled: Boolean(issueKey && !claimAwaitingTracker && (reviewOpen || detail.data?.claim) && user.role === 'mechanic' && apiClient.taskRepairOptions && !hiddenDetail), staleTimeMs: 30_000, refreshOnResume: true },
   )
   const robotNumber = normalizedRobotNumber(detail.data?.robot)
   const relatedQueue = detail.data?.queue?.trim()

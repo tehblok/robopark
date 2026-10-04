@@ -36,6 +36,17 @@ export function SubmitReviewForm({ defectCodes, hasQualifyingComment, repairOpti
   const methodLabelId = useId()
   const submitting = useRef(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  const selectedParts = initialOptions?.components.filter(item => componentIds.includes(item.id)) ?? []
+  const recommendedCodes = new Set(selectedParts.flatMap(item => item.defect_codes ?? []))
+  const recommendedDefects = [...recommendedCodes].map(id => defectCodes.find(item => item.code === id)).filter((item): item is DefectCode => Boolean(item))
+  const preferredMethods = [...new Set([
+    ...(initialOptions?.defect_method_suggestions?.[code] ?? []),
+    ...selectedParts.flatMap(item => item.solution_methods ?? []), ...COMMON_METHODS,
+  ])]
+  const primaryMethods = preferredMethods
+    .map(id => initialOptions?.solution_methods.find(item => item.code === id))
+    .filter((item): item is { code: string; label: string } => Boolean(item)).slice(0, 3)
+  const otherMethods = initialOptions?.solution_methods.filter(item => !primaryMethods.some(primary => primary.code === item.code)) ?? []
 
   useEffect(() => {
     if (!photo) { setPreview(''); return }
@@ -95,25 +106,28 @@ export function SubmitReviewForm({ defectCodes, hasQualifyingComment, repairOpti
     {commentRequired ? <p>Напишите, что было сделано перед передачей на проверку</p> : null}
     {initialOptions ? <>
       <details className="rp-repair-components" open={componentIds.length === 0 ? true : undefined}>
-        <summary>Что ремонтируем: {componentIds.map(id => initialOptions.components.find(item => item.id === id)?.label ?? 'Текущая компонента').join(', ') || 'выберите компоненту'} · изменить</summary>
+        <summary>Что ремонтируем: {componentIds.map(id => initialOptions.components.find(item => item.id === id)?.label ?? 'Текущая деталь').join(', ') || 'выберите деталь или узел'} · изменить</summary>
         <RepairComponentPicker options={initialOptions.components} value={componentIds} onChange={setComponentIds} />
       </details>
       <label className="field"><span>Что случилось?</span>
         <select aria-label="Что случилось?" onChange={event => setCode(event.target.value)} required value={code}>
           <option value="">Выберите неисправность</option>
+          {recommendedDefects.length ? <optgroup label="Для выбранной детали">
+            {recommendedDefects.map(item => <option key={item.code} value={item.code}>{item.label} · {item.code}</option>)}
+          </optgroup> : null}
           {Object.entries({ BD: 'Корпус', CH: 'Механика', EL: 'Электрика', WH: 'Проводка', PP: 'Комплектность' }).map(([prefix, label]) => <optgroup key={prefix} label={label}>
-            {defectCodes.filter(item => item.code.startsWith(`${prefix}-`)).map(item => <option key={item.code} value={item.code}>{item.label} · {item.code}</option>)}
+            {defectCodes.filter(item => !recommendedCodes.has(item.code) && item.code.startsWith(`${prefix}-`)).map(item => <option key={item.code} value={item.code}>{item.label} · {item.code}</option>)}
           </optgroup>)}
         </select>
       </label>
       <div className="field"><span id={methodLabelId}>Что сделали?</span>
         <div aria-labelledby={methodLabelId} className="rp-action-bar rp-repair-methods" role="group">
-          {initialOptions.solution_methods.filter(item => COMMON_METHODS.has(item.code)).map(item => <Button aria-pressed={method === item.code} key={item.code} onClick={() => setMethod(item.code)} type="button" variant={method === item.code ? 'primary' : 'secondary'}>{item.label}</Button>)}
+          {primaryMethods.map(item => <Button aria-pressed={method === item.code} key={item.code} onClick={() => setMethod(item.code)} type="button" variant={method === item.code ? 'primary' : 'secondary'}>{item.label}</Button>)}
         </div>
-        {initialOptions.solution_methods.some(item => !COMMON_METHODS.has(item.code)) ? <details className="rp-repair-other-methods" open={method && !COMMON_METHODS.has(method) ? true : undefined}>
-          <summary>Другое действие{method && !COMMON_METHODS.has(method) ? `: ${initialOptions.solution_methods.find(item => item.code === method)?.label ?? ''}` : ''}</summary>
+        {otherMethods.length ? <details className="rp-repair-other-methods" open={otherMethods.some(item => item.code === method) ? true : undefined}>
+          <summary>Другое действие{otherMethods.some(item => item.code === method) ? `: ${initialOptions.solution_methods.find(item => item.code === method)?.label ?? ''}` : ''}</summary>
           <div aria-label="Другие выполненные действия" className="rp-repair-methods" role="group">
-            {initialOptions.solution_methods.filter(item => !COMMON_METHODS.has(item.code)).map(item => <Button aria-pressed={method === item.code} key={item.code} onClick={() => setMethod(item.code)} type="button" variant={method === item.code ? 'primary' : 'secondary'}>{item.label}</Button>)}
+            {otherMethods.map(item => <Button aria-pressed={method === item.code} key={item.code} onClick={() => setMethod(item.code)} type="button" variant={method === item.code ? 'primary' : 'secondary'}>{item.label}</Button>)}
           </div>
         </details> : null}
       </div>

@@ -462,22 +462,47 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         tracker_client.set_issue_tags(token=token, key=action.resource_id, tags=[*tags, tag])
         return {"tag": tag}
     if action.action == "ensure_components":
-        value = payload.get("value")
-        if (
-            not isinstance(value, list)
-            or not value
-            or not all(isinstance(item, str) for item in value)
-        ):
-            raise DeliveryError("invalid_payload")
         if issue.get("components"):
             return {"already_applied": True}
         if closed_issue:
             raise DeliveryError("task_already_closed")
-        tracker_client.set_issue_components(
-            token=token,
-            key=action.resource_id,
-            components=value,
-        )
+        temporary_policy = payload.get("policy") == "temporary_component"
+        if temporary_policy:
+            name = str(payload.get("name") or "").strip()
+            if name != repair_fields.TEMPORARY_COMPONENT_NAME:
+                raise DeliveryError("invalid_payload")
+            catalog = tracker_client.list_queue_components(
+                token=token, queue=str(issue.get("queue") or "")
+            )
+            matches = {
+                str(item.get("id") or "").strip()
+                for item in catalog
+                if str(item.get("label") or "").strip() == name
+                or str(item.get("id") or "").strip() == name
+            }
+            matches.discard("")
+            if len(matches) != 1:
+                raise DeliveryError("temporary_component_unavailable")
+            value = [matches.pop()]
+        else:
+            value = payload.get("value")
+            if (
+                not isinstance(value, list)
+                or not value
+                or not all(isinstance(item, str) for item in value)
+            ):
+                raise DeliveryError("invalid_payload")
+        try:
+            tracker_client.set_issue_components(
+                token=token,
+                key=action.resource_id,
+                components=value,
+                **({"issue_resource": issue.get("_tracker_resource")} if temporary_policy else {}),
+            )
+        except tracker_client.TrackerError as exc:
+            if temporary_policy and _is_tracker_version_conflict(exc):
+                raise tracker_client.TrackerError("temporary_component_version_conflict") from exc
+            raise
         return {"components": value}
     if action.action in _TRANSITION_ACTIONS:
         components_prepared = False
@@ -535,7 +560,7 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
             token=token, queue=str(issue.get("queue") or "")
         )
         try:
-            repair_fields.validate_component_selection(values, catalog)
+            repair_fields.validate_component_selection(values, catalog, current_issue=issue)
         except Exception as exc:
             raise DeliveryError("repair_component_invalid") from exc
         try:
@@ -557,6 +582,8 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
 
 def _tracker_error_code(exc: tracker_client.TrackerError) -> str:
     text = str(exc).casefold()
+    if "temporary_component_version_conflict" in text:
+        return "temporary_component_version_conflict"
     if "timeout" in text or "timed out" in text:
         return "timeout"
     if "network" in text or "connection" in text:

@@ -506,7 +506,10 @@ export type TaskAttachmentStaged = {
 }
 export type DefectCode = { code: string; label: string; description: string | null }
 export type RepairFieldSnapshot = { component_ids: string[]; defect_code: string | null; solution_method: string | null }
-export type RepairComponent = { id: string; label: string }
+export type RepairComponent = {
+  id: string; label: string; tracker_name?: string; aliases?: string[]
+  defect_codes?: string[]; solution_methods?: string[]
+}
 export type TaskRepairOptions = {
   issue_key: string
   components: RepairComponent[]
@@ -516,6 +519,7 @@ export type TaskRepairOptions = {
   defect_code: string | null
   solution_method: string | null
   solution_methods: { code: string; label: string }[]
+  defect_method_suggestions?: Record<string, string[]>
   field_snapshot: RepairFieldSnapshot
 }
 export type TaskRepairFields = { componentIds: string[]; solutionMethod: string; expected: RepairFieldSnapshot }

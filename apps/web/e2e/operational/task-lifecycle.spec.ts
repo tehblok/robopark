@@ -61,7 +61,7 @@ async function installLifecycle(page: Page, session: Session, origin: string) {
 
 async function snapshot(bridge: Bridge) {
   const response = await bridgeCall(bridge, { control: 'snapshot' })
-  return response.json as { counts: Record<string, number>; field_values: Record<string, string | string[]>; actions: Array<{ id: string; action: string; state: string; error_code: string | null }>; claims: Array<{ issue_key: string; owner_user_id: number; state: string; start_action_id: string }>; timeline: string[] }
+  return response.json as { component_ids: string[]; counts: Record<string, number>; field_values: Record<string, string | string[]>; actions: Array<{ id: string; action: string; state: string; error_code: string | null }>; claims: Array<{ issue_key: string; owner_user_id: number; state: string; start_action_id: string }>; timeline: string[] }
 }
 
 async function drain(bridge: Bridge) {
@@ -140,6 +140,10 @@ async function submitReview(page: Page, input: { clarification?: string; camera?
   await page.getByRole('tab', { name: 'Задача', exact: true }).click()
   await page.getByRole('button', { name: 'Передать на проверку', exact: true }).click()
   const form = page.locator('form').filter({ has: page.getByLabel('Что случилось?') })
+  const componentChoice = form.getByRole('checkbox', { name: 'Мотор-колесо', exact: true })
+  if (!input.method) await componentChoice.check()
+  await expect(form.getByText(/Что ремонтируем: Мотор-колесо/)).toBeVisible()
+  await expect(form.getByRole('checkbox', { name: /ROBOT_UNSORTED/ })).toHaveCount(0)
   await form.getByLabel('Что случилось?').selectOption('BD-01')
   await form.getByRole('button', { name: input.method ?? 'Заменил', exact: true }).click()
   await form.getByRole('textbox', { name: /Добавить уточнение|Комментарий о выполненной работе/ })
@@ -229,6 +233,7 @@ async function runLifecycle(page: Page, width: number) {
     if (await pendingClaim.isVisible()) await expect(submitForReview).toHaveCount(0)
     await drain(bridge)
     await expect(submitForReview).toBeVisible({ timeout: 12_000 })
+    expect((await snapshot(bridge)).component_ids).toEqual(['162206'])
     const afterClaim = (await snapshot(bridge)).actions
     expect(afterClaim.filter(action => action.state !== 'succeeded')).toEqual([])
     expect(afterClaim.some(action => action.action === 'assign_operator')).toBe(false)

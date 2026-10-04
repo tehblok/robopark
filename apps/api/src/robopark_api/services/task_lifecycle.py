@@ -454,6 +454,7 @@ def workflow(
         "tracker_error",
         "repair_fields_conflict",
         "repair_component_invalid",
+        "temporary_component_unavailable",
     }:
         sync_error = None
     return {
@@ -643,9 +644,6 @@ def _claim_locked(
             )
         )
     elif not (issue or {}).get("components"):
-        selected_components = repair_fields.resolve_claim_components(
-            issue or {}, component_options, component_ids
-        )
         component = _action(
             db,
             actor=actor,
@@ -653,14 +651,15 @@ def _claim_locked(
             action="ensure_components",
             idempotency_key=idempotency_key,
             payload={
-                "value": selected_components,
+                "policy": "temporary_component",
+                "name": repair_fields.TEMPORARY_COMPONENT_NAME,
                 "depends_on_action_ids": [tag.row.id],
             },
         ).row
     payload = {
         "owner_user_id": actor.id,
         "park_id": park.id,
-        "component_policy": "catalog",
+        "component_policy": "temporary_unsorted",
         "depends_on_action_ids": [component.id if component is not None else tag.row.id],
     }
     if existing_assign is not None and existing_start is not None:
@@ -1056,13 +1055,21 @@ def submit_review(
         if repair_fields_payload is not None
         else None
     )
+    if (
+        structured is None
+        and current_issue is not None
+        and repair_fields.has_temporary_component(current_issue)
+    ):
+        raise HTTPException(409, "repair_fields_required")
     if structured is not None:
         if (
             current_issue is None
             or repair_fields.field_snapshot(current_issue) != structured["expected"]
         ):
             raise HTTPException(409, "repair_fields_conflict")
-        repair_fields.validate_component_selection(structured, component_options or [])
+        repair_fields.validate_component_selection(
+            structured, component_options or [], current_issue=current_issue
+        )
     generated_report = (
         repair_fields.report_text(structured, component_options or []) if structured else None
     )

@@ -136,15 +136,6 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
             raise HTTPException(404, "park_not_found")
         if task_lifecycle.issue_park(db, issue).id != park.id:
             raise HTTPException(409, "sync_park_mismatch")
-        components = []
-        if not issue.get("components"):
-            try:
-                components = tracker_client.list_queue_components(
-                    token=platform_settings.get_tracker_token(db) or "",
-                    queue=str(issue.get("queue") or ""),
-                )
-            except tracker_client.TrackerError as exc:
-                raise HTTPException(503, "tracker_upstream_error") from exc
         return task_lifecycle.claim(
             db,
             actor=user,
@@ -153,7 +144,7 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
             idempotency_key=item.idempotency_key,
             issue=issue,
             component_ids=item.payload.get("component_ids"),
-            component_options=components,
+            component_options=[],
         )
     if item.action == "handoff":
         _issue(db, user, item)

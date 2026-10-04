@@ -617,13 +617,13 @@ class TrackerIssueClaimOut(BaseModel):
     state: Literal["pending", "active"]
 
 
-class TrackerClaimIn(BaseModel):
-    component_ids: list[str] = Field(default_factory=list, max_length=20)
-
-
 class RepairComponentOptionOut(BaseModel):
     id: str
     label: str
+    tracker_name: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    defect_codes: list[str] = Field(default_factory=list)
+    solution_methods: list[str] = Field(default_factory=list)
 
 
 class RepairFieldSnapshotOut(BaseModel):
@@ -646,6 +646,7 @@ class RepairOptionsOut(BaseModel):
     defect_code: str | None = None
     solution_method: str | None = None
     solution_methods: list[RepairSolutionMethodOut]
+    defect_method_suggestions: dict[str, list[str]] = Field(default_factory=dict)
     field_snapshot: RepairFieldSnapshotOut
 
 

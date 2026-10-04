@@ -79,6 +79,26 @@ const repairOptions = {
   field_snapshot: { component_ids: ['wheel'], defect_code: 'BD-01', solution_method: null },
 }
 
+it('links component and defect suggestions without inventing or resetting the performed action', () => {
+  const linkedCodes = [...codes, { code: 'EL-06', label: 'Не откалибровано', description: null }, { code: 'EL-10', label: 'Нет изображения с камеры', description: null }]
+  const options = { ...repairOptions, defect_code: null, selected_component_ids: ['camera'], components: [
+    { id: 'camera', label: 'Камера', defect_codes: ['EL-06', 'EL-10'], solution_methods: ['CHANGE', 'CONFIG'] },
+    { id: 'wheel', label: 'Колесо', defect_codes: ['BD-01'], solution_methods: ['REPAIR'] },
+  ], solution_methods: [...repairOptions.solution_methods, { code: 'CONFIG', label: 'Настроил' }, { code: 'DIAG', label: 'Провёл диагностику' }], defect_method_suggestions: { 'EL-06': ['CONFIG', 'DIAG'] } }
+  render(<SubmitReviewForm defectCodes={linkedCodes} hasQualifyingComment repairOptions={options} onSubmit={vi.fn()} />)
+  const related = screen.getByRole('group', { name: 'Для выбранной детали' })
+  expect(related).toHaveTextContent('Не откалибровано')
+  expect(related).not.toHaveTextContent('Вмятина')
+  fireEvent.change(screen.getByRole('combobox', { name: 'Что случилось?' }), { target: { value: 'EL-06' } })
+  expect(screen.getByRole('group', { name: 'Что сделали?' }).querySelector('button')).toHaveTextContent('Настроил')
+  expect(screen.getByRole('button', { name: 'Настроил' })).toHaveAttribute('aria-pressed', 'false')
+  fireEvent.click(screen.getByRole('button', { name: 'Настроил' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Колесо' }))
+  expect(screen.getByRole('combobox', { name: 'Что случилось?' })).toHaveValue('EL-06')
+  expect(screen.getByRole('button', { name: 'Настроил' })).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('option', { name: 'Вмятина · BD-01' })).toBeInTheDocument()
+})
+
 it('submits explicit repair choices without making the mechanic retype the structured report', async () => {
   const onSubmit = vi.fn(async (_value: import('./SubmitReviewForm').SubmitReviewValue) => undefined)
   render(<SubmitReviewForm defectCodes={codes} hasQualifyingComment={false} repairOptions={repairOptions} onSubmit={onSubmit} />)

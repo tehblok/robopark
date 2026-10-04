@@ -2,6 +2,8 @@ import type { TaskSyncState } from '../../api'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 
 const reasons: Record<string, string> = {
+  repair_fields_required: 'Укажите деталь или узел в форме отчёта, затем передайте задачу на проверку.',
+  temporary_component_unavailable: 'Не удалось подготовить задачу к работе. Оператору нужно проверить компоненту ROBOT_UNSORTED в справочнике очереди, затем повторить отправку.',
   repair_fields_conflict: 'Поля ремонта изменились в Tracker. Проверьте актуальные значения и передайте отчёт на проверку ещё раз.',
   repair_component_invalid: 'Выбранная компонента больше недоступна. Выберите актуальную компоненту и передайте отчёт на проверку ещё раз.',
   task_component_selection_required: 'Нужно выбрать компоненту ремонта. Обновите задачу и повторите взятие в работу.',

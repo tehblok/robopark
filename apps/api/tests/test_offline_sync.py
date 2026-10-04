@@ -553,6 +553,59 @@ def test_offline_claim_preserves_existing_component_without_catalog_lookup(
     assert response.json()["results"][0]["state"] == "confirmed", response.json()
 
 
+def test_offline_empty_claim_queues_temporary_component_without_catalog_lookup(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import platform_settings, tracker_client
+
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_client,
+        "get_issue",
+        lambda **_kwargs: {
+            "key": "ROBOPARK-51",
+            "summary": "blocker [447]",
+            "status": "В очереди",
+            "status_key": "queued",
+            "queue": "ROBOPARK",
+            "tags": [seed_park_with_tracker.tag],
+            "components": [],
+            "component_ids": [],
+        },
+    )
+    monkeypatch.setattr(
+        tracker_client,
+        "list_queue_components",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Offline claim must not require component catalog")
+        ),
+    )
+    login_as(client, seed_mechanic.username, "secret")
+
+    response = client.post(
+        "/sync/batch",
+        json=_batch(
+            _action(
+                "empty-component-claim",
+                action="claim",
+                park_id=seed_park_with_tracker.id,
+                payload={},
+            )
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["state"] == "confirmed"
+    component = db_session.scalar(
+        select(ReliableAction).where(ReliableAction.action == "ensure_components")
+    )
+    payload = json.loads(component.payload_json)
+    assert (payload["policy"], payload["name"]) == (
+        "temporary_component",
+        "ROBOT_UNSORTED",
+    )
+
+
 def test_offline_nonmechanic_claim_is_rejected_before_catalog_lookup(
     client, db_session, seed_royal, seed_park_with_tracker, monkeypatch
 ):
@@ -675,8 +728,8 @@ def test_offline_review_persists_operator_notification_with_review(
             "status_key": "in_progress",
             "queue": "ROBOPARK",
             "tags": [seed_park_with_tracker.tag],
-            "components": ["Лидар"],
-            "component_ids": ["lidar"],
+            "components": ["ROBOT_UNSORTED"],
+            "component_ids": ["162206"],
             "defect_code": None,
             "solution_method": None,
         },
@@ -684,7 +737,10 @@ def test_offline_review_persists_operator_notification_with_review(
     monkeypatch.setattr(
         tracker_client,
         "list_queue_components",
-        lambda **_kwargs: [{"id": "lidar", "label": "Лидар"}],
+        lambda **_kwargs: [
+            {"id": "162206", "label": "ROBOT_UNSORTED"},
+            {"id": "lidar", "label": "Лидар"},
+        ],
     )
     login_as(client, seed_mechanic.username, "secret")
 
@@ -725,7 +781,7 @@ def test_offline_review_persists_operator_notification_with_review(
                         "component_ids": ["lidar"],
                         "solution_method": "REPAIR",
                         "expected": {
-                            "component_ids": ["lidar"],
+                            "component_ids": ["162206"],
                             "defect_code": None,
                             "solution_method": None,
                         },

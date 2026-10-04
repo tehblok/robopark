@@ -30,7 +30,7 @@ _NEEDS_ATTENTION_CODES = {
     "transition_not_found",
     "unauthorized",
 }
-_TRANSIENT_CODES = {"429", "network", "timeout"}
+_TRANSIENT_CODES = {"429", "network", "timeout", "temporary_component_version_conflict"}
 
 
 @dataclass(frozen=True)

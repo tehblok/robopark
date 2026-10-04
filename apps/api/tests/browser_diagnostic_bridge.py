@@ -90,8 +90,8 @@ def run():
             "counts": Counter(),
             "assignee": None,
             "tags": ["north"],
-            "components": ["Колёса"],
-            "component_ids": ["wheels"],
+            "components": [],
+            "component_ids": [],
             "defect_code": None,
             "solution_method": None,
             "transitions": [
@@ -193,14 +193,21 @@ def run():
         def set_issue_components(*, components, **_kwargs):
             require_tracker()
             tracker["counts"]["components"] += 1
-            tracker["components"] = list(components)
+            tracker["component_ids"] = list(components)
+            labels = {
+                "162206": "ROBOT_UNSORTED",
+                "wheels": "ROBOT_SUSPENSION_WHEEL",
+                "lidar": "ROBOT_SENSORS_LIDAR",
+            }
+            tracker["components"] = [labels.get(value, value) for value in components]
 
         def list_queue_components(**_kwargs):
             require_tracker()
             tracker["counts"]["component_catalog"] += 1
             return [
-                {"id": "wheels", "label": "Колёса"},
-                {"id": "lidar", "label": "Лидар"},
+                {"id": "162206", "label": "ROBOT_UNSORTED"},
+                {"id": "wheels", "label": "ROBOT_SUSPENSION_WHEEL"},
+                {"id": "lidar", "label": "ROBOT_SENSORS_LIDAR"},
             ]
 
         def set_repair_fields(*, component_ids, defect_code, solution_method, **_kwargs):
@@ -210,7 +217,10 @@ def run():
             tracker["counts"]["repair_fields:defect_code"] += 1
             tracker["counts"]["repair_fields:solution_method"] += 1
             tracker["component_ids"] = list(component_ids)
-            labels = {"wheels": "Колёса", "lidar": "Лидар"}
+            labels = {
+                "wheels": "ROBOT_SUSPENSION_WHEEL",
+                "lidar": "ROBOT_SENSORS_LIDAR",
+            }
             tracker["components"] = [labels.get(value, value) for value in component_ids]
             tracker["defect_code"] = defect_code
             tracker["solution_method"] = solution_method
@@ -357,6 +367,8 @@ def run():
                         "json": {
                             "counts": dict(tracker["counts"]),
                             "field_values": tracker["field_values"],
+                            "components": list(tracker["components"]),
+                            "component_ids": list(tracker["component_ids"]),
                             "actions": actions,
                             "claims": claims,
                             "timeline": timeline,

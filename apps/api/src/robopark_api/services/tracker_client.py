@@ -1383,11 +1383,14 @@ def set_issue_tags(*, token: str, key: str, tags: list[str]) -> None:
     _run_mutation(_run)
 
 
-def set_issue_components(*, token: str, key: str, components: list[str]) -> None:
+def set_issue_components(
+    *, token: str, key: str, components: list[str], issue_resource: Any | None = None
+) -> None:
     client = _client(token)
 
     def _run() -> None:
-        client.issues[key].update(components=components)
+        issue = issue_resource or client.issues[key]
+        issue.update(components=components)
 
     _run_mutation(_run)
 
