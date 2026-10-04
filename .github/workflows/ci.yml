@@ -98,7 +98,20 @@ jobs:
       - name: Verify the production PWA in the pinned Linux image
         env:
           ROBOPARK_PLAYWRIGHT_ARTIFACTS: test-results/linux-pwa
-        run: npm run test:e2e:pwa:linux
+        shell: bash
+        run: |
+          mkdir -p test-results
+          npm run test:e2e:pwa:linux 2>&1 | tee test-results/pwa-run.log
+      - name: Preserve PWA evidence before the remaining browser workflows
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pwa-workflows
+          path: |
+            apps/web/test-results/linux-pwa/
+            apps/web/test-results/pwa-run.log
+          if-no-files-found: error
+          retention-days: 14
       - name: Verify workflows in Chromium, Firefox and WebKit
         # Collect independent workflow evidence even if the PWA gate fails.
         if: ${{ !cancelled() }}
