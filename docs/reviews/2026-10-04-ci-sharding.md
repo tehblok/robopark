@@ -71,3 +71,15 @@ fixtures provide a ready status and drive the actual five-second refresh for
 stale/denied states. Assistant spacing is included at all six widths. Terminal
 screenshots no longer attempt to create `/work/output`. The CI governance suite
 passed 21 tests with the exact four-shard workflow contract.
+
+## Early PWA diagnostics
+
+Run 37233412409 finished its failing PWA step while the following cross-browser
+matrix was still running. GitHub's job log endpoint did not yet have a log blob,
+and the existing end-of-job artifact upload had not run.
+
+The PWA step now captures its output with `tee` under explicit Bash pipefail
+semantics. A separate `pwa-workflows` artifact is uploaded immediately afterward,
+including on failure. The later combined artifact remains available, preserving
+existing troubleshooting paths. The independent cross-browser checks and every
+required gate still run; no test or assertion is removed.

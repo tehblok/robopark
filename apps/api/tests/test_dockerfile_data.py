@@ -229,10 +229,19 @@ def test_ci_uses_only_the_pinned_verification_entrypoints():
         "npm ci",
         "npm run test:e2e:linux -- --workers=2 --shard=${{ matrix.shard }}/4",
         "npm ci",
-        "npm run test:e2e:pwa:linux",
+        "|",
         "npm run test:e2e:crossbrowser:linux -- --workers=2",
         "|",
     ]
+    assert (
+        "shell: bash\n"
+        "        run: |\n"
+        "          mkdir -p test-results\n"
+        "          npm run test:e2e:pwa:linux 2>&1 | tee test-results/pwa-run.log"
+    ) in workflow
+    assert workflow.index("name: pwa-workflows") < workflow.index(
+        "name: Verify workflows in Chromium, Firefox and WebKit"
+    )
     assert "docker build -t robopark-bot:verify apps/bot" in workflow
     assert "docker run --rm --entrypoint python robopark-bot:verify" in workflow
     assert "uv pip install" not in workflow

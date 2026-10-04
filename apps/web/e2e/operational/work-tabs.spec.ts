@@ -165,6 +165,7 @@ for (const width of [390, 1440]) {
     expectRelatedQuery(queries.at(-1)!, firstRepair.key, false)
     await page.getByRole('tabpanel').getByRole('button', { name: `Открыть задачу ${secondRepair.key}: ${secondRepair.summary}`, exact: true }).click()
     await expectWorkLocation(page, secondRepair.key)
+    await expectTaskIdentity(page, secondRepair.key, secondRepair.summary)
     expect(new URL(page.url()).searchParams.get('blocker')).toBe(rootKey)
     await page.getByRole('tab', { name: 'Проверка', exact: true }).click()
     await expectWorkLocation(page, secondRepair.key, 'check')
