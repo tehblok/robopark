@@ -37,7 +37,7 @@ from robopark_api.services.reliable_actions import canonical_payload
 from robopark_api.services.task_timeline import append_user_message
 from robopark_api.services.tracker_policy import enforce_issue_scope
 from robopark_api.sync_schemas import SyncActionIn, SyncActionResultOut, SyncBatchIn, SyncBatchOut
-from robopark_api.task_workflow_models import MediaUploadSession, OfflineSyncReceipt
+from robopark_api.task_workflow_models import OfflineSyncReceipt
 
 
 def _ordered(actions: list[SyncActionIn]) -> list[SyncActionIn]:
@@ -100,7 +100,12 @@ def _authorize_review(db: Session, user: User, item: SyncActionIn, *, fresh: boo
     return issue
 
 
-def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, Any]:
+def dispatch_action(
+    db: Session,
+    user: User,
+    item: SyncActionIn,
+    consumed_media: media_uploads.ConsumedUpload | None = None,
+) -> dict[str, Any]:
     if item.resource_type == "schedule_entry":
         try:
             return _schedule_action(db, user, item)
@@ -182,19 +187,9 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
         push_service = db.info.get("sync_push_service")
         if push_service is None:
             raise HTTPException(503, "sync_notification_service_unavailable")
-        media_id = str(item.payload.get("media_id") or "")
-        upload = db.scalar(
-            select(MediaUploadSession).where(
-                MediaUploadSession.actor_user_id == user.id,
-                MediaUploadSession.media_id == media_id,
-                MediaUploadSession.issue_key == item.resource_id,
-                MediaUploadSession.completed.is_(True),
-            )
-        )
-        if upload is None:
+        if consumed_media is None:
             raise HTTPException(409, "media_dependency_pending")
         context = tracker_signatures.build_signature_context(db, user, issue)
-        path = media_uploads.content_path(upload)
         structured = item.payload.get("repair_fields")
         if structured is not None and not isinstance(structured, dict):
             raise HTTPException(422, "repair_fields_invalid")
@@ -214,9 +209,9 @@ def dispatch_action(db: Session, user: User, item: SyncActionIn) -> dict[str, An
             actor=user,
             issue_key=item.resource_id,
             defect_code=str(item.payload.get("defect_code") or ""),
-            filename=upload.original_name,
-            content=path.read_bytes(),
-            content_type=upload.mime_type,
+            filename=consumed_media.original_name,
+            content=consumed_media.content,
+            content_type=consumed_media.mime_type,
             comment=str(item.payload.get("comment") or "") or None,
             repair_fields_payload=(
                 {**structured, "defect_code": str(item.payload.get("defect_code") or "")}
@@ -436,6 +431,25 @@ def synchronize(
             states[item.client_action_id] = result.state
             continue
         receipt_key = f"offline-sync:{user.id}:{batch.device_id}:{item.client_action_id}"
+        consumed_media = None
+        media_preflight_error: Exception | None = None
+        if dependent_media_id:
+            preexisting, _precanonical, _prehash = _receipt(db, user, batch.device_id, item)
+            if preexisting is None and _park_allowed(db, user, item.park_id):
+                try:
+                    _verify_prior_dependencies(db, user, batch.device_id, item, states)
+                    _authorize_review(db, user, item)
+                    consumed_media = media_uploads.consume_action_dependency(
+                        db,
+                        user,
+                        media_id=dependent_media_id,
+                        issue_key=item.resource_id,
+                        device_id=batch.device_id,
+                        action_id=item.client_action_id,
+                    )
+                except Exception as exc:
+                    db.rollback()
+                    media_preflight_error = exc
         with database_idempotency_lock(db, receipt_key):
             # A durable receipt is not an authorization grant. Recheck the
             # current park membership before returning a previous result.
@@ -487,17 +501,11 @@ def synchronize(
                 else:
                     try:
                         _verify_prior_dependencies(db, user, batch.device_id, item, states)
-                        if dependent_media_id:
-                            _authorize_review(db, user, item)
-                            media_uploads.bind_action_dependency(
-                                db,
-                                user,
-                                media_id=dependent_media_id,
-                                issue_key=item.resource_id,
-                                device_id=batch.device_id,
-                                action_id=item.client_action_id,
-                            )
-                        value = dispatch_action(db, user, item)
+                        if media_preflight_error is not None:
+                            raise media_preflight_error
+                        if dependent_media_id and consumed_media is None:
+                            raise HTTPException(409, "media_dependency_pending")
+                        value = dispatch_action(db, user, item, consumed_media)
                         result = SyncActionResultOut(
                             client_action_id=item.client_action_id,
                             state="confirmed",

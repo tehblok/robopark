@@ -15,6 +15,25 @@ from robopark_api.services import media_uploads
 router = APIRouter(prefix="/media/uploads", tags=["media-uploads"])
 
 
+async def _read_chunk(request: Request) -> bytes:
+    declared_length = request.headers.get("content-length")
+    if declared_length is not None:
+        try:
+            parsed_length = int(declared_length)
+        except ValueError as exc:
+            raise HTTPException(400, "media_chunk_size_invalid") from exc
+        if parsed_length <= 0 or parsed_length > media_uploads.MAX_CHUNK_BYTES:
+            raise HTTPException(400, "media_chunk_size_invalid")
+    content = bytearray()
+    async for chunk in request.stream():
+        if len(content) + len(chunk) > media_uploads.MAX_CHUNK_BYTES:
+            raise HTTPException(400, "media_chunk_size_invalid")
+        content.extend(chunk)
+    if not content:
+        raise HTTPException(400, "media_chunk_size_invalid")
+    return bytes(content)
+
+
 @router.post("", response_model=MediaUploadSessionOut, status_code=status.HTTP_201_CREATED)
 def create_upload(
     payload: MediaUploadCreateIn, user: User = Depends(require_user), db: Session = Depends(get_db)
@@ -41,7 +60,8 @@ async def put_chunk(
 ):
     if not chunk_sha256:
         raise HTTPException(400, "media_chunk_checksum_required")
-    content = await request.body()
+    media_uploads.authorize_chunk(db, user, upload_id)
+    content = await _read_chunk(request)
     received = media_uploads.append_chunk(db, user, upload_id, offset, content, chunk_sha256)
     return MediaChunkOut(received_offset=received)
 

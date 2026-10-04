@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import threading
 import time
@@ -8,10 +9,12 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
 from conftest import login_as, role_id_for
 from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, Park, User, UserPark
+from robopark_api.routers import media_uploads as media_uploads_router
 from robopark_api.security import hash_password
 from robopark_api.services import media_uploads, platform_settings, rbac, tracker_cache
 from robopark_api.task_workflow_models import MediaUploadSession
@@ -706,6 +709,72 @@ def test_resumable_upload_validates_offsets_checksums_and_replays(
     }
 
 
+def test_chunk_upload_stops_reading_once_stream_exceeds_limit(
+    db_session, seed_mechanic, monkeypatch
+):
+    chunks = [
+        b"a" * (media_uploads.MAX_CHUNK_BYTES // 2 + 1),
+        b"b" * (media_uploads.MAX_CHUNK_BYTES // 2),
+        b"must-not-be-read",
+    ]
+    reads = 0
+    events = []
+
+    async def receive():
+        nonlocal reads
+        chunk = chunks[reads]
+        reads += 1
+        events.append(f"read-{reads}")
+        return {"type": "http.request", "body": chunk, "more_body": reads < len(chunks)}
+
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "PUT",
+            "scheme": "http",
+            "path": "/media/uploads/upload-1/chunks/0",
+            "raw_path": b"/media/uploads/upload-1/chunks/0",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        },
+        receive,
+    )
+
+    monkeypatch.setattr(
+        media_uploads,
+        "authorize_chunk",
+        lambda *_args: events.append("authorized"),
+        raising=False,
+    )
+
+    def append_chunk(*_args):
+        pytest.fail("oversized content reached append_chunk")
+
+    monkeypatch.setattr(media_uploads, "append_chunk", append_chunk)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            media_uploads_router.put_chunk(
+                "upload-1",
+                0,
+                request,
+                "a" * 64,
+                seed_mechanic,
+                db_session,
+            )
+        )
+
+    assert (caught.value.status_code, caught.value.detail) == (
+        400,
+        "media_chunk_size_invalid",
+    )
+    assert reads == 2
+    assert events == ["authorized", "read-1", "read-2"]
+
+
 def test_upload_creation_persists_exact_action_dependency_before_content(
     client, db_session, seed_mechanic
 ):
@@ -1018,6 +1087,107 @@ def test_cleanup_removes_abandoned_and_old_completed_uploads(
     assert not (tmp_path / "completed.ready").exists()
 
 
+def test_failed_completion_commit_rolls_back_and_cleanup_removes_renamed_blob(
+    db_engine, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    now = time.time()
+    content = b"\xff\xd8\xffcommit-failure"
+    with Session(db_engine) as db:
+        row = MediaUploadSession(
+            actor_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            media_id="failed-completion-commit",
+            issue_key="ROBOPARK-51",
+            original_name="robot.jpg",
+            mime_type="image/jpeg",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            received_offset=len(content),
+            blob_name="failed-completion.part",
+            completed=False,
+            created_at=now,
+            updated_at=now,
+            expires_at=now + 60,
+        )
+        db.add(row)
+        db.commit()
+        upload_id = row.id
+    source = tmp_path / "failed-completion.part"
+    ready = tmp_path / f"{upload_id}.ready"
+    source.write_bytes(content)
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+
+    with Session(db_engine) as db:
+        actor = db.get(User, seed_mechanic.id)
+
+        def fail_commit():
+            raise RuntimeError("commit failed before durability")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+        with pytest.raises(RuntimeError, match="commit failed"):
+            media_uploads.complete(db, actor, upload_id)
+        assert db.in_transaction() is False
+
+    assert not source.exists()
+    assert ready.read_bytes() == content
+    with Session(db_engine) as db:
+        persisted = db.get(MediaUploadSession, upload_id)
+        assert persisted.completed is False
+        assert persisted.blob_name == "failed-completion.part"
+        assert media_uploads.cleanup_expired(db, now=now + 61) == 1
+    assert not ready.exists()
+
+
+def test_completion_commit_ambiguous_success_is_replayable_from_fresh_session(
+    db_engine, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    now = time.time()
+    content = b"\xff\xd8\xffambiguous-commit"
+    with Session(db_engine) as db:
+        row = MediaUploadSession(
+            actor_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            media_id="ambiguous-completion-commit",
+            issue_key="ROBOPARK-51",
+            original_name="robot.jpg",
+            mime_type="image/jpeg",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            received_offset=len(content),
+            blob_name="ambiguous-completion.part",
+            completed=False,
+            created_at=now,
+            updated_at=now,
+            expires_at=now + 60,
+        )
+        db.add(row)
+        db.commit()
+        upload_id = row.id
+    (tmp_path / "ambiguous-completion.part").write_bytes(content)
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+
+    with Session(db_engine) as db:
+        actor = db.get(User, seed_mechanic.id)
+        durable_commit = db.commit
+
+        def commit_then_fail():
+            durable_commit()
+            raise RuntimeError("commit acknowledgement lost")
+
+        monkeypatch.setattr(db, "commit", commit_then_fail)
+        with pytest.raises(RuntimeError, match="acknowledgement lost"):
+            media_uploads.complete(db, actor, upload_id)
+        assert db.in_transaction() is False
+
+    with Session(db_engine) as db:
+        actor = db.get(User, seed_mechanic.id)
+        replay = media_uploads.complete(db, actor, upload_id)
+        assert replay.completed is True
+        assert replay.blob_name == f"{upload_id}.ready"
+        assert media_uploads.cleanup_expired(db, now=now + 61) == 0
+    assert (tmp_path / f"{upload_id}.ready").read_bytes() == content
+
+
 def test_cleanup_serializes_eligibility_with_expired_upload_reinitialization(
     db_engine, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
 ):
@@ -1100,6 +1270,50 @@ def test_cleanup_serializes_eligibility_with_expired_upload_reinitialization(
         persisted = db.get(MediaUploadSession, row_id)
         assert persisted is not None
         assert persisted.expires_at > now
+
+
+def test_expired_upload_reinitialization_removes_orphaned_ready_blob(
+    db_session, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    now = time.time()
+    content = b"\xff\xd8\xfforphan"
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        park_id=seed_park_with_tracker.id,
+        media_id="reinitialize-orphan-ready",
+        issue_key="ROBOPARK-51",
+        original_name="robot.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        received_offset=len(content),
+        blob_name="missing-after-rename.part",
+        completed=False,
+        created_at=now - media_uploads.SESSION_TTL_SECONDS - 1,
+        updated_at=now - 1,
+        expires_at=now - 1,
+    )
+    db_session.add(row)
+    db_session.commit()
+    orphan = tmp_path / f"{row.id}.ready"
+    orphan.write_bytes(content)
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+
+    restarted = media_uploads.start(
+        db_session,
+        seed_mechanic,
+        media_uploads.MediaUploadCreateIn(
+            media_id=row.media_id,
+            issue_key=row.issue_key,
+            name=row.original_name,
+            mime_type=row.mime_type,
+            size_bytes=row.size_bytes,
+            sha256=row.sha256,
+        ),
+    )
+
+    assert restarted.status == "reinitialized"
+    assert not orphan.exists()
 
 
 def test_cleanup_cannot_delete_session_while_chunk_is_writing(
@@ -1297,6 +1511,120 @@ def test_cleanup_retains_completed_upload_while_dependent_action_is_pending(
     )
     assert db_session.get(MediaUploadSession, row.id) is None
     assert not (tmp_path / row.blob_name).exists()
+
+
+def test_cleanup_bounds_nonterminal_dependency_retention(
+    db_session, seed_mechanic, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    now = time.time()
+    row = MediaUploadSession(
+        actor_user_id=seed_mechanic.id,
+        media_id="media-abandoned-dependent",
+        issue_key="ROBOPARK-1",
+        original_name="review.jpg",
+        mime_type="image/jpeg",
+        size_bytes=4,
+        sha256="c" * 64,
+        received_offset=4,
+        blob_name="abandoned-dependent.ready",
+        completed=True,
+        created_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 10,
+        updated_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 10,
+        completed_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 1,
+        expires_at=now - 1,
+        dependent_device_id="phone-1",
+        dependent_action_id="abandoned-action",
+        dependency_bound_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 10,
+        dependency_terminal_at=None,
+    )
+    db_session.add(row)
+    db_session.commit()
+    path = tmp_path / row.blob_name
+    path.write_bytes(b"data")
+
+    assert media_uploads.cleanup_expired(db_session, now=now) == 1
+    assert db_session.get(MediaUploadSession, row.id) is None
+    assert not path.exists()
+
+
+def test_cleanup_waits_for_dependency_content_read(
+    db_engine, seed_mechanic, seed_park_with_tracker, tmp_path, monkeypatch
+):
+    now = time.time()
+    content = b"dependency-content"
+    with Session(db_engine) as db:
+        row = MediaUploadSession(
+            actor_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            media_id="media-read-cleanup-race",
+            issue_key="ROBOPARK-51",
+            original_name="review.jpg",
+            mime_type="image/jpeg",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            received_offset=len(content),
+            blob_name="read-cleanup-race.ready",
+            completed=True,
+            created_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 10,
+            updated_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 10,
+            completed_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 1,
+            expires_at=now - 1,
+            dependent_device_id="phone-1",
+            dependent_action_id="read-cleanup-action",
+            dependency_bound_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 10,
+        )
+        db.add(row)
+        db.commit()
+        upload_id = row.id
+    path = tmp_path / "read-cleanup-race.ready"
+    path.write_bytes(content)
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    original_read_bytes = Path.read_bytes
+    read_started = threading.Event()
+    allow_read = threading.Event()
+    cleanup_done = threading.Event()
+
+    def hold_read(candidate: Path):
+        if candidate == path:
+            read_started.set()
+            assert allow_read.wait(timeout=2)
+        return original_read_bytes(candidate)
+
+    monkeypatch.setattr(Path, "read_bytes", hold_read)
+
+    def consume():
+        with Session(db_engine) as db:
+            actor = db.get(User, seed_mechanic.id)
+            return media_uploads.consume_action_dependency(
+                db,
+                actor,
+                media_id="media-read-cleanup-race",
+                issue_key="ROBOPARK-51",
+                device_id="phone-1",
+                action_id="read-cleanup-action",
+            ).content
+
+    def cleanup():
+        try:
+            with Session(db_engine) as db:
+                return media_uploads.cleanup_expired(db, now=now)
+        finally:
+            cleanup_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        consume_future = executor.submit(consume)
+        assert read_started.wait(timeout=1)
+        cleanup_future = executor.submit(cleanup)
+        cleanup_ran_during_read = cleanup_done.wait(timeout=0.2)
+        allow_read.set()
+        assert consume_future.result(timeout=2) == content
+        assert cleanup_future.result(timeout=2) == 1
+
+    assert cleanup_ran_during_read is False
+    assert not path.exists()
+    with Session(db_engine) as db:
+        assert db.get(MediaUploadSession, upload_id) is None
 
 
 def test_cleanup_retries_transient_upload_unlink_failure(
