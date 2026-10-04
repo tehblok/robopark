@@ -481,9 +481,13 @@ def test_claim_without_park_operator_keeps_local_assignment_and_defers_upstream_
 def test_sdk_retries_disabled_for_durable_mutations(monkeypatch):
     constructed = []
     monkeypatch.setattr(tracker_client, "_CLIENTS", {})
-    monkeypatch.setattr(
-        tracker_client, "_import_startrek", lambda: lambda **kwargs: constructed.append(kwargs)
-    )
+    from yandex_tracker_client import TrackerClient
+
+    def construct(**kwargs):
+        constructed.append(kwargs)
+        return TrackerClient(**kwargs)
+
+    monkeypatch.setattr(tracker_client, "_import_startrek", lambda: construct)
     tracker_client._client("test-only")
     assert constructed[0]["retries"] == 0
     assert constructed[0]["timeout"] == 10

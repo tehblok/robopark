@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import threading
+import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from itertools import islice
@@ -66,7 +67,10 @@ _ATTACHMENT_EXT_MIMES = {
     "heif": "image/heif",
 }
 
+# Robopark uses one platform token. Retain only the last requested client;
+# in-flight calls and SDK resources keep retired clients alive until they finish.
 _CLIENTS: dict[str, Any] = {}
+_CLIENTS_LOCK = threading.Lock()
 
 _WORK_HISTORY_WORKERS = 2
 _WORK_HISTORY_TTL_SECONDS = 60.0
@@ -99,24 +103,31 @@ def _import_startrek():
 
 
 def clear_tracker_clients() -> None:
-    """Сброс кэша Startrek после смены OAuth-токена."""
-    _CLIENTS.clear()
+    """Retire the cached client without closing sessions still used by SDK resources."""
+    with _CLIENTS_LOCK:
+        _CLIENTS.clear()
 
 
 def _client(token: str):
-    cached = _CLIENTS.get(token)
-    if cached is not None:
-        return cached
-    TrackerClient = _import_startrek()
-    client = TrackerClient(
-        headers={"User-Agent": USER_AGENT},
-        base_url=API_BASE,
-        token=token,
-        retries=0,
-        timeout=10,
-    )
-    _CLIENTS[token] = client
-    return client
+    with _CLIENTS_LOCK:
+        cached = _CLIENTS.get(token)
+        if cached is not None:
+            return cached
+        TrackerClient = _import_startrek()
+        client = TrackerClient(
+            headers={"User-Agent": USER_AGENT},
+            base_url=API_BASE,
+            token=token,
+            retries=0,
+            timeout=10,
+        )
+        # SDK resources reference their connection and client. Close only when
+        # that whole object graph is unreachable, never during a live request.
+        # The session itself has no back-reference to the client.
+        weakref.finalize(client, client._connection.session.close)
+        _CLIENTS.clear()
+        _CLIENTS[token] = client
+        return client
 
 
 def build_issue_url(key: str) -> str:
