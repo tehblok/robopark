@@ -3,25 +3,27 @@
 ## Установка и обновление
 
 На Ubuntu/Armbian с Python 3.10+, `curl` и `sudo` одна команда скачивает
-проверенный выпуск rc.21, сверяет SHA-256 и запускает меню установки:
+кандидат выпуска rc.24, сверяет SHA-256 и запускает меню установки:
 
 ```sh
-d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.21.dev13181400260723547202/robopark-0.2.0-rc.21.dev13181400260723547202.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' 'eb2168458af4a6588c49f0f7100931bd690845bfff58ac5f69b2668014002092  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
+d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.24/robopark-0.2.0-rc.24.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' '35d0288b8d48b3c7ec27297188eddd6a27df8a5a17eb39357b0d240b553f2bd5  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
 ```
 
 Выберите «Чистая установка» на новом хосте. Установщик интерактивно запросит
 Tuna token, домен и пароль первого владельца. При найденных данных Robopark
 чистая установка откажет; для работающего хоста используйте OTA-обновление.
-Пакет поддерживает обновление с точного rc.20, указанного в его manifest.
+Пакет обновляет только точные версии, перечисленные в его manifest.
 ARM64/AMD64, поддерживаемые ОС и требования к памяти/диску перечислены в
 [руководстве установки](docs/runbooks/usb-clean-install.md).
 Происхождение и границы проверки опубликованного пакета — в
-[описании rc.21](docs/releases/0.2.0-rc.21.dev13181400260723547202.md).
+[описании rc.24](docs/releases/0.2.0-rc.24.md) и
+[отчёте о проверке](docs/reviews/2026-10-04-local-ai.md).
 
-> **GEACX1 и NVMe:** опубликованный `rc.21` не содержит поддержки управляемых
-> storage layout и не подходит для их подготовки. Используйте пакет, собранный
-> из новых исходников и выпущенный с новой версией; порядок выбора и проверки
-> двух режимов описан в [инструкции по хранилищу GEACX1](docs/runbooks/geacx1-storage.md).
+> **GEACX1 и NVMe:** rc.24 поддерживает NVMe с ОС и eMMC с ОС + NVMe для данных.
+> Порядок выбора и проверки описан в
+> [инструкции по хранилищу GEACX1](docs/runbooks/geacx1-storage.md).
+> ИИ устанавливается только на подтверждённый AGX Orin. Физическая проверка
+> GEACX1/JetPack 7.2 пока не выполнена; скорость и качество ответов не измерены.
 > Диагностика AGX, кэширование и короткие проверки описаны в
 > [руководстве по производительности](docs/runbooks/geacx1-performance.md).
 
