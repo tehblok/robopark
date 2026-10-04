@@ -180,3 +180,42 @@ test('conversation creation retries once and ignores a late response after anoth
   await expect(draft).toHaveValue('Проверить питание')
   expect(creations).toBe(2)
 })
+
+test('failed conversation deletion can be retried without clearing a newer selection', async ({ page }) => {
+  const first = { id: 'c-1', title: 'Первый разговор', park_id: 7, issue_key: null, updated_at: '', messages: [], jobs: [] }
+  const second = { ...first, id: 'c-2', title: 'Второй разговор' }
+  let deletions = 0
+  let finishDelete!: () => void
+  const pendingDelete = new Promise<void>(resolve => { finishDelete = resolve })
+  await openAssistant(page, mechanicUser, [
+    { method: 'GET', path: '/api/ai/status', handler: () => ({ json: readyStatus }) },
+    { method: 'GET', path: '/api/ai/conversations', handler: () => ({ json: [first, second] }) },
+    { method: 'GET', path: '/api/ai/conversations/c-1', handler: () => ({ json: first }) },
+    { method: 'GET', path: '/api/ai/conversations/c-2', handler: () => ({ json: second }) },
+    { method: 'DELETE', path: '/api/ai/conversations/c-1', handler: async () => {
+      deletions += 1
+      if (deletions === 1) return { status: 503, json: { detail: 'temporarily_unavailable' } }
+      await pendingDelete
+      return { json: { deleted: true } }
+    } },
+  ])
+  const remove = page.getByRole('button', { name: 'Удалить Первый разговор', exact: true })
+  const draft = page.getByLabel('Сообщение помощнику')
+  await draft.fill('Проверить питание')
+  await remove.click()
+  await expect(page.getByRole('alert')).toContainText('Не удалось удалить разговор')
+  await expect(remove).toBeEnabled()
+  await expect(page.getByRole('heading', { name: 'Первый разговор' })).toBeVisible()
+  await remove.click()
+  await expect(remove).toBeDisabled()
+  expect(deletions).toBe(2)
+  await page.getByRole('button', { name: 'Второй разговор', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+  finishDelete()
+  await expect(remove).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Первый разговор', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+  await expect(draft).toHaveValue('Проверить питание')
+  await expect(draft).toBeEnabled()
+  expect(deletions).toBe(2)
+})

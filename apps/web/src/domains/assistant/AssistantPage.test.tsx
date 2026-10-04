@@ -523,6 +523,152 @@ describe('AssistantPage', () => {
     expect(apiClient.cancelJob).not.toHaveBeenCalled()
   })
 
+  it('ignores a final answer detail that resolves after selecting another conversation', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    const second = { ...first, id: 'c-2', title: 'Второй разговор' }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    let finishAnswer!: (value: typeof first) => void
+    let firstReads = 0
+    vi.mocked(apiClient.conversation).mockImplementation(id => {
+      if (id === second.id) return Promise.resolve(second)
+      if (++firstReads === 1) return Promise.resolve(first)
+      return new Promise(resolve => { finishAnswer = resolve })
+    })
+    renderPage(apiClient)
+    const input = await screen.findByLabelText('Сообщение помощнику')
+    await waitFor(() => expect(input).toBeEnabled())
+    await userEvent.type(input, 'Проверить питание')
+    await userEvent.click(screen.getByRole('button', { name: 'Отправить' }))
+    await waitFor(() => expect(firstReads).toBe(2))
+    await userEvent.click(screen.getByRole('button', { name: 'Второй разговор' }))
+    await screen.findByRole('heading', { name: 'Второй разговор' })
+    await act(async () => finishAnswer(first))
+    expect(screen.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+    expect(input).toHaveValue('Проверить питание')
+  })
+
+  it('keeps the current selection when deleting an earlier selected conversation completes late', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    const second = { ...first, id: 'c-2', title: 'Второй разговор' }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    vi.mocked(apiClient.conversation).mockImplementation(async id => id === first.id ? first : second)
+    let finishDelete!: () => void
+    vi.mocked(apiClient.deleteConversation).mockImplementation(() => new Promise(resolve => { finishDelete = resolve }))
+    renderPage(apiClient)
+    await screen.findByRole('heading', { name: 'Первый разговор' })
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Первый разговор' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Второй разговор' }))
+    await screen.findByRole('heading', { name: 'Второй разговор' })
+    await act(async () => finishDelete())
+    expect(screen.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Первый разговор' })).not.toBeInTheDocument()
+  })
+
+  it('keeps both conversations removed when parallel deletions finish in reverse order', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    const second = { ...first, id: 'c-2', title: 'Второй разговор' }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    vi.mocked(apiClient.conversation).mockResolvedValue(first)
+    const finishes = new Map<string, () => void>()
+    vi.mocked(apiClient.deleteConversation).mockImplementation(id => new Promise(resolve => { finishes.set(id, resolve) }))
+    renderPage(apiClient)
+    await screen.findByRole('heading', { name: 'Первый разговор' })
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Первый разговор' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Второй разговор' }))
+    await act(async () => finishes.get(second.id)!())
+    await act(async () => finishes.get(first.id)!())
+    expect(screen.queryByRole('button', { name: 'Первый разговор' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Второй разговор' })).not.toBeInTheDocument()
+    expect(screen.getByText('Начните новый разговор.')).toBeVisible()
+  })
+
+  it('does not reopen a deleted conversation when its initial detail request resolves late', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Удалённый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first])
+    let finishOpen!: (value: typeof first) => void
+    vi.mocked(apiClient.conversation).mockImplementation(() => new Promise(resolve => { finishOpen = resolve }))
+    vi.mocked(apiClient.deleteConversation).mockResolvedValue(undefined)
+    renderPage(apiClient)
+    await waitFor(() => expect(apiClient.conversation).toHaveBeenCalledTimes(1))
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Удалённый разговор' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Удалённый разговор' })).not.toBeInTheDocument())
+    await act(async () => finishOpen(first))
+    expect(screen.queryByRole('heading', { name: 'Удалённый разговор' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Сообщение помощнику')).toBeEnabled()
+  })
+
+  it('coalesces duplicate delete clicks and exposes a failed deletion for retry', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first])
+    vi.mocked(apiClient.conversation).mockResolvedValue(first)
+    let failDelete!: (error: Error) => void
+    vi.mocked(apiClient.deleteConversation).mockImplementationOnce(() => new Promise((_resolve, reject) => { failDelete = reject })).mockResolvedValue(undefined)
+    renderPage(apiClient)
+    const remove = await screen.findByRole('button', { name: 'Удалить Первый разговор' })
+    act(() => { fireEvent.click(remove); fireEvent.click(remove) })
+    expect(apiClient.deleteConversation).toHaveBeenCalledTimes(1)
+    expect(remove).toBeDisabled()
+    await act(async () => failDelete(new Error('offline')))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось удалить разговор')
+    expect(remove).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Первый разговор' })).toBeVisible()
+    await userEvent.click(remove)
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Первый разговор' })).not.toBeInTheDocument())
+    expect(apiClient.deleteConversation).toHaveBeenCalledTimes(2)
+  })
+
+  it('aborts resumed polling after successful deletion and discards its late result', async () => {
+    const apiClient = client()
+    const pending = { id: 'j-pending', kind: 'chat', state: 'running' as const, created_at: '', updated_at: '', error: null, result: null }
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [pending] }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first])
+    vi.mocked(apiClient.conversation).mockResolvedValue(first)
+    let finishJob!: (value: Awaited<ReturnType<AssistantApiClient['job']>>) => void
+    vi.mocked(apiClient.job).mockImplementation(() => new Promise(resolve => { finishJob = resolve }))
+    vi.mocked(apiClient.deleteConversation).mockResolvedValue(undefined)
+    renderPage(apiClient)
+    await waitFor(() => expect(apiClient.job).toHaveBeenCalledTimes(1))
+    const signal = vi.mocked(apiClient.job).mock.calls[0][1]!
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Первый разговор' }))
+    await waitFor(() => expect(signal.aborted).toBe(true))
+    await act(async () => finishJob({ ...pending, state: 'succeeded' }))
+    expect(apiClient.conversation).toHaveBeenCalledTimes(1)
+    expect(apiClient.job).toHaveBeenCalledTimes(1)
+    expect(apiClient.cancelJob).not.toHaveBeenCalled()
+    expect(screen.queryByRole('heading', { name: 'Первый разговор' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Ответ ещё готовится/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Сообщение помощнику')).toBeEnabled()
+  })
+
+  it('preserves a new conversation creation when deletion of the old selection finishes first', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    const next = { ...first, id: 'c-new', title: 'Новый ремонт' }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first])
+    vi.mocked(apiClient.conversation).mockResolvedValue(first)
+    let finishDelete!: () => void
+    let finishCreate!: (value: typeof first) => void
+    vi.mocked(apiClient.deleteConversation).mockImplementation(() => new Promise(resolve => { finishDelete = resolve }))
+    vi.mocked(apiClient.createConversation).mockImplementation(() => new Promise(resolve => { finishCreate = resolve }))
+    renderPage(apiClient)
+    const create = await screen.findByRole('button', { name: 'Новый' })
+    await waitFor(() => expect(create).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Первый разговор' }))
+    await userEvent.click(create)
+    await act(async () => finishDelete())
+    expect(screen.getByLabelText('Сообщение помощнику')).toBeDisabled()
+    await act(async () => finishCreate(next))
+    expect(screen.getByRole('heading', { name: 'Новый ремонт' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Новый ремонт' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Первый разговор' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Сообщение помощнику')).toBeEnabled()
+  })
+
   it('waits for the initial conversation list before accepting a message or creating a new conversation', async () => {
     const apiClient = client()
     let finishList!: (value: Awaited<ReturnType<AssistantApiClient['conversations']>>) => void
@@ -606,6 +752,26 @@ describe('AssistantPage', () => {
 
     expect(await screen.findByText(/Ответ ещё готовится/)).toBeVisible()
     expect(apiClient.job).toHaveBeenCalledWith('j-pending', expect.any(AbortSignal))
+  })
+
+  it('resumes an unfinished job again after switching away and reopening its conversation', async () => {
+    const apiClient = client()
+    const pending = { id: 'j-pending', kind: 'chat', state: 'running' as const, created_at: '', updated_at: '', error: null, result: null }
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [pending] }
+    const second = { ...first, id: 'c-2', title: 'Второй разговор', jobs: [] }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    vi.mocked(apiClient.conversation).mockImplementation(async id => id === first.id ? first : second)
+    vi.mocked(apiClient.job).mockImplementation(() => new Promise(() => {}))
+    renderPage(apiClient)
+    await waitFor(() => expect(apiClient.job).toHaveBeenCalledTimes(1))
+    const firstSignal = vi.mocked(apiClient.job).mock.calls[0][1]!
+    await userEvent.click(screen.getByRole('button', { name: 'Второй разговор' }))
+    await screen.findByRole('heading', { name: 'Второй разговор' })
+    expect(firstSignal.aborted).toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: 'Первый разговор' }))
+    await waitFor(() => expect(apiClient.job).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(apiClient.job).mock.calls[1][1]!.aborted).toBe(false)
+    expect(apiClient.cancelJob).not.toHaveBeenCalled()
   })
 
   it('stops UI job polling on unmount without cancelling the durable job', async () => {

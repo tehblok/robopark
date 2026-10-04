@@ -181,24 +181,33 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
   const [sending, setSending] = useState(false)
   const [opening, setOpening] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [deleting, setDeleting] = useState(new Set<string>())
   const [activeJob, setActiveJob] = useState<AiJob | null>(null)
   const [error, setError] = useState<string | null>(null)
   const initializedContext = useRef<string | null>(null)
-  const resumedJobs = useRef(new Set<string>())
+  const resumedJob = useRef<string | null>(null)
+  const selectedIdRef = useRef<string | null>(null)
+  const deleteControllers = useRef(new Map<string, AbortController>())
+  const resumePollController = useRef<AbortController | null>(null)
   const openGeneration = useRef(0)
   const openController = useRef<AbortController | null>(null)
   const createController = useRef<AbortController | null>(null)
   const submitPollController = useRef<AbortController | null>(null)
 
+  const select = useCallback((id: string | null) => { selectedIdRef.current = id; setSelectedId(id) }, [])
+  const stopConversationRequests = useCallback(() => {
+    openController.current?.abort(); openController.current = null
+    submitPollController.current?.abort(); submitPollController.current = null
+    resumePollController.current?.abort(); resumePollController.current = null
+    resumedJob.current = null
+  }, [])
   const open = useCallback(async (id: string) => {
     const currentGeneration = ++openGeneration.current
     createController.current?.abort(); createController.current = null; setCreating(false)
-    openController.current?.abort()
-    submitPollController.current?.abort()
-    submitPollController.current = null
+    stopConversationRequests()
     const controller = new AbortController()
     openController.current = controller
-    setSelectedId(id); setDetail(null); setActiveJob(null); setSending(false); setOpening(true); setError(null)
+    select(id); setDetail(null); setActiveJob(null); setSending(false); setOpening(true); setError(null)
     try {
       const next = await api.conversation(id, controller.signal)
       if (currentGeneration === openGeneration.current && !controller.signal.aborted) setDetail(next)
@@ -210,7 +219,7 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
         if (!controller.signal.aborted) setOpening(false)
       }
     }
-  }, [api])
+  }, [api, select, stopConversationRequests])
   const create = useCallback(async (parentSignal?: AbortSignal) => {
     if (createController.current || parentSignal?.aborted) return null
     if (parkId == null) { setError('Сначала выберите парк.'); return null }
@@ -223,7 +232,8 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
       const conversation = await api.createConversation({ park_id: parkId, ...(issueKey ? { issue_key: issueKey, title: issueKey } : {}) })
       if (!current()) return null
       setSessionData(previous => [conversation, ...(previous ?? []).filter(item => item.id !== conversation.id)])
-      setSelectedId(conversation.id); setDetail({ ...conversation, messages: [], jobs: [] })
+      resumePollController.current?.abort(); resumePollController.current = null; resumedJob.current = null
+      select(conversation.id); setDetail({ ...conversation, messages: [], jobs: [] }); setActiveJob(null)
       return conversation
     } catch (caught) {
       if (current()) setError(`Не удалось создать разговор: ${errorText(caught)}`)
@@ -234,25 +244,24 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
         if (current()) setCreating(false)
       }
     }
-  }, [api, issueKey, parkId, setSessionData])
+  }, [api, issueKey, parkId, select, setSessionData])
   useEffect(() => () => {
     openGeneration.current += 1
-    openController.current?.abort()
+    stopConversationRequests()
     createController.current?.abort()
-    submitPollController.current?.abort()
-  }, [])
+    for (const controller of deleteControllers.current.values()) controller.abort()
+    deleteControllers.current.clear()
+  }, [stopConversationRequests])
   useEffect(() => {
     const context = issueKey && parkId != null ? `${parkId}:${issueKey}` : 'default'
     if (sessionsLoading || !sessionData) return
     if (initializedContext.current === context) return
     initializedContext.current = context
     const generation = ++openGeneration.current
-    openController.current?.abort()
+    stopConversationRequests()
     createController.current?.abort(); createController.current = null
-    submitPollController.current?.abort(); submitPollController.current = null
-    setSelectedId(null); setDetail(null); setActiveJob(null); setError(null)
+    select(null); setDetail(null); setActiveJob(null); setError(null)
     setCreating(false); setOpening(false); setSending(false)
-    resumedJobs.current.clear()
     if (issueKey && parkId != null) {
       const match = sessionData.find(item => item.issue_key === issueKey && item.park_id === parkId)
       if (match) void open(match.id)
@@ -264,13 +273,14 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
     } else if (sessionData.length) {
       void open(sessionData[0].id)
     }
-  }, [create, enabled, issueKey, open, parkId, sessionData, sessionsLoading])
+  }, [create, enabled, issueKey, open, parkId, select, sessionData, sessionsLoading, stopConversationRequests])
 
   const pendingJob = detail?.jobs.findLast(job => job.state === 'queued' || job.state === 'running')
   useEffect(() => {
-    if (!pendingJob || resumedJobs.current.has(pendingJob.id)) return
+    if (!pendingJob || resumedJob.current === pendingJob.id) return
     const controller = new AbortController()
-    resumedJobs.current.add(pendingJob.id); setActiveJob(pendingJob)
+    resumePollController.current = controller
+    resumedJob.current = pendingJob.id; setActiveJob(pendingJob)
     void waitForJob(api, pendingJob, controller.signal, setActiveJob).then(async result => {
       if (controller.signal.aborted) return
       if (result.timedOut) { setActiveJob(result.job); return }
@@ -284,7 +294,10 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
       if (controller.signal.aborted) return
       setActiveJob(null); setError(errorText(caught))
     })
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      if (resumePollController.current === controller) resumePollController.current = null
+    }
   }, [api, detail, pendingJob])
 
   const submit = async (event: FormEvent) => {
@@ -302,7 +315,8 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
       if (result.timedOut) { setActiveJob(result.job); return }
       setActiveJob(null)
       if (result.job.state !== 'succeeded') throw new Error(result.job.error || (result.job.state === 'cancelled' ? 'Задание отменено' : 'Генерация завершилась с ошибкой'))
-      setDetail(await api.conversation(conversation.id, controller.signal)); setDraft('')
+      const next = await api.conversation(conversation.id, controller.signal)
+      if (!controller.signal.aborted) { setDetail(next); setDraft('') }
     } catch (caught) {
       if (!controller.signal.aborted) { setActiveJob(null); setError(`Не удалось отправить: ${errorText(caught)}`) }
     } finally {
@@ -310,13 +324,32 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
       if (submitPollController.current === controller) submitPollController.current = null
     }
   }
-  const remove = async (session: Conversation) => { await api.deleteConversation(session.id); sessions.setData((sessions.data ?? []).filter(item => item.id !== session.id)); if (selectedId === session.id) { setSelectedId(null); setDetail(null) } }
+  const remove = async (session: Conversation) => {
+    if (deleteControllers.current.has(session.id)) return
+    const controller = new AbortController()
+    deleteControllers.current.set(session.id, controller)
+    setDeleting(previous => new Set(previous).add(session.id)); setError(null)
+    try {
+      await api.deleteConversation(session.id)
+      if (controller.signal.aborted) return
+      setSessionData(previous => previous?.filter(item => item.id !== session.id) ?? null)
+      if (selectedIdRef.current === session.id) {
+        stopConversationRequests()
+        select(null); setDetail(null); setActiveJob(null); setSending(false); setOpening(false)
+      }
+    } catch (caught) {
+      if (!controller.signal.aborted) setError(`Не удалось удалить разговор «${session.title}»: ${errorText(caught)}`)
+    } finally {
+      if (deleteControllers.current.get(session.id) === controller) deleteControllers.current.delete(session.id)
+      if (!controller.signal.aborted) setDeleting(previous => { const next = new Set(previous); next.delete(session.id); return next })
+    }
+  }
   const selectedSession = sessions.data?.find(item => item.id === selectedId)
 
   return <div className="rp-assistant-chat-layout">
     <Panel title="Разговоры" actions={<Button busy={creating} disabled={!enabled || !sessionsReady || creating || sending || opening || parkId == null} onClick={() => void create()} size="compact">Новый</Button>}>
       {sessions.loading ? <LoadingState label="Загружаем разговоры" /> : sessions.error ? <ErrorState title="Не удалось загрузить разговоры" description={sessions.error} onRetry={() => void sessions.refresh()} /> :
-        sessions.data?.length ? <ul className="rp-assistant-list">{sessions.data.map(item => <li key={item.id}><button aria-current={selectedId === item.id} onClick={() => void open(item.id)} type="button"><strong>{item.title}</strong>{item.issue_key ? <span>{item.issue_key}</span> : null}</button><Button aria-label={`Удалить ${item.title}`} onClick={() => void remove(item)} size="compact" variant="ghost">×</Button></li>)}</ul> : <p>Начните новый разговор.</p>}
+        sessions.data?.length ? <ul className="rp-assistant-list">{sessions.data.map(item => <li key={item.id}><button aria-current={selectedId === item.id} onClick={() => void open(item.id)} type="button"><strong>{item.title}</strong>{item.issue_key ? <span>{item.issue_key}</span> : null}</button><Button aria-label={`Удалить ${item.title}`} busy={deleting.has(item.id)} disabled={deleting.has(item.id)} onClick={() => void remove(item)} size="compact" variant="ghost">×</Button></li>)}</ul> : <p>Начните новый разговор.</p>}
     </Panel>
     <Panel title={detail?.title ?? selectedSession?.title ?? (issueKey ? `Помощник по ${issueKey}` : 'Новый разговор')}>
       {error ? <Alert tone="error">{error}</Alert> : null}
