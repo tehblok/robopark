@@ -417,6 +417,7 @@ describe('AssistantPage', () => {
     ['ai_context_too_large', 'Уменьшите запрос'],
     ['ai_sources_changed', 'Источники изменились'],
     ['ai_queue_full', 'Очередь помощника заполнена'],
+    ['ai_finalize_busy', 'Не удалось сохранить результат'],
     ['issue_park_mismatch', 'Задача относится к другому парку'],
     ['script_test_required', 'Сначала проверьте текущую ревизию скрипта'],
     ['connector_url_invalid', 'Проверьте HTTPS-адрес подключения'],

@@ -29,6 +29,7 @@ from robopark_api.services.ops.maintenance import host_maintenance_active
 
 logger = logging.getLogger(__name__)
 FINAL = {"succeeded", "failed", "cancelled"}
+FINALIZE_LOCK_ATTEMPTS = 5
 
 
 def view(row):
@@ -228,6 +229,75 @@ def _validate_claim(db, settings, job, sources):
             raise HTTPException(409, "ai_script_changed")
 
 
+def _publish_result(session_factory, settings, job_id, kind, sources, result, error):
+    with session_factory() as db, database_idempotency_lock(db, "ai-controls"):
+        job = db.get(AIJob, job_id, populate_existing=True)
+        if job is None or job.state != "running":
+            return
+        try:
+            actor = db.get(User, job.owner_id, populate_existing=True)
+            authorize(db, actor, job)
+            policy.available(db, settings)
+            if not sources_valid(db, actor, sources):
+                raise HTTPException(409, "ai_sources_changed")
+            if error:
+                job.state, job.error = "failed", error
+            elif kind == "chat":
+                # Citations are server-derived; fabricated IDs are stripped.
+                ids = {s["id"] for s in sources}
+                content = re.sub(
+                    r"\[источник:\s*([^\]]+)\]",
+                    lambda m: m[0] if m[1].strip() in ids else "",
+                    result["content"],
+                )
+                message = AIMessage(
+                    conversation_id=job.conversation_id,
+                    role="assistant",
+                    content=content,
+                    sources=sources,
+                )
+                db.add(message)
+                db.flush()
+                db.get(AIConversation, job.conversation_id).updated_at = time.time()
+                job.state, job.result = "succeeded", {"message_id": message.id}
+            else:
+                if kind == "script_test":
+                    script = policy.get_row(db, AIScript, job.payload["request"]["script_id"])
+                    if script.revision != job.payload["request"]["revision"]:
+                        raise HTTPException(409, "ai_script_changed")
+                    script.tested_revision = script.revision
+                job.state, job.result = "succeeded", result
+        except HTTPException as exc:
+            job.state, job.error, job.result = "cancelled", str(exc.detail), None
+        job.updated_at = time.time()
+        db.commit()
+
+
+def _finalize_result(session_factory, settings, job_id, kind, sources, result, error):
+    for _attempt in range(FINALIZE_LOCK_ATTEMPTS):
+        try:
+            _publish_result(session_factory, settings, job_id, kind, sources, result, error)
+            return
+        except HTTPException as exc:
+            if exc.detail != "idempotency_lock_busy":
+                raise
+    # Inference and scripts are never replayed automatically. If administrative
+    # work holds controls beyond the bounded retry window, fail closed without
+    # publishing the unvalidated result or leaving the job permanently running.
+    with session_factory() as db:
+        db.execute(
+            update(AIJob)
+            .where(AIJob.id == job_id, AIJob.state == "running")
+            .values(
+                state="failed",
+                error="ai_finalize_busy",
+                result=None,
+                updated_at=time.time(),
+            )
+        )
+        db.commit()
+
+
 def process_job(session_factory, settings):
     with session_factory() as db:
         job = db.scalar(
@@ -303,47 +373,7 @@ def process_job(session_factory, settings):
     except Exception:
         result, error = None, "ai_execution_failed"
         logger.warning("Local AI execution failed")
-    with session_factory() as db, database_idempotency_lock(db, "ai-controls"):
-        job = db.get(AIJob, job_id, populate_existing=True)
-        if job is None or job.state != "running":
-            return True
-        try:
-            actor = db.get(User, job.owner_id, populate_existing=True)
-            authorize(db, actor, job)
-            policy.available(db, settings)
-            if not sources_valid(db, actor, sources):
-                raise HTTPException(409, "ai_sources_changed")
-            if error:
-                job.state, job.error = "failed", error
-            elif kind == "chat":
-                # Citations are server-derived; fabricated IDs are stripped.
-                ids = {s["id"] for s in sources}
-                content = re.sub(
-                    r"\[источник:\s*([^\]]+)\]",
-                    lambda m: m[0] if m[1].strip() in ids else "",
-                    result["content"],
-                )
-                message = AIMessage(
-                    conversation_id=job.conversation_id,
-                    role="assistant",
-                    content=content,
-                    sources=sources,
-                )
-                db.add(message)
-                db.flush()
-                db.get(AIConversation, job.conversation_id).updated_at = time.time()
-                job.state, job.result = "succeeded", {"message_id": message.id}
-            else:
-                if kind == "script_test":
-                    script = policy.get_row(db, AIScript, job.payload["request"]["script_id"])
-                    if script.revision != job.payload["request"]["revision"]:
-                        raise HTTPException(409, "ai_script_changed")
-                    script.tested_revision = script.revision
-                job.state, job.result = "succeeded", result
-        except HTTPException as exc:
-            job.state, job.error, job.result = "cancelled", str(exc.detail), None
-        job.updated_at = time.time()
-        db.commit()
+    _finalize_result(session_factory, settings, job_id, kind, sources, result, error)
     return True
 
 

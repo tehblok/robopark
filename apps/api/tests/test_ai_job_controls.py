@@ -2,8 +2,10 @@
 
 import json
 import threading
+from contextlib import contextmanager
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.orm import sessionmaker
 
 from conftest import login_as
@@ -179,3 +181,172 @@ def test_claim_lock_contention_keeps_job_queued_for_next_tick(
     with factory() as db:
         assert db.get(AIJob, job["id"]).state == "succeeded"
     assert calls == ["sandbox"]
+
+
+def test_temporary_finalization_lock_contention_preserves_completed_result(
+    client, db_engine, seed_admin, test_settings, tmp_path, monkeypatch
+):
+    script, job = _queued_script_test(client, test_settings, tmp_path)
+    factory = sessionmaker(bind=db_engine, future=True)
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+    first_timeout = threading.Event()
+    errors = []
+    inference_calls = []
+    original_lock = jobs.database_idempotency_lock
+
+    def hold_controls():
+        try:
+            with factory() as db, database_locks.database_idempotency_lock(db, "ai-controls"):
+                lock_held.set()
+                assert release_lock.wait(3)
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    holder = threading.Thread(target=hold_controls, name="hold-final-ai-controls")
+
+    @contextmanager
+    def release_after_first_timeout(db, key):
+        try:
+            with original_lock(db, key):
+                yield
+        except HTTPException as exc:
+            if exc.detail == "idempotency_lock_busy" and not first_timeout.is_set():
+                first_timeout.set()
+                release_lock.set()
+            raise
+
+    def execute(*_args, **_kwargs):
+        inference_calls.append("sandbox")
+        holder.start()
+        assert lock_held.wait(3)
+        return {"output": {"a": 1}, "stdout": ""}
+
+    monkeypatch.setattr(database_locks, "LOCK_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(jobs, "database_idempotency_lock", release_after_first_timeout)
+    monkeypatch.setattr(jobs.runtime, "broker", execute)
+
+    assert jobs.process_job(factory, test_settings)
+    holder.join(3)
+    assert not holder.is_alive()
+    assert not errors
+    assert first_timeout.is_set()
+    assert inference_calls == ["sandbox"]
+    with factory() as db:
+        assert db.get(AIJob, job["id"]).state == "succeeded"
+        assert db.get(AIScript, script["id"]).tested_revision == script["revision"]
+
+
+def test_persistent_finalization_lock_contention_fails_without_reexecution(
+    client, db_engine, seed_admin, test_settings, tmp_path, monkeypatch
+):
+    script, job = _queued_script_test(client, test_settings, tmp_path)
+    factory = sessionmaker(bind=db_engine, future=True)
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+    errors = []
+    inference_calls = []
+
+    def hold_controls():
+        try:
+            with factory() as db, database_locks.database_idempotency_lock(db, "ai-controls"):
+                lock_held.set()
+                assert release_lock.wait(3)
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    holder = threading.Thread(target=hold_controls, name="hold-persistent-ai-controls")
+
+    def execute(*_args, **_kwargs):
+        inference_calls.append("sandbox")
+        holder.start()
+        assert lock_held.wait(3)
+        return {"output": {"a": 1}, "stdout": ""}
+
+    monkeypatch.setattr(database_locks, "LOCK_WAIT_SECONDS", 0.03)
+    monkeypatch.setattr(jobs, "FINALIZE_LOCK_ATTEMPTS", 2, raising=False)
+    monkeypatch.setattr(jobs.runtime, "broker", execute)
+
+    try:
+        assert jobs.process_job(factory, test_settings)
+    finally:
+        release_lock.set()
+        holder.join(3)
+
+    assert not holder.is_alive()
+    assert not errors
+    assert inference_calls == ["sandbox"]
+    with factory() as db:
+        final = db.get(AIJob, job["id"])
+        assert (final.state, final.error, final.result) == (
+            "failed",
+            "ai_finalize_busy",
+            None,
+        )
+        assert db.get(AIScript, script["id"]).tested_revision is None
+
+
+def test_script_deleted_while_finalization_waits_discards_completed_result(
+    client, db_engine, seed_admin, test_settings, tmp_path, monkeypatch
+):
+    script, job = _queued_script_test(client, test_settings, tmp_path)
+    factory = sessionmaker(bind=db_engine, future=True)
+    script_deleted = threading.Event()
+    release_admin = threading.Event()
+    first_timeout = threading.Event()
+    errors = []
+    inference_calls = []
+    original_lock = jobs.database_idempotency_lock
+
+    def delete_script_under_controls():
+        try:
+            with factory() as db, original_lock(db, "ai-controls"):
+                row = db.get(AIScript, script["id"])
+                db.delete(row)
+                db.commit()
+                script_deleted.set()
+                assert release_admin.wait(3)
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    admin = threading.Thread(target=delete_script_under_controls, name="delete-ai-script")
+
+    @contextmanager
+    def release_after_first_timeout(db, key):
+        try:
+            with original_lock(db, key):
+                yield
+        except HTTPException as exc:
+            if exc.detail == "idempotency_lock_busy" and not first_timeout.is_set():
+                first_timeout.set()
+                release_admin.set()
+            raise
+
+    def execute(*_args, **_kwargs):
+        inference_calls.append("sandbox")
+        admin.start()
+        assert script_deleted.wait(3)
+        return {"output": {"a": 1}, "stdout": ""}
+
+    monkeypatch.setattr(database_locks, "LOCK_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(jobs, "database_idempotency_lock", release_after_first_timeout)
+    monkeypatch.setattr(jobs.runtime, "broker", execute)
+
+    try:
+        assert jobs.process_job(factory, test_settings)
+    finally:
+        release_admin.set()
+        admin.join(3)
+
+    assert not admin.is_alive()
+    assert not errors
+    assert first_timeout.is_set()
+    assert inference_calls == ["sandbox"]
+    with factory() as db:
+        final = db.get(AIJob, job["id"])
+        assert (final.state, final.error, final.result) == (
+            "cancelled",
+            "ai_not_found",
+            None,
+        )
+        assert db.get(AIScript, script["id"]) is None

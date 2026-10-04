@@ -197,10 +197,3 @@ def listing(db):
         }
         for role, content in DEFAULTS.items()
     ]
-
-
-def system(db, user, sources, *, draft=None):
-    return {
-        "role": "system",
-        "content": _system_content(_guidance(db, user), sources, draft=draft),
-    }
