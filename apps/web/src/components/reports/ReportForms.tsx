@@ -84,6 +84,7 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
   const [createdReportId, setCreatedReportId] = useState<number | null>(initial.createdReportId ?? null)
   const [attachmentDelivered, setAttachmentDelivered] = useState(initial.attachmentDelivered === true)
   const [attachment, setAttachment] = useState<File | null>(null)
+  const [attachmentRestoreFailed, setAttachmentRestoreFailed] = useState(false)
   const [attachmentKind, setAttachmentKind] = useState<ReportAttachmentKind>('device_photo')
   const [attachmentError, setAttachmentError] = useState('')
   const [attachmentSuccess, setAttachmentSuccess] = useState('')
@@ -135,6 +136,7 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
     setCreatedReportId(next.createdReportId ?? null)
     setAttachmentDelivered(next.attachmentDelivered === true)
     setAttachment(null)
+    setAttachmentRestoreFailed(false)
     if (fileInputRef.current) fileInputRef.current.value = ''
     setAttachmentKind('device_photo')
     setAttachmentError('')
@@ -149,11 +151,28 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
     const current = () => !cancelled && mountedRef.current && generationRef.current === generation && ownerRef.current.key === ownerKey
     const key = reportDraftKey(principalId, parkId)
     const loading = restoreDraft ? restoreReportPhotoDraft(key, ownerKey).then(() => readReportPhotoDraft(key)) : Promise.resolve(null)
-    void loading.then((stored) => {
+    void loading.then(async (stored) => {
       if (!current()) return
       if (stored && stored.ownerKey === ownerKey && editRef.current === edits) {
-        revisionRef.current = stored.revision
         const textDraft = loadDraft(principalId, parkId, ownerKey)
+        const savedAttachment = !textDraft.attachmentDelivered ? stored.attachment : null
+        // Rewriting an IndexedDB-backed Blob can leave WebKit's native multipart
+        // stream unreadable after reload. Restore one independently owned File.
+        let restoredAttachment: File | null = null
+        let photoReadFailed = false
+        try {
+          if (savedAttachment) {
+            const bytes = await savedAttachment.blob.arrayBuffer()
+            if (!current() || editRef.current !== edits) return
+            restoredAttachment = new File([bytes], savedAttachment.name, {
+              type: savedAttachment.blob.type, lastModified: savedAttachment.lastModified,
+            })
+          }
+        } catch { photoReadFailed = true }
+        if (!current() || editRef.current !== edits) return
+        setAttachmentRestoreFailed(photoReadFailed)
+        if (photoReadFailed) setStorageError('Не удалось прочитать сохранённый файл. Данные репорта восстановлены; выберите файл заново или повторите после перезагрузки.')
+        revisionRef.current = stored.revision
         const hasSynchronousText = Boolean(textDraft.title || textDraft.body || textDraft.trackerKey || textDraft.createdReportId)
         // Synchronous text is the newest fallback if the browser closed mid-transaction.
         setActiveForm(hasSynchronousText ? textDraft.activeForm : stored.activeForm)
@@ -162,9 +181,7 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
         setBody(hasSynchronousText ? textDraft.body : stored.body)
         setCreatedReportId((knownId) => knownId ?? textDraft.createdReportId ?? stored.createdReportId)
         setAttachmentKind(stored.attachmentKind)
-        setAttachment(!textDraft.attachmentDelivered && stored.attachment ? new File([stored.attachment.blob], stored.attachment.name, {
-          type: stored.attachment.blob.type, lastModified: stored.attachment.lastModified,
-        }) : null)
+        setAttachment(restoredAttachment)
       }
     }).catch(() => {
       if (current()) setStorageError('Не удалось восстановить черновик с файлами. Текст доступен; не закрывайте страницу до отправки.')
@@ -175,11 +192,13 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
   useEffect(() => {
     if (ownerRef.current.key !== ownerKey || !draftReady) return
     try {
-      saveDraft(principalId, parkId, { activeForm, trackerKey, title, body, ownerKey, attachmentDelivered, createdReportId: attachment || attachmentDelivered ? createdReportId : null })
+      saveDraft(principalId, parkId, { activeForm, trackerKey, title, body, ownerKey, attachmentDelivered, createdReportId: attachment || attachmentDelivered || attachmentRestoreFailed ? createdReportId : null })
     } catch {
       setStorageError('Не удалось сохранить черновик на устройстве. Форма и файл остаются доступны; не закрывайте страницу до отправки.')
     }
-    if (!draftReady) return
+    // Keep the original IDB record available for reload/recovery. A failed read
+    // must not overwrite its attachment or acknowledged report ID with empties.
+    if (attachmentRestoreFailed) return
     const revision = crypto.randomUUID()
     const previousRevision = revisionRef.current
     revisionRef.current = revision
@@ -198,7 +217,7 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
     }).catch((caught: unknown) => {
       if (current()) setStorageError(`Не удалось сохранить черновик на устройстве. ${caught instanceof Error && caught.name !== 'QuotaExceededError' ? caught.message : 'Хранилище заполнено.'} Форма и файл остаются доступны; не закрывайте страницу до отправки.`)
     })
-  }, [activeForm, attachment, attachmentDelivered, attachmentKind, body, createdReportId, draftReady, ownerKey, parkId, principalId, title, trackerKey])
+  }, [activeForm, attachment, attachmentDelivered, attachmentKind, attachmentRestoreFailed, body, createdReportId, draftReady, ownerKey, parkId, principalId, title, trackerKey])
 
   function edited() { editRef.current += 1; setDraftSaved(false) }
 
@@ -208,6 +227,7 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
     setCreatedReportId(null)
     setAttachmentDelivered(false)
     setAttachment(null)
+    setAttachmentRestoreFailed(false)
     setAttachmentKind('device_photo')
     setSuccess('')
     setAttachmentSuccess('')
@@ -329,6 +349,7 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
           saveDraft(principalId, parkId, { activeForm: liveRef.current.activeForm, trackerKey: liveRef.current.trackerKey, title: liveRef.current.title, body: liveRef.current.body, ownerKey, createdReportId, attachmentDelivered: true })
         } catch { setStorageError('Файл отправлен, но подтверждение не сохранено на устройстве.') }
         setAttachment(null)
+        setAttachmentRestoreFailed(false)
         if (fileInputRef.current) fileInputRef.current.value = ''
       }
       setAttachmentSuccess('Файл прикреплён к созданному репорту.')
@@ -422,12 +443,12 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
             disabled={submitting || attaching || !draftReady}
             inputRef={fileInputRef}
             label="Файл"
-            onChange={(event) => { edited(); setAttachmentDelivered(false); setAttachment(event.target.files?.[0] ?? null) }}
+            onChange={(event) => { edited(); setAttachmentRestoreFailed(false); setAttachmentDelivered(false); setAttachment(event.target.files?.[0] ?? null) }}
             selectedFileLabel={attachment ? `Выбран файл: ${attachment.name} (${Math.ceil(attachment.size / 1024)} КиБ)` : null}
           />
           <label className="field">
             <span className="field-label">Тип вложения</span>
-            <select disabled={submitting || attaching} onChange={(event) => { edited(); setAttachmentKind(event.target.value as ReportAttachmentKind) }} value={attachmentKind}>
+            <select disabled={submitting || attaching || !draftReady} onChange={(event) => { edited(); setAttachmentKind(event.target.value as ReportAttachmentKind) }} value={attachmentKind}>
               <option value="device_photo">Фото устройства</option>
               <option value="ui_snapshot">Снимок интерфейса</option>
               <option value="client_log">Лог клиента</option>
@@ -445,7 +466,7 @@ export function ReportForms({ apiClient = api, ownerKey, parkId, principalId, re
             {submitting ? <Spinner label={ru.create} /> : ru.create}
           </button>
           <button className="btn btn-secondary" disabled={submitting || attaching} onClick={discardDraft} type="button">Удалить черновик</button>
-          {createdReportId != null && !attachment && <button className="btn btn-secondary" onClick={() => { edited(); setAttachmentDelivered(false); setCreatedReportId(null); setSuccess(''); setAttachmentSuccess('') }} type="button">Новый репорт</button>}
+          {createdReportId != null && !attachment && !attachmentRestoreFailed && <button className="btn btn-secondary" onClick={() => { edited(); setAttachmentDelivered(false); setCreatedReportId(null); setSuccess(''); setAttachmentSuccess('') }} type="button">Новый репорт</button>}
         </div>
       </form>
     </div>

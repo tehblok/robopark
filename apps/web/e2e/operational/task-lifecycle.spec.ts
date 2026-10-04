@@ -185,7 +185,9 @@ async function returnReview(page: Page) {
 
 async function assertMobileContract(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-  for (const control of await page.locator('button:visible, label.btn:visible').all()) expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44)
+  // Firefox can expose an exact 44 CSS px box as 43.999877… through DOMRect.
+  const cssPixelEpsilon = 0.001
+  for (const control of await page.locator('button:visible, label.btn:visible').all()) expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44 - cssPixelEpsilon)
   await expect(page.locator('main')).toHaveAttribute('id', 'main-content')
 }
 
@@ -230,11 +232,11 @@ async function runLifecycle(page: Page, width: number) {
       await bridgeCall(bridge, { control: 'tracker', available: true })
       await page.reload()
     } else await page.getByRole('button', { name: 'Взять в работу', exact: true }).dblclick()
-    await openIssue(page)
     await expect.poll(
       async () => (await snapshot(bridge)).actions.some(action => action.action === 'start'),
       { timeout: 15_000 },
     ).toBe(true)
+    await openIssue(page)
     if (mobile) {
       await bridgeCall(bridge, { control: 'tracker', available: false })
       await drain(bridge)
