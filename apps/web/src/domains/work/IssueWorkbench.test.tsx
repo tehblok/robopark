@@ -803,7 +803,7 @@ it('keeps one queued write-off across close and reopen, then collapses only afte
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, syncEngine })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
   expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
@@ -820,7 +820,7 @@ it('keeps one queued write-off across close and reopen, then collapses only afte
 
   fireEvent.click(screen.getByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
 
   await waitFor(() => expect(enqueueAction).toHaveBeenCalledTimes(2))
