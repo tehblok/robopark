@@ -256,7 +256,8 @@ def test_postgresql_http_concurrent_sync_replay_dispatches_once_and_returns_one_
     dispatch_entered = threading.Event()
     allow_dispatch_to_finish = threading.Event()
 
-    def dispatch(_db, _user, item):
+    def dispatch(_db, _user, item, consumed_media=None):
+        assert consumed_media is None
         calls.append(item.client_action_id)
         dispatch_entered.set()
         assert allow_dispatch_to_finish.wait(timeout=1)

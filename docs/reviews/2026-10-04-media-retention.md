@@ -22,9 +22,16 @@ The dependency lookup does not use a PostgreSQL row lock. The reservation fence 
 - `apps/api/tests/test_offline_sync.py` covers cleanup-winning reupload with stable action identity, receipt replay without a second dispatch, and atomic submit-review comment/review effects.
 - `apps/api/tests/postgres/test_schema_and_workflows.py` leaves the first consumer transaction open and proves that a second consumer of the same row and an unrelated media consumer both finish without waiting on a retained row lock.
 
-No hardware, Docker, or long-running system installation was exercised in this slice.
+No physical hardware or host installation was exercised in this slice. Real
+PostgreSQL verification used the supported temporary Docker fixture and cleaned
+it up after each run.
 
 Final targeted validation: 64 media/offline tests passed; the real PostgreSQL
 regression failed before removing FOR UPDATE and passed afterwards. Ruff check,
 format check and diff check passed. Independent re-review found no remaining
 reproducible blocker in this slice.
+
+The full PostgreSQL suite initially found an outdated three-argument dispatch
+mock. Updating it to the four-argument consumed-media contract (with an explicit
+None assertion for a comment action) restored the concurrent receipt replay
+test. Final PostgreSQL acceptance: 26 passed; no fixture containers remained.
