@@ -3,10 +3,10 @@
 ## Установка и обновление
 
 На Ubuntu/Armbian с Python 3.10+, `curl` и `sudo` одна команда скачивает
-кандидат выпуска rc.24, сверяет SHA-256 и запускает меню установки:
+кандидат выпуска rc.25, сверяет SHA-256 и запускает меню установки:
 
 ```sh
-d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.24/robopark-0.2.0-rc.24.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' '35d0288b8d48b3c7ec27297188eddd6a27df8a5a17eb39357b0d240b553f2bd5  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
+d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.25/robopark-0.2.0-rc.25.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' '3137b6d0a2e1b0e5aff93e8feb4bf2b0ad08105733ce2c1c371eac5b0d45a3a6  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
 ```
 
 Выберите «Чистая установка» на новом хосте. Установщик интерактивно запросит
@@ -16,10 +16,10 @@ Tuna token, домен и пароль первого владельца. При
 ARM64/AMD64, поддерживаемые ОС и требования к памяти/диску перечислены в
 [руководстве установки](docs/runbooks/usb-clean-install.md).
 Происхождение и границы проверки опубликованного пакета — в
-[описании rc.24](docs/releases/0.2.0-rc.24.md) и
-[отчёте о проверке](docs/reviews/2026-10-04-local-ai.md).
+[описании rc.25](docs/releases/0.2.0-rc.25.md) и
+[отчёте о проверке](docs/reviews/2026-10-04-knowledge-quality.md).
 
-> **GEACX1 и NVMe:** rc.24 поддерживает NVMe с ОС и eMMC с ОС + NVMe для данных.
+> **GEACX1 и NVMe:** rc.25 поддерживает NVMe с ОС и eMMC с ОС + NVMe для данных.
 > Порядок выбора и проверки описан в
 > [инструкции по хранилищу GEACX1](docs/runbooks/geacx1-storage.md).
 > ИИ устанавливается только на подтверждённый AGX Orin. Физическая проверка
@@ -464,7 +464,7 @@ Not included:
 
 ## Локальный помощник на AGX Orin
 
-Начиная с rc.24 установщик поддерживает локальный Bonsai, встроенную базу знаний,
+Начиная с rc.25 установщик поддерживает локальный Bonsai, встроенную базу знаний,
 чат с источниками и управляемые интеграции/скрипты. Загрузка и запуск модели
 разрешены только на подтверждённом AGX Orin с NVMe и CUDA; Khadas работает без неё.
 Частные инструкции и выгрузки не входят в публичный репозиторий.
