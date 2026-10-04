@@ -150,7 +150,15 @@ def _payload(repository: Path) -> dict[str, bytes]:
         payload[f"robopark_storage/{name}"] = (
             repository / "deploy/host/robopark_host" / name
         ).read_bytes()
+    # The repository README pins the finished archive hash. The installed
+    # guide is independent of that file and its presence in a workspace.
+    readme = repository / "deploy/ota/README.installed.md"
+    if readme.is_symlink() or not readme.is_file():
+        raise BuildError("invalid_packaged_readme")
+    payload["release/README.md"] = readme.read_bytes()
     for relative in _tracked_files(repository):
+        if relative == Path("README.md"):
+            continue
         payload[f"release/{relative.as_posix()}"] = (repository / relative).read_bytes()
     return payload
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -51,6 +52,47 @@ def test_built_ota_is_self_executable_and_independently_verifiable(tmp_path: Pat
     assert "Чистая установка" in completed.stdout
     assert verified.sha256 == _sha256(artifact)
     assert verified.manifest.app_version == (ROOT / "VERSION").read_text().strip()
+
+
+def test_packaged_readme_has_no_stale_install_hash_or_unshipped_doc_links(tmp_path: Path):
+    artifact = build_ota(ROOT, tmp_path, git_sha="b" * 40)
+    with zipfile.ZipFile(artifact) as archive:
+        readme = archive.read("release/README.md").decode("utf-8")
+
+    assert "releases/download/" not in readme
+    assert "(docs/" not in readme
+    assert "https://github.com/tehblok/robopark" in readme
+    assert "sudo python3" in readme
+
+
+@pytest.mark.parametrize("root_readme", ["missing", "symlink"])
+def test_packaged_guide_is_independent_of_workspace_root_readme(tmp_path: Path, root_readme: str):
+    repository = tmp_path / "source"
+    paths = [
+        "VERSION", "README.md", "deploy/release-metadata.json",
+        "deploy/ota/__main__.py", "deploy/ota/README.installed.md",
+        *(str(path.relative_to(ROOT)) for path in (ROOT / "deploy/ota/robopark_ota").glob("*.py")),
+        *(f"deploy/host/robopark_host/{name}.py"
+          for name in ("storage_layout", "storage_setup", "storage_watchdog")),
+    ]
+    for relative in paths:
+        target = repository / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    (repository / "README.md").unlink()
+    if root_readme == "symlink":
+        external = tmp_path / "external.txt"
+        external.write_text("must-not-be-packaged")
+        (repository / "README.md").symlink_to(external)
+
+    artifact = build_ota(repository, tmp_path / "out", git_sha="c" * 40)
+    with zipfile.ZipFile(artifact) as archive:
+        readme = archive.read("release/README.md")
+
+    assert readme == (ROOT / "deploy/ota/README.installed.md").read_bytes()
+    assert b"must-not-be-packaged" not in readme
 
 
 def test_manifest_inventory_exactly_matches_regular_members(tmp_path: Path):
