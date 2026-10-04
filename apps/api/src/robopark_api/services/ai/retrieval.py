@@ -98,7 +98,20 @@ NOISE = {
     "правильно",
     "безопасно",
 }
-POSITIONS = (("лев", "прав"), ("передн", "задн"))
+POSITION_ALIASES = {
+    "inner": (
+        "внутренний внутренняя внутреннее внутренние внутреннюю внутренней внутренних",
+        "inner",
+        "internal",
+    ),
+    "outer": (
+        "внешний внешняя внешнее внешние внешнюю внешней внешних",
+        "наружный наружная наружное наружные наружную наружной наружных",
+        "outer",
+        "external",
+    ),
+}
+POSITIONS = (("лев", "прав"), ("передн", "задн"), ("inner", "outer"))
 CODE = re.compile(r"\b([a-z]{2,4})[-– ]?(\d{1,4})\b", re.I)
 
 
@@ -108,7 +121,9 @@ def codes(text):
 
 @lru_cache(maxsize=4)
 def alias_terms(tokenize):
-    return {key: set(tokenize(" ".join(values))) for key, values in ALIASES.items()}
+    return {
+        key: set(tokenize(" ".join(values))) for key, values in (ALIASES | POSITION_ALIASES).items()
+    }
 
 
 def canonical(text, tokenize):
@@ -149,6 +164,8 @@ def prepare(text, tokenize, context=""):
     expanded = set(tokenize(text)) - NOISE
     required_terms = set()
     for key in entities:
+        required_terms |= alias_terms(tokenize)[key]
+    for key in meaningful & POSITION_ALIASES.keys():
         required_terms |= alias_terms(tokenize)[key]
     for code in exact_codes:
         letters, number = re.fullmatch(r"([a-z]+)(\d+)", code).groups()

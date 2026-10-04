@@ -101,8 +101,8 @@ class Sandbox:
             raise BrokerError("request_too_large")
         wrapper = (
             "import json,sys\n"
-            "p=json.load(sys.stdin); ns={}\n"
-            "exec(compile(p['source'],'<automation>','exec'),{'__builtins__':__builtins__},ns)\n"
+            "p=json.load(sys.stdin); ns={'__builtins__':__builtins__}\n"
+            "exec(compile(p['source'],'<automation>','exec'),ns,ns)\n"
             "fn=ns.get('main'); out=fn(p['input']) if callable(fn) else (_ for _ in ()).throw(ValueError('main_required'))\n"
             "print('__ROBOPARK_RESULT__='+json.dumps(out,separators=(',',':'),ensure_ascii=False,allow_nan=False))\n"
         )

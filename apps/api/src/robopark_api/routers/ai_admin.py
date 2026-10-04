@@ -17,7 +17,7 @@ from robopark_api.ai_models import (
 )
 from robopark_api.crypto import MissingSecretKeyError, encrypt_secret
 from robopark_api.routers.ai import DB, Manager, Settings, private_response
-from robopark_api.services.ai import automations, connectors, jobs, knowledge, policy
+from robopark_api.services.ai import automations, connectors, jobs, knowledge, learning, policy
 from robopark_api.services.database_locks import database_idempotency_lock
 
 router = APIRouter(
@@ -263,17 +263,20 @@ def list_runs(db: DB, user: Manager, limit: int = Query(default=50, ge=1, le=200
 def purge_runs(db: DB, user: Manager, before_days: int = Query(default=30, ge=1, le=3650)):
     # Keep a minimal delivery receipt for deduplication; only payload/error data
     # is cleared. A cleanup must never cause an external write to be replayed.
-    count = db.execute(
-        update(AIRun)
-        .where(
-            AIRun.created_at < time.time() - before_days * 86400,
-            AIRun.state.not_in(("queued", "running", "purged")),
-        )
-        .values(result=None, error=None, state="purged")
-    ).rowcount
-    db.commit()
+    cutoff = time.time() - before_days * 86400
+    with database_idempotency_lock(db, "ai-controls"):
+        count = db.execute(
+            update(AIRun)
+            .where(
+                AIRun.created_at < cutoff,
+                AIRun.state.not_in(("queued", "running", "purged")),
+            )
+            .values(result=None, error=None, state="purged")
+        ).rowcount
+        events_cleaned = learning.purge_event_payloads(db, before=cutoff, limit=1000)
+        db.commit()
     policy.changed(db, user, "runs_cleaned", "history")
-    return {"deleted": count}
+    return {"deleted": count, "events_cleaned": events_cleaned}
 
 
 @router.post("/maintenance")

@@ -1,6 +1,7 @@
 """Deterministic event rules; model output has no execution authority."""
 
 import ast
+import hashlib
 import json
 import re
 import time
@@ -22,6 +23,16 @@ FIELDS = {
     "comment",
     "event_key",
 }
+
+
+def delivery_key(automation_id, event_key):
+    value = (
+        b"robopark-ai-connector-v1\0"
+        + str(automation_id).encode()
+        + b"\0"
+        + str(event_key).encode()
+    )
+    return hashlib.sha256(value).hexdigest()
 
 
 def bounded_json(value, limit=65536):
@@ -128,6 +139,7 @@ def process_run(session_factory, settings):
         if run is None:
             return False
         run_id = run.id
+        connector_key = delivery_key(run.automation_id, run.event_key)
         try:
             policy.available(db, settings)
             rule = policy.get_row(db, AIAutomation, run.automation_id)
@@ -179,7 +191,7 @@ def process_run(session_factory, settings):
                 db.commit()
                 result.update(
                     connectors.deliver(
-                        settings, connector, bounded_json(payload), run_id, event_data
+                        settings, connector, bounded_json(payload), connector_key, event_data
                     )
                 )
             else:

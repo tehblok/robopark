@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -40,6 +41,7 @@ class AIPrompt(Base):
 
 class AIDocument(Base):
     __tablename__ = "ai_documents"
+    __table_args__ = (Index("ix_ai_documents_source_ref_park_id", "source_ref", "park_id"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     source_key: Mapped[str] = mapped_column(String(64), unique=True)
     fingerprint: Mapped[str] = mapped_column(String(64), index=True)
@@ -55,6 +57,20 @@ class AIDocument(Base):
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class AIBundleDocument(Base):
+    """Receipt proving which document revision still matches a shipped source."""
+
+    __tablename__ = "ai_bundle_documents"
+    __table_args__ = (UniqueConstraint("document_id", name="uq_ai_bundle_documents_document_id"),)
+    source_ref: Mapped[str] = mapped_column(String(400), primary_key=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("ai_documents.id", ondelete="CASCADE"))
+    applied_document_revision: Mapped[int] = mapped_column(Integer)
+    applied_signature: Mapped[str] = mapped_column(String(64))
+    applied_bundle_revision: Mapped[str] = mapped_column(String(64))
+    seen_bundle_revision: Mapped[str] = mapped_column(String(64), index=True)
     updated_at: Mapped[float] = mapped_column(Float, default=time.time)
 
 
@@ -161,9 +177,13 @@ class AIAutomation(Base):
 
 class AIEvent(Base):
     __tablename__ = "ai_events"
+    __table_args__ = (
+        Index("ix_ai_events_retention", "processed", "payload_retained", "occurred_at"),
+    )
     key: Mapped[str] = mapped_column(String(150), primary_key=True)
     park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
     payload: Mapped[dict] = mapped_column(JSON)
+    payload_retained: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     occurred_at: Mapped[float] = mapped_column(Float)
     processed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
@@ -171,7 +191,10 @@ class AIEvent(Base):
 
 class AIRun(Base):
     __tablename__ = "ai_runs"
-    __table_args__ = (UniqueConstraint("automation_id", "event_key", name="uq_ai_rule_event"),)
+    __table_args__ = (
+        UniqueConstraint("automation_id", "event_key", name="uq_ai_rule_event"),
+        Index("ix_ai_runs_event_state", "event_key", "state"),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     automation_id: Mapped[str] = mapped_column(String(36), index=True)
     event_key: Mapped[str] = mapped_column(String(150))

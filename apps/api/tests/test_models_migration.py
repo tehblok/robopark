@@ -36,6 +36,7 @@ def test_metadata_has_required_tables():
         "ai_config",
         "ai_prompts",
         "ai_documents",
+        "ai_bundle_documents",
         "ai_chunks",
         "ai_terms",
         "ai_conversations",
@@ -152,10 +153,10 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_includes_host_terminal():
+def test_alembic_head_includes_bundle_receipts():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0057_local_ai"]
+    assert script.get_heads() == ["0058_ai_bundle_receipts"]
 
 
 def test_host_terminal_migration_builds_bounded_session_schema(sqlite_database_url, monkeypatch):
@@ -425,7 +426,10 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
         "lease_until",
     }
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0057_local_ai"
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0058_ai_bundle_receipts"
+        )
 
 
 def test_schedule_series_lookup_index_is_used(sqlite_database_url, monkeypatch):

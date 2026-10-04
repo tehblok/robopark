@@ -211,3 +211,24 @@ def test_code_mapping_reference_survives_many_historical_repairs(db_session, see
         db_session, seed_admin, "Какой код выбрать, если с камеры нет изображения?"
     )
     assert found and found[0]["id"] == correct.id
+
+
+def test_position_inflections_match_inner_camera_and_exclude_outer(db_session, seed_admin):
+    for i in range(5):
+        put(
+            db_session,
+            seed_admin,
+            f"Крышка камеры {i}",
+            "Крышка грузового отсека: отсоедините внешнюю камеру крышки. " * 3,
+        )
+    inner = put(
+        db_session,
+        seed_admin,
+        "Отключение внутренних камер",
+        "Откройте крышку грузового отсека. Нажмите фиксатор внутренней камеры и отсоедините разъём.",
+    )
+    found = knowledge.search(
+        db_session, seed_admin, "Как отключить внутреннюю камеру крышки грузового отсека?", limit=3
+    )
+    assert found and found[0]["id"] == inner.id
+    assert len(found) == 1

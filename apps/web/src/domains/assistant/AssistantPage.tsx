@@ -22,26 +22,64 @@ const MANAGER_ROLES = new Set(['admin', 'royal'])
 
 const errorText = assistantErrorText
 
-function useLoader<T>(load: () => Promise<T>, dependencies: readonly unknown[]) {
+function useLoader<T>(load: (signal: AbortSignal) => Promise<T>, dependencies: readonly unknown[]) {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const generation = useRef(0)
+  const activeController = useRef<AbortController | null>(null)
   const refresh = useCallback(async () => {
+    activeController.current?.abort()
+    const controller = new AbortController()
+    activeController.current = controller
+    const currentGeneration = ++generation.current
     setLoading(true); setError(null)
-    try { const next = await load(); setData(next); return next } catch (caught) { setError(errorText(caught)); return null } finally { setLoading(false) }
+    try {
+      const next = await load(controller.signal)
+      if (currentGeneration !== generation.current || controller.signal.aborted) return null
+      setData(next); return next
+    } catch (caught) {
+      if (currentGeneration === generation.current && !controller.signal.aborted) setError(errorText(caught))
+      return null
+    } finally {
+      if (currentGeneration === generation.current) {
+        if (activeController.current === controller) activeController.current = null
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, dependencies)
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    void refresh()
+    return () => {
+      generation.current += 1
+      activeController.current?.abort()
+      activeController.current = null
+    }
+  }, [refresh])
   return { data, setData, loading, error, refresh }
 }
 
 type JobWaitResult = { job: AiJob; timedOut: boolean }
 
-async function waitForJob(api: AssistantApiClient, initial: AiJob, onProgress?: (job: AiJob) => void): Promise<JobWaitResult> {
+function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const rejectAborted = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+    if (signal.aborted) { rejectAborted(); return }
+    const timer = window.setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve() }, milliseconds)
+    const onAbort = () => { window.clearTimeout(timer); rejectAborted() }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+async function waitForJob(api: AssistantApiClient, initial: AiJob, signal: AbortSignal, onProgress?: (job: AiJob) => void): Promise<JobWaitResult> {
   let current = initial
   for (let attempt = 0; attempt < 180 && (current.state === 'queued' || current.state === 'running'); attempt += 1) {
-    if (attempt) await new Promise(resolve => window.setTimeout(resolve, 1000))
-    current = await api.job(current.id); onProgress?.(current)
+    if (attempt) await abortableDelay(1000, signal)
+    signal.throwIfAborted()
+    current = await api.job(current.id, signal)
+    signal.throwIfAborted()
+    onProgress?.(current)
   }
   return { job: current, timedOut: current.state === 'queued' || current.state === 'running' }
 }
@@ -54,27 +92,36 @@ export function AssistantPage({ apiClient = assistantApi }: { apiClient?: Assist
   const effectiveParkId = Number.isInteger(requestedParkId) && user?.parks.some(park => park.id === requestedParkId)
     ? requestedParkId
     : parkId
-  const status = useLoader(() => apiClient.status(), [apiClient])
+  const status = useLoader(signal => apiClient.status(signal), [apiClient, user?.id])
   const statusSupported = status.data?.supported
   const setStatus = status.setData
-  const statusPollInFlight = useRef(false)
+  const statusPollController = useRef<AbortController | null>(null)
   useEffect(() => {
     if (!statusSupported) return
     let cancelled = false
     const poll = async () => {
-      if (statusPollInFlight.current) return
-      statusPollInFlight.current = true
+      if (statusPollController.current) return
+      const controller = new AbortController()
+      statusPollController.current = controller
       try {
-        const next = await apiClient.status()
-        if (!cancelled) setStatus(next)
-      } catch { /* keep the last usable status; the next poll retries */ } finally { statusPollInFlight.current = false }
+        const next = await apiClient.status(controller.signal)
+        if (!cancelled && !controller.signal.aborted) setStatus(next)
+      } catch { /* keep the last usable status; the next poll retries */ } finally {
+        if (statusPollController.current === controller) statusPollController.current = null
+      }
     }
     const timer = window.setInterval(poll, 5000)
-    return () => { cancelled = true; window.clearInterval(timer) }
-  }, [apiClient, statusSupported, setStatus])
+    return () => {
+      cancelled = true; window.clearInterval(timer)
+      statusPollController.current?.abort()
+      statusPollController.current = null
+    }
+  }, [apiClient, statusSupported, setStatus, user?.id])
   const [tab, setTab] = useState<Tab>(() => search.has('document') ? 'knowledge' : 'chat')
   useEffect(() => { if (search.has('document')) setTab('knowledge') }, [search])
   const canManage = Boolean(user && MANAGER_ROLES.has(user.role) && status.data?.can_manage)
+  const userScope = user?.id ?? 'anonymous'
+  const parkScope = `${userScope}:${effectiveParkId ?? 'all'}`
   const tabs = useMemo(() => [
     { id: 'chat', label: 'Помощник' }, { id: 'knowledge', label: 'База знаний' },
     ...(canManage ? [
@@ -90,13 +137,13 @@ export function AssistantPage({ apiClient = assistantApi }: { apiClient?: Assist
   return <PageLayout className="rp-assistant" title="Локальный помощник" description="Ответы по ремонту с проверяемыми источниками. Данные остаются внутри Robopark.">
     {!status.data.ready ? <Alert tone="warning">{statusReasonText(status.data.reason)}</Alert> : null}
     <Tabs ariaLabel="Разделы помощника" items={tabs} value={tab} onChange={id => setTab(id as Tab)} panelIdFor={id => `assistant-panel-${id}`} wrapOnPhone />
-    <TabPanel id="assistant-panel-chat" labelledBy="tab-chat" active={tab === 'chat'}><ChatPanel api={apiClient} enabled={status.data.ready} issueKey={search.get('issue_key')} parkId={effectiveParkId} /></TabPanel>
-    <TabPanel id="assistant-panel-knowledge" labelledBy="tab-knowledge" active={tab === 'knowledge'}><KnowledgePanel api={apiClient} canManage={canManage} initialDocumentId={search.get('document')} parkId={effectiveParkId} /></TabPanel>
+    <TabPanel id="assistant-panel-chat" labelledBy="tab-chat" active={tab === 'chat'}><ChatPanel api={apiClient} enabled={status.data.ready} issueKey={search.get('issue_key')} key={`chat:${parkScope}`} parkId={effectiveParkId} /></TabPanel>
+    <TabPanel id="assistant-panel-knowledge" labelledBy="tab-knowledge" active={tab === 'knowledge'}><KnowledgePanel api={apiClient} bundle={status.data.knowledge_bundle} canManage={canManage} initialDocumentId={search.get('document')} key={`knowledge:${parkScope}`} parkId={effectiveParkId} /></TabPanel>
     {canManage ? <>
-      <TabPanel id="assistant-panel-automations" labelledBy="tab-automations" active={tab === 'automations'}><AutomationsPanel api={apiClient} parkId={effectiveParkId} /></TabPanel>
-      <TabPanel id="assistant-panel-scripts" labelledBy="tab-scripts" active={tab === 'scripts'}><ScriptsPanel api={apiClient} parkId={effectiveParkId} /></TabPanel>
-      <TabPanel id="assistant-panel-connectors" labelledBy="tab-connectors" active={tab === 'connectors'}><ConnectorsPanel api={apiClient} /></TabPanel>
-      <TabPanel id="assistant-panel-settings" labelledBy="tab-settings" active={tab === 'settings'}><SettingsPanel api={apiClient} status={status.data} onStatus={status.setData} /></TabPanel>
+      <TabPanel id="assistant-panel-automations" labelledBy="tab-automations" active={tab === 'automations'}><AutomationsPanel api={apiClient} key={`automations:${parkScope}`} parkId={effectiveParkId} /></TabPanel>
+      <TabPanel id="assistant-panel-scripts" labelledBy="tab-scripts" active={tab === 'scripts'}><ScriptsPanel api={apiClient} key={`scripts:${parkScope}`} parkId={effectiveParkId} /></TabPanel>
+      <TabPanel id="assistant-panel-connectors" labelledBy="tab-connectors" active={tab === 'connectors'}><ConnectorsPanel api={apiClient} key={`connectors:${userScope}`} /></TabPanel>
+      <TabPanel id="assistant-panel-settings" labelledBy="tab-settings" active={tab === 'settings'}><SettingsPanel api={apiClient} key={`settings:${userScope}`} status={status.data} onStatus={status.setData} /></TabPanel>
     </> : null}
   </PageLayout>
 }
@@ -110,92 +157,189 @@ function UnsupportedStatus({ status }: { status: AiStatus }) {
 }
 
 function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient; enabled: boolean; parkId: number | null; issueKey: string | null }) {
-  const sessions = useLoader(() => api.conversations(), [api])
+  const sessions = useLoader(signal => api.conversations(signal), [api])
   const sessionData = sessions.data; const sessionsLoading = sessions.loading; const setSessionData = sessions.setData
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  const [opening, setOpening] = useState(false)
   const [activeJob, setActiveJob] = useState<AiJob | null>(null)
   const [error, setError] = useState<string | null>(null)
   const initializedContext = useRef<string | null>(null)
   const resumedJobs = useRef(new Set<string>())
+  const openGeneration = useRef(0)
+  const openController = useRef<AbortController | null>(null)
+  const createController = useRef<AbortController | null>(null)
+  const submitPollController = useRef<AbortController | null>(null)
 
-  const open = useCallback(async (id: string) => { setSelectedId(id); setError(null); try { setDetail(await api.conversation(id)) } catch (caught) { setError(errorText(caught)) } }, [api])
+  const open = useCallback(async (id: string) => {
+    const currentGeneration = ++openGeneration.current
+    openController.current?.abort()
+    submitPollController.current?.abort()
+    submitPollController.current = null
+    const controller = new AbortController()
+    openController.current = controller
+    setSelectedId(id); setDetail(null); setActiveJob(null); setSending(false); setOpening(true); setError(null)
+    try {
+      const next = await api.conversation(id, controller.signal)
+      if (currentGeneration === openGeneration.current && !controller.signal.aborted) setDetail(next)
+    } catch (caught) {
+      if (currentGeneration === openGeneration.current && !controller.signal.aborted) setError(errorText(caught))
+    } finally {
+      if (openController.current === controller) {
+        openController.current = null
+        if (!controller.signal.aborted) setOpening(false)
+      }
+    }
+  }, [api])
+  useEffect(() => () => {
+    openGeneration.current += 1
+    openController.current?.abort()
+    createController.current?.abort()
+    submitPollController.current?.abort()
+  }, [])
   useEffect(() => {
-    if (selectedId || sessionsLoading || !sessionData) return
     const context = issueKey && parkId != null ? `${parkId}:${issueKey}` : 'default'
+    if (sessionsLoading || !sessionData) return
     if (initializedContext.current === context) return
+    let active = true
     initializedContext.current = context
+    openGeneration.current += 1
+    openController.current?.abort()
+    setSelectedId(null); setDetail(null); setActiveJob(null); setError(null)
+    resumedJobs.current.clear()
     if (issueKey && parkId != null) {
       const match = sessionData.find(item => item.issue_key === issueKey && item.park_id === parkId)
-      if (match) { void open(match.id); return }
-      if (!enabled) return
-      void api.createConversation({ park_id: parkId, issue_key: issueKey, title: issueKey }).then(conversation => {
-        setSessionData([conversation, ...sessionData]); void open(conversation.id)
-      }).catch(caught => setError(errorText(caught)))
-      return
+      if (match) void open(match.id)
+      else if (enabled) {
+        void api.createConversation({ park_id: parkId, issue_key: issueKey, title: issueKey }).then(conversation => {
+          if (!active || initializedContext.current !== context) return
+          setSessionData([conversation, ...sessionData]); void open(conversation.id)
+        }).catch(caught => { if (active && initializedContext.current === context) setError(errorText(caught)) })
+      }
+    } else if (sessionData.length) {
+      void open(sessionData[0].id)
     }
-    if (sessionData.length) void open(sessionData[0].id)
-  }, [api, enabled, issueKey, open, parkId, selectedId, sessionData, sessionsLoading, setSessionData])
+    return () => { active = false }
+  }, [api, enabled, issueKey, open, parkId, sessionData, sessionsLoading, setSessionData])
 
+  const pendingJob = detail?.jobs.findLast(job => job.state === 'queued' || job.state === 'running')
   useEffect(() => {
-    const pending = detail?.jobs.findLast(job => job.state === 'queued' || job.state === 'running')
-    if (!pending || activeJob || resumedJobs.current.has(pending.id)) return
-    resumedJobs.current.add(pending.id); setActiveJob(pending)
-    void waitForJob(api, pending, setActiveJob).then(async result => {
+    if (!pendingJob || resumedJobs.current.has(pendingJob.id)) return
+    const controller = new AbortController()
+    resumedJobs.current.add(pendingJob.id); setActiveJob(pendingJob)
+    void waitForJob(api, pendingJob, controller.signal, setActiveJob).then(async result => {
+      if (controller.signal.aborted) return
       if (result.timedOut) { setActiveJob(result.job); return }
       setActiveJob(null)
-      if (result.job.state === 'succeeded' && detail) setDetail(await api.conversation(detail.id))
+      if (result.job.state === 'succeeded' && detail) {
+        const next = await api.conversation(detail.id, controller.signal)
+        if (!controller.signal.aborted) setDetail(next)
+      }
       else if (result.job.state === 'failed') setError(result.job.error || 'Генерация завершилась с ошибкой')
-    }).catch(caught => { setActiveJob(null); setError(errorText(caught)) })
-  }, [activeJob, api, detail])
+    }).catch(caught => {
+      if (controller.signal.aborted) return
+      setActiveJob(null); setError(errorText(caught))
+    })
+    return () => controller.abort()
+  }, [api, detail, pendingJob])
 
-  const create = async () => {
+  const create = async (parentSignal?: AbortSignal) => {
     if (parkId == null) { setError('Сначала выберите парк.'); return null }
-    const conversation = await api.createConversation({ park_id: parkId, ...(issueKey ? { issue_key: issueKey, title: issueKey } : {}) })
-    sessions.setData([conversation, ...(sessions.data ?? [])]); setSelectedId(conversation.id); setDetail({ ...conversation, messages: [], jobs: [] }); return conversation
+    const controller = parentSignal ? null : new AbortController()
+    if (controller) { createController.current?.abort(); createController.current = controller }
+    const signal = parentSignal ?? controller!.signal
+    try {
+      const conversation = await api.createConversation({ park_id: parkId, ...(issueKey ? { issue_key: issueKey, title: issueKey } : {}) })
+      if (signal.aborted) return null
+      sessions.setData([conversation, ...(sessions.data ?? [])]); setSelectedId(conversation.id); setDetail({ ...conversation, messages: [], jobs: [] }); return conversation
+    } finally {
+      if (controller && createController.current === controller) createController.current = null
+    }
   }
   const submit = async (event: FormEvent) => {
-    event.preventDefault(); if (!draft.trim() || !enabled || sending) return
+    event.preventDefault(); if (!draft.trim() || !enabled || sending || opening) return
+    const controller = new AbortController()
+    submitPollController.current?.abort()
+    submitPollController.current = controller
     setSending(true); setError(null)
     try {
-      const conversation = detail ?? await create(); if (!conversation) return
+      const conversation = detail ?? await create(controller.signal); if (!conversation || controller.signal.aborted) return
       const job = await api.sendMessage(conversation.id, draft.trim(), crypto.randomUUID())
+      if (controller.signal.aborted) return
       setActiveJob(job)
-      const result = await waitForJob(api, job, setActiveJob)
+      const result = await waitForJob(api, job, controller.signal, setActiveJob)
+      if (controller.signal.aborted) return
       if (result.timedOut) { setActiveJob(result.job); return }
       setActiveJob(null)
       if (result.job.state !== 'succeeded') throw new Error(result.job.error || (result.job.state === 'cancelled' ? 'Задание отменено' : 'Генерация завершилась с ошибкой'))
-      setDetail(await api.conversation(conversation.id)); setDraft('')
-    } catch (caught) { setActiveJob(null); setError(`Не удалось отправить: ${errorText(caught)}`) } finally { setSending(false) }
+      setDetail(await api.conversation(conversation.id, controller.signal)); setDraft('')
+    } catch (caught) {
+      if (!controller.signal.aborted) { setActiveJob(null); setError(`Не удалось отправить: ${errorText(caught)}`) }
+    } finally {
+      if (!controller.signal.aborted) setSending(false)
+      if (submitPollController.current === controller) submitPollController.current = null
+    }
   }
   const remove = async (session: Conversation) => { await api.deleteConversation(session.id); sessions.setData((sessions.data ?? []).filter(item => item.id !== session.id)); if (selectedId === session.id) { setSelectedId(null); setDetail(null) } }
+  const selectedSession = sessions.data?.find(item => item.id === selectedId)
 
   return <div className="rp-assistant-chat-layout">
     <Panel title="Разговоры" actions={<Button disabled={!enabled || parkId == null} onClick={() => void create()} size="compact">Новый</Button>}>
       {sessions.loading ? <LoadingState label="Загружаем разговоры" /> : sessions.error ? <ErrorState title="Не удалось загрузить разговоры" description={sessions.error} onRetry={() => void sessions.refresh()} /> :
         sessions.data?.length ? <ul className="rp-assistant-list">{sessions.data.map(item => <li key={item.id}><button aria-current={selectedId === item.id} onClick={() => void open(item.id)} type="button"><strong>{item.title}</strong>{item.issue_key ? <span>{item.issue_key}</span> : null}</button><Button aria-label={`Удалить ${item.title}`} onClick={() => void remove(item)} size="compact" variant="ghost">×</Button></li>)}</ul> : <p>Начните новый разговор.</p>}
     </Panel>
-    <Panel title={detail?.title ?? (issueKey ? `Помощник по ${issueKey}` : 'Новый разговор')}>
+    <Panel title={detail?.title ?? selectedSession?.title ?? (issueKey ? `Помощник по ${issueKey}` : 'Новый разговор')}>
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <div aria-live="polite" className="rp-assistant-messages">{detail?.messages.length ? detail.messages.map(message => <article className={`rp-assistant-message rp-assistant-message--${message.role}`} key={message.id}><strong>{message.role === 'assistant' ? 'Помощник' : 'Вы'}</strong><p>{message.content}</p>{message.sources.length ? <div className="rp-assistant-sources"><span>Источники</span>{message.sources.map(source => <Link key={source.id} title={source.excerpt} to={`/assistant?document=${encodeURIComponent(source.id)}`}>{source.title}</Link>)}</div> : null}</article>) : <EmptyState title="Задайте вопрос по ремонту" description={issueKey ? `Контекст задачи ${issueKey} будет приложен к разговору.` : 'Выберите парк и опишите симптом или нужную процедуру.'} />}</div>
+      <div aria-live="polite" className="rp-assistant-messages">{opening ? <LoadingState label="Открываем разговор" /> : detail?.messages.length ? detail.messages.map(message => <article className={`rp-assistant-message rp-assistant-message--${message.role}`} key={message.id}><strong>{message.role === 'assistant' ? 'Помощник' : 'Вы'}</strong><p>{message.content}</p>{message.sources.length ? <div className="rp-assistant-sources"><span>Источники</span>{message.sources.map(source => <Link key={source.id} title={source.excerpt} to={`/assistant?document=${encodeURIComponent(source.id)}`}>{source.title}</Link>)}</div> : null}</article>) : <EmptyState title="Задайте вопрос по ремонту" description={issueKey ? `Контекст задачи ${issueKey} будет приложен к разговору.` : 'Выберите парк и опишите симптом или нужную процедуру.'} />}</div>
       {activeJob && (activeJob.state === 'queued' || activeJob.state === 'running') ? <div className="rp-assistant-job" role="status"><span>{sending ? 'Готовим ответ…' : 'Ответ ещё готовится. Можно вернуться позже.'}</span><Button onClick={() => void api.cancelJob(activeJob.id).then(setActiveJob)} size="compact" variant="secondary">Отменить</Button></div> : null}
-      <form className="rp-assistant-compose" onSubmit={submit}><FormField id="assistant-message" label="Сообщение помощнику"><textarea disabled={!enabled || sending} onChange={event => setDraft(event.target.value)} rows={3} value={draft} /></FormField><Button busy={sending} disabled={!enabled || !draft.trim() || parkId == null} type="submit">Отправить</Button></form>
+      <form className="rp-assistant-compose" onSubmit={submit}><FormField id="assistant-message" label="Сообщение помощнику"><textarea disabled={!enabled || sending || opening} onChange={event => setDraft(event.target.value)} rows={3} value={draft} /></FormField><Button busy={sending} disabled={!enabled || !draft.trim() || parkId == null || opening} type="submit">Отправить</Button></form>
     </Panel>
   </div>
 }
 
-function KnowledgePanel({ api, canManage, initialDocumentId, parkId }: { api: AssistantApiClient; canManage: boolean; initialDocumentId: string | null; parkId: number | null }) {
+function KnowledgeBundleNotice({ bundle }: { bundle: AiStatus['knowledge_bundle'] }) {
+  if (!bundle || bundle.state === 'ready') return null
+  if (bundle.state === 'importing') {
+    const maximum = Math.max(bundle.total, 1)
+    const processed = Math.min(Math.max(bundle.processed, 0), maximum)
+    return <Alert tone="info">
+      Загружаем начальную базу знаний: {bundle.processed} из {bundle.total}.{' '}
+      <progress aria-label="Загрузка начальной базы знаний" aria-valuemax={maximum} aria-valuemin={0} aria-valuenow={processed} max={maximum} value={processed} />
+    </Alert>
+  }
+  if (bundle.state === 'failed') return <Alert tone="error">Начальную базу знаний загрузить не удалось. Система повторит попытку; подробности доступны администратору в журнале.</Alert>
+  if (bundle.state === 'paused') return <Alert tone="warning">Загрузка начальной базы знаний приостановлена и продолжится после включения помощника.</Alert>
+  if (bundle.state === 'unavailable') return <Alert tone="warning">Пакет начальной базы знаний недоступен в этой установке.</Alert>
+  return <Alert tone="info">Начальная база знаний ожидает загрузки.</Alert>
+}
+
+function KnowledgePanel({ api, bundle, canManage, initialDocumentId, parkId }: { api: AssistantApiClient; bundle: AiStatus['knowledge_bundle']; canManage: boolean; initialDocumentId: string | null; parkId: number | null }) {
   const [query, setQuery] = useState(''); const [state, setState] = useState<KnowledgeState | ''>('')
-  const documents = useLoader(() => api.documents({ q: query || undefined, park_id: parkId ?? undefined, state: state || undefined }), [api, query, parkId, state])
+  const documents = useLoader(signal => api.documents({ q: query || undefined, park_id: parkId ?? undefined, state: state || undefined, signal }), [api, query, parkId, state])
   const [selected, setSelected] = useState<KnowledgeDocument | null>(null); const [editing, setEditing] = useState(false)
   const [message, setMessage] = useState<string | null>(null); const [error, setError] = useState<string | null>(null)
-  const open = async (item: KnowledgeDocument) => { setError(null); try { setSelected(await api.document(item.id)); setEditing(false) } catch (caught) { setError(errorText(caught)) } }
+  const documentController = useRef<AbortController | null>(null)
+  const open = async (item: KnowledgeDocument) => {
+    documentController.current?.abort()
+    const controller = new AbortController()
+    documentController.current = controller
+    setError(null)
+    try {
+      const next = await api.document(item.id, controller.signal)
+      if (!controller.signal.aborted) { setSelected(next); setEditing(false) }
+    } catch (caught) { if (!controller.signal.aborted) setError(errorText(caught)) }
+  }
+  useEffect(() => () => { documentController.current?.abort() }, [parkId])
   useEffect(() => {
     if (!initialDocumentId) return
+    const controller = new AbortController()
     setError(null)
-    void api.document(initialDocumentId).then(setSelected).catch(caught => setError(errorText(caught)))
+    void api.document(initialDocumentId, controller.signal).then(next => {
+      if (!controller.signal.aborted) setSelected(next)
+    }).catch(caught => { if (!controller.signal.aborted) setError(errorText(caught)) })
+    return () => controller.abort()
   }, [api, initialDocumentId])
   const save = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const data = new FormData(event.currentTarget); setError(null)
@@ -208,6 +352,7 @@ function KnowledgePanel({ api, canManage, initialDocumentId, parkId }: { api: As
   const remove = async () => { if (!selected) return; await api.deleteDocument(selected.id); setSelected(null); setEditing(false); void documents.refresh() }
   return <div className="rp-assistant-knowledge">
     <Panel title="Поиск" actions={canManage ? <Button onClick={() => { setSelected(null); setEditing(true) }} size="compact">Добавить</Button> : null}>
+      <KnowledgeBundleNotice bundle={bundle} />
       <div className="rp-assistant-filters"><FormField id="knowledge-query" label="Текст"><input onChange={event => setQuery(event.target.value)} placeholder="Например, лидар" value={query} /></FormField><FormField id="knowledge-state" label="Статус"><select onChange={event => setState(event.target.value as KnowledgeState | '')} value={state}><option value="">Все</option><option value="active">Действующие</option><option value="candidate">Кандидаты</option><option value="rejected">Отклонённые</option></select></FormField></div>
       {documents.loading ? <LoadingState label="Ищем документы" /> : documents.error ? <ErrorState title="Поиск не выполнен" description={documents.error} onRetry={() => void documents.refresh()} /> : documents.data?.items.length ? <ul className="rp-assistant-list">{documents.data.items.map(item => <li key={item.id}><button onClick={() => void open(item)} type="button"><strong>{item.title}</strong><span>{item.kind} · {item.state} · {item.trust}</span></button></li>)}</ul> : <EmptyState title="Ничего не найдено" description="Измените запрос или добавьте документ." />}
       {canManage ? <KnowledgeImport api={api} parkId={parkId} onDone={() => void documents.refresh()} /> : null}
@@ -233,29 +378,33 @@ function KnowledgeImport({ api, parkId, onDone }: { api: AssistantApiClient; par
 
 function DraftGenerator({ api, kind, parkId, onProposal }: { api: AssistantApiClient; kind: 'script' | 'automation'; parkId: number | null; onProposal: (result: Record<string, unknown>) => void }) {
   const [instruction, setInstruction] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null); const [proposal, setProposal] = useState<Record<string, unknown> | null>(null); const [copied, setCopied] = useState(false)
-  const generate = async () => { if (parkId == null || !instruction.trim()) return; setBusy(true); setError(null); setCopied(false); try { const { job: complete, timedOut } = await waitForJob(api, await api.createDraft({ kind, instruction: instruction.trim(), park_id: parkId })); if (timedOut || complete.state !== 'succeeded' || !complete.result || typeof complete.result !== 'object') throw new Error(complete.error || (timedOut ? 'Черновик ещё готовится. Попробуйте открыть раздел позже.' : 'Черновик не создан')); const next = complete.result as Record<string, unknown>; setProposal(next); onProposal(next) } catch (caught) { setError(errorText(caught)) } finally { setBusy(false) } }
+  const pollController = useRef<AbortController | null>(null)
+  useEffect(() => () => pollController.current?.abort(), [])
+  const generate = async () => { if (parkId == null || !instruction.trim()) return; const controller = new AbortController(); pollController.current?.abort(); pollController.current = controller; setBusy(true); setError(null); setCopied(false); try { const { job: complete, timedOut } = await waitForJob(api, await api.createDraft({ kind, instruction: instruction.trim(), park_id: parkId }), controller.signal); if (controller.signal.aborted) return; if (timedOut || complete.state !== 'succeeded' || !complete.result || typeof complete.result !== 'object') throw new Error(complete.error || (timedOut ? 'Черновик ещё готовится. Попробуйте открыть раздел позже.' : 'Черновик не создан')); const next = complete.result as Record<string, unknown>; setProposal(next); onProposal(next) } catch (caught) { if (!controller.signal.aborted) setError(errorText(caught)) } finally { if (!controller.signal.aborted) setBusy(false); if (pollController.current === controller) pollController.current = null } }
   const copy = async () => { if (!proposal) return; try { await navigator.clipboard.writeText(JSON.stringify(proposal, null, 2)); setCopied(true) } catch { setError('Не удалось скопировать предложение. Выделите текст вручную.') } }
   return <details className="rp-assistant-advanced"><summary>Создать черновик с помощником</summary><FormField id={`draft-${kind}`} label="Что нужно сделать"><textarea onChange={event => setInstruction(event.target.value)} rows={3} value={instruction} /></FormField>{error ? <Alert tone="error">{error}</Alert> : null}<Button busy={busy} disabled={parkId == null || !instruction.trim()} onClick={() => void generate()}>Подготовить предложение</Button>{proposal ? <><pre>{JSON.stringify(proposal, null, 2)}</pre><Button onClick={() => void copy()} variant="secondary">Копировать предложение</Button>{copied ? <span role="status">Скопировано.</span> : null}</> : null}<p>Предложение перенесено в редактор, но не сохраняется и не включается автоматически.</p></details>
 }
 
 function ScriptsPanel({ api, parkId }: { api: AssistantApiClient; parkId: number | null }) {
-  const resource = useLoader(() => api.scripts(), [api]); const [selected, setSelected] = useState<AssistantScript | null>(null); const [name, setName] = useState(''); const [source, setSource] = useState('def main(data):\n    return {}'); const [input, setInput] = useState('{}'); const [result, setResult] = useState(''); const [error, setError] = useState<string | null>(null)
+  const resource = useLoader(signal => api.scripts(signal), [api]); const [selected, setSelected] = useState<AssistantScript | null>(null); const [name, setName] = useState(''); const [source, setSource] = useState('def main(data):\n    return {}'); const [input, setInput] = useState('{}'); const [result, setResult] = useState(''); const [error, setError] = useState<string | null>(null)
+  const testPollController = useRef<AbortController | null>(null)
+  useEffect(() => () => testPollController.current?.abort(), [])
   const select = (item: AssistantScript) => { setSelected(item); setName(item.name); setSource(item.source); setResult('') }
   const save = async () => { setError(null); try { const next = selected ? await api.updateScript(selected.id, { name, source, revision: selected.revision }) : await api.createScript({ name, source }); setSelected(next); select(next); await resource.refresh() } catch (caught) { setError(errorText(caught)) } }
-  const test = async () => { if (!selected) return; setError(null); try { const parsed = JSON.parse(input) as unknown; const { job: complete, timedOut } = await waitForJob(api, await api.testScript(selected.id, parsed)); setResult(JSON.stringify(complete.result, null, 2)); if (timedOut || complete.state !== 'succeeded') throw new Error(complete.error || (timedOut ? 'Проверка ещё выполняется' : 'Проверка не пройдена')); const all = await resource.refresh(); const current = all?.find(item => item.id === selected.id); if (current) select(current) } catch (caught) { setError(errorText(caught)) } }
+  const test = async () => { if (!selected) return; const controller = new AbortController(); testPollController.current?.abort(); testPollController.current = controller; setError(null); try { const parsed = JSON.parse(input) as unknown; const { job: complete, timedOut } = await waitForJob(api, await api.testScript(selected.id, parsed), controller.signal); if (controller.signal.aborted) return; setResult(JSON.stringify(complete.result, null, 2)); if (timedOut || complete.state !== 'succeeded') throw new Error(complete.error || (timedOut ? 'Проверка ещё выполняется' : 'Проверка не пройдена')); const all = await resource.refresh(); const current = all?.find(item => item.id === selected.id); if (current) select(current) } catch (caught) { if (!controller.signal.aborted) setError(errorText(caught)) } finally { if (testPollController.current === controller) testPollController.current = null } }
   const toggle = async () => { if (!selected) return; try { const next = await api.updateScript(selected.id, { revision: selected.revision, enabled: !selected.enabled }); select(next); await resource.refresh() } catch (caught) { setError(errorText(caught)) } }
   return <div className="rp-assistant-admin-layout"><Panel title="Скрипты" actions={<Button onClick={() => { setSelected(null); setName(''); setSource('def main(data):\n    return {}') }} size="compact">Новый</Button>}>{resource.data?.length ? <ul className="rp-assistant-list">{resource.data.map(item => <li key={item.id}><button onClick={() => select(item)} type="button"><strong>{item.name}</strong><span>r{item.revision} · {item.enabled ? 'включён' : 'выключен'} · тест r{item.tested_revision ?? '—'}</span></button></li>)}</ul> : <EmptyState title="Скриптов пока нет" />}<DraftGenerator api={api} kind="script" parkId={parkId} onProposal={proposal => { setSelected(null); setName('Черновик'); setSource(String(proposal.source ?? '')) }} /></Panel><Panel title={selected ? selected.name : 'Редактор скрипта'}>{error ? <Alert tone="error">{error}</Alert> : null}<FormField id="script-name" label="Название"><input onChange={event => setName(event.target.value)} value={name} /></FormField><FormField id="script-source" label="Python: main(data) → JSON"><textarea className="rp-assistant-code" onChange={event => setSource(event.target.value)} rows={16} value={source} /></FormField><div className="rp-assistant-actions"><Button disabled={!name.trim() || !source.trim()} onClick={() => void save()}>Сохранить</Button>{selected ? <><Button onClick={() => void toggle()} variant="secondary">{selected.enabled ? 'Выключить' : 'Включить'}</Button><Button onClick={() => { if (window.confirm(`Удалить скрипт «${selected.name}»?`)) void api.deleteScript(selected.id).then(() => { setSelected(null); void resource.refresh() }) }} variant="danger">Удалить</Button></> : null}</div>{selected ? <details className="rp-assistant-advanced" open><summary>Проверка текущей ревизии</summary><FormField id="script-input" label="Входной JSON"><textarea className="rp-assistant-code" onChange={event => setInput(event.target.value)} rows={5} value={input} /></FormField><Button onClick={() => void test()}>Запустить тест</Button>{result ? <pre>{result}</pre> : null}</details> : null}</Panel></div>
 }
 
 function ConnectorsPanel({ api }: { api: AssistantApiClient }) {
-  const resource = useLoader(() => api.connectors(), [api]); const [selected, setSelected] = useState<Connector | null>(null); const [error, setError] = useState<string | null>(null)
+  const resource = useLoader(signal => api.connectors(signal), [api]); const [selected, setSelected] = useState<Connector | null>(null); const [error, setError] = useState<string | null>(null)
   const edit = (item: Connector | null) => setSelected(item)
   const save = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); const value = { name: String(data.get('name')), url: String(data.get('url')), method: String(data.get('method')) as Connector['method'], token: String(data.get('token') || '') || undefined, enabled: data.get('enabled') === 'on' }; setError(null); try { const next = selected ? await api.updateConnector(selected.id, { ...value, revision: selected.revision }) : await api.createConnector(value); setSelected(next); await resource.refresh(); form.reset() } catch (caught) { setError(errorText(caught)) } }
   return <div className="rp-assistant-admin-layout"><Panel title="Подключения" actions={<Button onClick={() => edit(null)} size="compact">Новое</Button>}>{resource.data?.length ? <ul className="rp-assistant-list">{resource.data.map(item => <li key={item.id}><button onClick={() => edit(item)} type="button"><strong>{item.name}</strong><span>{item.method} · {item.enabled ? 'включено' : 'выключено'} · токен {item.token_set ? 'задан' : 'не задан'}</span></button></li>)}</ul> : <EmptyState title="Подключений пока нет" />}</Panel><Panel title={selected ? `Подключение: ${selected.name}` : 'Новое подключение'}><p>Адрес фиксируется администратором. Секрет после сохранения не отображается.</p>{error ? <Alert tone="error">{error}</Alert> : null}<form className="rp-assistant-form" key={selected?.id ?? 'new'} onSubmit={save}><FormField id="connector-name" label="Название" required><input defaultValue={selected?.name} name="name" /></FormField><FormField id="connector-url" label="HTTPS адрес" required><input defaultValue={selected?.url} inputMode="url" name="url" placeholder="https://service.example/issues/{{issue_key}}" type="text" /></FormField><p className="rp-assistant-muted">Шаблон {'{{issue_key}}'} разрешён только в пути, например https://service.example/issues/{'{{issue_key}}'}.</p><FormField id="connector-method" label="Метод"><select defaultValue={selected?.method ?? 'POST'} name="method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option></select></FormField><FormField id="connector-token" label={selected?.token_set ? 'Новый bearer-токен (необязательно)' : 'Bearer-токен'}><input autoComplete="new-password" name="token" type="password" /></FormField><label><input defaultChecked={selected?.enabled} name="enabled" type="checkbox" /> Включено</label><div className="rp-assistant-actions"><Button type="submit">Сохранить</Button>{selected ? <Button onClick={() => { if (window.confirm(`Удалить подключение «${selected.name}»?`)) void api.deleteConnector(selected.id).then(() => { setSelected(null); void resource.refresh() }) }} type="button" variant="danger">Удалить</Button> : null}</div></form></Panel></div>
 }
 
 function AutomationsPanel({ api, parkId }: { api: AssistantApiClient; parkId: number | null }) {
-  const resource = useLoader(() => api.automations(), [api]); const [selected, setSelected] = useState<Automation | null>(null); const [name, setName] = useState(''); const [filters, setFilters] = useState('{"component_ids":[],"defect_codes":[],"keywords":[]}'); const [action, setAction] = useState('{"body":{}}'); const [event, setEvent] = useState('{}'); const [output, setOutput] = useState(''); const [error, setError] = useState<string | null>(null)
+  const resource = useLoader(signal => api.automations(signal), [api]); const [selected, setSelected] = useState<Automation | null>(null); const [name, setName] = useState(''); const [filters, setFilters] = useState('{"component_ids":[],"defect_codes":[],"keywords":[]}'); const [action, setAction] = useState('{"body":{}}'); const [event, setEvent] = useState('{}'); const [output, setOutput] = useState(''); const [error, setError] = useState<string | null>(null)
   const select = (item: Automation) => { setSelected(item); setName(item.name); setFilters(JSON.stringify(item.filters, null, 2)); setAction(JSON.stringify(item.action, null, 2)) }
   const save = async () => { if (parkId == null) return; setError(null); try { const parsedFilters = JSON.parse(filters) as Automation['filters'], parsedAction = JSON.parse(action) as Automation['action']; const next = selected ? await api.updateAutomation(selected.id, { revision: selected.revision, name, filters: parsedFilters, action: parsedAction }) : await api.createAutomation({ name, park_id: parkId, filters: parsedFilters, action: parsedAction }); select(next); await resource.refresh() } catch (caught) { setError(errorText(caught)) } }
   const toggle = async () => { if (!selected) return; try { const next = await api.updateAutomation(selected.id, { revision: selected.revision, enabled: !selected.enabled }); select(next); await resource.refresh() } catch (caught) { setError(errorText(caught)) } }
@@ -264,7 +413,7 @@ function AutomationsPanel({ api, parkId }: { api: AssistantApiClient; parkId: nu
 }
 
 function SettingsPanel({ api, status, onStatus }: { api: AssistantApiClient; status: AiStatus; onStatus: (status: AiStatus) => void }) {
-  const config = useLoader(() => api.config(), [api]); const prompts = useLoader(() => api.prompts(), [api]); const runs = useLoader(() => api.runs(), [api]); const [error, setError] = useState<string | null>(null); const [message, setMessage] = useState<string | null>(null); const [runtimeBusy, setRuntimeBusy] = useState<null | 'install' | 'enable' | 'disable' | 'remove_model'>(null); const runtimeBusyRef = useRef(false); const [cleanupBusy, setCleanupBusy] = useState<string | null>(null); const cleanupBusyRef = useRef(false)
+  const config = useLoader(signal => api.config(signal), [api]); const prompts = useLoader(signal => api.prompts(signal), [api]); const runs = useLoader(signal => api.runs(50, signal), [api]); const [error, setError] = useState<string | null>(null); const [message, setMessage] = useState<string | null>(null); const [runtimeBusy, setRuntimeBusy] = useState<null | 'install' | 'enable' | 'disable' | 'remove_model'>(null); const runtimeBusyRef = useRef(false); const [cleanupBusy, setCleanupBusy] = useState<string | null>(null); const cleanupBusyRef = useRef(false)
   const updateConfig = async (patch: Partial<AiConfig>) => { if (!config.data) return; try { config.setData(await api.updateConfig({ ...config.data, ...patch })) } catch (caught) { setError(errorText(caught)) } }
   const runtime = async (action: 'install' | 'enable' | 'disable' | 'remove_model') => { if (runtimeBusyRef.current || (action === 'remove_model' && !window.confirm('Удалить локальную модель? Для повторного запуска потребуется новая установка.'))) return; runtimeBusyRef.current = true; setRuntimeBusy(action); setError(null); try { onStatus(await api.runtime(action)) } catch (caught) { setError(errorText(caught)) } finally { runtimeBusyRef.current = false; setRuntimeBusy(null) } }
   const cleanup = async (kind: 'runs' | 'failed_jobs' | 'history') => { if (cleanupBusyRef.current) return; cleanupBusyRef.current = true; setCleanupBusy(kind); setError(null); try { const result = kind === 'runs' ? await api.purgeRuns(30) : await api.maintenance(kind, 30); setMessage(kind === 'runs' ? `Удалено записей: ${result.deleted}` : kind === 'failed_jobs' ? `Удалено заданий: ${result.deleted}` : `Удалено сообщений: ${result.deleted}`); if (kind === 'runs') void runs.refresh() } catch (caught) { setError(errorText(caught)) } finally { cleanupBusyRef.current = false; setCleanupBusy(null) } }

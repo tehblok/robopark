@@ -6,11 +6,41 @@ import logging
 
 from sqlalchemy import select
 
-from robopark_api.ai_models import AIDocument, AIEvent
+from robopark_api.ai_models import AIDocument, AIEvent, AIRun
 from robopark_api.services.ai import automations, knowledge, policy
 from robopark_api.task_workflow_models import ReliableAction
 
 logger = logging.getLogger(__name__)
+
+
+def purge_event_payloads(db, *, before, limit=100):
+    """Keep immutable deduplication keys; queued/running rules still need input.
+
+    Caller holds ai-controls, shared with execution and admin changes, and commits.
+    Composite indexes keep each bounded pass independent of old empty receipts.
+    """
+    pending = (
+        select(AIRun.id)
+        .where(AIRun.event_key == AIEvent.key, AIRun.state.in_(("queued", "running")))
+        .exists()
+    )
+    rows = list(
+        db.scalars(
+            select(AIEvent)
+            .where(
+                AIEvent.processed.is_(True),
+                AIEvent.payload_retained.is_(True),
+                AIEvent.occurred_at < before,
+                ~pending,
+            )
+            .order_by(AIEvent.occurred_at, AIEvent.key)
+            .limit(max(1, min(limit, 1000)))
+        )
+    )
+    for row in rows:
+        row.payload = {}
+        row.payload_retained = False
+    return len(rows)
 
 
 def stage_verified_close(db, *, review, park_id, event_key, closed_at, previous_closure=None):

@@ -162,6 +162,67 @@ def test_unknown_delivery_never_retries_and_disable_cancels(
     assert db_session.scalar(select(AIRun).where(AIRun.event_key == "e2")).state == "cancelled"
 
 
+def test_connector_idempotency_key_survives_pre_run_snapshot_restore(
+    db_session, db_engine, seed_admin, seed_park_with_tracker, test_settings, tmp_path, monkeypatch
+):
+    enable_host(test_settings, tmp_path)
+    connector = AIConnector(
+        name="X", url="https://example.com/api", method="PATCH", enabled=True, encrypted_token=""
+    )
+    db_session.add(connector)
+    db_session.flush()
+    rule = AIAutomation(
+        id="automation-stable",
+        name="X",
+        park_id=seed_park_with_tracker.id,
+        owner_id=seed_admin.id,
+        enabled=True,
+        enabled_at=1,
+        filters={},
+        action={"connector_id": connector.id, "body": {"id": "{{issue_key}}"}},
+    )
+    event = AIEvent(
+        key="snapshot-event",
+        park_id=seed_park_with_tracker.id,
+        payload={"issue_key": "R-1", "event_key": "snapshot-event"},
+        occurred_at=2,
+    )
+    db_session.add_all([rule, event])
+    db_session.flush()
+    automations.stage_runs(db_session, event)
+    db_session.commit()
+    delivered = []
+
+    def deliver(_settings, _connector, _payload, idempotency_key, _event):
+        delivered.append(idempotency_key)
+        return {"http_status": 200, "response_bytes": 0}
+
+    monkeypatch.setattr(connectors, "deliver", deliver)
+    factory = sessionmaker(bind=db_engine)
+    assert automations.process_run(factory, test_settings)
+    db_session.expire_all()
+    first = db_session.scalar(select(AIRun))
+    first_run_id = first.id
+
+    # Restore of a snapshot taken before staging has no AIRun receipt. The
+    # same immutable rule/event pair is staged again with a different UUID.
+    db_session.delete(first)
+    db_session.commit()
+    automations.stage_runs(db_session, event)
+    db_session.commit()
+    second = db_session.scalar(select(AIRun))
+    assert second.id != first_run_id
+    assert automations.process_run(factory, test_settings)
+
+    assert len(delivered) == 2
+    assert delivered == [
+        "83df5003b37064aa60ba197294dd6f300e253d63d98266c89c99975aa753e5b1",
+        "83df5003b37064aa60ba197294dd6f300e253d63d98266c89c99975aa753e5b1",
+    ]
+    assert delivered[0] != first_run_id
+    assert len(delivered[0]) == 64
+
+
 def test_learning_requires_review_and_survives_dedup_delete(
     db_session,
     seed_admin,

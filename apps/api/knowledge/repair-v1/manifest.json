@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "bundle_id": "repair-public-v1",
+  "identity_key_sha256": "561a2095fd0264f296f95ff1f9a13b9f9b50590b550f81a2f7c4e1656b778c83",
+  "documents": 4706,
+  "parts": [
+    {
+      "path": "seed.jsonl",
+      "documents": 4706,
+      "bytes": 2999108,
+      "sha256": "717692682dc16fbed31197a5ce0602652e2bf5db9c8bc60ec32c4cdaaecddf4a"
+    }
+  ]
+}

@@ -46,7 +46,10 @@ PHONE_RE = re.compile(
     r"(?<!\w)(?:\+?7|8)[\s()\-]*\d{3}[\s()\-]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}(?!\w)"
 )
 SECRET_RE = re.compile(
-    r"(?i)\b(password|passwd|pwd|token|api[_-]?key|secret|authorization)\b(\s*[:=]\s*)([^\s,;]+)"
+    r"(?<!\w)(password|passwd|pwd|token|api[_-]?key|secret|authorization|"
+    r"пароль|логин|секрет|пин(?:[-_\s]?код)|код\s+доступа)(?!\w)"
+    r"(\s*[:=]\s*)([^\s,;]+)",
+    re.IGNORECASE,
 )
 BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 URL_AUTH_RE = re.compile(r"(?i)\b(https?://)([^/@\s:]+):([^/@\s]+)@")
@@ -147,9 +150,7 @@ def select_manual_title(texts: Iterable[str], path: Path, fallback: str) -> str:
         if clean_text(line)
     ]
     candidate = manual_heading(lines[0] if lines else "", path, fallback)
-    filename_title = safe_heading(
-        re.sub(r"\s+\(\d+\)$", "", path.stem), fallback
-    )
+    filename_title = safe_heading(re.sub(r"\s+\(\d+\)$", "", path.stem), fallback)
     operation = re.compile(
         r"(?i)^(?:замена|снятие|установка|регулировка|ремонт|демонтаж|монтаж|сборка|разборка)\b"
     )
@@ -283,9 +284,9 @@ class Redactor:
             key=len,
             reverse=True,
         ):
-            hits = text.count(name)
+            pattern = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.IGNORECASE)
+            text, hits = pattern.subn("[имя удалено]", text)
             if hits:
-                text = text.replace(name, "[имя удалено]")
                 self.counts["name"] += hits
         return text
 

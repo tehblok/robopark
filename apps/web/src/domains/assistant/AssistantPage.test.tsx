@@ -10,6 +10,7 @@ import { assistantErrorText, createKnowledgeImportBatches } from './assistantUi'
 import type { AssistantApiClient, AiStatus } from './assistantApi'
 
 const park = { id: 4, name: 'Север', tag: 'NORTH', timezone: 'Europe/Moscow' }
+const southPark = { id: 5, name: 'Юг', tag: 'SOUTH', timezone: 'Europe/Moscow' }
 const operator: User = { id: 1, username: 'operator', role: 'operator', access_status: 'approved', permissions: ['nav.tasks'], parks: [park] }
 const admin: User = { ...operator, id: 2, username: 'admin', role: 'admin' }
 const ready: AiStatus = {
@@ -34,13 +35,17 @@ function client(status: AiStatus = ready): AssistantApiClient {
   }
 }
 
-function renderPage(apiClient: AssistantApiClient, user: User = operator, path = '/assistant') {
-  return render(<MemoryRouter initialEntries={[path]}><AuthContext.Provider value={{
+function page(apiClient: AssistantApiClient, user: User = operator, path = '/assistant', activePark = park) {
+  return <MemoryRouter initialEntries={[path]}><AuthContext.Provider value={{
     user, loading: false, login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn(),
   }}><ParkScopeContext.Provider value={{
-    parkId: 4, selectedPark: park, parks: [park], loading: false, locked: false,
+    parkId: activePark.id, selectedPark: activePark, parks: user.parks, loading: false, locked: false,
     setParkId: vi.fn(), refreshParks: vi.fn(),
-  }}><AssistantPage apiClient={apiClient} /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>)
+  }}><AssistantPage apiClient={apiClient} /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
+}
+
+function renderPage(apiClient: AssistantApiClient, user: User = operator, path = '/assistant') {
+  return render(page(apiClient, user, path))
 }
 
 describe('AssistantPage', () => {
@@ -62,6 +67,42 @@ describe('AssistantPage', () => {
     expect(screen.queryByRole('tab', { name: 'Автоматизации' })).not.toBeInTheDocument()
   })
 
+  it('shows initial knowledge import progress without exposing backend details', async () => {
+    const apiClient = client({
+      ...ready,
+      knowledge_bundle: { state: 'importing', total: 15595, processed: 4100, created: 4050, skipped: 50, error: '/private/source/seed.jsonl' },
+    })
+    renderPage(apiClient)
+
+    await userEvent.click(await screen.findByRole('tab', { name: 'База знаний' }))
+
+    expect(screen.getByRole('progressbar', { name: 'Загрузка начальной базы знаний' })).toHaveAttribute('aria-valuenow', '4100')
+    expect(screen.getByText('Загружаем начальную базу знаний: 4100 из 15595.')).toBeVisible()
+    expect(screen.queryByText(/private\/source/)).not.toBeInTheDocument()
+  })
+
+  it('keeps the knowledge section compatible with status responses without bundle state', async () => {
+    renderPage(client(ready))
+
+    await userEvent.click(await screen.findByRole('tab', { name: 'База знаний' }))
+
+    expect(screen.getByRole('heading', { name: 'Поиск' })).toBeVisible()
+    expect(screen.queryByText(/начальн.*баз/i)).not.toBeInTheDocument()
+  })
+
+  it('replaces a bundle failure detail with a safe recovery message', async () => {
+    const apiClient = client({
+      ...ready,
+      knowledge_bundle: { state: 'failed', total: 15595, processed: 4100, created: 4050, skipped: 50, error: 'permission denied: /private/source/seed.jsonl' },
+    })
+    renderPage(apiClient)
+
+    await userEvent.click(await screen.findByRole('tab', { name: 'База знаний' }))
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Начальную базу знаний загрузить не удалось')
+    expect(screen.queryByText(/permission denied|private\/source/i)).not.toBeInTheDocument()
+  })
+
   it('polls supported status and reflects readiness changes', async () => {
     const apiClient = client()
     const starting = { ...ready, ready: false, reason: 'starting' }
@@ -71,6 +112,7 @@ describe('AssistantPage', () => {
     const interval = vi.spyOn(window, 'setInterval').mockImplementation((handler, delay) => { if (delay === 5000) tick = handler as () => Promise<void>; return 123 as unknown as ReturnType<typeof setInterval> })
     renderPage(apiClient)
     expect(await screen.findByText('Запускаем локальную модель.')).toBeVisible()
+    await waitFor(() => expect(tick).toBeTypeOf('function'))
 
     await act(async () => { await tick() })
     expect(apiClient.status).toHaveBeenCalledTimes(2)
@@ -92,12 +134,90 @@ describe('AssistantPage', () => {
     const interval = vi.spyOn(window, 'setInterval').mockImplementation((handler, delay) => { if (delay === 5000) tick = handler as () => Promise<void>; return 123 as unknown as ReturnType<typeof setInterval> })
     renderPage(apiClient)
     expect(await screen.findByText('Запускаем локальную модель.')).toBeVisible()
+    await waitFor(() => expect(tick).toBeTypeOf('function'))
 
     let firstPoll!: Promise<void>
     await act(async () => { firstPoll = tick(); await tick() })
     expect(apiClient.status).toHaveBeenCalledTimes(2)
     await act(async () => { finishPoll(ready); await firstPoll })
     interval.mockRestore()
+  })
+
+  it('aborts the initial status request when the page unmounts', () => {
+    const apiClient = client()
+    vi.mocked(apiClient.status).mockImplementation(() => new Promise(() => {}))
+
+    const view = renderPage(apiClient)
+    const signal = (vi.mocked(apiClient.status).mock.calls[0] as unknown[])[0] as AbortSignal
+    view.unmount()
+
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal.aborted).toBe(true)
+  })
+
+  it('aborts an in-flight status poll when the page unmounts', async () => {
+    const apiClient = client()
+    vi.mocked(apiClient.status).mockResolvedValueOnce(ready).mockImplementation(() => new Promise(() => {}))
+    let tick!: () => Promise<void>
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation((handler, delay) => { if (delay === 5000) tick = handler as () => Promise<void>; return 123 as unknown as ReturnType<typeof setInterval> })
+    const view = renderPage(apiClient)
+    await screen.findByRole('tab', { name: 'Помощник' })
+    await waitFor(() => expect(tick).toBeTypeOf('function'))
+
+    void tick()
+    await waitFor(() => expect(apiClient.status).toHaveBeenCalledTimes(2))
+    const signal = (vi.mocked(apiClient.status).mock.calls[1] as unknown[])[0] as AbortSignal
+    view.unmount()
+
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal.aborted).toBe(true)
+    interval.mockRestore()
+  })
+
+  it('keeps the newest park documents when an older load resolves late', async () => {
+    const apiClient = client()
+    const currentUser = { ...operator, parks: [park, southPark] }
+    let finishNorth!: (value: Awaited<ReturnType<AssistantApiClient['documents']>>) => void
+    let finishSouth!: (value: Awaited<ReturnType<AssistantApiClient['documents']>>) => void
+    vi.mocked(apiClient.documents).mockImplementation((filters = {}) => new Promise(resolve => {
+      if (filters.park_id === park.id) finishNorth = resolve
+      else finishSouth = resolve
+    }))
+    const view = render(page(apiClient, currentUser, '/assistant', park))
+    await userEvent.click(await screen.findByRole('tab', { name: 'База знаний' }))
+    await waitFor(() => expect(apiClient.documents).toHaveBeenCalledTimes(1))
+
+    view.rerender(page(apiClient, currentUser, '/assistant', southPark))
+    await waitFor(() => expect(apiClient.documents).toHaveBeenCalledTimes(2))
+    const northSignal = ((vi.mocked(apiClient.documents).mock.calls[0] as unknown[])[0] as { signal?: AbortSignal }).signal
+    await act(async () => finishSouth({ items: [{ id: 'south', title: 'Южная инструкция', kind: 'manual', state: 'active', trust: 'instruction', park_id: 5, source_ref: 'south', updated_at: '', revision: 1 }], total: 1, offset: 0, limit: 30 }))
+    expect(await screen.findByText('Южная инструкция')).toBeVisible()
+    await act(async () => finishNorth({ items: [{ id: 'north', title: 'Северная инструкция', kind: 'manual', state: 'active', trust: 'instruction', park_id: 4, source_ref: 'north', updated_at: '', revision: 1 }], total: 1, offset: 0, limit: 30 }))
+
+    expect(northSignal).toBeInstanceOf(AbortSignal)
+    expect(northSignal?.aborted).toBe(true)
+    expect(screen.getByText('Южная инструкция')).toBeVisible()
+    expect(screen.queryByText('Северная инструкция')).not.toBeInTheDocument()
+  })
+
+  it('ignores a late status response from the previous user', async () => {
+    const apiClient = client()
+    const nextUser = { ...operator, id: 9, username: 'next-operator' }
+    let finishPrevious!: (value: AiStatus) => void
+    let finishNext!: (value: AiStatus) => void
+    vi.mocked(apiClient.status)
+      .mockImplementationOnce(() => new Promise(resolve => { finishPrevious = resolve }))
+      .mockImplementationOnce(() => new Promise(resolve => { finishNext = resolve }))
+    const view = render(page(apiClient, operator))
+    view.rerender(page(apiClient, nextUser))
+    await waitFor(() => expect(apiClient.status).toHaveBeenCalledTimes(2))
+
+    await act(async () => finishNext(ready))
+    expect(await screen.findByRole('tab', { name: 'Помощник' })).toBeVisible()
+    await act(async () => finishPrevious({ ...ready, supported: false, ready: false, reason: 'old-user-response' }))
+
+    expect(screen.getByRole('tab', { name: 'Помощник' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Требуется NVIDIA AGX Orin' })).not.toBeInTheDocument()
   })
 
   it('preserves a failed chat draft and renders returned source citations after retry', async () => {
@@ -117,7 +237,7 @@ describe('AssistantPage', () => {
     expect(input).toHaveValue('Как проверить лидар?')
 
     await user.click(screen.getByRole('button', { name: 'Отправить' }))
-    await waitFor(() => expect(apiClient.conversation).toHaveBeenCalledWith('c-1'))
+    await waitFor(() => expect(apiClient.conversation).toHaveBeenCalledWith('c-1', expect.any(AbortSignal)))
     expect(await screen.findByRole('link', { name: 'Инструкция по лидару' })).toBeVisible()
     expect(input).toHaveValue('')
   })
@@ -148,8 +268,8 @@ describe('AssistantPage', () => {
 
     renderPage(apiClient, operator, '/assistant?issue_key=RP-B&park_id=4')
 
-    await waitFor(() => expect(apiClient.conversation).toHaveBeenCalledWith('c-b'))
-    expect(apiClient.conversation).not.toHaveBeenCalledWith('c-a')
+    await waitFor(() => expect(apiClient.conversation).toHaveBeenCalledWith('c-b', expect.any(AbortSignal)))
+    expect(apiClient.conversation).not.toHaveBeenCalledWith('c-a', expect.anything())
     expect(apiClient.createConversation).not.toHaveBeenCalled()
   })
 
@@ -165,6 +285,68 @@ describe('AssistantPage', () => {
 
     await waitFor(() => expect(apiClient.createConversation).toHaveBeenCalledWith({ park_id: 4, issue_key: 'RP-B', title: 'RP-B' }))
     expect(await screen.findByRole('heading', { name: 'RP-B' })).toBeVisible()
+  })
+
+  it('does not open an issue conversation created after the page unmounts', async () => {
+    const apiClient = client()
+    let finishCreate!: (value: Awaited<ReturnType<AssistantApiClient['createConversation']>>) => void
+    vi.mocked(apiClient.createConversation).mockImplementation(() => new Promise(resolve => { finishCreate = resolve }))
+    const view = renderPage(apiClient, operator, '/assistant?issue_key=RP-LATE&park_id=4')
+    await waitFor(() => expect(apiClient.createConversation).toHaveBeenCalledTimes(1))
+
+    view.unmount()
+    await act(async () => finishCreate({ id: 'c-late', title: 'RP-LATE', park_id: 4, issue_key: 'RP-LATE', updated_at: '' }))
+
+    expect(apiClient.conversation).not.toHaveBeenCalled()
+  })
+
+  it('keeps the newly selected conversation when an older job resolves late', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    const second = { id: 'c-2', title: 'Второй разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    let finishSecond!: (value: typeof second) => void
+    let firstReads = 0
+    vi.mocked(apiClient.conversation).mockImplementation(id => {
+      if (id === 'c-2') return new Promise(resolve => { finishSecond = resolve })
+      firstReads += 1
+      return Promise.resolve(firstReads === 1 ? first : {
+        ...first,
+        messages: [{ id: 'm-old', role: 'assistant', content: 'Поздний старый ответ', sources: [], created_at: '' }],
+      })
+    })
+    let finishJob!: (value: Awaited<ReturnType<AssistantApiClient['job']>>) => void
+    vi.mocked(apiClient.job).mockImplementation(() => new Promise(resolve => { finishJob = resolve }))
+    renderPage(apiClient)
+    const input = await screen.findByLabelText('Сообщение помощнику')
+    await screen.findByRole('heading', { name: 'Первый разговор' })
+    fireEvent.change(input, { target: { value: 'Проверить питание' } })
+    fireEvent.submit(input.closest('form')!)
+    await waitFor(() => expect(apiClient.job).toHaveBeenCalledTimes(1))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Второй разговор' }))
+    await act(async () => finishSecond(second))
+    expect(await screen.findByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+    await act(async () => finishJob({ id: 'j-1', kind: 'chat', state: 'succeeded', created_at: '', updated_at: '', error: null, result: {} }))
+
+    expect(screen.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+    expect(screen.queryByText('Поздний старый ответ')).not.toBeInTheDocument()
+    expect(apiClient.cancelJob).not.toHaveBeenCalled()
+  })
+
+  it('disables message submission while a newly selected conversation is loading', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    const second = { id: 'c-2', title: 'Второй разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    vi.mocked(apiClient.conversation).mockImplementation(id => id === 'c-1' ? Promise.resolve(first) : new Promise(() => {}))
+    renderPage(apiClient)
+    await screen.findByRole('heading', { name: 'Первый разговор' })
+
+    await userEvent.click(screen.getByRole('button', { name: 'Второй разговор' }))
+
+    expect(screen.getByLabelText('Сообщение помощнику')).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Отправить' })).toBeDisabled()
   })
 
   it('keeps the draft and pending job when polling reaches its time limit', async () => {
@@ -194,7 +376,41 @@ describe('AssistantPage', () => {
     renderPage(apiClient)
 
     expect(await screen.findByText(/Ответ ещё готовится/)).toBeVisible()
-    expect(apiClient.job).toHaveBeenCalledWith('j-pending')
+    expect(apiClient.job).toHaveBeenCalledWith('j-pending', expect.any(AbortSignal))
+  })
+
+  it('stops UI job polling on unmount without cancelling the durable job', async () => {
+    const apiClient = client()
+    const pending = { id: 'j-pending', kind: 'chat', state: 'running' as const, created_at: '', updated_at: '', error: null, result: null }
+    vi.mocked(apiClient.conversations).mockResolvedValue([{ id: 'c-1', title: 'Диагностика', park_id: 4, issue_key: null, updated_at: '' }])
+    vi.mocked(apiClient.conversation).mockResolvedValue({ id: 'c-1', title: 'Диагностика', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [pending] })
+    vi.mocked(apiClient.job).mockImplementation(() => new Promise(() => {}))
+    const view = renderPage(apiClient)
+    await screen.findByText(/Ответ ещё готовится/)
+    const signal = (vi.mocked(apiClient.job).mock.calls[0] as unknown[])[1] as AbortSignal
+
+    view.unmount()
+
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal.aborted).toBe(true)
+    expect(apiClient.cancelJob).not.toHaveBeenCalled()
+  })
+
+  it('does not start polling when message creation resolves after unmount', async () => {
+    const apiClient = client()
+    let finishSend!: (job: Awaited<ReturnType<AssistantApiClient['sendMessage']>>) => void
+    vi.mocked(apiClient.sendMessage).mockImplementation(() => new Promise(resolve => { finishSend = resolve }))
+    const view = renderPage(apiClient)
+    const input = await screen.findByLabelText('Сообщение помощнику')
+    fireEvent.change(input, { target: { value: 'Проверить питание' } })
+    fireEvent.submit(input.closest('form')!)
+    await waitFor(() => expect(apiClient.sendMessage).toHaveBeenCalledTimes(1))
+
+    view.unmount()
+    await act(async () => finishSend({ id: 'j-late', kind: 'chat', state: 'queued', created_at: '', updated_at: '', error: null, result: null }))
+
+    expect(apiClient.job).not.toHaveBeenCalled()
+    expect(apiClient.cancelJob).not.toHaveBeenCalled()
   })
 
   it.each([

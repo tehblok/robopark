@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts.build_knowledge_seed import Redactor
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/build_knowledge_seed.py"
 
@@ -39,6 +41,30 @@ def load_documents(output: Path) -> list[dict]:
             for line in (output / part["path"]).read_text().splitlines()
         )
     return documents
+
+
+def test_redactor_removes_russian_assignments_and_case_insensitive_known_names():
+    redactor = Redactor()
+
+    result = redactor.redact(
+        "ИВАН ПЕТРОВ сообщил: пароль: rus-secret; Логин = service-user, "
+        "СЕКРЕТ=hidden-value; пин-код: 1234; код доступа = 9876. "
+        "Ивановский контроллер и Петровский датчик исправны; motor-login relay включён.",
+        names=["Иван Петров"],
+    )
+
+    assert "ИВАН ПЕТРОВ" not in result
+    assert "[имя удалено] сообщил" in result
+    assert all(
+        value not in result
+        for value in ("rus-secret", "service-user", "hidden-value", "1234", "9876")
+    )
+    assert result.count("[секрет удалён]") == 5
+    assert redactor.counts["secret"] == 5
+    assert redactor.counts["name"] == 1
+    assert "Ивановский контроллер" in result
+    assert "Петровский датчик" in result
+    assert "motor-login relay" in result
 
 
 def test_builds_redacted_chunked_seed_and_manifest(tmp_path: Path):

@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -32,6 +34,37 @@ def test_sandbox_rejects_oversized_input_before_docker():
 
     with pytest.raises(BrokerError, match="request_too_large"):
         Sandbox("sha256:" + "a" * 64, run=lambda *a, **k: pytest.fail("docker reached")).execute("def main(data): return data", {"x": "z" * 65536})
+
+
+def test_sandbox_top_level_import_constants_and_helpers_share_execution_namespace():
+    from robopark_host.ai_broker import Sandbox
+
+    def run(argv, *, input_bytes, timeout, max_output):
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", argv[-1]],
+            input=input_bytes,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        return (
+            completed.returncode,
+            completed.stdout[: max_output + 1],
+            completed.stderr,
+        )
+
+    source = """
+import math
+OFFSET = 2
+
+def adjusted(value):
+    return math.floor(value) + OFFSET
+
+def main(data):
+    return {"value": adjusted(data["value"])}
+"""
+    result = Sandbox("sha256:" + "a" * 64, run=run).execute(source, {"value": 3.8})
+    assert result == {"output": {"value": 5}, "stdout": ""}
 
 
 @pytest.mark.parametrize("uid", [1, 65534, 10002])

@@ -318,16 +318,27 @@ def test_receipt_replay_does_not_expose_result_after_park_access_is_revoked(
 
 
 def test_sqlite_concurrent_sync_replay_uses_one_dispatch_and_one_receipt(
-    db_engine, seed_mechanic, seed_park_with_tracker, monkeypatch
+    db_engine, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):
-    """Separate SQLite sessions must not dispatch the same client action twice."""
+    """A real owner/waiter race uses the application's SQLite/lock contract."""
+    from contextlib import contextmanager
+
+    from robopark_api.db import configure_engine
     from robopark_api.services import offline_sync
+    from robopark_api.services.database_locks import LOCK_WAIT_SECONDS
     from robopark_api.task_workflow_models import OfflineSyncReceipt
 
+    # Capture scalar IDs before threads start; expired fixture ORM attributes
+    # must not issue reads through the shared fixture Session from both threads.
+    user_id, park_id = seed_mechanic.id, seed_park_with_tracker.id
+    db_session.rollback()
+    engine = configure_engine(str(db_engine.url))
+    watchdog = LOCK_WAIT_SECONDS + 5  # Includes the supported SQLite busy window.
     calls: list[str] = []
     dispatch_entered = threading.Event()
+    waiter_entered = threading.Event()
     allow_dispatch = threading.Event()
-    start = threading.Barrier(3)
+    original_lock = offline_sync.database_idempotency_lock
 
     class Revisions:
         def mark_changed(self, _scope):
@@ -336,43 +347,54 @@ def test_sqlite_concurrent_sync_replay_uses_one_dispatch_and_one_receipt(
         def current(self, _scope):
             return 0
 
+    @contextmanager
+    def observed_lock(db, key):
+        if dispatch_entered.is_set():
+            waiter_entered.set()
+        with original_lock(db, key):
+            yield
+
     def dispatch(_db, _user, item):
         calls.append(item.client_action_id)
         dispatch_entered.set()
-        assert allow_dispatch.wait(timeout=1)
+        assert allow_dispatch.wait(timeout=watchdog), "owner was not released"
         return {"message_id": "sqlite-1"}
 
+    monkeypatch.setattr(offline_sync, "database_idempotency_lock", observed_lock)
     monkeypatch.setattr(offline_sync, "dispatch_action", dispatch)
-    body = offline_sync.SyncBatchIn.model_validate(
-        _batch(_action("concurrent", park_id=seed_park_with_tracker.id))
-    )
+    body = offline_sync.SyncBatchIn.model_validate(_batch(_action("concurrent", park_id=park_id)))
 
     def synchronize_once():
-        start.wait(timeout=1)
-        with Session(db_engine) as db:
-            user = db.get(User, seed_mechanic.id)
+        with Session(engine) as db:
+            user = db.get(User, user_id)
             return offline_sync.synchronize(db, user, body, revision_store=Revisions())
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(synchronize_once)
-        second = executor.submit(synchronize_once)
-        start.wait(timeout=1)
-        assert dispatch_entered.wait(timeout=1)
-        allow_dispatch.set()
-        first_result = first.result(timeout=2)
-        second_result = second.result(timeout=2)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(synchronize_once)
+            try:
+                assert dispatch_entered.wait(timeout=watchdog), "owner did not dispatch"
+                second = executor.submit(synchronize_once)
+                assert waiter_entered.wait(timeout=watchdog), "replay did not reach the held lock"
+                assert not second.done(), "replay finished while owner still held the lock"
+            finally:
+                allow_dispatch.set()
+            first_result = first.result(timeout=watchdog)
+            second_result = second.result(timeout=watchdog)
 
-    with Session(db_engine) as db:
-        receipts = list(
-            db.scalars(
-                select(OfflineSyncReceipt).where(
-                    OfflineSyncReceipt.client_action_id == "concurrent"
+        with Session(engine) as db:
+            receipts = list(
+                db.scalars(
+                    select(OfflineSyncReceipt).where(
+                        OfflineSyncReceipt.client_action_id == "concurrent"
+                    )
                 )
             )
-        )
-    assert calls == ["concurrent"]
-    assert first_result == second_result
-    assert len(receipts) == 1
+        assert calls == ["concurrent"]
+        assert first_result == second_result
+        assert len(receipts) == 1
+    finally:
+        engine.dispose()
 
 
 def test_same_client_action_with_different_payload_is_a_conflict(

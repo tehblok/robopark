@@ -16,6 +16,7 @@ from robopark_api.ai_models import AIConversation, AIDocument, AIJob, AIMessage,
 from robopark_api.models import User
 from robopark_api.services.ai import (
     automations,
+    bundle,
     issue_context,
     knowledge,
     learning,
@@ -340,6 +341,11 @@ def tick(session_factory, settings, *, first=False):
         learning.process_events(db, settings)
     process_job(session_factory, settings)
     automations.process_run(session_factory, settings)
+    with session_factory() as db:
+        bundle.step(db, settings)
+    with session_factory() as db, database_idempotency_lock(db, "ai-controls"):
+        learning.purge_event_payloads(db, before=time.time() - 30 * 86400)
+        db.commit()
     return True
 
 

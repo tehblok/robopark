@@ -10,7 +10,15 @@ from robopark_api.ai_models import AIConfig, AIConversation, AIDocument, AIJob, 
 from robopark_api.config import get_settings
 from robopark_api.db import get_db
 from robopark_api.deps import require_user
-from robopark_api.services.ai import issue_context, jobs, knowledge, policy, prompts, runtime
+from robopark_api.services.ai import (
+    bundle,
+    issue_context,
+    jobs,
+    knowledge,
+    policy,
+    prompts,
+    runtime,
+)
 from robopark_api.services.database_locks import database_idempotency_lock
 
 
@@ -62,7 +70,12 @@ def status_value(db, settings, user):
         )
         if not policy.config(db)["enabled"]:
             status.update(enabled=False, ready=False, reason="ai_disabled")
-    return {**status, "can_manage": policy.can_manage(db, user), "counts": counts}
+    return {
+        **status,
+        "can_manage": policy.can_manage(db, user),
+        "counts": counts,
+        "knowledge_bundle": bundle.status(db, settings),
+    }
 
 
 @router.get("/status")

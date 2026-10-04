@@ -119,6 +119,10 @@ def reindex(db, document):
 def add(db, user, value, *, trust=None):
     data = value.model_dump() if hasattr(value, "model_dump") else dict(value)
     policy.park(db, user, data.get("park_id"), global_allowed=True)
+    return _add_document(db, data, created_by=user.id, trust=trust)
+
+
+def _add_document(db, data, *, created_by, trust=None, stable_source=False):
     content = redact(data["content"])
     title = redact(data["title"])[:250]
     if not content or not title:
@@ -126,14 +130,16 @@ def add(db, user, value, *, trust=None):
     scope = str(data.get("park_id"))
     fingerprint = hashlib.sha256((scope + "\n" + content).encode()).hexdigest()
     source_ref = redact(data.get("source_ref", ""))[:400]
-    source_key = hashlib.sha256(
-        (scope + "\n" + data["kind"] + "\n" + (source_ref or fingerprint)).encode()
-    ).hexdigest()
-    existing = db.scalar(
-        select(AIDocument)
-        .where(or_(AIDocument.source_key == source_key, AIDocument.fingerprint == fingerprint))
-        .limit(1)
+    source_identity = (
+        source_ref
+        if stable_source and source_ref
+        else data["kind"] + "\n" + (source_ref or fingerprint)
     )
+    source_key = hashlib.sha256((scope + "\n" + source_identity).encode()).hexdigest()
+    identity = AIDocument.source_key == source_key
+    if not stable_source:
+        identity = or_(identity, AIDocument.fingerprint == fingerprint)
+    existing = db.scalar(select(AIDocument).where(identity).limit(1))
     if existing:
         return existing, False
     row = AIDocument(
@@ -146,7 +152,7 @@ def add(db, user, value, *, trust=None):
         park_id=data.get("park_id"),
         source_ref=source_ref,
         trust=trust or ("instruction" if data["kind"] == "manual" else "unverified"),
-        created_by=user.id,
+        created_by=created_by,
     )
     db.add(row)
     db.flush()

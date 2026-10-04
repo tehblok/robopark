@@ -37,6 +37,10 @@ RUN chmod +x /app/docker-entrypoint.sh
 RUN useradd --create-home --uid 10001 robopark \
     && mkdir -p /data \
     && chown -R robopark:robopark /app /data
+# Shipped knowledge is immutable; user changes and indexing belong in the DB.
+COPY --chown=root:root knowledge ./knowledge
+RUN find /app/knowledge -type d -exec chmod 0555 {} + \
+    && find /app/knowledge -type f -exec chmod 0444 {} +
 USER robopark
 
 EXPOSE 8000
