@@ -93,6 +93,9 @@ class TerminalRegistry:
         if not row.reason:
             row.reason = reason
             row.attachment_id = None
+            # Retention follows first completion, not admission. A repeated
+            # finish is an idempotent replay and must not make an old row recent.
+            self.sessions[session_id] = self.sessions.pop(session_id)
 
     def expired(self):
         now = self.clock()
