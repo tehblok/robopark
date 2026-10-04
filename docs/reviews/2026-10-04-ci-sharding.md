@@ -36,3 +36,24 @@ GitHub ref `actions/upload-artifact/v4`. Workflow token ограничен чт�
 YAML разобран; извлечённый итоговый script реально выполнен с success, failure,
 cancelled и skipped: только success даёт exit 0. Независимое ревью workflow
 не обнаружило воспроизводимых ошибок после уточнения описания parallel-режима.
+
+
+## First-run PWA fixture defect
+
+The first PR run (37214898763, job 111473305432) reached the production PWA
+fixture and failed before tests: the fixture required every nginx CSP header to
+be identical. The isolated terminal intentionally has a stricter policy than
+the SPA. This was a stale test-server assumption, not a reason to relax nginx.
+
+The fixture now reads exactly one CSP from each exact document location and
+serves the terminal policy only with the resolved terminal document. Missing or
+ambiguous locations/headers reject startup. Production nginx is unchanged.
+Two Node regressions failed against the old global-policy extraction; the full
+38 script checks then passed. HTTP tests additionally verify both document
+headers; six security checks passed in the pinned Chromium/Firefox/WebKit image.
+Independent read-only review found no concrete issue in this narrow contract.
+
+The complete production PWA run then passed: 45 tests in 4.2 minutes across
+Chromium, Firefox and WebKit, including old-client activation and durable-work
+preservation. The new terminal HTTP test was checked separately in all three
+engines (six CSP tests total). No production security policy changed.
