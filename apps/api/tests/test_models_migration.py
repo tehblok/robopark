@@ -33,6 +33,19 @@ from robopark_api.task_workflow_models import ReliableAction
 
 def test_metadata_has_required_tables():
     assert set(Base.metadata.tables) == {
+        "ai_config",
+        "ai_prompts",
+        "ai_documents",
+        "ai_chunks",
+        "ai_terms",
+        "ai_conversations",
+        "ai_messages",
+        "ai_jobs",
+        "ai_connectors",
+        "ai_scripts",
+        "ai_automations",
+        "ai_events",
+        "ai_runs",
         "users",
         "sessions",
         "parks",
@@ -142,7 +155,7 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
 def test_alembic_head_includes_host_terminal():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0056_host_terminal"]
+    assert script.get_heads() == ["0057_local_ai"]
 
 
 def test_host_terminal_migration_builds_bounded_session_schema(sqlite_database_url, monkeypatch):
@@ -412,10 +425,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
         "lease_until",
     }
     with engine.connect() as connection:
-        assert (
-            connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0056_host_terminal"
-        )
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0057_local_ai"
 
 
 def test_schedule_series_lookup_index_is_used(sqlite_database_url, monkeypatch):

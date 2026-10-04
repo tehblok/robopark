@@ -66,6 +66,9 @@ export function canAccessRoute(user: AccessUser, routeId: AppRouteId): boolean {
   if (routeId === 'system' && user.role !== 'admin' && user.role !== 'royal') {
     return false
   }
+  if (routeId === 'assistant' && !['mechanic', 'operator', 'admin', 'royal'].includes(user.role)) {
+    return false
+  }
   const permissions = user.permissions ?? []
   if (route.permission && !permissions.includes(route.permission)) {
     return false

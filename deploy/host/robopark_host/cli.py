@@ -350,6 +350,12 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("terminal-reconcile")
     commands.add_parser("terminal-setup")
     commands.add_parser("terminal-broker")
+    commands.add_parser("ai-prepare")
+    commands.add_parser("ai-setup")
+    commands.add_parser("ai-reconcile")
+    commands.add_parser("ai-broker")
+    commands.add_parser("ai-verify")
+    commands.add_parser("ai-activate-intent")
     terminal_worker = commands.add_parser("terminal-worker")
     terminal_worker.add_argument("--id", required=True)
     terminal_worker.add_argument("--profile", choices=("maintenance", "root"), required=True)
@@ -419,6 +425,38 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command == "terminal-broker":
         from .terminal_broker import run_broker
         return run_broker(paths)
+    if arguments.command in {"ai-prepare", "ai-reconcile"}:
+        from .ai_install import reconcile_ai_compose, reconcile_ai_installation
+        from .updater import SystemRunner
+
+        release = paths.current.resolve(strict=True)
+        if release.parent != paths.releases.resolve(strict=True):
+            raise ValueError("ai_invalid_release")
+        if arguments.command == "ai-reconcile":
+            reconcile_ai_compose(paths)
+        reconcile_ai_installation(
+            paths, release, SystemRunner(), auto_install=arguments.command == "ai-prepare"
+        )
+        return 0
+    if arguments.command == "ai-setup":
+        from .ai_runtime import reconcile
+
+        result = reconcile(paths, auto_install=True)
+        return int(not result["installed"] and result["supported"])
+    if arguments.command == "ai-broker":
+        from .ai_broker import run_broker
+
+        return run_broker(paths)
+    if arguments.command == "ai-verify":
+        from .ai_runtime import installed
+
+        return 0 if installed(paths, verify=True) else 1
+    if arguments.command == "ai-activate-intent":
+        from .ai_runtime import activate_intent
+        from .updater import SystemRunner
+
+        activate_intent(paths, SystemRunner())
+        return 0
     if arguments.command == "terminal-worker":
         from .terminal_worker import run_worker
         return run_worker(paths, arguments.id, arguments.profile)

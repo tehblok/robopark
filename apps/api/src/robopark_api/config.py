@@ -93,6 +93,8 @@ class Settings(BaseSettings):
     ops_dir: str | None = None
     #: Installed host bridge mount; unset for manual Compose installations.
     ops_host_root: str | None = None
+    ai_runtime_state_path: str = "/ops/ai-public/ai-runtime.json"
+    ai_broker_socket: str = "/run/robopark-ai/broker.sock"
     terminal_broker_socket: str | None = None
     terminal_allowed_origins: str | None = None
     terminal_allow_loopback_http: bool = False

@@ -11,7 +11,7 @@ export function isSystemUserRole(role: string): role is UserRole {
 export type AppRouteId =
   | 'home' | 'login' | 'register' | 'change-password' | 'no-cabinet'
   | 'access-pending' | 'access-rejected' | 'mechanic-no-park'
-  | 'overview' | 'operator-parks' | 'work' | 'robots' | 'robot-check'
+  | 'overview' | 'operator-parks' | 'work' | 'assistant' | 'robots' | 'robot-check'
   | 'work-issue' | 'robot-detail' | 'legacy-robot-check'
   | 'campaigns' | 'campaign-detail'
   | 'inventory' | 'schedule'
@@ -133,6 +133,20 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
   {
     id: 'work-issue', path: '/work/:issueKey', label: 'Работа', icon: 'work',
     anyPermissions: ['nav.tasks', 'nav.dashboard', 'nav.admin.tracker'], prerequisites: SHELL_PREREQUISITES, surface: 'shell',
+  },
+  {
+    id: 'assistant',
+    path: '/assistant',
+    label: ru.nav.assistant,
+    icon: 'info',
+    permission: 'nav.tasks',
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
+    nav: {
+      group: 'operations',
+      desktopOrder: 35,
+      mobilePriority: { royal: 4, admin: 4, operator: 4, mechanic: 2 },
+    },
   },
   {
     id: 'robots',

@@ -28,6 +28,7 @@ const RoleManagementPage = lazy(() => import('../../domains/management/RoleManag
 const AdminEmergencyConfig = lazy(() => import('../../pages/AdminEmergencyConfig').then(module => ({ default: module.AdminEmergencyConfig })))
 const Analytics = lazy(() => import('../../pages/Analytics').then(module => ({ default: module.Analytics })))
 const WorkPage = lazy(() => import('../../domains/work/WorkPage').then(module => ({ default: module.WorkPage })))
+const AssistantPage = lazy(() => import('../../domains/assistant/AssistantPage').then(module => ({ default: module.AssistantPage })))
 const OverviewPage = lazy(() => import('../../domains/shift/OverviewPage').then(module => ({ default: module.OverviewPage })))
 const SchedulePage = lazy(() => import('../../domains/shift/ScheduleWorkspace').then(module => ({ default: module.SchedulePage })))
 const RobotsPage = lazy(() => import('../../domains/robots/RobotsPage').then(module => ({ default: module.RobotsPage })))
@@ -82,6 +83,7 @@ export const ROUTE_ELEMENTS: Record<AppRouteId, ReactElement> = {
   'operator-parks': <OperatorParks />,
   work: <WorkPage />,
   'work-issue': <WorkPage />,
+  assistant: <AssistantPage />,
   robots: <RobotsPage />,
   'robot-detail': <RobotPage />,
   'robot-check': <RobotCheckPage />,

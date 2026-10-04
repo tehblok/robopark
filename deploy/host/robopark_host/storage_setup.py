@@ -43,6 +43,9 @@ _WRITERS = (
     "robopark-terminal-broker.service",
     "robopark-terminal-maintenance@.service",
     "robopark-terminal-root@.service",
+    "robopark-ai-setup.service",
+    "robopark-ai.service",
+    "robopark-ai-broker.service",
 )
 
 

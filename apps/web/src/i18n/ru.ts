@@ -4,6 +4,7 @@ export const ru = {
   nav: {
     dashboard: 'Обзор',
     tasks: 'Работа',
+    assistant: 'Помощник',
     robot_search: 'Роботы',
     emergency: 'Проверка робота',
     analytics: 'Аналитика',

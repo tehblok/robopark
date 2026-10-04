@@ -124,6 +124,7 @@ const OWNER_CONTRACT_TRIGGER: Record<NestedStateKind, string> = {
 
 const OWNER_ACTOR: Partial<Record<AppRouteId, CoverageAudience>> = {
   overview: 'operator', 'operator-parks': 'operator', work: 'mechanic', 'work-issue': 'mechanic',
+  assistant: 'mechanic',
   robots: 'mechanic', 'robot-detail': 'mechanic', 'robot-check': 'mechanic', 'legacy-robot-check': 'mechanic',
   inventory: 'mechanic', reports: 'mechanic', 'reports-new': 'mechanic', 'report-detail': 'operator',
   campaigns: 'royal', 'campaign-detail': 'royal', schedule: 'mechanic', analytics: 'operator',
@@ -149,6 +150,7 @@ const ROUTE_ASYNC_CONTRACTS: Partial<Record<AppRouteId, RouteAsyncContract>> = {
   'operator-parks': { method: 'GET', path: '/api/operator/parks', emptyBody: [], protectedSelector: '.park-card-title:has-text("\u0421\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u043f\u0430\u0440\u043a")' },
   work: { method: 'GET', path: '/api/tracker/issues', emptyBody: { items: [], total: 0, limit: 50, offset: 0, has_more: false }, protectedSelector: 'button[aria-label^="\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u0437\u0430\u0434\u0430\u0447\u0443 ROBOPARK-42:"]' },
   'work-issue': { method: 'GET', path: '/api/tracker/issues/ROBOPARK-42', emptyBody: null, protectedSelector: '.rp-work-detail-pane .issue-detail-key:text-is("ROBOPARK-42")' },
+  assistant: { method: 'GET', path: '/api/ai/status', emptyBody: { supported: true, installed: true, enabled: true, ready: true, reason: null, model: 'fixture', backend: 'cuda', can_manage: false, counts: { documents: 0, candidates: 0, jobs: 0 } }, protectedSelector: 'h1:text-is("Локальный помощник")' },
   robots: { method: 'POST', path: '/api/emergency/resolve', emptyBody: { vin: 'YASADR00000000447', sections: [] }, protectedSelector: '.rp-robots-recent-card', fieldSelector: '#robot-reference', fieldValue: '447', triggerSelector: 'button:has-text("\u041d\u0430\u0439\u0442\u0438 \u0440\u043e\u0431\u043e\u0442\u0430")' },
   'robot-detail': { method: 'GET', path: '/api/emergency/YASADR00000000447/snapshot', emptyBody: null, protectedSelector: '#robot-check-panel-map', refreshStrategy: 'reload', pendingKeepsProtected: true },
   'robot-check': { method: 'GET', path: '/api/emergency/YASADR00000000447/snapshot', emptyBody: null, protectedSelector: '[role="tabpanel"]:has-text("\u0417\u0430\u0440\u044f\u0434")', refreshStrategy: 'reload', pendingKeepsProtected: true },
@@ -168,6 +170,10 @@ const ROUTE_ASYNC_CONTRACTS: Partial<Record<AppRouteId, RouteAsyncContract>> = {
 }
 
 const TARGETS: Partial<Record<AppRouteId, Record<string, Omit<OwnerStateDriver, 'stateKey' | 'stateKind'>>>> = {
+  assistant: {
+    chat: { action: 'tab', tabName: 'Помощник', targetSelector: '#assistant-panel-chat', expectedSelector: '#assistant-panel-chat' },
+    knowledge: { action: 'tab', tabName: 'База знаний', targetSelector: '#assistant-panel-knowledge', expectedSelector: '#assistant-panel-knowledge' },
+  },
   schedule: {
     week: { action: 'button', targetSelector: '[aria-label="Масштаб календаря"] button:has-text("Неделя")', expectedSelector: '.rp-schedule-calendar__days--week' },
     month: { action: 'button', targetSelector: '[aria-label="Масштаб календаря"] button:has-text("Месяц")', expectedSelector: '.rp-schedule-calendar__days--month' },

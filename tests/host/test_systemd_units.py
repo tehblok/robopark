@@ -82,7 +82,10 @@ def test_command_consumer_can_write_only_supported_backup_mount_roots():
 
 def test_boot_recreates_stable_lock_directory_before_sandboxed_units_start():
     tmpfiles = REPO / "deploy/tmpfiles.d/robopark.conf"
-    assert tmpfiles.read_text() == "d /run/lock/robopark 0700 root root -\n"
+    assert tmpfiles.read_text() == (
+        "d /run/lock/robopark 0700 root root -\n"
+        "d /run/robopark-ai 0750 root 10001 -\n"
+    )
     installer = (REPO / "deploy/installer/lib/install-services.py").read_text()
     assert '"deploy/tmpfiles.d/robopark.conf"' in installer
     assert '"etc/tmpfiles.d/robopark.conf"' in installer

@@ -71,12 +71,14 @@ TMPFILES_TARGET = Path("etc/tmpfiles.d/robopark.conf")
 
 
 def _activate_system_files(paths, candidate, *, check_space=True):
+    from .ai_install import AI_UNITS, ai_payload_present
     from .storage_compatibility import refresh_storage_release_guard
     from .terminal_install import TERMINAL_UNITS, terminal_payload_present
 
     refresh_storage_release_guard(paths, candidate, check_space=check_space)
     terminal_payload_present(candidate)
-    for unit in (*UNITS, *TERMINAL_UNITS):
+    ai_payload_present(candidate)
+    for unit in (*UNITS, *TERMINAL_UNITS, *AI_UNITS):
         source = candidate / "deploy/systemd" / unit
         if source.is_file():
             atomic_copy(source, paths.root / "etc/systemd/system" / unit, 0o644)
@@ -1089,9 +1091,18 @@ def apply_release(
             if terminal_payload_present(candidate):
                 atomic_symlink(candidate / "deploy/host", paths.opt / "host-tools")
                 prepare_terminal_installation(paths, candidate, runner)
+            from .ai_install import migration_compose, reconcile_ai_installation
+
+            atomic_symlink(candidate / "deploy/host", paths.opt / "host-tools")
+            reconcile_ai_installation(paths, candidate, runner, auto_install=False)
+            migration_config = migration_compose(
+                paths,
+                (paths.state / "current-compose.json").resolve(strict=True),
+                request.job_id,
+            )
             phase("migrating", migration_started=True)
             runner.run(
-                compose("robopark", paths.state / "current-compose.json")
+                compose("robopark", migration_config)
                 + [
                     "run",
                     "--rm",
@@ -1128,6 +1139,8 @@ def apply_release(
             phase("healthy")
             from .terminal_install import reconcile_terminal_installation
             reconcile_terminal_installation(paths, candidate, runner)
+            from .ai_install import reconcile_ai_installation
+            reconcile_ai_installation(paths, candidate, runner, auto_install=False)
             return UpdateResult("awaiting_reconciliation")
         except Exception as exc:
             error = _failure_token(journal["phase"], exc)

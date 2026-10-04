@@ -75,6 +75,21 @@ def install_units(root):
     if terminal and len(terminal) != len(terminal_names):
         raise ValueError("terminal_payload_invalid")
     contents.update(terminal)
+    ai_names = (
+        "robopark-ai-setup.service", "robopark-ai.service", "robopark-ai-broker.service",
+    )
+    ai = {}
+    for name in ai_names:
+        source = release / "deploy/systemd" / name
+        if source.is_symlink():
+            raise ValueError("ai_payload_invalid")
+        if source.exists():
+            if not source.is_file():
+                raise ValueError("ai_payload_invalid")
+            ai[name] = source.read_bytes()
+    if ai and len(ai) != len(ai_names):
+        raise ValueError("ai_payload_invalid")
+    contents.update(ai)
     tmpfiles_source = release / TMPFILES_SOURCE
     tmpfiles_target = root / TMPFILES_TARGET
     if tmpfiles_source.is_symlink() or not tmpfiles_source.is_file():

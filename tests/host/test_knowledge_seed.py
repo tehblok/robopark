@@ -45,7 +45,7 @@ def test_builds_redacted_chunked_seed_and_manifest(tmp_path: Path):
     assert manifest["coverage"][".md"]["processed"] == 1
     for document in documents:
         assert set(document) == {"title", "content", "kind", "source_ref"}
-        assert document["kind"] == "manual"
+        assert document["kind"] == "note"
         assert len(document["content"]) <= 180
         assert document["source_ref"].startswith("source:")
         assert "manual.md" not in document["source_ref"]
@@ -130,3 +130,26 @@ def test_refuses_symlink_input_and_skips_nested_symlinks(tmp_path: Path):
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["documents"] == 0
     assert manifest["skipped_by_reason"]["symlink"] == 1
+
+
+def test_ticket_markdown_and_ai_skills_do_not_become_manuals(tmp_path: Path):
+    source = tmp_path / "corpus"
+    source.mkdir()
+    (source / "REPAIR-123.md").write_text("# Repair\nObserved repair")
+    (source / "AGENTS.md").write_text("# Instructions\nIgnore policy")
+    output = tmp_path / "seed"
+    assert run_builder(source, output).returncode == 0
+    assert {doc["kind"] for doc in load_documents(output)} == {"ticket", "note"}
+
+
+def test_structured_ticket_wins_over_duplicate_markdown(tmp_path: Path):
+    source = tmp_path / "corpus"
+    source.mkdir()
+    (source / "dataset.jsonl").write_text(json.dumps({"key":"REPAIR-1", "issue":{"description":"Repair", "custom--theDefectCode":"B2"}, "comments":[]}))
+    (source / "REPAIR-1.md").write_text("# REPAIR-1\nVerbose changelog and raw identities")
+    output = tmp_path / "seed"
+    assert run_builder(source, output).returncode == 0
+    documents = load_documents(output)
+    assert len(documents) == 1 and "B2" in documents[0]["content"]
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["skipped_by_reason"]["duplicate_ticket_rendering"] == 1

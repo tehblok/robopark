@@ -114,6 +114,8 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
       action('claim-and-transition', ['mechanic'], 'apps/api/tests/test_task_lifecycle.py::test_claim_requires_tracker_write_permission'),
       action('attach-photo', ['royal', 'admin', 'operator', 'mechanic', 'restricted'], 'apps/api/tests/test_task_lifecycle.py::test_submit_review_requires_attachment_permission_before_queuing_any_actions'),
     ]),
+  route('assistant', 'AssistantPage.Classic', ['royal', 'admin', 'operator', 'mechanic'],
+    asyncStates('assistant', ['chat', 'tab'], ['knowledge', 'tab'])),
   route('robots', 'RobotsPage.Classic', ALL_ROLES,
     asyncStates('robots', ['search', 'form'], ['scanner', 'dialog'], ['camera', 'file'])),
   route('robot-detail', 'RobotPage.Classic', ALL_ROLES,

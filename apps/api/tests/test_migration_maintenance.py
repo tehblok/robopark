@@ -31,7 +31,7 @@ def test_alembic_upgrade_under_maintenance_does_not_unlock_application(tmp_path,
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0056_host_terminal"
+                == "0057_local_ai"
             )
         with pytest.raises(HostMaintenanceActive), engine.begin() as connection:
             connection.execute(text("CREATE TABLE forbidden (id INTEGER)"))

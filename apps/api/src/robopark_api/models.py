@@ -1195,4 +1195,5 @@ class DiagnosticUnknownSighting(Base):
 
 
 # Register terminal tables with the shared metadata for migrations and fixtures.
+from robopark_api import ai_models as _ai_models  # noqa: E402,F401
 from robopark_api import terminal_models as _terminal_models  # noqa: E402,F401

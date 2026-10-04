@@ -1,0 +1,22 @@
+[Unit]
+Description=Prepare optional Robopark local AI runtime
+Wants=network-online.target
+After=network-online.target robopark-storage.target
+ConditionPathExists=/opt/robopark/host-tools/robopark
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark ai-setup
+ExecStartPost=/usr/bin/python3 -I /opt/robopark/host-tools/robopark ai-activate-intent
+TimeoutStartSec=18000
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/robopark/ai /var/lib/robopark/ops/public /run/lock/robopark
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+MemoryMax=4G
+TasksMax=256
+LimitCORE=0

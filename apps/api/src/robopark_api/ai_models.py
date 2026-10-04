@@ -1,0 +1,183 @@
+"""Durable, scoped local assistant state; model weights stay outside the database."""
+
+import time
+from uuid import uuid4
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from robopark_api.models import Base
+
+
+def new_id():
+    return str(uuid4())
+
+
+class AIConfig(Base):
+    __tablename__ = "ai_config"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    learning_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class AIPrompt(Base):
+    __tablename__ = "ai_prompts"
+    role: Mapped[str] = mapped_column(String(20), primary_key=True)
+    content: Mapped[str] = mapped_column(Text)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class AIDocument(Base):
+    __tablename__ = "ai_documents"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    source_key: Mapped[str] = mapped_column(String(64), unique=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(250))
+    content: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(20))
+    state: Mapped[str] = mapped_column(String(20), default="candidate", index=True)
+    trust: Mapped[str] = mapped_column(String(20), default="unverified")
+    park_id: Mapped[int | None] = mapped_column(
+        ForeignKey("parks.id", ondelete="CASCADE"), index=True
+    )
+    source_ref: Mapped[str] = mapped_column(String(400), default="")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class AIChunk(Base):
+    __tablename__ = "ai_chunks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_documents.id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+
+
+class AITerm(Base):
+    __tablename__ = "ai_terms"
+    term: Mapped[str] = mapped_column(String(80), primary_key=True)
+    chunk_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_chunks.id", ondelete="CASCADE"), primary_key=True
+    )
+    weight: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class AIConversation(Base):
+    __tablename__ = "ai_conversations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
+    issue_key: Mapped[str | None] = mapped_column(String(128))
+    title: Mapped[str] = mapped_column(String(200), default="Новый разговор")
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class AIMessage(Base):
+    __tablename__ = "ai_messages"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_conversations.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(12))
+    content: Mapped[str] = mapped_column(Text)
+    sources: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class AIJob(Base):
+    __tablename__ = "ai_jobs"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "idempotency_key", name="uq_ai_job_key"),
+        Index("ix_ai_jobs_due", "state", "created_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_conversations.id", ondelete="CASCADE")
+    )
+    park_id: Mapped[int | None] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(24))
+    state: Mapped[str] = mapped_column(String(20), default="queued")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    result: Mapped[dict | None] = mapped_column(JSON)
+    error: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class AIConnector(Base):
+    __tablename__ = "ai_connectors"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(120))
+    url: Mapped[str] = mapped_column(String(1000))
+    method: Mapped[str] = mapped_column(String(8))
+    encrypted_token: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class AIScript(Base):
+    __tablename__ = "ai_scripts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(120))
+    source: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    tested_revision: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class AIAutomation(Base):
+    __tablename__ = "ai_automations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(120))
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    filters: Mapped[dict] = mapped_column(JSON, default=dict)
+    action: Mapped[dict] = mapped_column(JSON, default=dict)
+    enabled_at: Mapped[float | None] = mapped_column(Float)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class AIEvent(Base):
+    __tablename__ = "ai_events"
+    key: Mapped[str] = mapped_column(String(150), primary_key=True)
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+    occurred_at: Mapped[float] = mapped_column(Float)
+    processed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class AIRun(Base):
+    __tablename__ = "ai_runs"
+    __table_args__ = (UniqueConstraint("automation_id", "event_key", name="uq_ai_rule_event"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    automation_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_key: Mapped[str] = mapped_column(String(150))
+    revision: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    error: Mapped[str | None] = mapped_column(String(120))
+    result: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)

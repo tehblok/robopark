@@ -1,0 +1,33 @@
+[Unit]
+Description=Robopark private local AI broker
+Requires=robopark-storage.target
+After=robopark-storage.target
+Before=robopark.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark ai-broker
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+ReadWritePaths=/var/lib/robopark/ai /var/lib/robopark/ops/public /run/robopark-ai /run/lock/robopark
+UMask=0077
+MemoryMax=256M
+TasksMax=64
+LimitNOFILE=512
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

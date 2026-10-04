@@ -125,6 +125,11 @@ describe('ROUTE_MANIFEST', () => {
         anyPermissions: ['nav.tasks', 'nav.dashboard', 'nav.admin.tracker'], prerequisites: ['password-changed', 'approved', 'mechanic-has-park'], surface: 'shell',
       },
       {
+        id: 'assistant', path: '/assistant', label: 'Помощник', icon: 'info', permission: 'nav.tasks',
+        prerequisites: ['password-changed', 'approved', 'mechanic-has-park'], surface: 'shell',
+        nav: { group: 'operations', desktopOrder: 35, mobilePriority: { royal: 4, admin: 4, operator: 4, mechanic: 2 } },
+      },
+      {
         id: 'robots',
         path: '/robots',
         legacyPaths: ['/robots/search', '/map'],
@@ -347,19 +352,19 @@ describe('ROUTE_MANIFEST', () => {
 
 describe('navigation ordering', () => {
   const expectedDesktop = {
-    royal: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'system', 'admin-robot-check'],
-    admin: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'system', 'admin-robot-check'],
-    operator: ['overview', 'operator-parks', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
-    mechanic: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
+    royal: ['overview', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'system', 'admin-robot-check'],
+    admin: ['overview', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'system', 'admin-robot-check'],
+    operator: ['overview', 'operator-parks', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
+    mechanic: ['overview', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     driver: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     field_lead: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
   } as const
 
   const expectedMobile = {
-    royal: ['overview', 'admin', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'system', 'admin-robot-check'],
-    admin: ['admin', 'overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'system', 'admin-robot-check'],
-    operator: ['overview', 'work', 'robots', 'campaigns', 'operator-parks', 'inventory', 'reports', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
-    mechanic: ['work', 'robots', 'overview', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
+    royal: ['overview', 'admin', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'system', 'admin-robot-check'],
+    admin: ['admin', 'overview', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'system', 'admin-robot-check'],
+    operator: ['overview', 'work', 'robots', 'assistant', 'campaigns', 'operator-parks', 'inventory', 'reports', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
+    mechanic: ['work', 'assistant', 'robots', 'overview', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     driver: ['robots', 'overview', 'reports', 'work', 'inventory', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     field_lead: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
   } as const
@@ -375,7 +380,7 @@ describe('navigation ordering', () => {
 
     expect(actual.map((item) => item.id)).toEqual(expected)
     expect(actual.filter((item) => item.priority <= 4)).toHaveLength(
-      role === 'field_lead' ? 0 : role === 'operator' ? 4 : 3,
+      role === 'field_lead' ? 0 : role === 'operator' ? 5 : role === 'driver' ? 3 : 4,
     )
   })
 })

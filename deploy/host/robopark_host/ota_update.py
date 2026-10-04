@@ -853,15 +853,9 @@ class SystemOtaUpdateRuntime:
 
         identity = self._identity(request)
         config = self.paths.state / "compose" / f"{identity}-production.json"
-        document = json.loads(config.read_text())
-        volumes = document["services"]["api"].get("volumes", [])
-        filtered = [volume for volume in volumes if not (
-            isinstance(volume, dict) and volume.get("target") == "/run/robopark-terminal"
-        )]
-        if filtered != volumes:
-            document["services"]["api"]["volumes"] = filtered
-            config = self.paths.state / "compose" / f"{identity}-migration.json"
-            atomic_write_json(config, document)
+        from .ai_install import migration_compose
+
+        config = migration_compose(self.paths, config, identity)
         self.runner.run(
             compose("robopark", config)
             + ["run", "--rm", "--no-deps", "--entrypoint", "python", "api", "-m", "alembic", "upgrade", "head"],
@@ -891,6 +885,8 @@ class SystemOtaUpdateRuntime:
         _activate_system_files(self.paths, candidate)
         atomic_symlink(candidate / "deploy/host", self.paths.opt / "host-tools")
         prepare_terminal_installation(self.paths, candidate, self.runner)
+        from .ai_install import reconcile_ai_installation
+        reconcile_ai_installation(self.paths, candidate, self.runner, auto_install=False)
         self.runner.run(["systemctl", "daemon-reload"], timeout=60)
         self.runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
 
@@ -907,6 +903,10 @@ class SystemOtaUpdateRuntime:
         from .terminal_install import reconcile_terminal_installation
 
         reconcile_terminal_installation(self.paths, self.paths.current.resolve(), self.runner)
+        from .ai_install import reconcile_ai_installation
+        reconcile_ai_installation(
+            self.paths, self.paths.current.resolve(), self.runner, auto_install=False
+        )
 
     def publish(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
         self._require_storage()
@@ -1062,6 +1062,8 @@ class SystemOtaUpdateRuntime:
         from .terminal_install import reconcile_terminal_installation
 
         reconcile_terminal_installation(self.paths, current, self.runner)
+        from .ai_install import reconcile_ai_installation
+        reconcile_ai_installation(self.paths, current, self.runner, auto_install=False)
 
     def cleanup(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
         self._require_storage(check_space=False)

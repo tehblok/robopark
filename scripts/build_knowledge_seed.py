@@ -218,6 +218,7 @@ class Builder:
         self.kinds: Counter[str] = Counter()
         self.errors: Counter[str] = Counter()
         self.unavailable_attachments = 0
+        self.canonical_tickets: set[str] = set()
 
     def add(self, relative: Path, title: str, content: str, kind: str, suffix: str = "") -> None:
         content = self.redactor.redact(content)
@@ -230,11 +231,29 @@ class Builder:
             self.kinds[kind] += 1
 
     def build(self) -> dict[str, Any]:
+        # The ticket export includes the same repairs in dataset.jsonl and a
+        # verbose Markdown rendering. Prefer structured, identity-redacted
+        # records over repeated metadata/changelog dumps.
+        for path, _relative in self.walk(count_skipped=False):
+            if path.name != "dataset.jsonl" or path.stat().st_size > MAX_SOURCE_BYTES:
+                continue
+            with path.open(encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        item = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(item, dict) and {"key", "issue", "comments"} <= item.keys() and isinstance(item["key"], str):
+                        self.canonical_tickets.add(item["key"])
         for path, relative in self.walk():
             extension = path.suffix.lower()
             self.coverage[extension]["discovered"] += 1
             if extension not in SUPPORTED:
                 self.skipped["unsupported_format"] += 1
+                self.coverage[extension]["skipped"] += 1
+                continue
+            if extension == ".md" and path.stem in self.canonical_tickets:
+                self.skipped["duplicate_ticket_rendering"] += 1
                 self.coverage[extension]["skipped"] += 1
                 continue
             try:
@@ -261,7 +280,7 @@ class Builder:
             "errors": dict(sorted(self.errors.items())),
         }
 
-    def walk(self) -> Iterator[tuple[Path, Path]]:
+    def walk(self, *, count_skipped: bool = True) -> Iterator[tuple[Path, Path]]:
         stack = [self.root]
         while stack:
             directory = stack.pop()
@@ -269,7 +288,8 @@ class Builder:
                 for entry in sorted(entries, key=lambda item: item.name, reverse=True):
                     path = Path(entry.path)
                     if entry.is_symlink():
-                        self.skipped["symlink"] += 1
+                        if count_skipped:
+                            self.skipped["symlink"] += 1
                         continue
                     if entry.is_dir(follow_symlinks=False):
                         stack.append(path)
@@ -296,7 +316,11 @@ class Builder:
     def read_md(self, path: Path, relative: Path) -> None:
         text = path.read_text(encoding="utf-8", errors="replace")
         heading = next((line.lstrip("# ").strip() for line in text.splitlines() if line.startswith("#") and line.lstrip("# ").strip()), "")
-        self.add(relative, heading or f"Инструкция {stable_id(relative.as_posix(), 8)}", text, "manual")
+        kind = "ticket" if re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", path.stem) else "note"
+        # File format does not establish authority. Markdown exports and AI
+        # skills remain experience/notes; only dedicated repair manuals carry
+        # the manual kind. Administrator decides activation during import.
+        self.add(relative, heading or f"Материал {stable_id(relative.as_posix(), 8)}", text, kind)
 
     def read_docx(self, path: Path, relative: Path) -> None:
         with zipfile.ZipFile(path) as archive:
@@ -428,6 +452,8 @@ class Builder:
                 fields.append(f"{label}: {rendered}")
         for key, label in (("solutionMethod", "Способ решения"), ("theDefectCode", "Код дефекта")):
             value = issue.get(key)
+            if value is None:
+                value = next((value for name, value in issue.items() if name.endswith("--" + key)), None)
             if value not in (None, "", []):
                 fields.append(f"{label}: {flatten_text(value)}")
         if isinstance(comments, list):

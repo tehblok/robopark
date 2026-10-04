@@ -369,6 +369,16 @@ def _reconcile_external_closure_locked(db: Session, issue_key: str) -> None:
             outcome="success",
         )
     )
+    from robopark_api.services.ai.learning import stage_safely
+
+    stage_safely(
+        db,
+        review=review,
+        park_id=park_id,
+        event_key=message_id,
+        closed_at=now,
+        previous_closure=previous_closure,
+    )
     db.commit()
 
 
@@ -1440,6 +1450,7 @@ def approve_review(
         raise HTTPException(409, "task_review_not_pending")
     if review.state != "pending":
         raise HTTPException(409, "task_review_not_pending")
+    closing_claim = get_claim(db, issue_key)
     now = time.time()
     _advance_pending_review(
         db,
@@ -1455,7 +1466,9 @@ def approve_review(
         issue_key=issue_key,
         action="close",
         idempotency_key=idempotency_key,
-        payload={},
+        # Approval releases ownership before Tracker confirms closure. Keep
+        # the observed park with the durable action for the later event.
+        payload={"park_id": closing_claim.park_id} if closing_claim is not None else {},
     )
     if begun.created:
         release_claim(db, issue_key)

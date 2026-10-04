@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .release import ReleaseError, verify_directory
 from .terminal_install import TERMINAL_UNITS, quiesce_terminal
+from .ai_install import AI_UNITS
 
 UNITS = (
     "robopark-commands.service",
@@ -199,7 +200,7 @@ def snapshot(paths, journal, runner=None, *, refresh=False):
     backup = root / "units"
     backup.mkdir(mode=0o700, exist_ok=True)
     installed = paths.root / "etc/systemd/system"
-    for unit in (*UNITS, *TERMINAL_UNITS):
+    for unit in (*UNITS, *TERMINAL_UNITS, *AI_UNITS):
         path = installed / unit
         if path.is_file():
             atomic_copy(path, backup / unit)
@@ -222,7 +223,7 @@ def discard_rollback_artifacts(paths, journal):
 def restore_units(paths, journal):
     backup = paths.ops / "rollbacks" / journal["job_id"] / "units"
     installed = paths.root / "etc/systemd/system"
-    for unit in (*UNITS, *TERMINAL_UNITS):
+    for unit in (*UNITS, *TERMINAL_UNITS, *AI_UNITS):
         path = installed / unit
         if (backup / unit).is_file():
             atomic_copy(backup / unit, path, 0o644)
@@ -304,4 +305,6 @@ def rollback_release(paths, journal, runner, phase):
     from .terminal_install import reconcile_terminal_installation
 
     reconcile_terminal_installation(paths, previous, runner)
+    from .ai_install import reconcile_ai_installation
+    reconcile_ai_installation(paths, previous, runner, auto_install=False)
     phase("rollback_healthy")

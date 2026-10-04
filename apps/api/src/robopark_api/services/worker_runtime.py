@@ -126,6 +126,11 @@ class WorkerRuntime:
                     )
                 ),
             ]
+            from robopark_api.services.ai import jobs as ai_jobs
+
+            tasks.append(
+                asyncio.create_task(ai_jobs.run_loop(self.session_factory, stop, self.settings))
+            )
             _health = WorkerHealth(running=True, active_jobs=len(tasks))
             stop_waiter = asyncio.create_task(stop.wait())
             try:

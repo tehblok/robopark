@@ -77,6 +77,15 @@ const accessCases = protectedRoutes.flatMap((route) =>
 )
 
 describe('canAccessRoute', () => {
+  it('limits the assistant to approved built-in staff roles with task navigation', () => {
+    for (const role of ['mechanic', 'operator', 'admin', 'royal']) {
+      expect(canAccessRoute(user({ role, parks: [north], permissions: ['nav.tasks'] }), 'assistant')).toBe(true)
+    }
+    expect(canAccessRoute(user({ role: 'driver', permissions: ['nav.tasks'] }), 'assistant')).toBe(false)
+    expect(canAccessRoute(user({ role: 'field_lead', permissions: ['nav.tasks'] }), 'assistant')).toBe(false)
+    expect(canAccessRoute(user({ role: 'operator', access_status: 'pending', permissions: ['nav.tasks'] }), 'assistant')).toBe(false)
+    expect(canAccessRoute(user({ role: 'operator', permissions: [] }), 'assistant')).toBe(false)
+  })
   it('limits the system console to built-in admin and royal roles', () => {
     expect(canAccessRoute(user({ role: 'admin', permissions: ['nav.admin'] }), 'system')).toBe(true)
     expect(canAccessRoute(user({ role: 'royal', permissions: ['nav.admin'] }), 'system')).toBe(true)

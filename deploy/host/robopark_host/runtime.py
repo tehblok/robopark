@@ -477,6 +477,33 @@ def production_config(document, paths, release, image_tag, *, source_release=Non
             "target": "/run/robopark-terminal", "read_only": True,
             "bind": {"create_host_path": False},
         })
+    from .ai_install import ai_payload_present
+
+    ai_present = ai_payload_present(
+        source_release if source_release is not None else release
+    )
+    if ai_present:
+        ai_environment = {
+            "AI_BROKER_SOCKET": "/run/robopark-ai/broker.sock",
+            "AI_RUNTIME_STATE_PATH": "/ops/ai-public/ai-runtime.json",
+        }
+        ai_mounts = [
+            {
+                "type": "bind", "source": str(paths.root / "run/robopark-ai"),
+                "target": "/run/robopark-ai", "read_only": True,
+                "bind": {"create_host_path": False},
+            },
+            {
+                "type": "bind", "source": str(paths.ops / "public"),
+                "target": "/ops/ai-public", "read_only": True,
+                "bind": {"create_host_path": False},
+            },
+        ]
+        api["environment"].update(ai_environment)
+        api["volumes"].extend(ai_mounts)
+        if "worker" in document["services"]:
+            document["services"]["worker"]["environment"].update(ai_environment)
+            document["services"]["worker"]["volumes"].extend(copy.deepcopy(ai_mounts))
     if "bot" in document["services"]:
         api["volumes"].append(
             {
@@ -556,6 +583,15 @@ def production_config(document, paths, release, image_tag, *, source_release=Non
         worker["mem_limit"] = "1g"
         worker["pids_limit"] = 512
         worker.setdefault("ulimits", {})["nofile"] = {"soft": 65536, "hard": 65536}
+    from .ai_runtime import probe_hardware
+
+    ai_supported, _ = probe_hardware(paths)
+    if ai_present and ai_supported and profile.name == "orin":
+        # The 16 GiB native inference ceiling must coexist with Docker and the
+        # integrated GPU on a 32 GiB AGX. Keep aggregate service ceilings below
+        # 26 GiB so the kernel/CUDA/runtime retain a meaningful reserve.
+        api["mem_limit"] = "4g"
+        db["mem_limit"] = "4g"
     return document
 
 

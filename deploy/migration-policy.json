@@ -1,9 +1,10 @@
 {
   "schema": 1,
-  "target_head": "0056_host_terminal",
+  "target_head": "0057_local_ai",
   "known_heads": [
     "0055_media_upload_park",
-    "0056_host_terminal"
+    "0056_host_terminal",
+    "0057_local_ai"
   ],
   "bridge_before": "0.2.0-rc.8",
   "bridge_version": "0.2.0-rc.8",

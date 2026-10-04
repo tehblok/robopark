@@ -1200,6 +1200,15 @@ describe('IssueWorkbench', () => {
     expect(within(degraded).getByRole('button', { name: 'Повторить загрузку' })).toBeVisible()
   })
 
+  it('opens the assistant with the current issue and park context', async () => {
+    renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => issue) }) })
+
+    expect(await screen.findByRole('link', { name: 'Спросить помощника' })).toHaveAttribute(
+      'href',
+      '/assistant?issue_key=ROBOPARK-42&park_id=7',
+    )
+  })
+
   it('uses workflow owner and server comment eligibility as authoritative state', async () => {
     const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
     const workflowIssue: TrackerIssueDetail = {

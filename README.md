@@ -459,3 +459,11 @@ Not included:
 - Importing an old production SQLite database; clean hosts start with PostgreSQL 17.
 - Per-user Tracker credentials — the platform uses one service token and
   attributes actions through `audit_log` and comment signatures.
+
+## Локальный помощник на AGX Orin
+
+Начиная с rc.24 установщик поддерживает локальный Bonsai, встроенную базу знаний,
+чат с источниками и управляемые интеграции/скрипты. Загрузка и запуск модели
+разрешены только на подтверждённом AGX Orin с NVMe и CUDA; Khadas работает без неё.
+Частные инструкции и выгрузки не входят в публичный репозиторий.
+[Установка, импорт знаний и работа с автоматизациями](docs/runbooks/local-ai.md).
