@@ -2,10 +2,10 @@ import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { expect, test } from '@playwright/test'
 
-const auditDirectory = resolve('../../output/audit/2026-10-02/royal-terminal/web')
 const revision = 'a'.repeat(64)
 
-test('royal opens separate ordinary/root terminals and sees safe connection states', async ({ page }) => {
+test('royal opens separate ordinary/root terminals and sees safe connection states', async ({ page }, testInfo) => {
+  const auditDirectory = testInfo.outputPath('royal-terminal', 'web')
   await mkdir(auditDirectory, { recursive: true })
   const sessions = new Map<string, Record<string, unknown>>()
   let invalidTotp = true

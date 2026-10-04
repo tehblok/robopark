@@ -73,6 +73,13 @@ export function geometryRouteIdsFor(user: User): AppRouteId[] {
 }
 function routeMockRoutes(): MockRoute[] {
   return [
+    { method: 'GET', path: '/api/ai/status', handler: () => ({ json: {
+      supported: true, installed: true, enabled: true, ready: true, reason: null,
+      model: 'fixture', backend: 'cuda', can_manage: false,
+      counts: { documents: 0, candidates: 0, jobs: 0 },
+    } }) },
+    { method: 'GET', path: '/api/ai/conversations', handler: () => ({ json: [] }) },
+    { method: 'GET', path: '/api/ai/documents', handler: () => ({ json: { items: [], total: 0, offset: 0, limit: 30 } }) },
     { method: 'GET', path: '/api/analytics', handler: request => {
       const params = new URL(request.url).searchParams
       return { json: analyticsFixture(Number(params.get('park_id')), Number(params.get('days')), params.get('bucket') === '2h' ? '2h' : '1d') }
@@ -248,6 +255,7 @@ export async function assertShellIdentity(page: Page, user: User, expectedRole: 
 
 function routeReadyMarker(page: Page, routeId: AppRouteId) {
   switch (routeId) {
+    case 'assistant': return page.getByRole('heading', { name: 'Локальный помощник', exact: true })
     case 'overview': return page.getByRole('heading', { name: 'Очередь решений' })
     case 'operator-parks': return page.locator('.park-card-title', { hasText: 'Северный парк' })
     case 'work': return page.locator('.rp-work-entities').first()

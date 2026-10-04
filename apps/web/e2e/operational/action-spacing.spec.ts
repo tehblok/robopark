@@ -9,7 +9,7 @@ const screens = [
   'overview', 'operator-parks', 'work', 'work-issue', 'robots', 'robot-detail', 'robot-check',
   'legacy-robot-check', 'inventory', 'reports', 'reports-new', 'report-detail', 'campaigns', 'campaign-detail',
   'schedule', 'analytics', 'system', 'admin', 'admin-users', 'admin-roles', 'admin-settings',
-  'admin-robot-check',
+  'admin-robot-check', 'assistant',
 ] as const
 
 const roleFor = (route: typeof screens[number]) => route === 'operator-parks' || route === 'reports' || route === 'report-detail'

@@ -100,6 +100,8 @@ jobs:
           ROBOPARK_PLAYWRIGHT_ARTIFACTS: test-results/linux-pwa
         run: npm run test:e2e:pwa:linux
       - name: Verify workflows in Chromium, Firefox and WebKit
+        # Collect independent workflow evidence even if the PWA gate fails.
+        if: ${{ !cancelled() }}
         env:
           ROBOPARK_PLAYWRIGHT_ARTIFACTS: test-results/linux-crossbrowser
         run: npm run test:e2e:crossbrowser:linux -- --workers=2
