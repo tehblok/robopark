@@ -227,31 +227,46 @@ self.addEventListener('fetch', (event) => {
     return
   }
   if (request.method !== 'GET') return
-  if (url.pathname === '/terminal.html') return
+  if (url.pathname === '/terminal.html' || url.pathname.startsWith('/assets/terminal/')) return
   if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return
 
   if (request.mode === 'navigate') {
-    const shell = caches.open(shellCache).then(async (cache) => {
-      // Keep HTML and chunks from the same installation until the waiting
-      // worker passes the durable-work activation checks. Replacing only HTML
-      // here can expose a new release while its worker is still waiting.
-      return (await cache.match('/index.html'))
-        ?? fetch('/index.html', { cache: 'no-store' }).catch(() => cache.match('/offline.html'))
-    })
-    event.respondWith(shell)
+    event.respondWith((async () => {
+      let cache
+      try {
+        cache = await caches.open(shellCache)
+        // Keep HTML and chunks from the same installation until the waiting
+        // worker passes the durable-work activation checks.
+        const cached = await cache.match('/index.html')
+        if (cached) return cached
+      } catch { /* Storage may be unavailable while the network still works. */ }
+      try {
+        return await fetch('/index.html', { cache: 'no-store' })
+      } catch (networkError) {
+        try {
+          const offline = await cache?.match('/offline.html')
+          if (offline) return offline
+        } catch { /* Preserve the network error when storage also fails. */ }
+        throw networkError
+      }
+    })())
     return
   }
   if (url.search || !hashedAsset.test(url.pathname)) return
   event.respondWith((async () => {
-    const cached = await caches.match(request)
-    if (cached) return cached
+    try {
+      const cached = await caches.match(request)
+      if (cached) return cached
+    } catch { /* Cache access is optional for an online resource. */ }
     const response = await fetch(request)
     const contentType = response.headers.get('content-type') || ''
     if (response.ok && response.type !== 'opaque' && /^(?:text\/css|(?:application|text)\/javascript|image\/(?:png|svg\+xml|webp)|font\/woff2?)/i.test(contentType)) {
-      const cache = await caches.open(runtimeCache)
-      await cache.put(request, response.clone())
-      const keys = await cache.keys()
-      await Promise.all(keys.slice(0, Math.max(0, keys.length - maxRuntimeEntries)).map((key) => cache.delete(key)))
+      try {
+        const cache = await caches.open(runtimeCache)
+        await cache.put(request, response.clone())
+        const keys = await cache.keys()
+        await Promise.all(keys.slice(0, Math.max(0, keys.length - maxRuntimeEntries)).map((key) => cache.delete(key)))
+      } catch { /* A failed cache write must not discard a successful response. */ }
     }
     return response
   })())
