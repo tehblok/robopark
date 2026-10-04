@@ -27,9 +27,10 @@ describe('scheduleCalendar', () => {
     expect(range.days.map(day => formatDayKey(day, zone))[0]).toBe('2026-12-28')
   })
   it('projects a year-crossing Moscow week', () => {
-    const range = visibleRange(new Date('2026-12-31T12:00:00+03:00'), 'week')
+    const zone = 'Europe/Moscow'
+    const range = visibleRange(new Date('2026-12-31T12:00:00+03:00'), 'week', zone)
 
-    expect(range.days.map(day => formatDayKey(day))).toEqual([
+    expect(range.days.map(day => formatDayKey(day, zone))).toEqual([
       '2026-12-28',
       '2026-12-29',
       '2026-12-30',
@@ -38,18 +39,19 @@ describe('scheduleCalendar', () => {
       '2027-01-02',
       '2027-01-03',
     ])
-    expect(formatDayKey(range.start)).toBe('2026-12-28')
-    expect(formatDayKey(range.end)).toBe('2027-01-04')
+    expect(formatDayKey(range.start, zone)).toBe('2026-12-28')
+    expect(formatDayKey(range.end, zone)).toBe('2027-01-04')
   })
 
   it('uses exact Moscow month boundaries', () => {
-    const range = visibleRange(new Date('2027-01-15T22:00:00Z'), 'month')
+    const zone = 'Europe/Moscow'
+    const range = visibleRange(new Date('2027-01-15T22:00:00Z'), 'month', zone)
 
     expect(range.days).toHaveLength(31)
-    expect(range.days.map(day => formatDayKey(day))).toEqual(expect.arrayContaining(['2027-01-01', '2027-01-31']))
-    expect(formatDayKey(range.start)).toBe('2027-01-01')
-    expect(formatDayKey(range.end)).toBe('2027-02-01')
-    expect(formatDayKey(new Date('2026-12-31T21:30:00Z'))).toBe('2027-01-01')
+    expect(range.days.map(day => formatDayKey(day, zone))).toEqual(expect.arrayContaining(['2027-01-01', '2027-01-31']))
+    expect(formatDayKey(range.start, zone)).toBe('2027-01-01')
+    expect(formatDayKey(range.end, zone)).toBe('2027-02-01')
+    expect(formatDayKey(new Date('2026-12-31T21:30:00Z'), zone)).toBe('2027-01-01')
   })
 
   it('projects overnight entries onto both intersected days with half-open ends', () => {

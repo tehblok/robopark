@@ -44,9 +44,10 @@ describe('ScheduleCalendar', () => {
     const range = visibleRange(new Date('2026-09-21T12:00:00+03:00'), 'week')
     render(<ScheduleCalendar days={range.days} items={entries} ownerUserId={7} pendingIds={new Set(['shift-one'])} selectedDate={range.days[0]} view="week" onDelete={vi.fn()} onEdit={vi.fn()} onViewChange={vi.fn()} />)
 
-    expect(screen.getByText('Ожидает синхронизации')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Изменить' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Удалить' })).not.toBeInTheDocument()
+    const pendingCard = screen.getByText('Ожидает синхронизации').closest('article')
+    expect(pendingCard).not.toBeNull()
+    expect(within(pendingCard as HTMLElement).queryByRole('button', { name: 'Изменить' })).not.toBeInTheDocument()
+    expect(within(pendingCard as HTMLElement).queryByRole('button', { name: 'Удалить' })).not.toBeInTheDocument()
   })
 
   it('exposes week and month controls through the shared callback', () => {

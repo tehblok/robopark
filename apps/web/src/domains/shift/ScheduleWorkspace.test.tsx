@@ -242,7 +242,7 @@ describe('ScheduleWorkspace', () => {
     expect(screen.queryByText('driver · Механик')).not.toBeInTheDocument()
   })
 
-  it('requests only the visible Moscow month for the selected park and employee', async () => {
+  it('requests only the visible device-local month for the selected park and employee', async () => {
     const schedules = vi.fn(async () => [entry])
     render(<ScheduleWorkspace apiClient={client({ schedules })} initialAnchor={new Date('2026-09-15T12:00:00+03:00')} selectedParkId={7} user={mechanic} />)
 
@@ -253,8 +253,8 @@ describe('ScheduleWorkspace', () => {
     await waitFor(() => expect(schedules).toHaveBeenLastCalledWith(expect.objectContaining({
       parkId: 7,
       ownerUserId: 7,
-      startAt: '2026-08-31T21:00:00.000Z',
-      endAt: '2026-09-30T21:00:00.000Z',
+      startAt: new Date(2026, 8, 1).toISOString(),
+      endAt: new Date(2026, 9, 1).toISOString(),
       signal: expect.any(AbortSignal),
     })))
   })
@@ -477,12 +477,16 @@ describe('ScheduleWorkspace', () => {
     expect(screen.queryByRole('button', { name: 'Добавить период' })).not.toBeInTheDocument()
   })
 
-  it('edits and displays server timestamps in Moscow time', async () => {
+  it('edits and displays server timestamps in the device timezone', async () => {
     const utcEntry = { ...entry, start_at: '2026-09-21T06:00:00Z', end_at: '2026-09-21T18:00:00Z' }
+    const localStart = new Date(utcEntry.start_at)
+    const pad = (value: number) => String(value).padStart(2, '0')
+    const visibleStart = `${pad(localStart.getDate())}.${pad(localStart.getMonth() + 1)}.${localStart.getFullYear()}, ${pad(localStart.getHours())}:${pad(localStart.getMinutes())}`
+    const inputStart = `${localStart.getFullYear()}-${pad(localStart.getMonth() + 1)}-${pad(localStart.getDate())}T${pad(localStart.getHours())}:${pad(localStart.getMinutes())}`
     render(<ScheduleWorkspace apiClient={client({ schedules: vi.fn(async () => [utcEntry]) })} initialAnchor={new Date('2026-09-21T12:00:00+03:00')} selectedParkId={1} user={mechanic} />)
-    expect(await screen.findByText(/21\.09\.2026, 09:00/)).toBeInTheDocument()
+    expect(await screen.findByText(new RegExp(visibleStart.replaceAll('.', '\\.')))).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Изменить' }))
-    expect(screen.getByLabelText('Начало')).toHaveValue('2026-09-21T09:00')
+    expect(screen.getByLabelText('Начало')).toHaveValue(inputStart)
   })
 
   it('shows the bounded planner to royal users', async () => {
