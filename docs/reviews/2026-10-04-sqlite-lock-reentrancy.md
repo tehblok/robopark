@@ -12,7 +12,7 @@ before idempotency_lock_busy; the action did not reach the upstream service.
 The process lock now uses the physical bucket key and remains an RLock. A
 thread-local nesting count makes only the outer holder open, flock and close
 the descriptor. Other threads still acquire the process lock, and other
-processes still contend on flock. No new lock files, bucket count, API timeout,
+processes still contend on flock. No new lock files, bucket count, configured API timeout,
 PostgreSQL path, or idempotency receipt semantics are introduced.
 
 Verification:
@@ -31,3 +31,10 @@ suite passed 10 tests and the exact WebKit scenario passed.
 The full CI run passed core/API/host/dependency checks and all four responsive
 shards; its two cross-browser failures are not treated as a passing release
 gate. A new full run is required after these corrections.
+
+Independent review found a two-phase timeout issue: waiting on the local RLock
+and then on flock could reset the wait budget. Both phases now share one
+monotonic deadline, including a bounded final sleep. The deterministic regression
+used a one-second budget and observed 1.8 seconds before the correction. It now
+stops at one second and leaves no process registry entry or thread-local depth.
+The combined lock and offline-sync suites now pass 41 tests.

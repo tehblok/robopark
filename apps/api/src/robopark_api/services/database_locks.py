@@ -118,14 +118,14 @@ def _lock_busy() -> HTTPException:
     return HTTPException(503, "idempotency_lock_busy")
 
 
-def _acquire_process_lock(key: str) -> _ProcessLock:
+def _acquire_process_lock(key: str, *, deadline: float) -> _ProcessLock:
     with _process_locks_guard:
         entry = _process_locks.get(key)
         if entry is None:
             entry = _ProcessLock(lock=threading.RLock())
             _process_locks[key] = entry
         entry.users += 1
-    if not entry.lock.acquire(timeout=LOCK_WAIT_SECONDS):
+    if not entry.lock.acquire(timeout=_remaining_seconds(deadline)):
         _release_process_lock(key, entry, acquired=False)
         raise HTTPException(503, "idempotency_lock_busy")
     return entry
@@ -153,9 +153,10 @@ def _sqlite_lock_path(bind: Any, key: str) -> Path | None:
 @contextmanager
 def _sqlite_file_lock(bind: Any, key: str) -> Iterator[None]:
     """Use a prunable process lock plus `flock` for separate SQLite workers."""
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
     path = _sqlite_lock_path(bind, key)
     process_key = f"sqlite-bucket:{path}" if path is not None and fcntl is not None else key
-    entry = _acquire_process_lock(process_key)
+    entry = _acquire_process_lock(process_key, deadline=deadline)
     descriptor: int | None = None
     depths = getattr(_sqlite_thread_locks, "depths", None)
     if depths is None:
@@ -164,15 +165,15 @@ def _sqlite_file_lock(bind: Any, key: str) -> Iterator[None]:
     try:
         if path is not None and fcntl is not None and not nested:
             descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-            deadline = time.monotonic() + LOCK_WAIT_SECONDS
             while True:
                 try:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    if time.monotonic() >= deadline:
+                    remaining = _remaining_seconds(deadline)
+                    if remaining <= 0:
                         raise HTTPException(503, "idempotency_lock_busy") from None
-                    time.sleep(_SLEEP_SECONDS)
+                    time.sleep(min(_SLEEP_SECONDS, remaining))
         depths[process_key] = depths.get(process_key, 0) + 1
         yield
     finally:

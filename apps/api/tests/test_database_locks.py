@@ -673,3 +673,44 @@ def test_sqlite_bucket_files_and_process_lock_registry_are_bounded(tmp_path):
     root = tmp_path / ".robopark-idempotency-locks"
     assert len(list(root.glob("bucket-*.lock"))) <= database_locks.SQLITE_LOCK_BUCKETS
     assert database_locks._process_locks == {}
+
+
+def test_sqlite_process_and_file_wait_share_one_timeout_budget(tmp_path, monkeypatch):
+    """A second contention phase must not reset the caller's wait budget."""
+    if database_locks.fcntl is None:
+        pytest.skip("flock unavailable")
+    elapsed = 0.0
+    original_acquire = database_locks._acquire_process_lock
+
+    def clock():
+        return elapsed
+
+    def sleep(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    def delayed_process_lock(*args, **kwargs):
+        # Another local holder consumes most of the budget, then an external
+        # process wins the file lock before this caller can take it.
+        sleep(0.8)
+        return original_acquire(*args, **kwargs)
+
+    def contended_flock(_descriptor, operation):
+        if operation & database_locks.fcntl.LOCK_EX:
+            raise BlockingIOError
+
+    monkeypatch.setattr(database_locks, "LOCK_WAIT_SECONDS", 1.0)
+    monkeypatch.setattr(database_locks.time, "monotonic", clock)
+    monkeypatch.setattr(database_locks.time, "sleep", sleep)
+    monkeypatch.setattr(database_locks, "_acquire_process_lock", delayed_process_lock)
+    monkeypatch.setattr(database_locks.fcntl, "flock", contended_flock)
+
+    with (
+        pytest.raises(HTTPException) as error,
+        database_idempotency_lock(_SqliteDb(tmp_path / "shared.sqlite"), "two-phase"),
+    ):
+        pytest.fail("a contended file lock cannot enter the critical section")
+    assert error.value.detail == "idempotency_lock_busy"
+    assert elapsed <= 1.0 + 1e-9
+    assert database_locks._process_locks == {}
+    assert database_locks._sqlite_thread_locks.depths == {}
