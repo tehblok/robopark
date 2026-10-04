@@ -33,7 +33,7 @@ SQLITE_LOCK_BUCKETS = 64
 
 @dataclass
 class _ProcessLock:
-    lock: threading.Lock
+    lock: Any
     users: int = 0
 
 
@@ -64,6 +64,7 @@ class _PostgresPhaseDeadlines:
 
 _process_locks: dict[str, _ProcessLock] = {}
 _process_locks_guard = threading.Lock()
+_sqlite_thread_locks = threading.local()
 _postgres_lock_engines: dict[str, _PostgresLockEngine] = {}
 _postgres_lock_engines_guard = threading.Lock()
 _postgres_connect_deadline = threading.local()
@@ -121,7 +122,7 @@ def _acquire_process_lock(key: str) -> _ProcessLock:
     with _process_locks_guard:
         entry = _process_locks.get(key)
         if entry is None:
-            entry = _ProcessLock(lock=threading.Lock())
+            entry = _ProcessLock(lock=threading.RLock())
             _process_locks[key] = entry
         entry.users += 1
     if not entry.lock.acquire(timeout=LOCK_WAIT_SECONDS):
@@ -152,11 +153,16 @@ def _sqlite_lock_path(bind: Any, key: str) -> Path | None:
 @contextmanager
 def _sqlite_file_lock(bind: Any, key: str) -> Iterator[None]:
     """Use a prunable process lock plus `flock` for separate SQLite workers."""
-    entry = _acquire_process_lock(key)
+    path = _sqlite_lock_path(bind, key)
+    process_key = f"sqlite-bucket:{path}" if path is not None and fcntl is not None else key
+    entry = _acquire_process_lock(process_key)
     descriptor: int | None = None
+    depths = getattr(_sqlite_thread_locks, "depths", None)
+    if depths is None:
+        depths = _sqlite_thread_locks.depths = {}
+    nested = depths.get(process_key, 0) > 0
     try:
-        path = _sqlite_lock_path(bind, key)
-        if path is not None and fcntl is not None:
+        if path is not None and fcntl is not None and not nested:
             descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
             deadline = time.monotonic() + LOCK_WAIT_SECONDS
             while True:
@@ -167,15 +173,21 @@ def _sqlite_file_lock(bind: Any, key: str) -> Iterator[None]:
                     if time.monotonic() >= deadline:
                         raise HTTPException(503, "idempotency_lock_busy") from None
                     time.sleep(_SLEEP_SECONDS)
+        depths[process_key] = depths.get(process_key, 0) + 1
         yield
     finally:
+        depth = depths.get(process_key, 0)
+        if depth <= 1:
+            depths.pop(process_key, None)
+        else:
+            depths[process_key] = depth - 1
         if descriptor is not None:
             try:
                 if fcntl is not None:
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
             finally:
                 os.close(descriptor)
-        _release_process_lock(key, entry)
+        _release_process_lock(process_key, entry)
 
 
 def _postgres_lock_engine(bind: Any) -> _PostgresLockEngine:

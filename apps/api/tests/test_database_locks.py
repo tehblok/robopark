@@ -621,6 +621,48 @@ def test_sqlite_bucket_locks_exclude_same_bucket_and_allow_different_bucket(tmp_
     assert all(process.exitcode == 0 for process in (holder, same, different))
 
 
+def test_sqlite_nested_same_bucket_is_reentrant_only_for_the_holding_thread(
+    tmp_path, monkeypatch
+):
+    """Nested workflows must not deadlock when their distinct keys share a bucket."""
+    database = tmp_path / "robopark.db"
+    db = _SqliteDb(database)
+    outer_key = "offline-sync:4:account-100:df0f2527-a113-4de2-8c0d-ab005a6da379"
+    inner_key = "tracker-claim:ROBOPARK-42"
+    contender_key = "contender-44"
+    paths = {
+        database_locks._sqlite_lock_path(_SqliteBind(database), key)
+        for key in (outer_key, inner_key, contender_key)
+    }
+    assert len(paths) == 1
+    monkeypatch.setattr(database_locks, "LOCK_WAIT_SECONDS", 0.5)
+
+    attempting = threading.Event()
+    acquired = threading.Event()
+    contender = threading.Thread(
+        target=_acquire_sqlite_lock,
+        args=(database, contender_key, attempting, acquired),
+    )
+    try:
+        with database_idempotency_lock(db, outer_key):
+            with (
+                pytest.raises(RuntimeError, match="nested workflow failed"),
+                database_idempotency_lock(db, inner_key),
+            ):
+                contender.start()
+                assert attempting.wait(timeout=0.1)
+                assert not acquired.wait(timeout=0.05)
+                raise RuntimeError("nested workflow failed")
+            # Releasing the nested scope must not release the outer file lock.
+            assert not acquired.wait(timeout=0.05)
+        assert acquired.wait(timeout=0.5)
+    finally:
+        if contender.ident is not None:
+            contender.join(timeout=1)
+
+    assert not contender.is_alive()
+
+
 def test_sqlite_bucket_files_and_process_lock_registry_are_bounded(tmp_path):
     database = tmp_path / "robopark.db"
     db = _SqliteDb(database)
