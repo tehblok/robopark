@@ -53,3 +53,57 @@ test('photo draft survives browser reload and resumes an incomplete attachment o
     await attachments.close()
   }
 })
+
+for (const delayed of [false, true]) test(`offline media bytes survive ${delayed ? 'delayed' : 'immediate'} state updates and a page reload`, async ({ page }) => {
+  await page.route('**/__offline_media_integrity__', route => route.fulfill({
+    contentType: 'text/html', body: '<!doctype html><title>Offline media integrity</title>',
+  }))
+  await page.goto('/__offline_media_integrity__')
+  const result = await page.evaluate(async () => {
+    const moduleUrl = '/src/pwa/offlineDb.ts'
+    const { openOfflineDb } = await import(moduleUrl) as typeof import('../../src/pwa/offlineDb')
+    const scope = { account: 'media-probe', role: 'mechanic', permissions: 'tracker.read', park: '7', schema: 1 }
+    const db = await openOfflineDb(scope)
+    const contents = 'preserved-photo-bytes'
+    await db.putMedia({
+      id: 'photo', actionId: 'upload-photo', issueKey: 'ROBOPARK-42', name: 'photo.txt',
+      blob: new Blob([contents], { type: 'text/plain' }), mimeType: 'text/plain',
+      sha256: 'a'.repeat(64), sizeBytes: contents.length, state: 'ready', createdAt: 1, updatedAt: 1,
+    })
+    db.close()
+    return contents
+  })
+  await page.reload()
+  await page.evaluate(async (delayed) => {
+    const moduleUrl = '/src/pwa/offlineDb.ts'
+    const { openOfflineDb } = await import(moduleUrl) as typeof import('../../src/pwa/offlineDb')
+    const db = await openOfflineDb({ account: 'media-probe', role: 'mechanic', permissions: 'tracker.read', park: '7', schema: 1 })
+    await db.claimLease('media-probe', Date.now(), 60_000)
+    for (let i = 0; i < (delayed ? 2 : 20); i += 1) {
+      const before = await db.getMedia('photo')
+      if (!before) throw new Error(`missing media before update ${i}`)
+      // WebKit tracks file-backed Blob mtimes in whole seconds. Exercise a
+      // persisted read held across that boundary before rewriting metadata.
+      if (delayed) await new Promise(resolve => setTimeout(resolve, 1100))
+      const committed = await db.transactionIfLease('media-probe', () => Date.now(), writer => {
+        writer.putMedia({ ...before, state: i % 2 ? 'ready' : 'uploading', updatedAt: i + 2 })
+      })
+      if (!committed) throw new Error('media probe lost its lease')
+    }
+    const after = await db.getMedia('photo')
+    if (!after || after.updatedAt !== (delayed ? 3 : 21) || await after.blob.text() !== 'preserved-photo-bytes') throw new Error('media bytes lost after metadata-only updates')
+    db.close()
+  }, delayed)
+  await page.reload()
+  const restored = await page.evaluate(async () => {
+    const moduleUrl = '/src/pwa/offlineDb.ts'
+    const { openOfflineDb } = await import(moduleUrl) as typeof import('../../src/pwa/offlineDb')
+    const db = await openOfflineDb({ account: 'media-probe', role: 'mechanic', permissions: 'tracker.read', park: '7', schema: 1 })
+    try {
+      const media = await db.getMedia('photo')
+      if (!media) throw new Error('media missing after reload')
+      return await media.blob.text()
+    } finally { db.close() }
+  })
+  expect(restored).toBe(result)
+})
