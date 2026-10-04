@@ -6,6 +6,7 @@ import { FormField } from '../../design-system/forms/FormField'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
 import { InventoryLabels } from './InventoryLabels'
+import { retainInventoryPartRecords } from './inventoryPartRetention'
 import { inventoryInt64Compare, inventoryQuantityError, isInventoryQuantity } from './inventoryTypes'
 import { INVENTORY_COMPONENTS_INCOMPLETE, loadInventoryComponents } from './loadInventoryComponents'
 
@@ -81,6 +82,9 @@ export function InventoryPartsView({ apiClient = api, canManage = true, canPrint
   useLayoutEffect(() => {
     selection.current = { controlled: selectedCatalogPartId !== undefined, onChange: onSelectedCatalogPartIdChange }
   }, [onSelectedCatalogPartIdChange, selectedCatalogPartId])
+  useEffect(() => {
+    partsById.current = retainInventoryPartRecords(result?.items ?? [], selectedLabelIds, partsById.current)
+  }, [result, selectedLabelIds])
   const select = useCallback((id: number | null) => {
     if (!selection.current.controlled) setInternalSelectedId(id)
     selection.current.onChange?.(id)
@@ -94,7 +98,6 @@ export function InventoryPartsView({ apiClient = api, canManage = true, canPrint
     const timer = globalThis.setTimeout(() => {
       apiClient.searchInventory(params).then(value => {
         if (requestId !== generation.current) return
-        value.items.forEach(item => partsById.current.set(item.id, item))
         setResult(value)
         setLoading(false)
       }).catch(reason => {
@@ -147,7 +150,6 @@ export function InventoryPartsView({ apiClient = api, canManage = true, canPrint
     setResult(current => {
       if (!current) return current
       const items = current.items.map(item => item.id === stock.catalog_part_id ? { ...item, minimum_quantity: stock.minimum_quantity, location: stock.location, stock_is_active: stock.is_active } : item)
-      items.forEach(item => partsById.current.set(item.id, item))
       return { ...current, items }
     })
   }

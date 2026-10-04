@@ -8,7 +8,12 @@ import { ru } from '../../i18n/ru'
 import { TrackerWorkspace } from './TrackerWorkspace'
 import { IssueDrawer } from './IssueDrawer'
 
-vi.mock('./IssueFilters', () => ({ IssueFilters: () => null }))
+vi.mock('./IssueFilters', () => ({
+  IssueFilters: ({ onApply }: { onApply: (filters: { queue: string }) => void }) => <>
+    <button onClick={() => onApply({ queue: 'SDCFLEETOPS' })}>Основной фильтр</button>
+    <button onClick={() => onApply({ queue: 'EMPTY' })}>Пустой фильтр</button>
+  </>,
+}))
 vi.mock('./IssueDetailPanel', () => ({ IssueDetailPanel: ({ issue }: { issue: TrackerIssueDetail | null }) => <output>{issue?.summary}</output> }))
 vi.mock('./IssueActionsPanel', () => ({ IssueActionsPanel: ({ onAssign }: { onAssign: (name: string) => Promise<void> }) => <button onClick={() => void onAssign('me')}>Назначить</button> }))
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
@@ -36,6 +41,26 @@ it('refreshes every loaded page without collapsing pagination to the first 50', 
   await screen.findByRole('button', { name: 'Открыть задачу RP-100: Свежая 100' })
   expect(list.mock.calls.map(([query]) => query.offset)).toEqual([0, 50, 0, 50])
   expect(screen.getAllByRole('button', { name: /Открыть задачу/ })).toHaveLength(100)
+})
+
+it('forgets pagination depth after the inactive filter data is evicted', async () => {
+  const list = vi.spyOn(api, 'trackerIssues').mockImplementation(async query => query.queue === 'EMPTY'
+    ? { items: [], total: 0, offset: 0, limit: 50, has_more: false }
+    : page(query.offset ?? 0))
+  render(tree())
+  await screen.findByRole('button', { name: 'Открыть задачу RP-50: Задача 50' })
+  fireEvent.click(screen.getByRole('button', { name: ru.tracker.showMore }))
+  await screen.findByRole('button', { name: 'Открыть задачу RP-100: Задача 100' })
+
+  fireEvent.click(screen.getByRole('button', { name: 'Пустой фильтр' }))
+  await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ queue: 'EMPTY', offset: 0 })))
+  for (let index = 0; index < 129; index += 1) {
+    resourceStore.set(`retention-fixture:${index}`, { index }, false)
+  }
+
+  fireEvent.click(screen.getByRole('button', { name: 'Основной фильтр' }))
+  await waitFor(() => expect(list.mock.calls.filter(([query]) => query.queue === 'SDCFLEETOPS')).toHaveLength(3))
+  expect(list.mock.calls.filter(([query]) => query.queue === 'SDCFLEETOPS').map(([query]) => query.offset)).toEqual([0, 50, 0])
 })
 
 it('does not start background pagination while the next page remains pending', async () => {

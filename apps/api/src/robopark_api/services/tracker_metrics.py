@@ -90,7 +90,10 @@ def set_cached_now_report(
             return
         _METRICS_CACHE[cache_key] = (now + ttl_sec, encoded, retained_bytes)
         _METRICS_CACHE_BYTES += retained_bytes
-        while len(_METRICS_CACHE) > METRICS_CACHE_MAX_ENTRIES or _METRICS_CACHE_BYTES > METRICS_CACHE_MAX_BYTES:
+        while (
+            len(_METRICS_CACHE) > METRICS_CACHE_MAX_ENTRIES
+            or _METRICS_CACHE_BYTES > METRICS_CACHE_MAX_BYTES
+        ):
             _remove_cached_report(next(iter(_METRICS_CACHE)))
 
 

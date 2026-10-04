@@ -50,7 +50,7 @@ export function TrackerWorkspace({
   const [selected, setSelected] = useState('')
   const [validationError, setValidationError] = useState('')
   const loadMoreRef = useRef(false)
-  const loadedExtent = useRef(new Map<string, number>())
+  const loadedExtent = useRef<{ key: string; items: number } | null>(null)
   const appendRequest = useRef<{ key: string; base: ListPage } | null>(null)
 
   const invalidFilter = filters.untagged && !filters.queue
@@ -64,7 +64,9 @@ export function TrackerWorkspace({
         const page = await api.trackerIssues({ ...filters, limit: PAGE_SIZE, offset: append.base.items.length })
         return { ...page, items: [...append.base.items, ...page.items] }
       }
-      const target = Math.max(PAGE_SIZE, loadedExtent.current.get(currentListKey) ?? 0, resourceStore.get<ListPage>(currentListKey)?.items.length ?? 0)
+      const remembered = loadedExtent.current?.key === currentListKey ? loadedExtent.current.items : 0
+      const target = Math.max(PAGE_SIZE, remembered, resourceStore.get<ListPage>(currentListKey)?.items.length ?? 0)
+      loadedExtent.current = { key: currentListKey, items: target }
       const refreshed: TrackerIssue[] = []
       let page: ListPage
       do {
@@ -120,6 +122,8 @@ export function TrackerWorkspace({
 
   const applyFilters = useCallback((next: IssueFilterValues) => {
     setValidationError('')
+    const nextListKey = next.untagged && !next.queue ? '' : listKey(next)
+    if (loadedExtent.current?.key !== nextListKey) loadedExtent.current = null
     setFilters(next)
   }, [])
 
@@ -142,7 +146,7 @@ export function TrackerWorkspace({
     if (loadMoreRef.current || listRes.isRevalidating || !listRes.data) return
     loadMoreRef.current = true
     const base = listRes.data
-    loadedExtent.current.set(currentListKey, base.items.length + PAGE_SIZE)
+    loadedExtent.current = { key: currentListKey, items: base.items.length + PAGE_SIZE }
     appendRequest.current = { key: currentListKey, base }
     // Route pagination through the same request generation as background reads.
     resourceStore.invalidate(currentListKey)
@@ -168,7 +172,13 @@ export function TrackerWorkspace({
 
   const refreshAll = async () => {
     if (owner.current !== currentOwner) return
-    loadedExtent.current.set(currentListKey, Math.max(loadedExtent.current.get(currentListKey) ?? 0, resourceStore.get<ListPage>(currentListKey)?.items.length ?? 0))
+    loadedExtent.current = {
+      key: currentListKey,
+      items: Math.max(
+        loadedExtent.current?.key === currentListKey ? loadedExtent.current.items : 0,
+        resourceStore.get<ListPage>(currentListKey)?.items.length ?? 0,
+      ),
+    }
     resourceStore.invalidate(currentListKey)
     await Promise.all([refreshSelected(), listRes.refresh()])
   }
