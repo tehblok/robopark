@@ -56,10 +56,10 @@ _INSTALL_FILES = (
 )
 
 
-def _git_paths(repository: Path, *args: str) -> set[Path]:
+def _git_paths(repository: Path, *command: str) -> set[Path]:
     try:
         output = subprocess.run(
-            ["git", "ls-files", "-z", *args], cwd=repository,
+            ["git", *(command or ("ls-files",)), "-z"], cwd=repository,
             check=True, capture_output=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError) as error:
@@ -88,13 +88,20 @@ def _allowed_source(relative: Path) -> bool:
 def workspace_source_files(repository: Path) -> list[Path]:
     """Select reviewed/indexed source and reject unstaged new runtime files."""
     tracked = {path for path in _git_paths(repository) if _allowed_source(path)}
-    untracked_paths = _git_paths(repository, "--others", "--exclude-standard")
+    untracked_paths = _git_paths(repository, "ls-files", "--others", "--exclude-standard")
+    # git add -N lists a path in ls-files without actually staging its content.
+    # Do not confuse that marker with a legitimately staged empty module.
+    intent_paths = _git_paths(
+        repository, "diff", "--name-only", "--diff-filter=A", "--ita-invisible-in-index"
+    )
+    tracked -= intent_paths
     unexpected = {
         path for path in untracked_paths
         if _allowed_source(path)
         and path.as_posix().startswith(_UNTRACKED_PREFIXES)
         and (path.suffix in _UNTRACKED_EXTENSIONS or path.as_posix().startswith("apps/bot/") or path.suffix == ".path" or path.name == "robopark-bot-runtime")
     }
+    unexpected.update(path for path in intent_paths if _allowed_source(path))
     if unexpected:
         raise BuildError("unreviewed_untracked_source")
     selected: list[Path] = []

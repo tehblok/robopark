@@ -86,6 +86,25 @@ def test_historical_allowlist_does_not_publish_untracked_runtime_files(tmp_path,
     assert source.relative_to(repository) in workspace_source_files(repository)
 
 
+def test_intent_to_add_is_not_staged_content_but_real_empty_modules_are_allowed(tmp_path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    source = repository / "apps/api/src/local.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("local_experiment = True\n")
+    empty = source.with_name("__init__.py")
+    empty.write_text("")
+    subprocess.run(["git", "-C", str(repository), "add", "--", str(empty)], check=True)
+    subprocess.run(["git", "-C", str(repository), "add", "-N", "--", str(source)], check=True)
+    with pytest.raises(BuildError, match="unreviewed_untracked_source"):
+        workspace_source_files(repository)
+    subprocess.run(["git", "-C", str(repository), "add", "--", str(source)], check=True)
+    assert set(workspace_source_files(repository)) == {
+        source.relative_to(repository), empty.relative_to(repository),
+    }
+
+
 def test_workspace_snapshot_includes_optional_bot_and_primary_tracker_bridge():
     selected = {path.as_posix() for path in workspace_source_files(ROOT)}
 
