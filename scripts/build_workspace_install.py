@@ -34,14 +34,14 @@ _RUNTIME_DATA = {"apps/api/data/emergency_sections.json"}
 _RUNTIME_DATA_PREFIXES = ("apps/api/data/", "apps/bot/legacy/data/", "deploy/data/")
 _UNTRACKED_PREFIXES = (
     "apps/api/src/", "apps/api/alembic/versions/", "apps/web/src/", "apps/web/terminal.html", "apps/web/public/", "apps/web/docker-entrypoint.d/", "apps/bot/",
-    "deploy/host/robopark_host/", "deploy/ota/robopark_ota/",
-    "deploy/installer/lib/", "deploy/systemd/", "deploy/host/robopark-bot-runtime",
+    "deploy/host/", "deploy/ota/robopark_ota/",
+    "deploy/installer/lib/", "deploy/systemd/",
     "scripts/audit-dependencies.sh",
     "apps/web/scripts/install-dependencies.sh",
 )
 _UNTRACKED_EXTENSIONS = {
     ".py", ".ts", ".tsx", ".html", ".css", ".svg", ".png", ".webp",
-    ".json", ".sh", ".service", ".timer",
+    ".json", ".sh", ".service", ".timer", ".path", "",
 }
 _MAX_FILE_BYTES = 32 * 1024 * 1024
 # New runtime files must be reviewed and staged in Git before packaging. This
@@ -99,7 +99,7 @@ def workspace_source_files(repository: Path) -> list[Path]:
         path for path in untracked_paths
         if _allowed_source(path)
         and path.as_posix().startswith(_UNTRACKED_PREFIXES)
-        and (path.suffix in _UNTRACKED_EXTENSIONS or path.as_posix().startswith("apps/bot/") or path.suffix == ".path" or path.name == "robopark-bot-runtime")
+        and (path.suffix in _UNTRACKED_EXTENSIONS or path.as_posix().startswith("apps/bot/"))
     }
     unexpected.update(path for path in intent_paths if _allowed_source(path))
     if unexpected:

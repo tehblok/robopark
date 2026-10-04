@@ -219,6 +219,81 @@ def test_refresh_validates_all_guard_sources_before_replacing_any(
     assert old.read_text() == "old guard"
 
 
+def test_refresh_repairs_current_units_for_ready_layout(setup_host, monkeypatch):
+    setup, root, _ = setup_host
+    layout = setup.plan_storage("emmc-nvme-data", "/dev/nvme0n1p1", root=root)["layout"]
+    layout["state"] = "ready"
+    monkeypatch.setattr(setup, "load_layout", lambda _root: layout)
+    monkeypatch.setattr(
+        setup, "require_storage", lambda *_args, **_kw: {"state": "ready"}
+    )
+    release = root / "candidate"
+    package = release / "deploy/host/robopark_host"
+    package.mkdir(parents=True)
+    for name in ("storage_layout.py", "storage_watchdog.py"):
+        (package / name).write_text("# valid packaged guard\n")
+    stale = root / "etc/systemd/system/robopark-ai.service.d/50-robopark-storage.conf"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale\n")
+
+    setup.refresh_storage_guard(root, release)
+
+    expected = setup.storage_units(layout)
+    assert (
+        stale.read_text() == expected["robopark-ai.service.d/50-robopark-storage.conf"]
+    )
+    assert (
+        root
+        / "etc/systemd/system/robopark-ai-broker.service.d/50-robopark-storage.conf"
+    ).read_text() == expected["robopark-ai-broker.service.d/50-robopark-storage.conf"]
+
+
+def test_refresh_missing_storage_fails_before_repairing_units(setup_host, monkeypatch):
+    setup, root, _ = setup_host
+    monkeypatch.setattr(setup, "load_layout", lambda _root: {"state": "ready"})
+
+    def fail(*_args, **_kwargs):
+        raise setup.StorageError("storage_mount_missing")
+
+    monkeypatch.setattr(setup, "require_storage", fail)
+    stale = root / "etc/systemd/system/robopark-ai.service.d/50-robopark-storage.conf"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale\n")
+
+    with pytest.raises(RuntimeError, match="storage_mount_missing"):
+        setup.refresh_storage_guard(root, root / "candidate")
+
+    assert stale.read_text() == "stale\n"
+
+
+def test_refresh_validates_all_unit_paths_before_replacing_guard(
+    setup_host, monkeypatch
+):
+    setup, root, _ = setup_host
+    layout = setup.plan_storage("emmc-nvme-data", "/dev/nvme0n1p1", root=root)["layout"]
+    layout["state"] = "ready"
+    monkeypatch.setattr(setup, "load_layout", lambda _root: layout)
+    monkeypatch.setattr(
+        setup, "require_storage", lambda *_args, **_kw: {"state": "ready"}
+    )
+    guard = root / "usr/lib/robopark-storage/storage_layout.py"
+    guard.parent.mkdir(parents=True)
+    guard.write_text("old guard\n")
+    release = root / "candidate"
+    package = release / "deploy/host/robopark_host"
+    package.mkdir(parents=True)
+    for name in ("storage_layout.py", "storage_watchdog.py"):
+        (package / name).write_text("# valid packaged guard\n")
+    unsafe = root / "etc/systemd/system/docker.service.d"
+    unsafe.parent.mkdir(parents=True)
+    unsafe.symlink_to(root / "outside-systemd")
+
+    with pytest.raises(RuntimeError, match="storage_path_unsafe"):
+        setup.refresh_storage_guard(root, release)
+
+    assert guard.read_text() == "old guard\n"
+
+
 def test_ready_prepare_retries_watchdog_activation(setup_host, monkeypatch):
     setup, root, calls = setup_host
     plan = setup.plan_storage("emmc-nvme-data", "/dev/nvme0n1p1", root=root)
@@ -233,7 +308,53 @@ def test_ready_prepare_retries_watchdog_activation(setup_host, monkeypatch):
         "emmc-nvme-data", "/dev/nvme0n1p1", confirmation=plan["confirmation"], root=root
     )
     assert ["systemctl", "enable", "--now", "robopark-storage-watchdog.timer"] in calls
+    expected = setup.storage_units(plan["layout"])
+    assert (
+        root / "etc/systemd/system/robopark-ai.service.d/50-robopark-storage.conf"
+    ).read_text() == expected["robopark-ai.service.d/50-robopark-storage.conf"]
+    assert ["systemctl", "daemon-reload"] in calls
     assert not any(argv[0] in {"mount", "umount"} for argv in calls)
+
+
+def test_managed_container_roots_reject_live_docker_drift_without_starting_daemon(
+    setup_host, monkeypatch
+):
+    setup, root, calls = setup_host
+
+    def run(argv, *, root):
+        calls.append(argv)
+        if argv[:2] == ["systemctl", "show"] and "--property=ExecStart" in argv:
+            return (
+                "/usr/bin/dockerd\n"
+                if argv[2] == "docker.service"
+                else "/usr/bin/containerd\n"
+            )
+        if argv[:2] == ["systemctl", "show"]:
+            return "active\n" if argv[2] == "docker.service" else "inactive\n"
+        if argv == ["docker", "info", "--format", "{{.DockerRootDir}}"]:
+            return "/mnt/foreign-docker\n"
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(setup, "_run", run)
+
+    with pytest.raises(RuntimeError, match="storage_custom_container_root"):
+        setup.require_managed_container_roots(root, run=run)
+
+    assert ["systemctl", "start", "docker.service"] not in calls
+
+
+def test_managed_container_roots_reject_config_drift_before_live_probe(
+    setup_host, monkeypatch
+):
+    setup, root, calls = setup_host
+    config = root / "etc/docker/daemon.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"data-root": "/mnt/foreign-docker"}\n')
+
+    with pytest.raises(RuntimeError, match="storage_custom_container_root"):
+        setup.require_managed_container_roots(root)
+
+    assert calls == []
 
 
 @pytest.mark.parametrize(

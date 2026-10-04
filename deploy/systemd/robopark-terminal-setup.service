@@ -1,6 +1,7 @@
 [Unit]
 Description=Prepare Robopark host terminal account and directories
 Before=robopark-terminal-broker.service
+After=docker.service
 
 [Service]
 Type=oneshot
@@ -10,6 +11,7 @@ RuntimeDirectoryPreserve=yes
 RemainAfterExit=yes
 # System services default to root. Explicit User=root with seccomp on systemd
 # 255 drops CAP_SETUID, which the runuser readiness checks require.
+ExecStartPre=/usr/bin/python3 -I /opt/robopark/host-tools/robopark-storage-reconcile --apply
 ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark terminal-setup
 TimeoutStartSec=90
 NoNewPrivileges=true

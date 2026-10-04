@@ -519,7 +519,7 @@ class HostInstallRuntime:
             _require_install_space(destination, self.verified.manifest.required_free_bytes)
 
     def preflight(self) -> None:
-        storage.require_storage(self.root)
+        storage_status = storage.require_storage(self.root)
         if self.root == Path("/") and os.geteuid() != 0:
             raise PermissionError("root_required")
         if sys.version_info < (3, 10):  # noqa: UP036 -- OTA runs on host Python 3.10+
@@ -580,9 +580,18 @@ class HostInstallRuntime:
         ):
             raise RuntimeError("docker_root_unavailable")
         docker_root = Path(docker_root_output.strip())
-        if not docker_root.is_absolute() or not docker_root.is_dir():
+        if not docker_root.is_absolute():
             raise RuntimeError("docker_root_unavailable")
-        _require_install_space(docker_root, self.verified.manifest.required_free_bytes)
+        docker_root_path = docker_root
+        if storage_status.get("state") != "unmanaged":
+            if docker_root != Path("/var/lib/docker"):
+                raise RuntimeError("storage_custom_container_root")
+            docker_root_path = self.root / "var/lib/docker"
+        if not docker_root_path.is_dir():
+            raise RuntimeError("docker_root_unavailable")
+        _require_install_space(
+            docker_root_path, self.verified.manifest.required_free_bytes
+        )
 
     def _ensure_empty_robopark_paths(self) -> None:
         status = storage.require_storage(self.root)

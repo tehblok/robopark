@@ -72,6 +72,7 @@ def test_unreviewed_new_runtime_file_blocks_snapshot(tmp_path: Path):
 @pytest.mark.parametrize("name", [
     "apps/web/src/domains/map/MapPage.tsx",
     "apps/bot/legacy/app/local_experiment.py",
+    "deploy/host/robopark-future-runtime",
 ])
 def test_historical_allowlist_does_not_publish_untracked_runtime_files(tmp_path, name):
     repository = tmp_path / "repo"

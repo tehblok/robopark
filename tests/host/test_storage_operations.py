@@ -78,6 +78,32 @@ def test_release_gate_accepts_managed_candidate_with_exact_capability(
     assert require_storage_release(host_paths, candidate)["mode"] == "emmc-nvme-data"
 
 
+def test_operation_gate_validates_container_roots_only_for_managed_layout(
+    host_paths, monkeypatch
+):
+    from robopark_host.storage_compatibility import require_storage_operations
+
+    checked = []
+    monkeypatch.setattr(
+        "robopark_host.storage_setup.require_managed_container_roots",
+        lambda root: checked.append(root),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "robopark_host.storage_layout.require_storage",
+        lambda *_args, **_kwargs: {"state": "unmanaged"},
+    )
+    assert require_storage_operations(host_paths) == {"state": "unmanaged"}
+    assert checked == []
+
+    monkeypatch.setattr(
+        "robopark_host.storage_layout.require_storage",
+        lambda *_args, **_kwargs: {"state": "ready", "mode": "emmc-nvme-data"},
+    )
+    require_storage_operations(host_paths)
+    assert checked == [host_paths.root]
+
+
 def test_release_gate_and_guard_refresh_ignore_only_space_for_recovery(
     host_paths, tmp_path, monkeypatch
 ):

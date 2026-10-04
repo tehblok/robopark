@@ -187,6 +187,68 @@ def test_clean_install_preflight_rejects_full_custom_docker_root(tmp_path, monke
     assert ["docker", "info", "--format", "{{.DockerRootDir}}"] in commands
 
 
+def test_managed_clean_install_preflight_rejects_noncanonical_live_docker_root(
+    tmp_path, monkeypatch
+):
+    from robopark_ota import host_install
+
+    docker_root = tmp_path / "mnt/docker-data"
+    docker_root.mkdir(parents=True)
+    runtime = object.__new__(HostInstallRuntime)
+    runtime.root = tmp_path
+    runtime.verified = SimpleNamespace(manifest=SimpleNamespace(required_free_bytes=1))
+    runtime.tuna = TunaConfiguration()
+
+    def run(command, **kwargs):
+        if command == ["docker", "buildx", "version"]:
+            return SimpleNamespace(stdout="github.com/docker/buildx v0.14.0 deadbeef\n")
+        if command == ["docker", "info", "--format", "{{.DockerRootDir}}"]:
+            return SimpleNamespace(stdout=str(docker_root) + "\n")
+        return SimpleNamespace(stdout="Usage: build\nOptions: --builder --max-used-space\n")
+
+    runtime._run = run
+    monkeypatch.setattr(host_install.sys, "version_info", (3, 12, 0))
+    monkeypatch.setattr(host_install.shutil, "which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        host_install.storage,
+        "require_storage",
+        lambda _root: {"state": "ready", "mode": "emmc-nvme-data"},
+    )
+
+    with pytest.raises(RuntimeError, match="storage_custom_container_root"):
+        runtime.preflight()
+
+
+def test_managed_clean_install_preflight_accepts_canonical_root_in_synthetic_host(
+    tmp_path, monkeypatch
+):
+    from robopark_ota import host_install
+
+    (tmp_path / "var/lib/docker").mkdir(parents=True)
+    runtime = object.__new__(HostInstallRuntime)
+    runtime.root = tmp_path
+    runtime.verified = SimpleNamespace(manifest=SimpleNamespace(required_free_bytes=1))
+    runtime.tuna = TunaConfiguration()
+
+    def run(command, **kwargs):
+        if command == ["docker", "buildx", "version"]:
+            return SimpleNamespace(stdout="github.com/docker/buildx v0.14.0 deadbeef\n")
+        if command == ["docker", "info", "--format", "{{.DockerRootDir}}"]:
+            return SimpleNamespace(stdout="/var/lib/docker\n")
+        return SimpleNamespace(stdout="Usage: build\nOptions: --builder --max-used-space\n")
+
+    runtime._run = run
+    monkeypatch.setattr(host_install.sys, "version_info", (3, 12, 0))
+    monkeypatch.setattr(host_install.shutil, "which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        host_install.storage,
+        "require_storage",
+        lambda _root: {"state": "ready", "mode": "emmc-nvme-data"},
+    )
+
+    runtime.preflight()
+
+
 @pytest.mark.parametrize(
     ("total_bytes", "free_bytes"),
     [(32 * 1024**3, 5 * 1024**3), (100 * 1024**3, 10 * 1024**3)],

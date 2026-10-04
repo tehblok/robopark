@@ -9,6 +9,7 @@ StartLimitBurst=3
 [Service]
 Type=simple
 User=root
+ExecStartPre=+/usr/bin/python3 -I /opt/robopark/host-tools/robopark-storage-reconcile --check
 ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark ai-broker
 Restart=on-failure
 RestartSec=3

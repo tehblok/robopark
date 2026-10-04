@@ -13,6 +13,7 @@ from robopark_host.storage_layout import (
     inspect_storage,
     load_layout,
     parse_mountinfo,
+    require_container_configuration,
     require_storage,
 )
 
@@ -461,6 +462,116 @@ def test_standalone_check_isolated_python_accepts_legacy_and_reports_safe_error(
     )
     assert unsafe.returncode == 2
     assert json.loads(unsafe.stdout) == {"error": "storage_preparing", "safe": False}
+
+
+def test_standalone_prestart_rejects_managed_custom_docker_config(tmp_path):
+    module = Path(__file__).parents[2] / "deploy/host/robopark_host/storage_layout.py"
+    env = {**os.environ, "ROBOPARK_TESTING": "1"}
+    _write_layout(tmp_path)
+    _write_split_mounts(tmp_path)
+    config = tmp_path / "etc/docker/daemon.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"data-root": "/mnt/emmc-docker"}\n')
+
+    checked = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(module),
+            "check",
+            "--presence-only",
+            "--root",
+            str(tmp_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+        timeout=5,
+    )
+
+    assert checked.returncode == 2
+    assert json.loads(checked.stdout) == {
+        "error": "storage_custom_container_root",
+        "safe": False,
+    }
+
+
+def test_container_configuration_rejects_execstart_drift_without_docker_probe(
+    tmp_path,
+):
+    calls = []
+
+    def run(argv, *, root):
+        calls.append(argv)
+        if argv[2] == "docker.service":
+            return "/usr/bin/dockerd --data-root=/mnt/emmc-docker\n"
+        return "/usr/bin/containerd\n"
+
+    _assert_code(
+        "storage_custom_container_root",
+        lambda: require_container_configuration(tmp_path, run=run),
+    )
+    assert all(command[:2] == ["systemctl", "show"] for command in calls)
+    assert not any(command[0] == "docker" for command in calls)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ['"root"', "'root'", '"imports"', "'imports'"],
+)
+def test_container_configuration_rejects_quoted_containerd_root_keys(tmp_path, key):
+    config = tmp_path / "etc/containerd/config.toml"
+    config.parent.mkdir(parents=True)
+    value = '"/srv/containerd"' if "root" in key else '["/etc/other.toml"]'
+    config.write_text(f"{key} = {value}\nversion = 2\n")
+
+    _assert_code(
+        "storage_custom_container_root",
+        lambda: require_container_configuration(tmp_path),
+    )
+
+
+def test_container_configuration_accepts_canonical_quoted_containerd_keys(tmp_path):
+    config = tmp_path / "etc/containerd/config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        '"root" = "/var/lib/containerd"\n\'imports\' = []\n"version" = 2\n'
+    )
+
+    require_container_configuration(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/usr/bin/dockerd -g/srv/docker",
+        "/usr/bin/dockerd -g=/srv/docker",
+        "/usr/bin/containerd -c=/etc/other.toml",
+        "/usr/bin/containerd -c/etc/other.toml",
+        "/usr/bin/containerd -cother.toml",
+        "/usr/bin/dockerd -grelative",
+    ],
+)
+def test_container_configuration_rejects_compact_short_root_flags(tmp_path, command):
+    def run(argv, *, root):
+        return command if argv[2] == "docker.service" else "/usr/bin/containerd\n"
+
+    _assert_code(
+        "storage_custom_container_root",
+        lambda: require_container_configuration(tmp_path, run=run),
+    )
+
+
+def test_container_configuration_allows_rootless_word_without_root_override(tmp_path):
+    def run(argv, *, root):
+        return (
+            "/usr/bin/dockerd-rootless.sh\n"
+            if argv[2] == "docker.service"
+            else "/usr/bin/containerd\n"
+        )
+
+    require_container_configuration(tmp_path, run=run)
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Reconcile managed-storage policy with the verified current release."""
+
+from __future__ import annotations
+
+import json
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+RELEASE = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(RELEASE / "deploy/host"))
+
+from robopark_host.paths import paths_from_environment
+from robopark_host.state import atomic_write_json
+from robopark_host.storage_compatibility import (
+    refresh_storage_release_guard,
+    require_storage_release,
+)
+
+
+def _current_release(paths) -> Path:
+    current = paths.current.resolve(strict=True)
+    releases = paths.releases.resolve(strict=True)
+    if (
+        not paths.current.is_symlink()
+        or current != RELEASE
+        or current.parent != releases
+        or RELEASE.is_symlink()
+        or not RELEASE.is_dir()
+    ):
+        raise RuntimeError("storage_release_changed")
+    return current
+
+
+def _receipt(paths) -> Path:
+    return paths.state / "storage-policy-release.json"
+
+
+def _check_receipt(paths, current: Path) -> None:
+    storage = require_storage_release(paths, current, check_space=False)
+    if storage.get("state") == "unmanaged":
+        return
+    try:
+        receipt = _receipt(paths)
+        info = receipt.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+            raise OSError("unsafe receipt")
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise RuntimeError("storage_policy_not_reconciled") from exc
+    if value != {"schema": 1, "release": str(current)}:
+        raise RuntimeError("storage_policy_not_reconciled")
+
+
+def _apply(paths, current: Path) -> None:
+    storage = refresh_storage_release_guard(paths, current, check_space=False)
+    if storage.get("state") == "unmanaged":
+        return
+    if paths.root == Path("/"):
+        subprocess.run(
+            ["/usr/bin/systemctl", "daemon-reload"],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=60,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
+        )
+    atomic_write_json(
+        _receipt(paths), {"schema": 1, "release": str(current)}, mode=0o600
+    )
+
+
+def main() -> int:
+    if len(sys.argv) != 2 or sys.argv[1] not in {"--apply", "--check"}:
+        return 2
+    paths = paths_from_environment()
+    current = _current_release(paths)
+    if sys.argv[1] == "--apply":
+        _apply(paths, current)
+    else:
+        _check_receipt(paths, current)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

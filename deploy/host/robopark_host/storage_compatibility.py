@@ -18,7 +18,12 @@ def require_storage_operations(paths, *, check_space: bool = True):
 
     from .storage_layout import require_storage
 
-    return require_storage(paths.root, check_space=check_space)
+    storage = require_storage(paths.root, check_space=check_space)
+    if storage.get("state") != "unmanaged":
+        from .storage_setup import require_managed_container_roots
+
+        require_managed_container_roots(paths.root)
+    return storage
 
 
 def require_storage_release(paths, candidate: Path, *, check_space: bool = True):
@@ -38,7 +43,11 @@ def require_storage_release(paths, candidate: Path, *, check_space: bool = True)
     try:
         if root.is_symlink() or not root.is_dir():
             raise ValueError
-        if marker.is_symlink() or not marker.is_file() or marker.read_bytes() != _LAYOUT_VERSION:
+        if (
+            marker.is_symlink()
+            or not marker.is_file()
+            or marker.read_bytes() != _LAYOUT_VERSION
+        ):
             raise ValueError
         for relative in _REQUIRED_RELEASE_FILES:
             target = root / relative

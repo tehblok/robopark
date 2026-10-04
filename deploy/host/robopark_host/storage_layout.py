@@ -40,6 +40,7 @@ _LAYOUT_FIELDS = {
 _MAX_LAYOUT_BYTES = 16 * 1024
 _MAX_MOUNTINFO_BYTES = 1024 * 1024
 _MAX_COMMAND_BYTES = 2 * 1024 * 1024
+_MAX_CONTAINER_CONFIG_BYTES = 64 * 1024
 _MIN_FREE_BYTES = 67_108_864
 _UUID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\Z")
 _NVME_PARTITION_RE = re.compile(r"/dev/nvme[0-9]+n[0-9]+p[0-9]+\Z")
@@ -148,6 +149,136 @@ def load_layout(root: Path = Path("/")) -> dict[str, Any] | None:
     if type(minimum) is not int or minimum != _MIN_FREE_BYTES:
         raise StorageError("layout_invalid")
     return value
+
+
+def _configuration_path(root: Path, absolute: str) -> Path:
+    target = root / absolute.lstrip("/")
+    for part in (target, *target.parents):
+        if part == root:
+            break
+        if part.is_symlink():
+            raise StorageError("storage_custom_container_root")
+    return target
+
+
+def _read_container_config(root: Path, absolute: str) -> str | None:
+    path = _configuration_path(root, absolute)
+    if not path.exists():
+        return None
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_CONTAINER_CONFIG_BYTES:
+            raise OSError("unsafe container configuration")
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise StorageError("storage_custom_container_root") from exc
+
+
+def _simple_toml_key(raw: str) -> str:
+    raw = raw.strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]+", raw):
+        return raw
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {'"', "'"}:
+        value = raw[1:-1]
+        if re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            return value
+    # Escaped, dotted, or otherwise complex top-level keys cannot safely be
+    # interpreted by the Python 3.10 standalone guard.
+    raise ValueError("unsupported TOML key")
+
+
+def require_container_config_files(root: Path = Path("/")) -> None:
+    """Require canonical Docker/containerd roots without changing vendor config."""
+
+    root = Path(root)
+    try:
+        docker = _read_container_config(root, "/etc/docker/daemon.json")
+        if docker is not None:
+            values = json.loads(docker, object_pairs_hook=_unique_object)
+            if (
+                not isinstance(values, dict)
+                or values.get("data-root", "/var/lib/docker") != "/var/lib/docker"
+            ):
+                raise ValueError("custom Docker root")
+        containerd = _read_container_config(root, "/etc/containerd/config.toml")
+        if containerd is not None:
+            header = re.split(r"(?m)^\s*\[", containerd, maxsplit=1)[0]
+            seen: set[str] = set()
+            for line in header.splitlines():
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                raw_key, separator, value = line.partition("=")
+                if not separator:
+                    raise ValueError("unsupported TOML assignment")
+                key = _simple_toml_key(raw_key)
+                if key not in {"root", "imports"}:
+                    continue
+                if key in seen:
+                    raise ValueError("duplicate container root key")
+                seen.add(key)
+                value = value.split("#", 1)[0].strip()
+                if key == "root" and value not in {
+                    '"/var/lib/containerd"',
+                    "'/var/lib/containerd'",
+                }:
+                    raise ValueError("custom containerd root")
+                if key == "imports" and value != "[]":
+                    raise ValueError("unverifiable containerd imports")
+    except (ValueError, RecursionError, json.JSONDecodeError) as exc:
+        raise StorageError("storage_custom_container_root") from exc
+
+
+def _run_text(argv: list[str], *, root: Path) -> str:
+    if root != Path("/"):
+        raise StorageError("storage_probe_failed")
+    try:
+        result = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
+        )
+        if (
+            result.returncode != 0
+            or len(result.stdout.encode("utf-8")) > _MAX_CONTAINER_CONFIG_BYTES
+        ):
+            raise ValueError("probe command failed")
+        return result.stdout
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
+        raise StorageError("storage_probe_failed") from exc
+
+
+def require_container_daemon_commands(root: Path = Path("/"), *, run=None) -> None:
+    """Reject systemd command lines that can redirect persistent state."""
+
+    root = Path(root)
+    if run is None:
+        if root != Path("/"):
+            return
+        run = _run_text
+    for unit in ("docker.service", "containerd.service"):
+        command = run(
+            ["systemctl", "show", unit, "--property=ExecStart", "--value"],
+            root=root,
+        )
+        long_override = re.search(
+            r"(?:^|[\s;])(?:--data-root|--graph|--root|--config(?:-file)?)(?=$|[\s=;])",
+            command,
+        )
+        short_override = re.search(r"(?:^|[\s;])-(?:g|c)", command)
+        if long_override or short_override or "$" in command:
+            raise StorageError("storage_custom_container_root")
+
+
+def require_container_configuration(root: Path = Path("/"), *, run=None) -> None:
+    """Validate container roots without connecting to or starting a daemon."""
+
+    require_container_config_files(root)
+    require_container_daemon_commands(root, run=run)
 
 
 def _unescape_mount(value: str) -> str:
@@ -581,6 +712,8 @@ def _main(argv: list[str] | None = None) -> int:
             if args.command == "inspect"
             else require_storage(root, check_space=not args.presence_only)
         )
+        if args.command == "check" and result.get("state") != "unmanaged":
+            require_container_configuration(root)
     except StorageError as exc:
         print(json.dumps({"error": exc.code, "safe": False}, sort_keys=True))
         return 2

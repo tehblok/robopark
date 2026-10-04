@@ -34,7 +34,10 @@ def test_tuna_requires_ready_application_and_bounded_restart():
 def test_boot_never_builds_or_uses_a_mutable_compose_config():
     service = unit("robopark.service")
     app = service["Service"]
-    assert app["ExecStartPre"].endswith("robopark restore --boot-recover")
+    raw = (REPO / "deploy/systemd/robopark.service").read_text()
+    recover = "robopark restore --boot-recover"
+    storage_check = "robopark-storage-reconcile --check"
+    assert raw.index(recover) < raw.index(storage_check) < raw.index("ExecStart=")
     assert app.get("User", "root") == "root"
     assert int(app["TimeoutStartSec"]) >= 1800
     assert service["Install"]["WantedBy"] == "multi-user.target"

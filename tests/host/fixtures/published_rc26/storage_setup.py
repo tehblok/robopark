@@ -24,9 +24,6 @@ from .storage_layout import (
     StorageError,
     inspect_storage,
     load_layout,
-    require_container_config_files,
-    require_container_configuration,
-    require_container_daemon_commands,
     require_storage,
 )
 
@@ -85,46 +82,35 @@ def _run(argv: list[str], *, root: Path) -> str:
 
 
 def _config_roots(root: Path) -> None:
-    require_container_config_files(root)
-
-
-def _require_default_daemon_commands(root: Path, *, run=None) -> None:
-    """Reject daemon command lines that can redirect persistent container state."""
-
-    require_container_daemon_commands(root, run=_run if run is None else run)
-
-
-def require_managed_container_roots(root: Path, *, run=None) -> None:
-    """Fail closed when a managed host can persist containers outside its layout."""
-
-    root = Path(root)
-    require_container_configuration(root, run=run)
-    # Synthetic roots have no corresponding systemd/Docker namespace. Their
-    # callers can inject an executor for focused validation without ever
-    # probing the developer machine.
-    if run is None:
-        if root != Path("/"):
-            return
-        run = _run
-    active = run(
-        [
-            "systemctl",
-            "show",
-            "docker.service",
-            "--property=ActiveState",
-            "--value",
-        ],
-        root=root,
-    ).strip()
-    if active in {"", "inactive", "failed"}:
-        return
-    if active != "active":
-        raise StorageError("storage_setup_command_failed")
-    docker_root = run(
-        ["docker", "info", "--format", "{{.DockerRootDir}}"], root=root
-    ).strip()
-    if docker_root != "/var/lib/docker":
-        raise StorageError("storage_custom_container_root")
+    docker = _path(root, "/etc/docker/daemon.json")
+    try:
+        if docker.exists():
+            if docker.stat().st_size > 65536:
+                raise ValueError()
+            values = json.loads(docker.read_text())
+            if (
+                not isinstance(values, dict)
+                or values.get("data-root", "/var/lib/docker") != "/var/lib/docker"
+            ):
+                raise ValueError()
+        containerd = _path(root, "/etc/containerd/config.toml")
+        if containerd.exists():
+            if containerd.stat().st_size > 65536:
+                raise ValueError()
+            # Preserve all NVIDIA runtime/plugin configuration. Only inspect
+            # the top-level root; imported config cannot be verified here.
+            header = re.split(r"(?m)^\s*\[", containerd.read_text(), maxsplit=1)[0]
+            for key, value in re.findall(r"(?m)^\s*(root|imports)\s*=\s*(.+)$", header):
+                value = value.split("#", 1)[0].strip()
+                if key == "root" and value not in {
+                    '"/var/lib/containerd"',
+                    "'/var/lib/containerd'",
+                }:
+                    raise ValueError()
+                if key == "imports" and value != "[]":
+                    raise ValueError()
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise StorageError("storage_custom_container_root") from exc
 
 
 def _empty(path: Path) -> bool:
@@ -328,19 +314,22 @@ def _require_stopped(root: Path) -> None:
         ):
             raise StorageError("storage_daemon_running")
     # Reject command-line overrides rather than silently preserving eMMC data.
-    _require_default_daemon_commands(root)
-
-
-def _storage_unit_updates(root: Path, layout: dict) -> list[tuple[Path, bytes]]:
-    return [
-        (_path(root, "/etc/systemd/system/" + name), content.encode())
-        for name, content in storage_units(layout).items()
-    ]
-
-
-def _reconcile_storage_units(root: Path, layout: dict) -> None:
-    for target, content in _storage_unit_updates(root, layout):
-        _atomic(target, content, 0o644)
+    for unit in ("docker.service", "containerd.service"):
+        command = _run(
+            ["systemctl", "show", unit, "--property=ExecStart", "--value"], root=root
+        )
+        if any(
+            flag in command
+            for flag in (
+                "--data-root",
+                "--root",
+                " -g ",
+                "--config",
+                " -c ",
+                "$",
+            )
+        ):
+            raise StorageError("storage_custom_container_root")
 
 
 def _probe_empty_filesystem(layout: dict, *, root: Path) -> None:
@@ -437,9 +426,6 @@ def prepare_storage(
         old = load_layout(root)
         if old and old["state"] == "ready":
             result = require_storage(root, require_layout=True)
-            require_managed_container_roots(root)
-            _reconcile_storage_units(root, old)
-            _run(["systemctl", "daemon-reload"], root=root)
             # A power cut can occur after the durable ready manifest but
             # before systemd enables the independent watchdog.
             _run(
@@ -482,11 +468,9 @@ def prepare_storage(
 
 def refresh_storage_guard(root: Path, release: Path) -> None:
     """Refresh the independent copy only from an already verified release."""
-    layout = load_layout(root)
-    if layout is None:
+    if load_layout(root) is None:
         return
     require_storage(root, require_layout=True, check_space=False)
-    require_managed_container_roots(root)
     contents = {}
     for name in ("storage_layout.py", "storage_watchdog.py"):
         source = release / "deploy/host/robopark_host" / name
@@ -501,10 +485,5 @@ def refresh_storage_guard(root: Path, release: Path) -> None:
             compile(contents[name], name, "exec")
         except (OSError, ValueError, SyntaxError) as exc:
             raise StorageError("storage_guard_payload_invalid") from exc
-    updates = [
-        (_path(root, "/usr/lib/robopark-storage/" + name), content)
-        for name, content in contents.items()
-    ]
-    updates.extend(_storage_unit_updates(root, layout))
-    for target, content in updates:
-        _atomic(target, content, 0o644)
+    for name, content in contents.items():
+        _atomic(_path(root, "/usr/lib/robopark-storage/" + name), content, 0o644)
