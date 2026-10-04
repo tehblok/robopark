@@ -35,3 +35,18 @@ The byte copy is local to the active form, with the existing 15 MiB photo /
 64 KiB log limits on persisted drafts; no new persistent cache was added.
 Blob reading itself is not abortable, so stale completions are discarded.
 No physical Safari/device acceptance or eight-hour soak is claimed.
+
+## Final browser regressions
+
+The mobile task lifecycle passed in Chromium, Firefox and WebKit after waiting
+for claim acceptance and correcting subpixel comparison. The final photo
+implementation (including failed-read recovery) also passed on all three engines.
+
+The image test still detached its frame after the first attempted ordering fix.
+Independent inspection found the actual cause: the legacy /robots/:vin/check
+URL redirects in a passive effect to /robots/:vin; AppRouter keys route
+boundaries by route ID, so the entire robot workspace remounts. The image
+selection test now uses the canonical URL. Legacy redirect behavior remains
+covered by RobotWorkspace unit tests. All six views passed five WebKit repeats
+each (30 checks), with dimensions, single requested WebP and marker assertions
+unchanged. No production routing behavior was altered.

@@ -520,10 +520,13 @@ for (const view of [
       sort_order: 0, part: 'Робот', view: view.id, x: .5, y: .5, indicator: 'point' as const,
     }
     await installOperational(page, { snapshot: { ...snapshot, diagnostic_events: [event] } })
-    await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
-    const photo = page.locator('.rp-check-photo-frame img')
-    await photo.scrollIntoViewIfNeeded()
+    // This checks image selection, not the legacy /check redirect (which
+    // replaces the route boundary and remounts the whole robot workspace).
+    await page.goto(`/robots/${snapshot.vin}?park=7&tab=scheme`)
+    const frame = page.locator('.rp-check-photo-frame')
+    const photo = frame.locator('img')
     await expect(photo).toHaveAttribute('alt', new RegExp(view.label))
+    await frame.scrollIntoViewIfNeeded()
     await expect.poll(() => photo.evaluate((element: HTMLImageElement) => [element.naturalWidth, element.naturalHeight])).toEqual([view.width, view.height])
     await expect(page.getByRole('button', { name: 'Ошибка: Активная ошибка' })).toBeVisible()
     expect(images).toEqual([`${view.id}.webp`])
