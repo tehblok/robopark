@@ -13,13 +13,13 @@
   {
     "id": "TD-002",
     "module": "release-contract",
-    "impact": "Валидаторы manifest дублируются в API, host-tools и автономном verifier.",
+    "impact": "OTA v1 manifest разбирают два валидатора: API admission и автономный verifier; host consumer делегирует автономному verifier.",
     "risk": "maintainability",
     "owner": "platform",
     "target_version": "1.1.0",
-    "acceptance": "Один генерируемый набор контрактных fixtures проходит всеми тремя независимыми валидаторами.",
-    "status": "open",
-    "evidence": null
+    "acceptance": "Один генерируемый набор контрактных fixtures проверяет одинаковое принятие, нормализацию и отказ обоих реальных валидаторов; host consumer использует проверенный standalone путь.",
+    "status": "closed",
+    "evidence": "docs/reviews/2026-10-04-ota-contract-parity.md"
   },
   {
     "id": "TD-003",

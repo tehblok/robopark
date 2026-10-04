@@ -28,6 +28,12 @@ MAX_COMPRESSION_RATIO = 250
 VERIFY_CHUNK_BYTES = 1024 * 1024
 MIN_HOST_FREE_BYTES = 6 * 1024**3
 
+_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,150}$")
+_GIT_SHA = re.compile(r"^[a-f0-9]{40}$")
+_MIGRATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,150}$")
+_SHA256 = re.compile(r"^[a-f0-9]{64}$")
+_REQUIREMENT_KEYS = {"python", "systems", "architectures", "memory_profiles_mb"}
+
 
 class OtaUploadError(ValueError):
     pass
@@ -64,6 +70,8 @@ def _safe_member(name: str) -> str:
     path = PurePosixPath(name)
     if (
         name.startswith("/")
+        or re.match(r"^[A-Za-z]:/", name)
+        or not path.parts
         or path.as_posix() != name
         or any(part in {"", ".", ".."} for part in path.parts)
     ):
@@ -138,16 +146,46 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...],
             version = manifest["app_version"]
             changes = manifest["changes"]
             compatible = manifest["compatible_from"]
+            requirements = manifest["requirements"]
             files = manifest["files"]
             max_expanded = manifest["max_expanded_bytes"]
             required_free = manifest["required_free_bytes"]
             if (
                 manifest["format_version"] != 1
                 or not isinstance(version, str)
-                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,150}", version) is None
+                or _VERSION.fullmatch(version) is None
+                or not isinstance(manifest["git_sha"], str)
+                or _GIT_SHA.fullmatch(manifest["git_sha"]) is None
+                or not isinstance(manifest["migration_head"], str)
+                or _MIGRATION.fullmatch(manifest["migration_head"]) is None
                 or not isinstance(changes, list)
+                or not 0 < len(changes) <= 100
+                or any(
+                    not isinstance(item, str) or not item.strip() or len(item) > 500
+                    for item in changes
+                )
                 or not isinstance(compatible, list)
+                or len(compatible) > 256
+                or any(
+                    not isinstance(item, str) or _VERSION.fullmatch(item) is None
+                    for item in compatible
+                )
+                or len(compatible) != len(set(compatible))
+                or not isinstance(requirements, dict)
+                or set(requirements) != _REQUIREMENT_KEYS
+                or requirements["python"] != ">=3.10"
+                or requirements["systems"] != ["armbian", "ubuntu"]
+                or requirements["architectures"] != ["aarch64", "x86_64"]
+                or not isinstance(requirements["memory_profiles_mb"], list)
+                or not requirements["memory_profiles_mb"]
+                or any(
+                    type(item) is not int or item < 1024
+                    for item in requirements["memory_profiles_mb"]
+                )
+                or requirements["memory_profiles_mb"]
+                != sorted(set(requirements["memory_profiles_mb"]))
                 or not isinstance(files, list)
+                or not files
                 or type(max_expanded) is not int
                 or not 0 < max_expanded <= MAX_EXPANDED_BYTES
                 or type(required_free) is not int
@@ -158,16 +196,22 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...],
             for row in files:
                 if not isinstance(row, dict) or set(row) != {"path", "size", "sha256"}:
                     raise OtaUploadError("ota_manifest_invalid")
-                member = _safe_member(row["path"])
+                try:
+                    member = _safe_member(row["path"])
+                except OtaUploadError as exc:
+                    raise OtaUploadError("ota_manifest_invalid") from exc
                 if (
-                    member in declared
+                    member == "manifest.json"
+                    or member in declared
                     or type(row["size"]) is not int
                     or not 0 <= row["size"] <= MAX_FILE_BYTES
                     or not isinstance(row["sha256"], str)
-                    or re.fullmatch(r"[a-f0-9]{64}", row["sha256"]) is None
+                    or _SHA256.fullmatch(row["sha256"]) is None
                 ):
                     raise OtaUploadError("ota_manifest_invalid")
                 declared[member] = row
+            if tuple(sorted(declared)) != tuple(declared):
+                raise OtaUploadError("ota_manifest_invalid")
             if set(declared) != set(names) - {"manifest.json"} or "__main__.py" not in declared:
                 raise OtaUploadError("ota_manifest_invalid")
             if sum(archive.getinfo(member).file_size for member in declared) > max_expanded:
@@ -185,13 +229,21 @@ def _inspect_package(path: Path) -> tuple[str, tuple[str, ...], tuple[str, ...],
                     raise OtaUploadError("ota_hash_mismatch")
             return (
                 version,
-                tuple(str(item)[:500] for item in changes[:100]),
-                tuple(compatible[:256]),
+                tuple(item.strip() for item in changes),
+                tuple(compatible),
                 required_free,
             )
     except OtaUploadError:
         raise
-    except (OSError, ValueError, UnicodeError, KeyError, zipfile.BadZipFile) as exc:
+    except (
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        KeyError,
+        zipfile.BadZipFile,
+    ) as exc:
         raise OtaUploadError("ota_invalid_container") from exc
 
 
