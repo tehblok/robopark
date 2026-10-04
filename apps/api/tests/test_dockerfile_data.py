@@ -209,21 +209,29 @@ def test_ci_uses_only_the_pinned_verification_entrypoints():
         "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
         "astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081",
         "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
     }
     actions = set(re.findall(r"uses:\s+([^\s]+)", workflow))
     assert actions == expected_actions
     assert all(re.search(r"@[0-9a-f]{40}$", action) for action in actions)
     assert "version: 0.11.31" in workflow
     assert "node-version: 24.18.0" in workflow
-    assert "timeout-minutes: 180" in workflow
-    assert re.findall(r"^\s+run:\s+(.+)$", workflow, flags=re.MULTILINE) == [
+    assert "timeout-minutes: 90" in workflow
+    assert "shard: [1, 2, 3, 4]" in workflow
+    assert "needs: [verify-core, responsive, browser-workflows]" in workflow
+    assert "if: ${{ always() }}" in workflow
+    assert 'job["result"] != "success"' in workflow
+    assert re.findall(r"^[ \t]+(?:- )?run:[ \t]+(.+)$", workflow, flags=re.MULTILINE) == [
         "python3 scripts/check-tech-debt.py && python3 scripts/check-module-boundaries.py",
         "./scripts/verify.sh",
         "sh scripts/audit-dependencies.sh",
         "|",
-        "npm run test:e2e:linux -- --workers=2",
+        "npm ci",
+        "npm run test:e2e:linux -- --workers=2 --shard=${{ matrix.shard }}/4",
+        "npm ci",
         "npm run test:e2e:pwa:linux",
         "npm run test:e2e:crossbrowser:linux -- --workers=2",
+        "|",
     ]
     assert "docker build -t robopark-bot:verify apps/bot" in workflow
     assert "docker run --rm --entrypoint python robopark-bot:verify" in workflow

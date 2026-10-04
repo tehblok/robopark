@@ -57,3 +57,17 @@ The complete production PWA run then passed: 45 tests in 4.2 minutes across
 Chromium, Firefox and WebKit, including old-client activation and durable-work
 preservation. The new terminal HTTP test was checked separately in all three
 engines (six CSP tests total). No production security policy changed.
+
+The independent cross-browser step also runs after a failed PWA step (unless
+cancelled), so one failed gate no longer hides the workflow results. The job
+and aggregate still fail when the PWA step fails; no test assertion or retry
+policy is relaxed.
+
+CI run 37215819846 also exposed a stale exact action allowlist and a terminal screenshot path outside the writable browser workspace. The allowlist now includes the same pinned upload-artifact SHA, and terminal screenshots use per-test Playwright output paths (preserved by the existing artifact upload). No assertion or required check was removed.
+
+The follow-up focused run passed 21/21 browser cases. Route evidence now targets
+the real assistant tab buttons and the current repair-outcome select; assistant
+fixtures provide a ready status and drive the actual five-second refresh for
+stale/denied states. Assistant spacing is included at all six widths. Terminal
+screenshots no longer attempt to create `/work/output`. The CI governance suite
+passed 21 tests with the exact four-shard workflow contract.

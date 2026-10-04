@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { ApiError } from '../../api'
 import { useAuth } from '../../auth-context'
 import { useParkScope } from '../../app/park/parkScope'
 import { Alert } from '../../components/PageShell'
@@ -57,7 +58,7 @@ function useLoader<T>(load: (signal: AbortSignal) => Promise<T>, dependencies: r
       activeController.current = null
     }
   }, [refresh])
-  return { data, setData, loading, error, refresh }
+  return { data, setData, loading, error, setError, refresh }
 }
 
 type JobWaitResult = { job: AiJob; timedOut: boolean }
@@ -86,6 +87,12 @@ async function waitForJob(api: AssistantApiClient, initial: AiJob, signal: Abort
 
 export function AssistantPage({ apiClient = assistantApi }: { apiClient?: AssistantApiClient }) {
   const { user } = useAuth()
+  const identity = JSON.stringify([user?.id ?? null, user?.role ?? null, user?.access_status ?? null, [...(user?.permissions ?? [])].sort()])
+  return <AssistantWorkspace apiClient={apiClient} key={identity} />
+}
+
+function AssistantWorkspace({ apiClient }: { apiClient: AssistantApiClient }) {
+  const { user } = useAuth()
   const { parkId } = useParkScope()
   const [search] = useSearchParams()
   const requestedParkId = Number(search.get('park_id'))
@@ -95,18 +102,26 @@ export function AssistantPage({ apiClient = assistantApi }: { apiClient?: Assist
   const status = useLoader(signal => apiClient.status(signal), [apiClient, user?.id])
   const statusSupported = status.data?.supported
   const setStatus = status.setData
+  const setStatusError = status.setError
   const statusPollController = useRef<AbortController | null>(null)
   useEffect(() => {
     if (!statusSupported) return
     let cancelled = false
     const poll = async () => {
-      if (statusPollController.current) return
+      if (cancelled || statusPollController.current) return
       const controller = new AbortController()
       statusPollController.current = controller
       try {
         const next = await apiClient.status(controller.signal)
         if (!cancelled && !controller.signal.aborted) setStatus(next)
-      } catch { /* keep the last usable status; the next poll retries */ } finally {
+      } catch (caught) {
+        if (!cancelled && !controller.signal.aborted && caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) {
+          // Unmount protected panels and abort their requests as soon as access
+          // is denied. A transient network/server failure can keep the draft.
+          setStatus(null)
+          setStatusError(errorText(caught))
+        }
+      } finally {
         if (statusPollController.current === controller) statusPollController.current = null
       }
     }
@@ -116,7 +131,7 @@ export function AssistantPage({ apiClient = assistantApi }: { apiClient?: Assist
       statusPollController.current?.abort()
       statusPollController.current = null
     }
-  }, [apiClient, statusSupported, setStatus, user?.id])
+  }, [apiClient, statusSupported, setStatus, setStatusError, user?.id])
   const [tab, setTab] = useState<Tab>(() => search.has('document') ? 'knowledge' : 'chat')
   useEffect(() => { if (search.has('document')) setTab('knowledge') }, [search])
   const canManage = Boolean(user && MANAGER_ROLES.has(user.role) && status.data?.can_manage)

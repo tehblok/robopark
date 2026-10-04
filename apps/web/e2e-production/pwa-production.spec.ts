@@ -140,13 +140,22 @@ async function settleOfflineRecord(page: Page, store: 'actions' | 'media', state
       opening.onsuccess = () => resolve(opening.result)
       opening.onerror = () => reject(opening.error)
     })
-    const transaction = db.transaction(store, 'readwrite')
     const key = store === 'actions' ? 'scope-a\0action' : 'scope-b\0photo'
-    const request = transaction.objectStore(store).get(key)
-    request.onsuccess = () => transaction.objectStore(store).put({ ...request.result, state })
+    const reading = db.transaction(store, 'readonly').objectStore(store).get(key)
+    const record = await new Promise<Record<string, unknown> & { blob?: Blob }>((resolve, reject) => {
+      reading.onsuccess = () => resolve(reading.result)
+      reading.onerror = () => reject(reading.error)
+    })
+    // This fixture writes native IndexedDB records rather than using OfflineDb.
+    // Materialize the persisted bytes before replacing its file-backed Blob:
+    // WebKit intermittently loses read access when this fixture reuses it.
+    // Real OfflineDb metadata updates are covered separately in all engines.
+    const blob = record.blob ? new Blob([await record.blob.arrayBuffer()], { type: record.blob.type }) : undefined
+    const transaction = db.transaction(store, 'readwrite')
+    transaction.objectStore(store).put({ ...record, state, ...(blob ? { blob } : {}) })
     await new Promise<void>((resolve, reject) => {
       transaction.oncomplete = () => resolve()
-      transaction.onerror = () => reject(transaction.error)
+      transaction.onerror = transaction.onabort = () => reject(transaction.error)
     })
     db.close()
   }, { store, state })

@@ -118,3 +118,59 @@ it('hides both presence and loaded handoff on a polling denial without a parent 
   expect(screen.queryAllByRole('textbox')).toHaveLength(0)
   expect(screen.queryByText(/Сейчас в задаче/)).not.toBeInTheDocument()
 })
+
+
+it('clears a successfully accepted handoff so a second activation cannot repeat it', async () => {
+  const onHandoff = vi.fn(async () => undefined)
+  render(<TaskCollaboration issueKey="RP-1" owner="alice" active canWrite lifecycle onHandoff={onHandoff} />)
+  fireEvent.change(screen.getByLabelText('Логин сменщика'), { target: { value: 'bob' } })
+  fireEvent.change(screen.getByLabelText('Причина передачи'), { target: { value: 'Смена' } })
+  const submit = screen.getByRole('button', { name: 'Передать смену' })
+  fireEvent.click(submit)
+  await waitFor(() => expect(screen.getByLabelText('Логин сменщика')).toHaveValue(''))
+  fireEvent.click(submit)
+  expect(onHandoff).toHaveBeenCalledTimes(1)
+})
+
+it('guards two handoff events before React commits the busy state', async () => {
+  let finish!: () => void
+  const onHandoff = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  render(<TaskCollaboration issueKey="RP-1" owner="alice" active canWrite lifecycle onHandoff={onHandoff} />)
+  fireEvent.change(screen.getByLabelText('Логин сменщика'), { target: { value: 'bob' } })
+  fireEvent.change(screen.getByLabelText('Причина передачи'), { target: { value: 'Смена' } })
+  const submit = screen.getByRole('button', { name: 'Передать смену' })
+  act(() => {
+    submit.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    submit.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  expect(onHandoff).toHaveBeenCalledTimes(1)
+  await act(async () => finish())
+})
+
+it('preserves edits made while a handoff is being accepted and keeps failed input retryable', async () => {
+  let finish!: () => void
+  const onHandoff = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  render(<TaskCollaboration issueKey="RP-1" owner="alice" active canWrite lifecycle onHandoff={onHandoff} />)
+  fireEvent.change(screen.getByLabelText('Логин сменщика'), { target: { value: 'bob' } })
+  fireEvent.change(screen.getByLabelText('Причина передачи'), { target: { value: 'Смена' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Передать смену' }))
+  fireEvent.change(screen.getByLabelText('Причина передачи'), { target: { value: 'Новый текст' } })
+  await act(async () => finish())
+  expect(screen.getByLabelText('Причина передачи')).toHaveValue('Новый текст')
+  onHandoff.mockRejectedValueOnce(new Error('offline'))
+  fireEvent.click(screen.getByRole('button', { name: 'Передать смену' }))
+  await screen.findByRole('alert')
+  expect(screen.getByLabelText('Причина передачи')).toHaveValue('Новый текст')
+  expect(screen.getByRole('button', { name: 'Передать смену' })).toBeEnabled()
+})
+
+it('starts a separate lifecycle handoff draft for each owner and issue', () => {
+  const onHandoff = vi.fn(async () => undefined)
+  const view = render(<TaskCollaboration issueKey="RP-1" owner="alice" active canWrite lifecycle onHandoff={onHandoff} />)
+  fireEvent.change(screen.getByLabelText('Логин сменщика'), { target: { value: 'bob' } })
+  view.rerender(<TaskCollaboration issueKey="RP-2" owner="alice" active canWrite lifecycle onHandoff={onHandoff} />)
+  expect(screen.getByLabelText('Логин сменщика')).toHaveValue('')
+  fireEvent.change(screen.getByLabelText('Логин сменщика'), { target: { value: 'carol' } })
+  view.rerender(<TaskCollaboration issueKey="RP-2" owner="dave" active canWrite lifecycle onHandoff={onHandoff} />)
+  expect(screen.getByLabelText('Логин сменщика')).toHaveValue('')
+})
