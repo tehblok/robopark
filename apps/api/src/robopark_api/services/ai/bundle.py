@@ -29,6 +29,7 @@ FIELDS = {"title", "content", "kind", "source_ref"}
 class Bundle:
     root: str
     revision: str
+    bundle_id: str
     parts: tuple[str, ...]
     stamps: tuple[tuple[int, int, int, int], ...]
     offsets: tuple[tuple[int, int], ...]
@@ -75,12 +76,16 @@ def _stamp(path):
     return stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
-def _record(raw):
+def _record(raw, bundle_id):
     value = json.loads(raw)
     if not isinstance(value, dict) or set(value) != FIELDS:
         raise ValueError("ai_bundle_invalid")
     parsed = DocumentIn.model_validate(value)
-    if not re.fullmatch(r"public:repair-v1:[a-f0-9]{32}", parsed.source_ref):
+    patterns = {
+        "repair-public-v1": r"public:repair-v1:[a-f0-9]{32}",
+        "repair-private-v2": r"(?:public:repair-v1|private:repair-v2):[a-f0-9]{32}",
+    }
+    if not re.fullmatch(patterns[bundle_id], parsed.source_ref):
         raise ValueError("ai_bundle_invalid")
     value = parsed.model_dump()
     value["title"] = knowledge.redact(value["title"])[:250]
@@ -96,7 +101,7 @@ def _manifest(raw):
     if (
         not isinstance(value, dict)
         or value.get("schema") != 1
-        or value.get("bundle_id") != "repair-public-v1"
+        or value.get("bundle_id") not in {"repair-public-v1", "repair-private-v2"}
         or type(value.get("documents")) is not int
         or not 0 < value["documents"] <= MAX_DOCUMENTS
         or not isinstance(value.get("parts"), list)
@@ -142,7 +147,7 @@ def _validated(root, raw, stamps):
                 while line := handle.readline(MAX_LINE + 1):
                     if len(line) > MAX_LINE:
                         raise ValueError("ai_bundle_invalid")
-                    value = _record(line)
+                    value = _record(line, manifest["bundle_id"])
                     if value["source_ref"] in refs:
                         raise ValueError("ai_bundle_invalid")
                     refs.add(value["source_ref"])
@@ -162,6 +167,7 @@ def _validated(root, raw, stamps):
         return Bundle(
             root,
             hashlib.sha256(raw).hexdigest(),
+            manifest["bundle_id"],
             tuple(p["path"] for p in manifest["parts"]),
             stamps,
             tuple(offsets),
@@ -214,7 +220,7 @@ def _read_batch(package, start, end):
                 raise ValueError("ai_bundle_invalid")
             handle.seek(offset)
             raw = handle.readline(MAX_LINE + 1)
-            data = _record(raw)
+            data = _record(raw, package.bundle_id)
             after = os.fstat(handle.fileno())
             if (after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) != stamp:
                 raise ValueError("ai_bundle_invalid")

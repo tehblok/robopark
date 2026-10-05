@@ -356,6 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("ai-broker")
     commands.add_parser("ai-verify")
     commands.add_parser("ai-activate-intent")
+    commands.add_parser("knowledge-install")
     terminal_worker = commands.add_parser("terminal-worker")
     terminal_worker.add_argument("--id", required=True)
     terminal_worker.add_argument("--profile", choices=("maintenance", "root"), required=True)
@@ -437,6 +438,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         reconcile_ai_installation(
             paths, release, SystemRunner(), auto_install=arguments.command == "ai-prepare"
         )
+        return 0
+    if arguments.command == "knowledge-install":
+        from .ai_install import reconcile_ai_compose
+        from .knowledge_delivery import install_knowledge
+        from .release import ReleaseError
+        from .updater import SystemRunner, compose
+
+        if not install_knowledge(paths):
+            return 0
+        try:
+            with host_operation(paths):
+                reconcile_ai_compose(paths)
+                runner = SystemRunner()
+                runner.run(
+                    compose("robopark", paths.state / "current-compose.json") + [
+                        "up", "-d", "--no-build", "--force-recreate", "api", "worker",
+                    ],
+                    timeout=180,
+                )
+                if not runner.wait_ready(
+                    project="robopark",
+                    config=paths.state / "current-compose.json",
+                    timeout=180,
+                ):
+                    raise ReleaseError("knowledge_reconcile_failed")
+        except HostBusy:
+            _print({"state": "busy", "error": "host_busy"})
+            return 75
         return 0
     if arguments.command == "ai-setup":
         from .ai_runtime import reconcile

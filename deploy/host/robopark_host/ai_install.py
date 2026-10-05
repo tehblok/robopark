@@ -14,8 +14,11 @@ from .state import atomic_write_json
 AI_UNITS = ("robopark-ai-setup.service", "robopark-ai.service", "robopark-ai-broker.service")
 MIGRATION_OPTIONAL_TARGETS = {
     "/run/robopark-terminal", "/run/robopark-ai", "/ops/ai-runtime.json",
-    "/ops/ai-public",
+    "/ops/ai-public", "/opt/robopark-knowledge",
 }
+
+KNOWLEDGE_TARGET = "/opt/robopark-knowledge"
+KNOWLEDGE_ENVIRONMENT = "AI_KNOWLEDGE_BUNDLE_PATH"
 
 
 def migration_compose(paths, config: Path, identity: str) -> Path:
@@ -60,7 +63,32 @@ def reconcile_ai_compose(paths) -> bool:
     release = paths.current.resolve(strict=True)
     if release.parent != paths.releases.resolve(strict=True):
         raise ReleaseError("ai_invalid_release")
-    if not ai_payload_present(release):
+    ai_present = ai_payload_present(release)
+    knowledge_base = paths.var / "knowledge"
+    knowledge_current = knowledge_base / "current"
+    knowledge_mount = None
+    if knowledge_current.exists() or knowledge_current.is_symlink():
+        try:
+            from .knowledge_delivery import _bundle_ready
+
+            version = knowledge_current.resolve(strict=True)
+            versions = (knowledge_base / "versions").resolve(strict=True)
+            if (
+                not knowledge_current.is_symlink()
+                or version.parent != versions
+                or not _bundle_ready(version)
+            ):
+                raise ValueError("knowledge")
+        except (OSError, ValueError) as error:
+            raise ReleaseError("knowledge_installed_corrupt") from error
+        knowledge_mount = {
+            "type": "bind",
+            "source": str(knowledge_current / "bundle"),
+            "target": KNOWLEDGE_TARGET,
+            "read_only": True,
+            "bind": {"create_host_path": False},
+        }
+    if not ai_present and knowledge_mount is None:
         return False
     link = paths.state / "current-compose.json"
     target = link.resolve(strict=True)
@@ -80,11 +108,23 @@ def reconcile_ai_compose(paths) -> bool:
         socket_mount = {"type": "bind", "source": str(paths.root / "run/robopark-ai"), "target": "/run/robopark-ai", "read_only": True, "bind": {"create_host_path": False}}
         state_mount = {"type": "bind", "source": str(paths.ops / "public"), "target": "/ops/ai-public", "read_only": True, "bind": {"create_host_path": False}}
         changed = False
-        expected_environment = {
-            "AI_BROKER_SOCKET": "/run/robopark-ai/broker.sock",
-            "AI_RUNTIME_STATE_PATH": "/ops/ai-public/ai-runtime.json",
+        expected_environment = {}
+        expected_mounts = []
+        if ai_present:
+            expected_environment.update({
+                "AI_BROKER_SOCKET": "/run/robopark-ai/broker.sock",
+                "AI_RUNTIME_STATE_PATH": "/ops/ai-public/ai-runtime.json",
+            })
+            expected_mounts.extend((socket_mount, state_mount))
+        if knowledge_mount is not None:
+            expected_environment[KNOWLEDGE_ENVIRONMENT] = KNOWLEDGE_TARGET
+            expected_mounts.append(knowledge_mount)
+        managed_environment = {
+            "AI_BROKER_SOCKET", "AI_RUNTIME_STATE_PATH", KNOWLEDGE_ENVIRONMENT,
         }
-        expected_mounts = (socket_mount, state_mount)
+        managed_volume_markers = (
+            "robopark-ai", "ai-runtime.json", "ai-public", "robopark-knowledge",
+        )
         for service_name, service in services.items():
             if not isinstance(service, dict):
                 raise TypeError("service")
@@ -92,14 +132,16 @@ def reconcile_ai_compose(paths) -> bool:
             volumes = service.get("volumes", [])
             if not isinstance(environment, dict) or not isinstance(volumes, list):
                 raise TypeError("service")
-            for key, value in expected_environment.items():
+            for key in managed_environment:
                 if key in environment and (
-                    service_name not in {"api", "worker"} or environment[key] != value
+                    service_name not in {"api", "worker"}
+                    or key not in expected_environment
+                    or environment[key] != expected_environment[key]
                 ):
                     raise ValueError("conflict")
             for volume in volumes:
                 encoded = json.dumps(volume, sort_keys=True)
-                if "robopark-ai" not in encoded and "ai-runtime.json" not in encoded and "ai-public" not in encoded:
+                if not any(marker in encoded for marker in managed_volume_markers):
                     continue
                 if service_name not in {"api", "worker"} or volume not in expected_mounts:
                     raise ValueError("conflict")
@@ -113,7 +155,7 @@ def reconcile_ai_compose(paths) -> bool:
                 if key not in environment:
                     environment[key] = value
                     changed = True
-            for mount in (socket_mount, state_mount):
+            for mount in expected_mounts:
                 conflicts = [v for v in volumes if isinstance(v, dict) and v.get("target") == mount["target"]]
                 if conflicts and conflicts != [mount]:
                     raise ValueError("conflict")
@@ -128,6 +170,9 @@ def reconcile_ai_compose(paths) -> bool:
 
 
 def reconcile_ai_installation(paths, release, runner, *, auto_install=False):
+    compose_link = paths.state / "current-compose.json"
+    if compose_link.exists() or compose_link.is_symlink():
+        reconcile_ai_compose(paths)
     if not ai_payload_present(release):
         return
     bridge = paths.root / "run/robopark-ai"

@@ -678,6 +678,14 @@ class HostInstallRuntime:
         prefix = self._compose_prefix()
         self._run([*prefix, "up", "-d", "--no-build", "--wait", "db"])
 
+    def install_knowledge(self) -> None:
+        self._run([
+            sys.executable,
+            "-I",
+            str(self.release / "deploy/host/robopark"),
+            "knowledge-install",
+        ])
+
     def migrate(self) -> None:
         storage.require_storage(self.root)
         self._run(

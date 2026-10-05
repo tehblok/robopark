@@ -1,4 +1,8 @@
+import hashlib
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from robopark_host.state import atomic_write_json
 
@@ -42,6 +46,163 @@ def test_reconcile_compose_mounts_broker_and_public_state_into_api_and_worker(ho
         assert all(v["read_only"] is True for v in service["volumes"])
     assert actual["services"]["db"] == before["services"]["db"]
     assert reconcile_ai_compose(host_paths) is False
+
+
+def test_reconcile_compose_mounts_installed_knowledge_into_api_and_worker(host_paths):
+    from robopark_host.ai_install import reconcile_ai_compose
+
+    release = _release(host_paths)
+    version = host_paths.var / "knowledge/versions/v1"
+    bundle = version / "bundle"
+    bundle.mkdir(parents=True)
+    seed = b"{}\n"
+    (bundle / "seed.jsonl").write_bytes(seed)
+    (bundle / "manifest.json").write_text(json.dumps({
+        "schema": 1,
+        "bundle_id": "repair-private-v2",
+        "documents": 1,
+        "parts": [{
+            "path": "seed.jsonl",
+            "bytes": len(seed),
+            "sha256": hashlib.sha256(seed).hexdigest(),
+        }],
+    }))
+    (host_paths.var / "knowledge/current").symlink_to(version)
+    target = host_paths.state / "compose/current.json"
+    atomic_write_json(target, {
+        "x-robopark-release": str(release),
+        "services": {
+            "api": {"image": "sha256:api", "environment": {}, "volumes": []},
+            "worker": {"image": "sha256:api", "environment": {}, "volumes": []},
+        },
+    })
+    (host_paths.state / "current-compose.json").symlink_to(target)
+
+    assert reconcile_ai_compose(host_paths) is True
+
+    document = json.loads(target.read_text())
+    for name in ("api", "worker"):
+        service = document["services"][name]
+        assert service["environment"]["AI_KNOWLEDGE_BUNDLE_PATH"] == "/opt/robopark-knowledge"
+        mount = next(v for v in service["volumes"] if v["target"] == "/opt/robopark-knowledge")
+        assert mount == {
+            "type": "bind",
+            "source": str(host_paths.var / "knowledge/current/bundle"),
+            "target": "/opt/robopark-knowledge",
+            "read_only": True,
+            "bind": {"create_host_path": False},
+        }
+
+
+def test_knowledge_install_cli_reconciles_compose_and_recreates_consumers(
+    host_paths, monkeypatch
+):
+    from robopark_host import cli, knowledge_delivery
+
+    release = _release(host_paths)
+    target = host_paths.state / "compose/current.json"
+    atomic_write_json(target, {
+        "x-robopark-release": str(release),
+        "services": {
+            "api": {"image": "sha256:api", "environment": {}, "volumes": []},
+            "worker": {"image": "sha256:api", "environment": {}, "volumes": []},
+        },
+    })
+    (host_paths.state / "current-compose.json").symlink_to(target)
+    version = host_paths.var / "knowledge/versions/v1"
+    bundle = version / "bundle"
+    bundle.mkdir(parents=True)
+    seed = b"{}\n"
+    (bundle / "seed.jsonl").write_bytes(seed)
+    (bundle / "manifest.json").write_text(json.dumps({
+        "schema": 1,
+        "bundle_id": "repair-private-v2",
+        "documents": 1,
+        "parts": [{"path": "seed.jsonl", "bytes": len(seed), "sha256": hashlib.sha256(seed).hexdigest()}],
+    }))
+    (host_paths.var / "knowledge/current").symlink_to(version)
+    monkeypatch.setattr(knowledge_delivery, "install_knowledge", lambda paths: True)
+    monkeypatch.setattr(
+        "robopark_host.storage_compatibility.require_storage_operations",
+        lambda *_args, **_kwargs: None,
+    )
+    calls = []
+    readiness = []
+    monkeypatch.setattr(
+        "robopark_host.updater.SystemRunner",
+        lambda: SimpleNamespace(
+            run=lambda argv, **kwargs: calls.append((argv, kwargs)),
+            wait_ready=lambda **kwargs: readiness.append(kwargs) or True,
+        ),
+    )
+
+    assert cli.main(["knowledge-install"]) == 0
+    assert calls == [([
+        "docker", "compose", "-p", "robopark", "-f",
+        str(host_paths.state / "current-compose.json"),
+        "up", "-d", "--no-build", "--force-recreate", "api", "worker",
+    ], {"timeout": 180})]
+    assert readiness == [{
+        "project": "robopark",
+        "config": host_paths.state / "current-compose.json",
+        "timeout": 180,
+    }]
+
+
+def test_reconcile_compose_rejects_corrupt_selected_knowledge(host_paths):
+    from robopark_host.ai_install import reconcile_ai_compose
+    from robopark_host.release import ReleaseError
+
+    release = _release(host_paths)
+    target = host_paths.state / "compose/current.json"
+    atomic_write_json(target, {
+        "x-robopark-release": str(release),
+        "services": {"api": {}, "worker": {}},
+    })
+    (host_paths.state / "current-compose.json").symlink_to(target)
+    current = host_paths.var / "knowledge/current"
+    current.parent.mkdir(parents=True)
+    current.symlink_to(host_paths.var / "knowledge/versions/missing")
+
+    with pytest.raises(ReleaseError, match="knowledge_installed_corrupt"):
+        reconcile_ai_compose(host_paths)
+
+
+def test_ota_reconciliation_keeps_installed_knowledge_mounted(host_paths, monkeypatch):
+    from robopark_host import ai_install
+
+    release = _release(host_paths)
+    version = host_paths.var / "knowledge/versions/v1"
+    bundle = version / "bundle"
+    bundle.mkdir(parents=True)
+    seed = b"{}\n"
+    (bundle / "seed.jsonl").write_bytes(seed)
+    (bundle / "manifest.json").write_text(json.dumps({
+        "schema": 1,
+        "bundle_id": "repair-private-v2",
+        "documents": 1,
+        "parts": [{"path": "seed.jsonl", "bytes": len(seed), "sha256": hashlib.sha256(seed).hexdigest()}],
+    }))
+    (host_paths.var / "knowledge/current").symlink_to(version)
+    target = host_paths.state / "compose/current.json"
+    atomic_write_json(target, {
+        "x-robopark-release": str(release),
+        "services": {"api": {}, "worker": {}},
+    })
+    (host_paths.state / "current-compose.json").symlink_to(target)
+    monkeypatch.setattr(ai_install, "probe_support", lambda paths: (False, "agx_required"))
+    monkeypatch.setattr(ai_install, "publish_status", lambda *_args, **_kwargs: None)
+
+    ai_install.reconcile_ai_installation(
+        host_paths, release, SimpleNamespace(run=lambda *_args, **_kwargs: None)
+    )
+
+    document = json.loads(target.read_text())
+    assert document["services"]["api"]["environment"] == {
+        "AI_BROKER_SOCKET": "/run/robopark-ai/broker.sock",
+        "AI_RUNTIME_STATE_PATH": "/ops/ai-public/ai-runtime.json",
+        "AI_KNOWLEDGE_BUNDLE_PATH": "/opt/robopark-knowledge",
+    }
 
 
 def test_reconcile_installation_never_auto_installs_on_unsupported_host(host_paths, monkeypatch):
@@ -170,6 +331,7 @@ def test_migration_config_removes_optional_runtime_mounts_without_mutating_produ
     document = {"services": {"api": {"volumes": [
         {"type": "bind", "source": "/run/robopark-ai", "target": "/run/robopark-ai"},
         {"type": "bind", "source": "/state", "target": "/ops/ai-public"},
+        {"type": "bind", "source": "/knowledge", "target": "/opt/robopark-knowledge"},
         {"type": "bind", "source": "/data", "target": "/data"},
     ]}}}
     atomic_write_json(production, document)
