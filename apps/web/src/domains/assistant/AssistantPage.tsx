@@ -396,7 +396,8 @@ function actionStateLabel(action: AiAction): string {
 }
 
 function ActionReceipts({ jobs, busy, enabled, onDecision }: { jobs: AiJob[]; busy: boolean; enabled: boolean; onDecision: (job: AiJob, action?: AiAction) => Promise<void> }) {
-  return <div className="rp-assistant-receipts" aria-label="Действия помощника">{jobs.flatMap(job => (job.actions ?? []).map(action => <article className="rp-assistant-advanced" key={action.id}>
+  if (!jobs.some(job => job.actions?.length)) return null
+  return <div className="rp-assistant-receipts" role="group" aria-label="Действия помощника">{jobs.flatMap(job => (job.actions ?? []).map(action => <article className="rp-assistant-advanced" key={action.id}>
     <strong>{actionStateLabel(action)}</strong><p>{action.preview}</p>
     {action.state === 'uncertain' ? <p>Вызов мог завершиться. Проверьте объект перед повторной командой.</p> : null}
     {action.error ? <p>{errorText(action.error)}</p> : null}

@@ -50,6 +50,8 @@ test('desktop mechanic receives a sourced answer and opens the cited document', 
     { method: 'GET', path: '/api/ai/documents/d-1', handler: () => ({ json: { id: 'd-1', title: 'Проверка лидара', kind: 'manual', state: 'active', trust: 'instruction', park_id: 7, source_ref: 'manual:lidar', updated_at: '', revision: 1, content: 'Перед осмотром отключите питание.' } }) },
   ])
 
+  await expect(page.locator('.rp-assistant-receipts')).toHaveCount(0)
+  await assertNoSeriousA11yViolations(page)
   await page.getByLabel('Сообщение помощнику').fill('Как проверить лидар?')
   await page.getByRole('button', { name: 'Отправить' }).click()
   const source = page.getByRole('link', { name: 'Проверка лидара' })
