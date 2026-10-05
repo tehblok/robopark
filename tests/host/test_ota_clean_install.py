@@ -5,6 +5,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -1556,6 +1557,9 @@ class FakeInstallRuntime:
     def configure(self) -> None:
         self.calls.append("configure")
 
+    def install_knowledge(self) -> None:
+        self.calls.append("knowledge")
+
     def start_database(self) -> None:
         self.calls.append("database")
 
@@ -1605,6 +1609,42 @@ def test_clean_install_has_no_backup_branch_and_publishes_only_after_smoke(
         "smoke",
         "publish",
     ]
+
+
+def test_clean_install_knowledge_step_uses_current_release_host_cli(tmp_path: Path):
+    runtime = object.__new__(HostInstallRuntime)
+    runtime.release = tmp_path / "opt/robopark/releases/v1"
+    calls = []
+    runtime._run = lambda command, **kwargs: calls.append((command, kwargs))
+
+    runtime.install_knowledge()
+
+    assert calls == [([
+        sys.executable,
+        "-I",
+        str(runtime.release / "deploy/host/robopark"),
+        "knowledge-install",
+    ], {})]
+
+
+def test_private_knowledge_failure_leaves_published_site_retryable(tmp_path: Path):
+    from robopark_ota import cli
+
+    runtime = FakeInstallRuntime()
+
+    def fail_knowledge() -> None:
+        runtime.calls.append("knowledge")
+        raise subprocess.CalledProcessError(1, ["robopark", "knowledge-install"])
+
+    runtime.install_knowledge = fail_knowledge
+    secret = tmp_path / "seed.json"
+    secret.write_text("secret")
+
+    with pytest.raises(RuntimeError, match="knowledge_install_pending"):
+        cli._run_clean_install(runtime, secret)
+
+    assert runtime.calls[-2:] == ["publish", "knowledge"]
+    assert "diagnostics" not in runtime.calls
 
 
 def test_clean_install_failure_collects_diagnostics_without_publishing(tmp_path: Path):

@@ -12,14 +12,14 @@ from robopark_api.services.ai import bundle, knowledge
 from test_ai import enable_host
 
 
-def write_bundle(tmp_path, records):
+def write_bundle(tmp_path, records, *, bundle_id="repair-public-v1"):
     root = tmp_path / "bundle"
     root.mkdir(exist_ok=True)
     raw = b"".join((json.dumps(record, ensure_ascii=False) + "\n").encode() for record in records)
     (root / "seed.jsonl").write_bytes(raw)
     manifest = {
         "schema": 1,
-        "bundle_id": "repair-public-v1",
+        "bundle_id": bundle_id,
         "documents": len(records),
         "parts": [
             {
@@ -42,6 +42,15 @@ def record(index, kind="note", **changes):
         "kind": kind,
         **changes,
     }
+
+
+def private_record(index, kind="note", **changes):
+    return record(
+        index,
+        kind,
+        source_ref="private:repair-v2:" + f"{index:032x}",
+        **changes,
+    )
 
 
 def setup_bundle(tmp_path, settings, records):
@@ -75,6 +84,100 @@ def test_bundle_is_bounded_and_resumes_with_searchable_unverified_experience(
     found = knowledge.search(db_session, seed_admin, "камера")
     assert len(found) == 3 and {item["trust"] for item in found} == {"instruction", "unverified"}
     assert db_session.scalar(select(func.count()).select_from(AITerm)) > 0
+
+
+def test_private_bundle_is_bounded_and_resumes_without_promoting_non_manual_metadata(
+    db_session, test_settings, tmp_path, seed_admin
+):
+    enable_host(test_settings, tmp_path)
+    root = write_bundle(
+        tmp_path,
+        [record(1, content="Расширенная публичная запись"), private_record(2, "manual"), private_record(3)],
+        bundle_id="repair-private-v2",
+    )
+    test_settings.ai_knowledge_bundle_path = str(root)
+
+    first = bundle.step(db_session, test_settings, batch_size=2)
+    assert first["state"] == "importing" and first["processed"] == 2
+    assert bundle.step(db_session, test_settings, batch_size=2)["state"] == "ready"
+
+    rows = list(db_session.scalars(select(AIDocument).order_by(AIDocument.source_ref)))
+    assert len(rows) == 3
+    assert {row.source_ref for row in rows} == {
+        record(1)["source_ref"],
+        private_record(2)["source_ref"],
+        private_record(3)["source_ref"],
+    }
+    assert {row.source_ref: row.trust for row in rows} == {
+        record(1)["source_ref"]: "unverified",
+        private_record(2)["source_ref"]: "instruction",
+        private_record(3)["source_ref"]: "unverified",
+    }
+    assert len(knowledge.search(db_session, seed_admin, "камеры")) == 3
+
+
+def test_public_to_private_upgrade_reuses_public_identity_and_preserves_operator_decisions(
+    db_session, test_settings, tmp_path
+):
+    setup_bundle(tmp_path, test_settings, [record(1), record(2), record(3)])
+    assert bundle.step(db_session, test_settings)["state"] == "ready"
+    rows = {
+        row.source_ref: row
+        for row in db_session.scalars(select(AIDocument).order_by(AIDocument.source_ref))
+    }
+    original_ids = {source_ref: row.id for source_ref, row in rows.items()}
+    knowledge.remove(db_session, rows[record(1)["source_ref"]])
+    edited = rows[record(2)["source_ref"]]
+    edited.content = "Правка механика"
+    edited.revision += 1
+    db_session.commit()
+
+    write_bundle(
+        tmp_path,
+        [
+            record(1, content="Полная приватная версия 1"),
+            record(2, content="Полная приватная версия 2"),
+            record(3, content="Полная приватная версия 3"),
+            private_record(4),
+        ],
+        bundle_id="repair-private-v2",
+    )
+    assert bundle.step(db_session, test_settings, batch_size=2)["state"] == "importing"
+    assert bundle.step(db_session, test_settings, batch_size=2)["state"] == "ready"
+
+    upgraded = {
+        row.source_ref: row
+        for row in db_session.scalars(select(AIDocument).order_by(AIDocument.source_ref))
+    }
+    assert len(upgraded) == 4
+    assert {source_ref: upgraded[source_ref].id for source_ref in original_ids} == original_ids
+    assert upgraded[record(1)["source_ref"]].state == "deleted"
+    assert upgraded[record(2)["source_ref"]].content == "Правка механика"
+    assert upgraded[record(3)["source_ref"]].content == "Полная приватная версия 3"
+
+
+@pytest.mark.parametrize(
+    ("bundle_id", "source_ref"),
+    [
+        ("repair-public-v1", "private:repair-v2:" + "1" * 32),
+        ("repair-private-v2", "private:repair-v1:" + "1" * 32),
+        ("repair-private-v2", "public:repair-v2:" + "1" * 32),
+    ],
+)
+def test_bundle_rejects_source_identity_outside_manifest_namespace(
+    db_session, test_settings, tmp_path, bundle_id, source_ref
+):
+    enable_host(test_settings, tmp_path)
+    root = write_bundle(
+        tmp_path,
+        [record(1, source_ref=source_ref)],
+        bundle_id=bundle_id,
+    )
+    test_settings.ai_knowledge_bundle_path = str(root)
+
+    result = bundle.step(db_session, test_settings)
+    assert result["state"] == "failed" and result["error"] == "ai_bundle_invalid"
+    assert count(db_session) == 0
 
 
 def test_disabled_ai_pauses_initial_import(db_session, test_settings, tmp_path):

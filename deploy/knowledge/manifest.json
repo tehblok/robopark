@@ -1,0 +1,130 @@
+{
+  "schema": 1,
+  "id": "repair-20261005-v2",
+  "format": "age-tar-gzip-v1",
+  "documents": 15595,
+  "files": 22371,
+  "expanded_bytes": 4574183048,
+  "parts": [
+    {
+      "name": "part-0001.tar.gz.age",
+      "bytes": 237442642,
+      "sha256": "dacbc5170c2d40da9f6a6ff78f9179afd4a804eb3f3e5279b1f59a050f2c2511",
+      "files": 1274,
+      "expanded_bytes": 267751288
+    },
+    {
+      "name": "part-0002.tar.gz.age",
+      "bytes": 242081670,
+      "sha256": "14e0926eff6369ca5c20b9f1ad3cecc41b8fb16ccf5416d0e48e79ae2fc849aa",
+      "files": 1082,
+      "expanded_bytes": 268414872
+    },
+    {
+      "name": "part-0003.tar.gz.age",
+      "bytes": 245859741,
+      "sha256": "e59fe5dc4f3fa830a998bedcf7dd0f112ae498a66b2fbe2cb52499462603b25b",
+      "files": 1374,
+      "expanded_bytes": 268340929
+    },
+    {
+      "name": "part-0004.tar.gz.age",
+      "bytes": 245119365,
+      "sha256": "1c6fa878b7fd476cd58bf509ecbb9e90183a7efa1eb24a62ed1e4101c6d2a9aa",
+      "files": 1369,
+      "expanded_bytes": 268429393
+    },
+    {
+      "name": "part-0005.tar.gz.age",
+      "bytes": 236386101,
+      "sha256": "779da3ea8afb3a3ad4588aeecd2a6c7c0211b2a627ccae101c2dd6d79905b4e0",
+      "files": 1223,
+      "expanded_bytes": 268410812
+    },
+    {
+      "name": "part-0006.tar.gz.age",
+      "bytes": 247681428,
+      "sha256": "4305e84743c475ff8b2769cc2804503158fdf6d2b00a4dd27aaadc6d03121c77",
+      "files": 1228,
+      "expanded_bytes": 268352893
+    },
+    {
+      "name": "part-0007.tar.gz.age",
+      "bytes": 241776818,
+      "sha256": "eebc7036cde60e3f9314174c5ca703133c5ca87579d6222a05610fc000e2a1ea",
+      "files": 1560,
+      "expanded_bytes": 268318424
+    },
+    {
+      "name": "part-0008.tar.gz.age",
+      "bytes": 234575684,
+      "sha256": "c06b810c716a71b54cabd01411cb703054fe1a5468a7347af9264494f50bd7d5",
+      "files": 1648,
+      "expanded_bytes": 268357283
+    },
+    {
+      "name": "part-0009.tar.gz.age",
+      "bytes": 232857218,
+      "sha256": "d24fdf630be0b94703d4fcc59d77376b9351838b73f75f70d72029a56e915b96",
+      "files": 1556,
+      "expanded_bytes": 268401454
+    },
+    {
+      "name": "part-0010.tar.gz.age",
+      "bytes": 242069661,
+      "sha256": "cc2ab9f3764ff8a7e9f25462fe2bf7dcf657c8423e88f590afb80a6cde4a4118",
+      "files": 1465,
+      "expanded_bytes": 268433462
+    },
+    {
+      "name": "part-0011.tar.gz.age",
+      "bytes": 240395860,
+      "sha256": "7665bb102a4e308221f6d2d6870b92b55446296f2937ee57a9bac8bea9f2ac79",
+      "files": 1322,
+      "expanded_bytes": 268321458
+    },
+    {
+      "name": "part-0012.tar.gz.age",
+      "bytes": 240175543,
+      "sha256": "8def4ca740ff76e844f94ff842fb52283b7c3371274dc551bc29576f23dd951d",
+      "files": 1555,
+      "expanded_bytes": 268350358
+    },
+    {
+      "name": "part-0013.tar.gz.age",
+      "bytes": 208993992,
+      "sha256": "bb63c379ca4ca817a41e2571523aa28bb88dd3eb4d2d568cbc7395559b03dba3",
+      "files": 2322,
+      "expanded_bytes": 268406995
+    },
+    {
+      "name": "part-0014.tar.gz.age",
+      "bytes": 10554197,
+      "sha256": "659b999745b0c82e28dc967b36fec741140997fdedf297729907fe1b7b27c616",
+      "files": 3261,
+      "expanded_bytes": 109378936
+    },
+    {
+      "name": "part-0015.tar.gz.age",
+      "bytes": 60221562,
+      "sha256": "854e0b872ad7692cb0ff1de0f77a7005f09661561c508de1fc4766eb1c032ecd",
+      "files": 1,
+      "expanded_bytes": 561567741
+    },
+    {
+      "name": "part-0016.tar.gz.age",
+      "bytes": 264998521,
+      "sha256": "298ac73a139d17730381ac3413565a395092f27836626f2a3dffa67afaf18f81",
+      "files": 17,
+      "expanded_bytes": 266997211
+    },
+    {
+      "name": "part-0017.tar.gz.age",
+      "bytes": 104919798,
+      "sha256": "6b40f2fafbdbef76cbe104f87795d67405a75ce0673320c08fd2fa58cf22d837",
+      "files": 114,
+      "expanded_bytes": 147949539
+    }
+  ],
+  "base_url": "https://github.com/tehblok/robopark/releases/download/knowledge-20261005-v2"
+}
