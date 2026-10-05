@@ -528,6 +528,9 @@ def _execute(
         return {key: snapshot[key] for key in snapshot if key not in {"lat", "lon"}}
     if name in _TASK_NAMES:
         with tracker_submissions.task_mutation_lease(db, args["key"]):
+            # A claim may have changed while this process waited for the lease.
+            # Force all domain helpers below to observe the post-lease database state.
+            db.expire_all()
             issue = _fresh_issue(db, user, park_id, args["key"])
             _same_expected(_issue_expected(db, issue), expected)
             if name == "task_claim":

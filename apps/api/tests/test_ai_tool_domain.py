@@ -4,8 +4,10 @@ from contextlib import contextmanager
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 from robopark_api.ai_models import AIScript
+from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.services import platform_settings
 from robopark_api.services.ai import tool_domain
 from robopark_api.task_workflow_models import ReliableAction, TaskReview
@@ -244,6 +246,89 @@ def test_task_close_rechecks_review_after_acquiring_mutation_lease(
             "task_close",
             {"key": issue["key"]},
             idempotency_key="close-review-lease-race",
+            expected=prepared["expected"],
+        )
+
+    assert exc.value.detail == "ai_action_changed"
+    assert (
+        db_session.scalar(
+            select(ReliableAction).where(
+                ReliableAction.resource_id == issue["key"], ReliableAction.action == "close"
+            )
+        )
+        is None
+    )
+
+
+def test_task_close_reloads_claim_after_acquiring_mutation_lease(
+    db_engine,
+    db_session,
+    seed_admin,
+    seed_mechanic,
+    seed_park_with_tracker,
+    test_settings,
+    monkeypatch,
+):
+    issue = {
+        "key": "ROBOPARK-83",
+        "summary": "Camera",
+        "status": "На проверке",
+        "status_key": "review",
+        "updated": "2026-10-05T10:00:00Z",
+        "queue": seed_park_with_tracker.tracker_queue,
+        "tags": [seed_park_with_tracker.tag],
+    }
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(tool_domain.tracker_client, "get_issue", lambda **_kwargs: dict(issue))
+    db_session.add_all(
+        [
+            TrackerClaim(
+                issue_key=issue["key"],
+                park_id=seed_park_with_tracker.id,
+                owner_user_id=seed_mechanic.id,
+                updated_by_user_id=seed_mechanic.id,
+                state="active",
+                updated_at=1,
+            ),
+            TaskReview(
+                id="review-stale-claim-at-lease",
+                issue_key=issue["key"],
+                state="pending",
+                actor_user_id=seed_mechanic.id,
+                created_at=1,
+                updated_at=1,
+            ),
+        ]
+    )
+    db_session.commit()
+    cached_claim = db_session.get(TrackerClaim, issue["key"])
+    prepared = tool_domain.prepare(
+        db_session,
+        seed_admin,
+        seed_park_with_tracker.id,
+        "task_close",
+        {"key": issue["key"]},
+    )
+    assert cached_claim.owner_user_id == seed_mechanic.id
+    assert prepared["expected"]["issue"]["assignee"] == seed_mechanic.username
+
+    @contextmanager
+    def raced_lease(_db, _key):
+        with sessionmaker(bind=db_engine)() as other:
+            other.delete(other.get(TrackerClaim, issue["key"]))
+            other.commit()
+        yield
+
+    monkeypatch.setattr(tool_domain.tracker_submissions, "task_mutation_lease", raced_lease)
+    with pytest.raises(HTTPException) as exc:
+        tool_domain.execute(
+            db_session,
+            test_settings,
+            seed_admin,
+            seed_park_with_tracker.id,
+            "task_close",
+            {"key": issue["key"]},
+            idempotency_key="close-stale-claim-race",
             expected=prepared["expected"],
         )
 
