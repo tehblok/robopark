@@ -10,7 +10,7 @@ import { FormField } from '../../design-system/forms/FormField'
 import { PageLayout, Panel } from '../../design-system/layout/PageLayout'
 import { TabPanel, Tabs } from '../../design-system/navigation/Tabs'
 import {
-  assistantApi, parseKnowledgeFile, type AiConfig, type AiJob, type AiPrompt, type AiStatus,
+  assistantApi, parseKnowledgeFile, type AiAction, type AiConfig, type AiJob, type AiPrompt, type AiStatus,
   type AssistantApiClient, type AssistantScript, type Automation, type AutomationRun,
   type Connector, type Conversation, type ConversationDetail, type KnowledgeDocument,
   type KnowledgeImportDocument, type KnowledgeKind, type KnowledgeState,
@@ -149,7 +149,7 @@ function AssistantWorkspace({ apiClient }: { apiClient: AssistantApiClient }) {
   if (!status.data) return <ErrorState title="Не удалось получить статус помощника" description={status.error ?? 'Нет ответа сервера'} onRetry={() => void status.refresh()} />
   if (!status.data.supported) return <UnsupportedStatus status={status.data} />
 
-  return <PageLayout className="rp-assistant" title="Локальный помощник" description="Ответы по ремонту с проверяемыми источниками. Данные остаются внутри Robopark.">
+  return <PageLayout className="rp-assistant" title="Локальный помощник" description="Модель работает локально. Помощник использует доступные вам задачи, диагностику и инструменты.">
     {!status.data.ready ? <Alert tone="warning">{statusReasonText(status.data.reason)}</Alert> : null}
     <Tabs ariaLabel="Разделы помощника" items={tabs} value={tab} onChange={id => setTab(id as Tab)} panelIdFor={id => `assistant-panel-${id}`} wrapOnPhone />
     <TabPanel id="assistant-panel-chat" labelledBy="tab-chat" active={tab === 'chat'}><ChatPanel api={apiClient} enabled={status.data.ready} issueKey={search.get('issue_key')} key={`chat:${parkScope}`} parkId={effectiveParkId} /></TabPanel>
@@ -182,6 +182,8 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
   const [opening, setOpening] = useState(false)
   const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState(new Set<string>())
+  const [deciding, setDeciding] = useState(false)
+  const decisionController = useRef<AbortController | null>(null)
   const [activeJob, setActiveJob] = useState<AiJob | null>(null)
   const [error, setError] = useState<string | null>(null)
   const initializedContext = useRef<string | null>(null)
@@ -200,6 +202,7 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
     submitPollController.current?.abort(); submitPollController.current = null
     resumePollController.current?.abort(); resumePollController.current = null
     resumedJob.current = null
+    decisionController.current?.abort(); decisionController.current = null; setDeciding(false)
   }, [])
   const open = useCallback(async (id: string) => {
     const currentGeneration = ++openGeneration.current
@@ -275,7 +278,7 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
     }
   }, [create, enabled, issueKey, open, parkId, select, sessionData, sessionsLoading, stopConversationRequests])
 
-  const pendingJob = detail?.jobs.findLast(job => job.state === 'queued' || job.state === 'running')
+  const pendingJob = detail?.jobs.findLast(job => ['queued', 'running', 'waiting'].includes(job.state))
   useEffect(() => {
     if (!pendingJob || resumedJob.current === pendingJob.id) return
     const controller = new AbortController()
@@ -284,12 +287,12 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
     void waitForJob(api, pendingJob, controller.signal, setActiveJob).then(async result => {
       if (controller.signal.aborted) return
       if (result.timedOut) { setActiveJob(result.job); return }
-      setActiveJob(null)
-      if (result.job.state === 'succeeded' && detail) {
+      setActiveJob(result.job)
+      if (detail) {
         const next = await api.conversation(detail.id, controller.signal)
         if (!controller.signal.aborted) setDetail(next)
       }
-      else if (result.job.state === 'failed') setError(result.job.error || 'Генерация завершилась с ошибкой')
+      if (result.job.state === 'failed') setError(errorText(result.job.error || 'Генерация завершилась с ошибкой'))
     }).catch(caught => {
       if (controller.signal.aborted) return
       setActiveJob(null); setError(errorText(caught))
@@ -301,7 +304,7 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
   }, [api, detail, pendingJob])
 
   const submit = async (event: FormEvent) => {
-    event.preventDefault(); if (!draft.trim() || !enabled || !sessionsReady || creating || sending || opening || submitPollController.current) return
+    event.preventDefault(); if (actionPending || !draft.trim() || !enabled || !sessionsReady || creating || sending || opening || submitPollController.current) return
     const controller = new AbortController()
     submitPollController.current = controller
     setSending(true); setError(null)
@@ -313,10 +316,11 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
       const result = await waitForJob(api, job, controller.signal, setActiveJob)
       if (controller.signal.aborted) return
       if (result.timedOut) { setActiveJob(result.job); return }
-      setActiveJob(null)
-      if (result.job.state !== 'succeeded') throw new Error(result.job.error || (result.job.state === 'cancelled' ? 'Задание отменено' : 'Генерация завершилась с ошибкой'))
+      setActiveJob(result.job)
       const next = await api.conversation(conversation.id, controller.signal)
       if (!controller.signal.aborted) { setDetail(next); setDraft('') }
+      if (result.job.state === 'waiting') return
+      if (result.job.state !== 'succeeded') throw new Error(result.job.error || (result.job.state === 'cancelled' ? 'Задание отменено' : 'Генерация завершилась с ошибкой'))
     } catch (caught) {
       if (!controller.signal.aborted) { setActiveJob(null); setError(`Не удалось отправить: ${errorText(caught)}`) }
     } finally {
@@ -344,6 +348,25 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
       if (!controller.signal.aborted) setDeleting(previous => { const next = new Set(previous); next.delete(session.id); return next })
     }
   }
+  const decide = async (job: AiJob, action?: AiAction) => {
+    if (decisionController.current || (action && !action.digest)) return
+    const controller = new AbortController()
+    const conversationId = selectedIdRef.current
+    decisionController.current = controller; setDeciding(true); setError(null)
+    try {
+      const next = action ? await api.confirmAction(action.id, action.digest!) : await api.cancelJob(job.id)
+      if (controller.signal.aborted || selectedIdRef.current !== conversationId) return
+      resumedJob.current = null
+      setActiveJob(next)
+      setDetail(previous => previous?.id === conversationId ? { ...previous, jobs: [...previous.jobs.filter(item => item.id !== next.id), next] } : previous)
+    } catch (caught) {
+      if (!controller.signal.aborted && selectedIdRef.current === conversationId) setError(errorText(caught))
+    } finally {
+      if (decisionController.current === controller) { decisionController.current = null; setDeciding(false) }
+    }
+  }
+  const displayedJobs = [...(detail?.jobs ?? []).filter(job => job.id !== activeJob?.id), ...(activeJob ? [activeJob] : [])]
+  const actionPending = displayedJobs.some(job => ['waiting', 'queued', 'running'].includes(job.state))
   const selectedSession = sessions.data?.find(item => item.id === selectedId)
 
   return <div className="rp-assistant-chat-layout">
@@ -354,10 +377,37 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
     <Panel title={detail?.title ?? selectedSession?.title ?? (issueKey ? `Помощник по ${issueKey}` : 'Новый разговор')}>
       {error ? <Alert tone="error">{error}</Alert> : null}
       <div aria-live="polite" className="rp-assistant-messages">{creating ? <LoadingState label="Создаём разговор" /> : opening ? <LoadingState label="Открываем разговор" /> : detail?.messages.length ? detail.messages.map(message => <article className={`rp-assistant-message rp-assistant-message--${message.role}`} key={message.id}><strong>{message.role === 'assistant' ? 'Помощник' : 'Вы'}</strong><p>{message.content}</p>{message.sources.length ? <div className="rp-assistant-sources"><span>Источники</span>{message.sources.map(source => <Link key={source.id} title={source.excerpt} to={`/assistant?document=${encodeURIComponent(source.id)}`}>{source.title}</Link>)}</div> : null}</article>) : <EmptyState title="Задайте вопрос по ремонту" description={issueKey ? `Контекст задачи ${issueKey} будет приложен к разговору.` : 'Выберите парк и опишите симптом или нужную процедуру.'} />}</div>
-      {activeJob && (activeJob.state === 'queued' || activeJob.state === 'running') ? <div className="rp-assistant-job" role="status"><span>{sending ? 'Готовим ответ…' : 'Ответ ещё готовится. Можно вернуться позже.'}</span><Button onClick={() => void api.cancelJob(activeJob.id).then(setActiveJob)} size="compact" variant="secondary">Отменить</Button></div> : null}
-      <form className="rp-assistant-compose" onSubmit={submit}><FormField id="assistant-message" label="Сообщение помощнику"><textarea disabled={!enabled || !sessionsReady || creating || sending || opening} onChange={event => setDraft(event.target.value)} rows={3} value={draft} /></FormField><Button busy={sending} disabled={!enabled || !sessionsReady || creating || !draft.trim() || parkId == null || opening} type="submit">Отправить</Button></form>
+      <ActionReceipts jobs={displayedJobs} busy={deciding} enabled={enabled} onDecision={decide} />
+      {activeJob && (activeJob.state === 'queued' || activeJob.state === 'running') ? <div className="rp-assistant-job" role="status"><span>{sending ? 'Готовим ответ…' : 'Ответ ещё готовится. Можно вернуться позже.'}</span><Button busy={deciding} onClick={() => void decide(activeJob)} size="compact" variant="secondary">Отменить</Button></div> : null}
+      <form className="rp-assistant-compose" onSubmit={submit}><FormField id="assistant-message" label="Сообщение помощнику"><textarea disabled={!enabled || !sessionsReady || creating || sending || opening || actionPending} onChange={event => setDraft(event.target.value)} rows={3} value={draft} /></FormField><Button busy={sending} disabled={!enabled || !sessionsReady || creating || !draft.trim() || parkId == null || opening || actionPending} type="submit">Отправить</Button></form>
     </Panel>
   </div>
+}
+
+const ACTION_STATES: Record<AiAction['state'], string> = {
+  ready: 'Подготовлено', waiting: 'Нужно подтверждение', approved: 'Подтверждено', running: 'Выполняется',
+  succeeded: 'Выполнено', failed: 'Не выполнено', cancelled: 'Отменено', uncertain: 'Результат требует проверки',
+}
+function actionStateLabel(action: AiAction): string {
+  if (action.state === 'succeeded' && action.tool.startsWith('task_') && action.tool !== 'task_get'
+    && action.result && typeof action.result === 'object' && 'sync_state' in action.result
+    && action.result.sync_state !== 'synced') return 'Принято в обработку'
+  return ACTION_STATES[action.state]
+}
+
+function ActionReceipts({ jobs, busy, enabled, onDecision }: { jobs: AiJob[]; busy: boolean; enabled: boolean; onDecision: (job: AiJob, action?: AiAction) => Promise<void> }) {
+  if (!jobs.some(job => job.actions?.length)) return null
+  return <div className="rp-assistant-receipts" role="group" aria-label="Действия помощника">{jobs.flatMap(job => (job.actions ?? []).map(action => <article className="rp-assistant-advanced" key={action.id}>
+    <strong>{actionStateLabel(action)}</strong><p>{action.preview}</p>
+    {action.state === 'uncertain' ? <p>Вызов мог завершиться. Проверьте объект перед повторной командой.</p> : null}
+    {action.error ? <p>{errorText(action.error)}</p> : null}
+    {action.arguments ? <details><summary>Параметры действия</summary><pre>{JSON.stringify(action.arguments, null, 2)}</pre></details> : null}
+    {action.result != null ? <details><summary>Результат</summary><pre>{JSON.stringify(action.result, null, 2)}</pre></details> : null}
+    {action.state === 'waiting' && action.digest ? <><p>Подтвердите именно это действие. Если данные изменятся, оно будет остановлено.</p><div className="rp-assistant-actions">
+      <Button busy={busy} disabled={busy || !enabled} onClick={() => void onDecision(job, action)}>Подтвердить действие</Button>
+      <Button disabled={busy} onClick={() => void onDecision(job)} variant="secondary">Отменить действие</Button>
+    </div></> : null}
+  </article>))}</div>
 }
 
 function KnowledgeBundleNotice({ bundle }: { bundle: AiStatus['knowledge_bundle'] }) {

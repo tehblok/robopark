@@ -39,7 +39,7 @@ def test_bundle_receipts_upgrade_from_local_ai_head(sqlite_database_url, monkeyp
             )
         )
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0058_ai_bundle_receipts")
     inspector = inspect(engine)
     assert {column["name"] for column in inspector.get_columns("ai_bundle_documents")} == {
         "source_ref",

@@ -29,7 +29,7 @@ describe('assistantApi', () => {
 
     expect(fetch).toHaveBeenCalledWith('/api/ai/conversations/conversation-7/messages', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ content: 'Как проверить лидар?', idempotency_key: 'message-9' }),
+      body: JSON.stringify({ content: 'Как проверить лидар?', idempotency_key: 'message-9', use_tools: true }),
     }))
   })
 

@@ -50,6 +50,8 @@ test('desktop mechanic receives a sourced answer and opens the cited document', 
     { method: 'GET', path: '/api/ai/documents/d-1', handler: () => ({ json: { id: 'd-1', title: 'Проверка лидара', kind: 'manual', state: 'active', trust: 'instruction', park_id: 7, source_ref: 'manual:lidar', updated_at: '', revision: 1, content: 'Перед осмотром отключите питание.' } }) },
   ])
 
+  await expect(page.locator('.rp-assistant-receipts')).toHaveCount(0)
+  await assertNoSeriousA11yViolations(page)
   await page.getByLabel('Сообщение помощнику').fill('Как проверить лидар?')
   await page.getByRole('button', { name: 'Отправить' }).click()
   const source = page.getByRole('link', { name: 'Проверка лидара' })
@@ -219,3 +221,33 @@ test('failed conversation deletion can be retried without clearing a newer selec
   await expect(draft).toBeEnabled()
   expect(deletions).toBe(2)
 })
+
+for (const width of [320, 1440]) {
+  test(`action confirmation and durable result at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 })
+    let confirmed = false
+    let confirmationBody: unknown
+    const action = { id: 'a-1', tool: 'task_close', state: 'waiting', preview: 'Принять проверку и закрыть задачу RP-42', arguments: { key: 'RP-42' }, digest: 'digest-of-exact-action', result: null, error: null, created_at: '', expires_at: '2027-01-01T00:00:00Z' }
+    const job = () => ({ id: 'j-1', kind: 'chat', state: confirmed ? 'succeeded' : 'waiting', result: null, error: null, created_at: '', updated_at: '', actions: [{ ...action, state: confirmed ? 'succeeded' : 'waiting', digest: confirmed ? null : action.digest, result: confirmed ? { key: 'RP-42', sync_state: 'pending' } : null }] })
+    const conversation = { id: 'c-1', title: 'Закрытие ремонта', park_id: 7, issue_key: null, updated_at: '' }
+    await openAssistant(page, operatorUser, [
+      { method: 'GET', path: '/api/ai/status', handler: () => ({ json: readyStatus }) },
+      { method: 'GET', path: '/api/ai/conversations', handler: () => ({ json: [conversation] }) },
+      { method: 'GET', path: '/api/ai/conversations/c-1', handler: () => ({ json: { ...conversation, messages: [], jobs: [job()] } }) },
+      { method: 'POST', path: '/api/ai/actions/a-1/confirm', handler: async request => { confirmationBody = await request.json(); confirmed = true; return { json: { ...job(), state: 'queued' } } } },
+      { method: 'GET', path: '/api/ai/jobs/j-1', handler: () => ({ json: job() }) },
+    ])
+    await expect(page.getByText(action.preview)).toBeVisible()
+    expect(confirmed).toBe(false)
+    await page.getByText('Параметры действия', { exact: true }).click()
+    await expect(page.locator('.rp-assistant-receipts pre')).toContainText('RP-42')
+    await expect(page.locator('html')).toHaveJSProperty('scrollWidth', width)
+    await assertNoSeriousA11yViolations(page)
+    await page.screenshot({ path: testInfo.outputPath(`action-confirm-${width}.png`), fullPage: true, animations: 'disabled' })
+    await page.getByRole('button', { name: 'Подтвердить действие', exact: true }).click()
+    await expect(page.getByText('Принято в обработку', { exact: true })).toBeVisible()
+    expect(confirmationBody).toEqual({ digest: action.digest })
+    await expect(page.getByRole('button', { name: 'Подтвердить действие' })).toHaveCount(0)
+    await expect(page.getByLabel('Сообщение помощнику')).toBeEnabled()
+  })
+}

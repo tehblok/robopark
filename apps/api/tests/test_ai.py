@@ -449,7 +449,7 @@ def test_ticket_context_obeys_tracker_scope(
     assert client.get(f"/ai/conversations/{row.json()['id']}").status_code == 403
 
 
-def test_recovery_waits_for_runtime_projection(
+def test_recovery_precedes_runtime_projection(
     db_session, db_engine, seed_admin, test_settings, tmp_path
 ):
     from sqlalchemy.orm import sessionmaker
@@ -468,8 +468,6 @@ def test_recovery_waits_for_runtime_projection(
     db_session.add_all([job, run])
     db_session.commit()
     factory = sessionmaker(bind=db_engine)
-    assert jobs.tick(factory, test_settings, first=True) is False
-    enable_host(test_settings, tmp_path)
     assert jobs.tick(factory, test_settings, first=True) is True
     db_session.expire_all()
     assert db_session.get(AIJob, job.id).state == "failed"

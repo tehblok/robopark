@@ -47,7 +47,12 @@ class ConversationIn(Input):
     issue_key: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]*-\d+$", max_length=128)
 
 
+class ActionConfirmation(Input):
+    digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class MessageIn(Input):
+    use_tools: bool = False
     content: str = Field(min_length=1, max_length=6000)
     idempotency_key: str = Field(min_length=8, max_length=128)
 

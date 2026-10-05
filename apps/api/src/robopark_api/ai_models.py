@@ -138,6 +138,35 @@ class AIJob(Base):
     updated_at: Mapped[float] = mapped_column(Float, default=time.time)
 
 
+class AIAction(Base):
+    """Durable invocation receipt; never automatically replay an uncertain write."""
+
+    __tablename__ = "ai_actions"
+    __table_args__ = (
+        UniqueConstraint("job_id", "ordinal", name="uq_ai_action_ordinal"),
+        Index("ix_ai_actions_state_updated", "state", "updated_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_jobs.id", ondelete="SET NULL"), index=True
+    )
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    call_id: Mapped[str] = mapped_column(String(128))
+    tool: Mapped[str] = mapped_column(String(64))
+    arguments: Mapped[dict] = mapped_column(JSON)
+    expected: Mapped[dict] = mapped_column(JSON)
+    preview: Mapped[str] = mapped_column(Text)
+    digest: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(20))
+    result: Mapped[dict | None] = mapped_column(JSON)
+    error: Mapped[str | None] = mapped_column(String(120))
+    expires_at: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
 class AIConnector(Base):
     __tablename__ = "ai_connectors"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)

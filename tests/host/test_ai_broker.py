@@ -99,6 +99,227 @@ def test_chat_forward_is_nonstreaming_bounded_and_disables_reasoning():
     }
 
 
+def test_chat_forward_preserves_bounded_tools_and_paired_tool_result():
+    from robopark_host.ai_broker import bounded_chat_body
+
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "get_robot",
+            "description": "Read one robot",
+            "parameters": {
+                "type": "object",
+                "properties": {"robot_id": {"type": "integer"}},
+            },
+        },
+    }]
+    messages = [
+        {"role": "system", "content": "Use tools safely."},
+        {"role": "user", "content": "Robot 7"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_robot", "arguments": '{"robot_id":7}'},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"name":"R7"}'},
+    ]
+
+    body = bounded_chat_body(json.dumps({"messages": messages, "tools": tools}).encode())
+
+    assert json.loads(body) == {
+        "messages": [
+            messages[0],
+            messages[1],
+            {**messages[2], "content": ""},
+            messages[3],
+        ],
+        "tools": tools,
+        "parallel_tool_calls": False,
+        "max_tokens": 1024,
+        "stream": False,
+        "reasoning_effort": "none",
+    }
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [
+            {"role": "user", "content": "Robot 7"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_robot", "arguments": "{}"},
+                }],
+            },
+        ],
+        [
+            {"role": "user", "content": "Robot 7"},
+            {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+        ],
+        [
+            {"role": "system", "content": "one"},
+            {"role": "system", "content": "two"},
+            {"role": "user", "content": "Robot 7"},
+        ],
+        [
+            {"role": "user", "content": "Robot 7"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_robot", "arguments": "[]"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+        ],
+        [
+            {"role": "user", "content": "Robot 7"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_robot", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "get_robot", "arguments": "{}"},
+                    },
+                ],
+            },
+        ],
+    ],
+    ids=[
+        "dangling-call",
+        "orphan-result",
+        "repeated-system",
+        "non-object-arguments",
+        "parallel-calls",
+    ],
+)
+def test_chat_forward_rejects_invalid_tool_message_sequences(messages):
+    from robopark_host.ai_broker import BrokerError, bounded_chat_body
+
+    tools = [{
+        "type": "function",
+        "function": {"name": "get_robot", "parameters": {"type": "object"}},
+    }]
+
+    with pytest.raises(BrokerError, match="chat_request_invalid"):
+        bounded_chat_body(json.dumps({"messages": messages, "tools": tools}).encode())
+
+
+def test_chat_forward_rejects_more_than_sixteen_tools():
+    from robopark_host.ai_broker import BrokerError, bounded_chat_body
+
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": f"tool_{index}", "parameters": {"type": "object"}},
+        }
+        for index in range(17)
+    ]
+
+    with pytest.raises(BrokerError, match="chat_request_invalid"):
+        bounded_chat_body(json.dumps({
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": tools,
+        }).encode())
+
+
+def test_chat_forward_rejects_reused_tool_call_id():
+    from robopark_host.ai_broker import BrokerError, bounded_chat_body
+
+    tools = [{
+        "type": "function",
+        "function": {"name": "get_robot", "parameters": {"type": "object"}},
+    }]
+    messages = [
+        {"role": "user", "content": "Robot 7"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_robot", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_robot", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+    ]
+
+    with pytest.raises(BrokerError, match="chat_request_invalid"):
+        bounded_chat_body(json.dumps({"messages": messages, "tools": tools}).encode())
+
+
+def test_chat_token_count_sends_tools_to_native_template(host_paths, monkeypatch):
+    from robopark_host import ai_broker
+
+    secret = host_paths.var / "ai/api-key"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("private-token" * 3)
+    secret.chmod(0o600)
+    seen = []
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            return json.dumps(self.payload).encode()
+
+    def open_request(request, timeout):
+        seen.append((request.full_url, json.loads(request.data), timeout))
+        if request.full_url.endswith("/apply-template"):
+            return Response({"prompt": "formatted"})
+        return Response({"tokens": [1, 2]})
+
+    monkeypatch.setattr(ai_broker.urllib.request, "urlopen", open_request)
+    tools = [{
+        "type": "function",
+        "function": {"name": "get_robot", "parameters": {"type": "object"}},
+    }]
+
+    assert ai_broker._chat_token_count(
+        host_paths,
+        json.dumps({
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": tools,
+        }).encode(),
+    ) == {"prompt_tokens": 2, "context_tokens": 8192}
+    assert seen[0][1]["tools"] == tools
+    assert seen[0][1]["parallel_tool_calls"] is False
+
+
 def test_api_complete_reaches_real_broker_handler_and_native_contract(host_paths, monkeypatch):
     from robopark_api.services.ai.runtime import complete
     from robopark_host import ai_broker
