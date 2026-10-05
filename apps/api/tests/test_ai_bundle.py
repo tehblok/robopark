@@ -92,7 +92,11 @@ def test_private_bundle_is_bounded_and_resumes_without_promoting_non_manual_meta
     enable_host(test_settings, tmp_path)
     root = write_bundle(
         tmp_path,
-        [record(1, content="Расширенная публичная запись"), private_record(2, "manual"), private_record(3)],
+        [
+            record(1, content="Расширенная публичная запись"),
+            private_record(2, "manual"),
+            private_record(3),
+        ],
         bundle_id="repair-private-v2",
     )
     test_settings.ai_knowledge_bundle_path = str(root)
