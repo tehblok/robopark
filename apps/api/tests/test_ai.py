@@ -16,7 +16,7 @@ def enable_host(settings, tmp_path):
                 "enabled": True,
                 "ready": True,
                 "reason": None,
-                "model": "bonsai",
+                "model": "google/gemma-4-E4B-it-qat-q4_0-gguf",
                 "backend": "cuda",
             }
         )
@@ -36,6 +36,25 @@ def test_ai_status_unsupported_and_no_writes(client, seed_admin):
         ).status_code
         == 409
     )
+
+
+def test_ai_status_never_accepts_retired_model_as_ready(
+    client, seed_admin, test_settings, tmp_path
+):
+    state = enable_host(test_settings, tmp_path)
+    payload = json.loads(state.read_text())
+    payload["model"] = "prism-ml/Ternary-Bonsai-2-27B-gguf"
+    state.write_text(json.dumps(payload))
+    login_as(client, "admin", "secret")
+
+    status = client.get("/ai/status")
+
+    assert status.status_code == 200
+    assert status.json()["supported"] is True
+    assert status.json()["installed"] is False
+    assert status.json()["ready"] is False
+    assert status.json()["reason"] == "runtime_model_mismatch"
+    assert status.json()["model"] == "google/gemma-4-E4B-it-qat-q4_0-gguf"
 
 
 def test_knowledge_import_dedupe_tombstone_and_scope(

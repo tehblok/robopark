@@ -260,7 +260,9 @@ def search(db, user, query, *, park_id=None, limit=6, context=""):
             {
                 "id": doc.id,
                 "title": doc.title,
-                "excerpt": retrieval.excerpt(
+                "excerpt": doc.content
+                if doc.content.startswith("База знаний Robopark\nОбласть применения: ")
+                else retrieval.excerpt(
                     doc.content,
                     chunk.content,
                     include_start=doc.kind == "manual"

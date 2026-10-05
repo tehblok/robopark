@@ -14,6 +14,42 @@ from robopark_host import knowledge_archive as archive
 from robopark_host.release import ReleaseError
 
 
+def test_private_archive_excludes_only_explicit_derivative_paths(tmp_path, monkeypatch):
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "scripts"))
+    from build_private_knowledge import collect_originals
+
+    kept = {
+        "prepared-original/b.txt",
+        "records/1.json",
+        "attachments/a.jpg",
+        "manifest.json",
+        "keys.json",
+        "scripts/export.py",
+    }
+    for name in {"prepared/a.txt"} | kept:
+        target = tmp_path / "tracker_year_all_parks" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("data")
+    files = collect_originals(tmp_path, ["tracker_year_all_parks/prepared"])
+    assert {name for name, _ in files} == {
+        "originals/tracker_year_all_parks/" + name for name in kept
+    }
+    for excluded in (
+        "../escape",
+        "/absolute",
+        "export/missing",
+        ".",
+        "tracker_year_all_parks/records",
+        "tracker_year_all_parks/attachments",
+        "tracker_year_all_parks/manifest.json",
+        "tracker_year_all_parks/keys.json",
+        "tracker_year_all_parks/scripts",
+    ):
+        with pytest.raises(ValueError):
+            collect_originals(tmp_path, [excluded])
+
+
 def pack(entries, *, inventory=None):
     output = io.BytesIO()
     records = (

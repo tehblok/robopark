@@ -3,7 +3,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from robopark_host.state import atomic_write_json
 
 
@@ -246,6 +245,25 @@ def test_ota_preserves_disabled_ai_without_reenabling_installed_model(host_paths
     assert json.loads(state.read_text())["enabled"] is False
 
 
+def test_ota_stops_retired_runtime_until_current_model_is_verified(host_paths, monkeypatch):
+    from robopark_host import ai_install, ai_runtime
+
+    release = _release(host_paths)
+    ai_runtime.write_enabled_intent(host_paths, True)
+    monkeypatch.setattr(ai_install, "probe_support", lambda paths: (True, None))
+    monkeypatch.setattr(ai_runtime, "installed", lambda paths, **kwargs: False)
+    calls = []
+
+    class Runner:
+        def run(self, argv, **kwargs):
+            calls.append(argv)
+
+    ai_install.reconcile_ai_installation(host_paths, release, Runner(), auto_install=False)
+
+    assert ["systemctl", "disable", "--now", "robopark-ai.service"] in calls
+    assert ai_runtime.read_enabled_intent(host_paths) is True
+
+
 def test_ota_restarts_broker_once_per_release_and_again_on_rollback(host_paths, monkeypatch):
     from robopark_host import ai_install, ai_runtime
 
@@ -280,6 +298,7 @@ def test_ai_native_unit_is_nonroot_cuda_bounded_and_loopback_only():
     assert service["MemoryMax"] == "16G"
     assert service["ExecStartPre"].endswith("robopark ai-verify")
     assert "--api-key-file /var/lib/robopark/ai/api-key" in service["ExecStart"]
+    assert "--model /var/lib/robopark/ai/models/gemma-4-E4B_q4_0-it.gguf" in service["ExecStart"]
     command = service["ExecStart"]
     assert "--host 127.0.0.1" in command and "--port 18081" in command
     for value in ("-c 8192", "-np 1", "-ngl 99", "-fa on", "--jinja", "--reasoning auto"):

@@ -24,10 +24,11 @@ POLICY = """Ты локальный помощник Robopark. Отвечай п
 У тебя нет инструментов, доступа к терминалу и права закрывать тикеты или включать автоматизации.
 Не утверждай, что что-либо изменил, проверил на роботе или отправил по API.
 Различай документированную инструкцию, наблюдавшийся опыт ремонта и непроверенный материал. Метка instruction указывает тип источника, а не сертификацию или гарантию производителя.
-Закрытый тикет не доказывает причину поломки и успешность ремонта. Не превращай рекомендации и планы из переписки в выполненные работы.
+Закрытый тикет не доказывает причину поломки и успешность ремонта. Не превращай рекомендации и планы из переписки в выполненные работы. Частота связей в карточке опыта — не вероятность успеха; выбранный метод решения не доказывает действие. Учитывай отрицательные исходы, повторы и неизвестный код дефекта.
 Не переноси моменты затяжки, напряжения и другие числовые нормы с другой детали или модели. Если точная норма или проверка результата отсутствует, скажи это и запроси подходящую инструкцию.
 При неполной инструкции, ссылке на рисунок или пропущенном шаге попроси открыть полный источник; не восстанавливай шаги догадкой. Уточняй модель и положение детали, если от них зависит ответ.
-При противоречиях укажи их; при нехватке данных предложи конкретную проверку механику.
+При противоречиях укажи их. Предлагай технические действия только по переданным основаниям; если их нет, уточни недостающие данные, не придумывай порядок диагностики.
+Архивный пример не описывает текущее состояние робота. Для показателей парка указывай период, фильтры и полноту выборки; частота записей не равна частоте отказов всего флота.
 Не предлагай обходить блокировки, проверки безопасности, фотоотчёт и проверку оператора.
 Перед опасными работами указывай на необходимость обесточивания согласно инструкции.
 Ссылайся только на переданные источники в формате [источник: UUID]. Если источников нет, прямо скажи это.
@@ -46,9 +47,9 @@ TOOL_POLICY = POLICY.replace(
     "Администратор может поручить сохранить, проверить и включить скрипт инструментами. После правки нужна новая проверка. Не включай скрипт без успешного теста. Автоматизации настраиваются в соответствующем разделе.",
 )
 DEFAULTS = {
-    "mechanic": "Начни с задачи и симптома. Предложи 1–3 полезные проверки; по запросу получи доступные показания робота, возьми задачу в работу, добавь комментарий или подготовь передачу. Помоги связать фактический ремонт, решение, компоненту и код дефекта. Не выдумывай выполненные работы; фото и физическую проверку делает механик.",
-    "operator": "Проверь актуальную задачу и полноту отчёта механика, выдели противоречия и недостающие проверки. По запросу получи показания робота и добавь уточняющий комментарий. Закрытие подготовь через штатную проверку ремонта и подтверждение пользователя. Похожий ремонт не доказывает исправность текущего робота.",
-    "admin": "Анализируй повторяющиеся неисправности и работу парка. По запросу работай с задачами и диагностикой, создавай, меняй, проверяй, включай и запускай изолированные скрипты. Перед изменением объясни его эффект; не запрашивай секреты. Удаление и закрытие требуют подтверждения. Для автоматизаций и коннекторов используй существующий раздел настроек.",
+    "mechanic": "Начни с симптома, узла и ревизии. По источникам объясни, какие причины различали и что дали проверки; сохраняй отрицательные результаты. По запросу получи показания робота, возьми задачу в работу, добавь комментарий или подготовь передачу. Свяжи фактическую работу, компоненту и код дефекта. Не выдавай гипотезу за причину; фото и физическую проверку делает механик.",
+    "operator": "Разделяй актуальную диагностику, отчёт механика и исторический опыт. По запросу получи показания робота, объясни ошибки по источникам, проверь полноту отчёта и добавь уточняющий комментарий. Учитывай описанные в источниках смежные работы, проверки и условия передачи. Закрытие подготовь через штатную проверку ремонта и подтверждение пользователя; похожий случай не доказывает исправность.",
+    "admin": "Помогай с инженерным разбором причин и повторов, оклейками, планированием, запчастями и работой парка — в пределах имеющихся источников. Для чисел сначала установи период и состав данных; отличай повторную запись от повторной поломки. По запросу работай с задачами, диагностикой и изолированными скриптами, объясняя эффект изменений. Удаление и закрытие требуют подтверждения. Автоматизации и коннекторы — через существующие настройки.",
 }
 
 
@@ -64,6 +65,11 @@ def _truncate_utf8(value, limit):
         return ""
     prefix = value.encode("utf-8")[: limit - len(marker)].decode("utf-8", "ignore").rstrip()
     return prefix + TRUNCATION_MARKER if prefix else ""
+
+
+def atomic_source(source):
+    # A formatting contract only: imported content retains its existing trust.
+    return source.get("excerpt", "").startswith("База знаний Robopark\nОбласть применения: ")
 
 
 def _guidance(db, user):
@@ -154,32 +160,40 @@ def fit_context(
     while guidance and not fits(build(guidance, [])):
         guidance = _truncate_utf8(guidance, max(0, len(guidance.encode("utf-8")) - 128))
 
-    fitted_sources = [{**source, "excerpt": ""} for source in sources]
-    while fitted_sources and not fits(build(guidance, fitted_sources)):
-        fitted_sources.pop()
-    if fitted_sources:
-        full_sources = [dict(source) for source in sources[: len(fitted_sources)]]
-        if fits(build(guidance, full_sources)):
-            fitted_sources = full_sources
-        else:
-            upper = max(len(source["excerpt"].encode("utf-8")) for source in full_sources)
-            low, high = 0, upper
-            while low < high:
-                cap = (low + high + 1) // 2
-                candidate = [
-                    {**source, "excerpt": _truncate_utf8(source["excerpt"], cap)}
+    if any(atomic_source(source) for source in sources):
+        # Never turn a complete procedure into an action without prerequisites
+        # or remove its negative outcome just to fill the last context tokens.
+        fitted_sources = []
+        for source in sources:
+            candidate = [*fitted_sources, dict(source)]
+            if fits(build(guidance, candidate)):
+                fitted_sources = candidate
+    else:
+        fitted_sources = [{**source, "excerpt": ""} for source in sources]
+        while fitted_sources and not fits(build(guidance, fitted_sources)):
+            fitted_sources.pop()
+        if fitted_sources:
+            full_sources = [dict(source) for source in sources[: len(fitted_sources)]]
+            if fits(build(guidance, full_sources)):
+                fitted_sources = full_sources
+            else:
+                upper = max(len(source["excerpt"].encode("utf-8")) for source in full_sources)
+                low, high = 0, upper
+                while low < high:
+                    cap = (low + high + 1) // 2
+                    candidate = [
+                        {**source, "excerpt": _truncate_utf8(source["excerpt"], cap)}
+                        for source in full_sources
+                    ]
+                    if fits(build(guidance, candidate)):
+                        low = cap
+                    else:
+                        high = cap - 1
+                fitted_sources = [
+                    {**source, "excerpt": _truncate_utf8(source["excerpt"], low)}
                     for source in full_sources
                 ]
-                if fits(build(guidance, candidate)):
-                    low = cap
-                else:
-                    high = cap - 1
-            fitted_sources = [
-                {**source, "excerpt": _truncate_utf8(source["excerpt"], low)}
-                for source in full_sources
-            ]
-            fitted_sources = [source for source in fitted_sources if source["excerpt"]]
-
+                fitted_sources = [source for source in fitted_sources if source["excerpt"]]
     fitted_issue = ""
     if issue:
         if fits(build(guidance, fitted_sources, issue)):

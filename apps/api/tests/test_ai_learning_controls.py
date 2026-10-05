@@ -23,7 +23,7 @@ def _enable_host(settings, tmp_path):
                 "enabled": True,
                 "ready": True,
                 "reason": None,
-                "model": "bonsai",
+                "model": "google/gemma-4-E4B-it-qat-q4_0-gguf",
                 "backend": "cuda",
             }
         ),

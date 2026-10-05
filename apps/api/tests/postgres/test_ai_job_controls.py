@@ -35,7 +35,7 @@ def test_document_delete_waits_for_source_validated_result_publication(
                 "enabled": True,
                 "ready": True,
                 "reason": None,
-                "model": "bonsai",
+                "model": "google/gemma-4-E4B-it-qat-q4_0-gguf",
                 "backend": "cuda",
             }
         ),
@@ -162,7 +162,7 @@ def test_document_delete_waits_for_claim_then_invalidates_publication(
                 "enabled": True,
                 "ready": True,
                 "reason": None,
-                "model": "bonsai",
+                "model": "google/gemma-4-E4B-it-qat-q4_0-gguf",
                 "backend": "cuda",
             }
         ),

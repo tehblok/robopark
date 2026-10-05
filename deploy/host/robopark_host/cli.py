@@ -355,6 +355,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("ai-reconcile")
     commands.add_parser("ai-broker")
     commands.add_parser("ai-verify")
+    commands.add_parser("ai-check")
     commands.add_parser("ai-activate-intent")
     commands.add_parser("knowledge-install")
     terminal_worker = commands.add_parser("terminal-worker")
@@ -476,6 +477,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .ai_broker import run_broker
 
         return run_broker(paths)
+    if arguments.command == "ai-check":
+        from .ai_acceptance import run
+
+        result = run(paths)
+        _print(result)
+        return 0 if result["state"] == "measured" else 1
     if arguments.command == "ai-verify":
         from .ai_runtime import installed
 

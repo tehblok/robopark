@@ -240,7 +240,8 @@ def _prepare(db, settings, job, issue_snapshot):
     for source in sources:
         doc = db.get(AIDocument, source["id"])
         source["revision"] = doc.revision
-        source["excerpt"] = source["excerpt"][:2400]
+        if not prompts.atomic_source(source):
+            source["excerpt"] = source["excerpt"][:2400]
     prior = []
     if job.conversation_id:
         history = list(

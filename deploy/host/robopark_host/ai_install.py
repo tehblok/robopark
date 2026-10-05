@@ -206,6 +206,14 @@ def reconcile_ai_installation(paths, release, runner, *, auto_install=False):
         model_sha256=MODEL_SHA256 if present else None,
     )
     runner.run(["systemctl", "daemon-reload"], timeout=30)
+    if not present:
+        # A previous release can still be running with a retired model even
+        # though the new pinned artifact is absent.  Stop that process while
+        # preserving enabled_intent for activation after setup succeeds.
+        runner.run(
+            ["systemctl", "disable", "--now", "robopark-ai.service"],
+            timeout=60,
+        )
     # enable --now does not reload an already running Python broker. Refresh
     # it after release cutover/rollback so API and broker contracts agree,
     # without restarting it on every idempotent reconciliation.

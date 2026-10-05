@@ -6,7 +6,7 @@ import { mechanicUser, northPark, operatorUser } from './support/users'
 
 const readyStatus = {
   supported: true, installed: true, enabled: true, ready: true, reason: null,
-  model: 'prism-ml/Ternary-Bonsai-2-27B-gguf', backend: 'cuda', can_manage: false,
+  model: 'google/gemma-4-E4B-it-qat-q4_0-gguf', backend: 'cuda', can_manage: false,
   counts: { documents: 2, candidates: 1, jobs: 0 },
 }
 

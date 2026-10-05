@@ -19,13 +19,14 @@ from pathlib import Path
 from .state import atomic_write_json
 from .storage_layout import StorageError, require_storage
 
-MODEL_ID = "prism-ml/Ternary-Bonsai-2-27B-gguf"
-MODEL_REVISION = "b072e1d3b35a0a630cece372c2127528e0994386"
-MODEL_FILE = "Ternary-Bonsai-2-27B-PQ2_0.gguf"
-MODEL_SIZE = 7_206_168_928
-MODEL_SHA256 = "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1"
-LLAMA_REPOSITORY = "https://github.com/PrismML-Eng/llama.cpp.git"
-LLAMA_COMMIT = "2459f68b5c0eb26261fd5a81682004b93cd645ba"
+MODEL_ID = "google/gemma-4-E4B-it-qat-q4_0-gguf"
+MODEL_REVISION = "ce70163b5df4580cf3534f9f373f15c6c6a6c4e9"
+MODEL_FILE = "gemma-4-E4B_q4_0-it.gguf"
+MODEL_SIZE = 5_154_940_864
+MODEL_SHA256 = "09f6f2a1d9ff4a1b7db9cc1aad9c55a9df2f5ec133327a92eab593fcf4360ed0"
+LLAMA_REPOSITORY = "https://github.com/ggml-org/llama.cpp.git"
+LLAMA_COMMIT = "c25030496079fdad724609d94f68b859f25774ce"
+LEGACY_MODEL_FILES = ("Ternary-Bonsai-2-27B-PQ2_0.gguf",)
 
 
 def _read(path: Path, limit: int = 65536) -> bytes:
@@ -177,11 +178,15 @@ def install_runtime(paths) -> None:
     models, source, build, binary = base / "models", base / "src/llama.cpp", base / "build", base / "bin/llama-server"
     for directory in (models, source.parent, build, binary.parent):
         directory.mkdir(parents=True, exist_ok=True, mode=0o750)
+    (base / "install.json").unlink(missing_ok=True)
     _run(["nvcc", "--version"], timeout=20)
     if not (source / ".git").is_dir():
         if source.exists():
             shutil.rmtree(source)
         _run(["git", "clone", "--filter=blob:none", "--no-checkout", LLAMA_REPOSITORY, str(source)], timeout=600)
+    # Existing installations may contain the retired Prism fork.  Always move
+    # the reusable checkout to the pinned upstream before fetching the commit.
+    _run(["git", "-C", str(source), "remote", "set-url", "origin", LLAMA_REPOSITORY], timeout=30)
     _run(["git", "-C", str(source), "fetch", "--depth", "1", "origin", LLAMA_COMMIT], timeout=600)
     _run(["git", "-C", str(source), "checkout", "--detach", LLAMA_COMMIT], timeout=60)
     _run([
@@ -209,16 +214,6 @@ def install_runtime(paths) -> None:
             raise RuntimeError("ai_model_checksum_mismatch")
         partial.chmod(0o640)
         os.replace(partial, model)
-    atomic_write_json(
-        base / "install.json",
-        {
-            "schema": 1,
-            "llama_commit": LLAMA_COMMIT,
-            "model_file": MODEL_FILE,
-            "model_size": MODEL_SIZE,
-            "model_sha256": MODEL_SHA256,
-        },
-    )
     if paths.root == Path("/"):
         account = pwd.getpwnam("robopark-ai")
         for directory in (base, binary.parent, models):
@@ -226,32 +221,82 @@ def install_runtime(paths) -> None:
             directory.chmod(0o750)
         os.chown(base / "bin/llama-server", 0, account.pw_gid)
         os.chown(model, 0, account.pw_gid)
+    for legacy_file in LEGACY_MODEL_FILES:
+        for suffix in ("", ".part"):
+            with suppress(FileNotFoundError):
+                (models / (legacy_file + suffix)).unlink()
+
+    atomic_write_json(
+        base / "install.json",
+        {
+            "schema": 2,
+            "llama_commit": LLAMA_COMMIT,
+            "binary_sha256": _sha256(binary),
+            "model_file": MODEL_FILE,
+            "model_size": MODEL_SIZE,
+            "model_sha256": MODEL_SHA256,
+        },
+    )
 
 
 def installed(paths, *, verify=False) -> bool:
     base = paths.var / "ai"
     model = base / "models" / MODEL_FILE
-    if not (base / "bin/llama-server").is_file() or not model.is_file() or model.stat().st_size != MODEL_SIZE:
+    binary = base / "bin/llama-server"
+    if binary.is_symlink() or model.is_symlink() or not binary.is_file() or not model.is_file() or model.stat().st_size != MODEL_SIZE:
         return False
     receipt = base / "install.json"
     try:
         record = json.loads(receipt.read_text())
     except (OSError, ValueError):
         record = None
+    binary_hash = record.get("binary_sha256") if isinstance(record, dict) else None
+    if not isinstance(binary_hash, str) or len(binary_hash) != 64 or any(c not in "0123456789abcdef" for c in binary_hash):
+        return False
     expected = {
-        "schema": 1,
+        "schema": 2,
         "llama_commit": LLAMA_COMMIT,
+        "binary_sha256": binary_hash,
         "model_file": MODEL_FILE,
         "model_size": MODEL_SIZE,
         "model_sha256": MODEL_SHA256,
     }
-    if record == expected and not verify:
-        return True
-    if not verify or _sha256(model) != MODEL_SHA256:
-        return False
     if record != expected:
-        atomic_write_json(receipt, expected)
-    return True
+        # A model checksum cannot certify the installed server's build revision.
+        # Only install_runtime may write a receipt for a newly built runtime.
+        return False
+    try:
+        return not verify or (_sha256(binary) == binary_hash and _sha256(model) == MODEL_SHA256)
+    except OSError:
+        return False
+
+
+def _smoke_tool_response(body) -> bool:
+    """A successful HTTP response is not enough to accept a model/template."""
+    if not isinstance(body, dict):
+        return False
+    choices = body.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+        return False
+    if choices[0].get("finish_reason") != "tool_calls":
+        return False
+    message = choices[0].get("message")
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return False
+    calls = message.get("tool_calls")
+    if not isinstance(calls, list) or len(calls) != 1 or not isinstance(calls[0], dict):
+        return False
+    call = calls[0]
+    function = call.get("function")
+    if call.get("type") != "function" or not isinstance(call.get("id"), str) or not call["id"] or not isinstance(function, dict):
+        return False
+    if function.get("name") != "check_contract" or not isinstance(function.get("arguments"), str):
+        return False
+    try:
+        arguments = json.loads(function["arguments"])
+    except ValueError:
+        return False
+    return isinstance(arguments, dict) and set(arguments) == {"ok"} and arguments["ok"] is True
 
 
 def runtime_ready(paths) -> tuple[bool, str | None]:
@@ -267,7 +312,21 @@ def runtime_ready(paths) -> tuple[bool, str | None]:
                 return False, "health_failed"
         request = urllib.request.Request(
             "http://127.0.0.1:18081/v1/chat/completions",
-            data=json.dumps({"messages": [{"role": "user", "content": "Reply OK"}], "max_tokens": 4, "reasoning_effort": "none"}).encode(),
+            # This synthetic function is never dispatched. It checks the actual
+            # system/tool template and JSON wire contract before enabling jobs.
+            data=json.dumps({
+                "messages": [
+                    {"role": "system", "content": "Call check_contract once with ok=true. This is a synthetic readiness test."},
+                    {"role": "user", "content": "Check the contract now."},
+                ],
+                "tools": [{"type": "function", "function": {
+                    "name": "check_contract", "description": "Synthetic check, no side effects.",
+                    "parameters": {"type": "object", "properties": {"ok": {"type": "boolean", "const": True}}, "required": ["ok"], "additionalProperties": False},
+                }}],
+                "tool_choice": "required",
+                "parallel_tool_calls": False, "temperature": 0,
+                "max_tokens": 64, "stream": False, "reasoning_effort": "none",
+            }).encode(),
             headers={
                 "Content-Type": "application/json",
                 "Authorization": "Bearer " + read_api_key(paths),
@@ -278,7 +337,7 @@ def runtime_ready(paths) -> tuple[bool, str | None]:
             if len(raw) > 65536:
                 return False, "smoke_failed"
             body = json.loads(raw)
-        if response.status != 200 or not body.get("choices"):
+        if response.status != 200 or not _smoke_tool_response(body):
             return False, "smoke_failed"
     except (OSError, ValueError, KeyError):
         return False, "smoke_failed"
@@ -294,7 +353,7 @@ def reconcile(paths, *, auto_install=False, runner=None):
             supported, reason = probe_support(paths)
             if not supported:
                 return publish_status(paths, supported=False, reason=reason)
-            if auto_install and not installed(paths):
+            if auto_install and not installed(paths, verify=True):
                 install_runtime(paths)
             present = installed(paths)
             if runner and present:
@@ -340,6 +399,8 @@ def control(paths, action: str, runner) -> dict:
                 for target in (
                     paths.var / "ai/models" / MODEL_FILE,
                     paths.var / "ai/models" / (MODEL_FILE + ".part"),
+                    *(paths.var / "ai/models" / name for name in LEGACY_MODEL_FILES),
+                    *(paths.var / "ai/models" / (name + ".part") for name in LEGACY_MODEL_FILES),
                     paths.var / "ai/install.json",
                 ):
                     with suppress(FileNotFoundError):

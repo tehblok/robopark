@@ -133,3 +133,23 @@ def test_fit_context_rejects_question_that_cannot_fit_with_fixed_policy():
             [],
             "вопрос " * prompts.CONTEXT_BYTES,
         )
+
+
+def test_complete_knowledge_articles_are_kept_whole_or_omitted():
+    header = "База знаний Robopark\nОбласть применения: R3.9\n"
+    sources = [
+        {
+            "id": "too-long",
+            "excerpt": header + "Техническое основание. " * 400 + "\nЗамена НЕ помогла.",
+        },
+        {"id": "fits", "excerpt": header + "Отключить обе АКБ.\nПроверили.\nОшибка осталась."},
+    ]
+    messages, fitted = prompts.fit_context(
+        PromptDB(""), SimpleNamespace(role="mechanic"), sources, "Что известно?"
+    )
+    assert fitted == [sources[1]]
+    assert (
+        sources[1]["excerpt"]
+        in json.loads(messages[0]["content"].split(prompts.SOURCES_HEADER)[1])[0]["excerpt"]
+    )
+    assert prompts.TRUNCATION_MARKER not in messages[0]["content"]

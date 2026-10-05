@@ -20,6 +20,10 @@ from robopark_host.knowledge_archive import safe_name
 from robopark_host.knowledge_assets import sha256, validate_manifest
 
 CHUNK_BYTES = 256 * 1024**2
+DERIVED_EXPORTS = frozenset(
+    "tracker_year_all_parks/" + name
+    for name in ("corpus", "prepared", "dataset.jsonl", "training.jsonl")
+)
 
 
 def _write_json(path, value):
@@ -28,7 +32,7 @@ def _write_json(path, value):
     )
 
 
-def build_bundle(seed, public_seed, key, output):
+def build_bundle(seed, public_seed, key, output, *, replace_public=False):
     if len(key) < 32:
         raise ValueError("publication_identity_key_invalid")
     public = {
@@ -72,7 +76,7 @@ def build_bundle(seed, public_seed, key, output):
             total += 1
         # A future corpus may omit an original that remains in the public seed.
         # Keep those identities so the switch never retires unrelated public data.
-        for ref in sorted(public.keys() - seen):
+        for ref in sorted(public.keys() - seen) if not replace_public else ():
             stream.write(
                 json.dumps(public[ref], ensure_ascii=False, separators=(",", ":"))
                 + "\n"
@@ -117,6 +121,27 @@ def collect(root, prefix):
         safe_name(name)
         files.append((name, path))
     return files
+
+
+def collect_originals(root, excluded=()):
+    """Omit explicitly selected derivative exports, never sibling path prefixes."""
+    prefixes = []
+    for relative in excluded:
+        if relative not in DERIVED_EXPORTS:
+            raise ValueError("excluded_source_not_derivative")
+        prefix = safe_name("originals/" + relative)
+        path = root / relative
+        if path.is_symlink() or not path.exists():
+            raise ValueError("excluded_source_invalid")
+        prefixes.append(prefix)
+    return [
+        entry
+        for entry in collect(root, "originals")
+        if not any(
+            entry[0] == prefix or entry[0].startswith(prefix + "/")
+            for prefix in prefixes
+        )
+    ]
 
 
 def package_part(files, output, binary, recipient):
@@ -179,9 +204,15 @@ def build(args):
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     bundle = output / "local-bundle"
     value = build_bundle(
-        args.seed, args.public_seed, args.publication_key.read_bytes(), bundle
+        args.seed,
+        args.public_seed,
+        args.publication_key.read_bytes(),
+        bundle,
+        replace_public=getattr(args, "replace_public", False),
     )
-    originals = collect(args.source_root, "originals")
+    originals = collect_originals(
+        args.source_root, getattr(args, "exclude_original", ())
+    )
     if not originals:
         raise ValueError("source_empty")
     files = collect(bundle, "bundle") + originals
@@ -265,6 +296,17 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     for name in ["recipient", "id", "base-url"]:
         parser.add_argument("--" + name, required=True)
+    parser.add_argument(
+        "--replace-public",
+        action="store_true",
+        help="Curated replacement: omit missing public records so unchanged legacy tickets retire; preserve shared source IDs.",
+    )
+    parser.add_argument(
+        "--exclude-original",
+        action="append",
+        default=[],
+        help="Explicit path relative to source root; omit redundant derived exports only.",
+    )
     parser.add_argument(
         "--extra",
         action="append",

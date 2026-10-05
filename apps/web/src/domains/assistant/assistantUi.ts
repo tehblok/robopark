@@ -31,6 +31,7 @@ const STATUS_MESSAGES: Record<string, string> = {
   tegra234_required: 'Требуется платформа NVIDIA Tegra 234.', memory_below_24gib: 'Недостаточно оперативной памяти: требуется не менее 24 ГиБ.',
   storage: 'Хранилище модели недоступно или не готово.', install_failed: 'Установка модели завершилась с ошибкой.',
   model_missing: 'Файл модели не найден.', runtime_unavailable: ERROR_MESSAGES.runtime_unavailable,
+  runtime_model_mismatch: 'Версия модели изменилась. Установите Gemma 4 E4B в настройках помощника.',
   installing: 'Устанавливаем локальную модель. Страница обновится автоматически.',
   starting: 'Запускаем локальную модель.', not_installed: 'Локальная модель ещё не установлена.',
   cuda_unavailable: 'CUDA недоступна. Проверьте драйвер и конфигурацию устройства.',

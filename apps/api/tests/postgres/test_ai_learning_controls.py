@@ -34,7 +34,7 @@ def test_learning_rereads_disabled_config_after_postgres_controls_lock(
                 "enabled": True,
                 "ready": True,
                 "reason": None,
-                "model": "bonsai",
+                "model": "google/gemma-4-E4B-it-qat-q4_0-gguf",
                 "backend": "cuda",
             }
         ),

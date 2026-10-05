@@ -257,3 +257,50 @@ def test_position_inflections_match_inner_camera_and_exclude_outer(db_session, s
     )
     assert found and found[0]["id"] == inner.id
     assert len(found) == 1
+
+
+def test_grounded_article_excerpt_keeps_scope_without_promoting_trust(db_session, seed_admin):
+    scope = (
+        "Область применения: только учебный стенд R7; итоговая проверка в источнике отсутствует."
+    )
+    content = (
+        "База знаний Robopark\n"
+        + scope
+        + "\n\n"
+        + "Архивные наблюдения.\n\n" * 180
+        + "В записи описан калибровочный модуль и повторный отказ после настройки.\n\n"
+        + "Неизвестные обстоятельства.\n\n" * 100
+    )
+    row = put(db_session, seed_admin, "История настройки стенда", content, "note")
+    found = knowledge.search(db_session, seed_admin, "калибровочный модуль")
+    assert found and found[0]["id"] == row.id
+    assert scope in found[0]["excerpt"]
+    assert "повторный отказ" in found[0]["excerpt"]
+    assert found[0]["trust"] == "unverified"
+    assert found[0]["excerpt"] == content.strip()
+
+
+def test_operations_queries_reach_legacy_spellings_without_reindex(db_session, seed_admin):
+    cases = [
+        (
+            "Логи и Wi‑Fi",
+            "Слив логов остановился на Wi‑Fi, после перезапуска возобновился.",
+            "Логи не сливаются через Wi-Fi",
+        ),
+        (
+            "Ожидание запчастей",
+            "В ожидании запчастей деталь отсутствует в ЗИП.",
+            "Ждём запчасть, робот уже готов?",
+        ),
+        ("Донорские детали", "Снятый ПЦУ подписали тикетом донора.", "Откуда сняли донорский PCU?"),
+        (
+            "Сводка смены",
+            "В сводке смены указан простой и нехватка деталей.",
+            "Что передавали в отчёте смены?",
+        ),
+    ]
+    for title, text, _ in cases:
+        put(db_session, seed_admin, title, text, "note")
+    for title, _, query in cases:
+        found = knowledge.search(db_session, seed_admin, query)
+        assert found and found[0]["title"] == title

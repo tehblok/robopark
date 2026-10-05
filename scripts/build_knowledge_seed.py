@@ -425,7 +425,13 @@ def json_shape(path: Path) -> str:
 
 class Builder:
     def __init__(
-        self, root: Path, output: Path, chunk_chars: int, part_max_bytes: int
+        self,
+        root: Path,
+        output: Path,
+        chunk_chars: int,
+        part_max_bytes: int,
+        *,
+        excluded_directories: tuple[Path, ...] = (),
     ) -> None:
         self.root = root
         self.output = output
@@ -442,6 +448,12 @@ class Builder:
         self.canonical_tickets: dict[str, str] = {}
         self.document_fingerprints: dict[str, str] = {}
         self.source_map: dict[str, dict[str, Any]] = {}
+        self.excluded_directories = {path.resolve() for path in excluded_directories}
+        if root.resolve() in self.excluded_directories or any(
+            not path.is_relative_to(root.resolve())
+            for path in self.excluded_directories
+        ):
+            raise ValueError("excluded_directory_outside_input")
 
     def add(
         self, relative: Path, title: str, content: str, kind: str, suffix: str = ""
@@ -591,7 +603,13 @@ class Builder:
             except Exception as error:  # noqa: BLE001
                 reason = (
                     str(error)
-                    if str(error) in {"source_too_large", "encrypted_pdf"}
+                    if str(error)
+                    in {
+                        "source_too_large",
+                        "encrypted_pdf",
+                        "pdf_reader_unavailable",
+                        "xls_reader_unavailable",
+                    }
                     else "parse_error"
                 )
                 self.errors[reason] += 1
@@ -643,6 +661,8 @@ class Builder:
                             self.disposition(relative, "skipped", "symlink")
                         continue
                     if entry.is_dir(follow_symlinks=False):
+                        if path.resolve() in self.excluded_directories:
+                            continue
                         stack.append(path)
                     elif entry.is_file(follow_symlinks=False):
                         relative = path.relative_to(self.root)
@@ -655,7 +675,10 @@ class Builder:
         digest = hashlib.sha256()
         for directory, names, filenames in os.walk(self.root, followlinks=False):
             names[:] = sorted(
-                name for name in names if not (Path(directory) / name).is_symlink()
+                name
+                for name in names
+                if not (Path(directory) / name).is_symlink()
+                and (Path(directory) / name).resolve() not in self.excluded_directories
             )
             for name in sorted(filenames):
                 path = Path(directory) / name
@@ -827,7 +850,35 @@ class Builder:
                     self.add_generic_json(relative, item, index)
         else:
             data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-            self.add_generic_json(relative, data, 1)
+            if isinstance(data, dict) and "sections" in data and "key" in data:
+                # Full-year Tracker exports wrap each API result in an explicit
+                # success envelope. Never flatten failed sections as knowledge.
+                sections = data.get("sections")
+                issue_section = (
+                    sections.get("issue", {}) if isinstance(sections, dict) else {}
+                )
+                issue = (
+                    issue_section.get("value")
+                    if isinstance(issue_section, dict)
+                    else None
+                )
+                if (
+                    not isinstance(issue_section, dict)
+                    or issue_section.get("ok") is not True
+                    or not isinstance(issue, dict)
+                ):
+                    self.quarantine(relative, "tracker_issue_unavailable")
+                    return
+                ticket = {"key": data["key"], "issue": issue}
+                for section in ("comments", "attachments"):
+                    envelope = sections.get(section, {})
+                    if isinstance(envelope, dict) and envelope.get("ok") is True:
+                        ticket[section] = envelope.get("value", [])
+                    else:
+                        self.flag(relative, "tracker_section_unavailable", section)
+                self.add_ticket(relative, ticket)
+            else:
+                self.add_generic_json(relative, data, 1)
 
     def read_jsonl(self, path: Path, relative: Path) -> None:
         with path.open("r", encoding="utf-8", errors="replace") as stream:

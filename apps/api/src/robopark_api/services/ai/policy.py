@@ -13,6 +13,7 @@ from robopark_api.models import Park, UserPark
 from robopark_api.services import audit, rbac
 
 STAFF = {"mechanic", "operator", "admin", "royal"}
+RUNTIME_MODEL = "google/gemma-4-E4B-it-qat-q4_0-gguf"
 
 
 def staff(db, user):
@@ -62,7 +63,7 @@ def host_status(settings):
         "enabled": False,
         "ready": False,
         "reason": "agx_required",
-        "model": "Ternary-Bonsai-2-27B-PQ2_0",
+        "model": RUNTIME_MODEL,
         "backend": None,
     }
     try:
@@ -77,6 +78,12 @@ def host_status(settings):
             return unavailable
         if any(not isinstance(value.get(k), bool) for k in ("installed", "enabled", "ready")):
             return unavailable
+        if value.get("model") != RUNTIME_MODEL:
+            return {
+                **unavailable,
+                "supported": True,
+                "reason": "runtime_model_mismatch",
+            }
         return {
             **unavailable,
             **{k: value[k] for k in unavailable if k in value},
