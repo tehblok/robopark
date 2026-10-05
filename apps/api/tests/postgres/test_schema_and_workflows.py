@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from alembic import command
@@ -41,7 +42,7 @@ from robopark_api.models import (
 )
 from robopark_api.routers.tracker_collaboration import _presence_insert
 from robopark_api.security import hash_password
-from robopark_api.services import inventory_exports, inventory_stock, task_timeline
+from robopark_api.services import inventory_exports, inventory_stock, media_uploads, task_timeline
 from robopark_api.services.login_throttle import LoginThrottle
 from robopark_api.services.ops.snapshot import restore_snapshot_tree
 from robopark_api.services.rbac import RoleSlug
@@ -255,7 +256,8 @@ def test_postgresql_http_concurrent_sync_replay_dispatches_once_and_returns_one_
     dispatch_entered = threading.Event()
     allow_dispatch_to_finish = threading.Event()
 
-    def dispatch(_db, _user, item):
+    def dispatch(_db, _user, item, consumed_media=None):
+        assert consumed_media is None
         calls.append(item.client_action_id)
         dispatch_entered.set()
         assert allow_dispatch_to_finish.wait(timeout=1)
@@ -404,10 +406,99 @@ def test_postgresql_http_concurrent_media_completion_returns_one_stable_result(
     assert completed.json()["completed"] is True
 
 
+def test_postgresql_consumed_media_does_not_hold_row_or_global_fence(
+    migrated_engine: Engine, tmp_path: Path, monkeypatch
+) -> None:
+    factory = sessionmaker(bind=migrated_engine, future=True)
+    user_id, park_id, _username = _seed_http_mechanic(factory)
+    root = tmp_path / "consumed-media"
+    root.mkdir()
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: root)
+    suffix = uuid4().hex[:10]
+    rows = []
+    with factory() as db:
+        now = datetime.now(UTC).timestamp()
+        for label in ("same", "unrelated"):
+            row = MediaUploadSession(
+                actor_user_id=user_id,
+                park_id=park_id,
+                media_id=f"pg-consume-{label}-{suffix}",
+                issue_key=f"HTTP-{suffix}",
+                original_name=f"{label}.jpg",
+                mime_type="image/jpeg",
+                size_bytes=4,
+                sha256=sha256(b"data").hexdigest(),
+                received_offset=4,
+                blob_name=f"{label}-{suffix}.ready",
+                completed=True,
+                created_at=now,
+                updated_at=now,
+                completed_at=now,
+                expires_at=now + 3600,
+                dependent_device_id="phone-1",
+                dependent_action_id=f"{label}-action",
+                dependency_bound_at=now,
+            )
+            db.add(row)
+            rows.append(row)
+        db.commit()
+        identities = [(row.media_id, row.blob_name) for row in rows]
+    for _media_id, blob_name in identities:
+        (root / blob_name).write_bytes(b"data")
+
+    first_db = factory()
+    try:
+        actor = first_db.get(User, user_id)
+        first = media_uploads.consume_action_dependency(
+            first_db,
+            actor,
+            media_id=identities[0][0],
+            issue_key=f"HTTP-{suffix}",
+            device_id="phone-1",
+            action_id="same-action",
+        )
+        assert first.content == b"data"
+        assert first_db.in_transaction() is True
+
+        second_inside_fence = threading.Event()
+        main_thread = threading.current_thread()
+        original_bind = media_uploads._bind_action_dependency_locked
+
+        def observed_bind(*args, **kwargs):
+            if threading.current_thread() is not main_thread:
+                second_inside_fence.set()
+            return original_bind(*args, **kwargs)
+
+        monkeypatch.setattr(media_uploads, "_bind_action_dependency_locked", observed_bind)
+
+        def consume(media_id: str, action_id: str) -> bytes:
+            with factory() as db:
+                db.execute(text("SET LOCAL lock_timeout = '500ms'"))
+                worker = db.get(User, user_id)
+                return media_uploads.consume_action_dependency(
+                    db,
+                    worker,
+                    media_id=media_id,
+                    issue_key=f"HTTP-{suffix}",
+                    device_id="phone-1",
+                    action_id=action_id,
+                ).content
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            same_future = executor.submit(consume, identities[0][0], "same-action")
+            assert second_inside_fence.wait(timeout=1)
+            unrelated_future = executor.submit(consume, identities[1][0], "unrelated-action")
+            assert same_future.result(timeout=2) == b"data"
+            assert unrelated_future.result(timeout=2) == b"data"
+    finally:
+        first_db.rollback()
+        first_db.close()
+
+
 def test_postgresql_http_schedule_and_push_subscription_persist_for_same_user(
     migrated_engine: Engine, tmp_path: Path, monkeypatch
 ) -> None:
-    from robopark_api.schedule_models import PushSubscription
+    from robopark_api.schedule_models import PushSubscription, ScheduleEntry
 
     endpoint = "https://push.example/postgres"
     with _postgres_http_client(migrated_engine, tmp_path, monkeypatch) as (client, factory):
@@ -419,13 +510,15 @@ def test_postgresql_http_schedule_and_push_subscription_persist_for_same_user(
             == 204
         )
         now = datetime.now(UTC)
+        local_start = (now - timedelta(minutes=1)).astimezone(ZoneInfo("America/New_York"))
+        local_end = (now + timedelta(hours=1)).astimezone(ZoneInfo("America/New_York"))
         schedule = client.post(
             "/schedules",
             json={
                 "park_id": park_id,
                 "kind": "shift",
-                "start_at": (now - timedelta(minutes=1)).isoformat(),
-                "end_at": (now + timedelta(hours=1)).isoformat(),
+                "start_at": local_start.isoformat(),
+                "end_at": local_end.isoformat(),
             },
         )
         subscription = client.post(
@@ -436,7 +529,12 @@ def test_postgresql_http_schedule_and_push_subscription_persist_for_same_user(
             event_type="new_task", park_id=park_id, protected_text="private task"
         )
         inbox = client.get("/push/inbox")
+        assert schedule.status_code == 201
         with factory() as db:
+            persisted_schedule = db.get(ScheduleEntry, schedule.json()["id"])
+            assert persisted_schedule.start_at == local_start
+            assert persisted_schedule.end_at == local_end
+            assert persisted_schedule.start_at.tzinfo is not None
             persisted_subscription = db.scalar(
                 select(PushSubscription).where(
                     PushSubscription.endpoint_hash == sha256(endpoint.encode()).hexdigest()

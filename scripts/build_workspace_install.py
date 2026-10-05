@@ -44,6 +44,8 @@ _UNTRACKED_EXTENSIONS = {
     ".json", ".sh", ".service", ".timer", ".path", "",
 }
 _MAX_FILE_BYTES = 32 * 1024 * 1024
+_MANIFEST_CHANGE_LIMIT = 500
+_MANIFEST_CHANGES_LIMIT = 100
 # New runtime files must be reviewed and staged in Git before packaging. This
 # also covers files whose names were allowlisted during initial development.
 _SECRET_FILE_NAMES = {
@@ -178,6 +180,30 @@ def snapshot_version(base_version: str, digest: str) -> str:
     return f"{core}-rc.{next_rc}.dev{int(digest[:16], 16)}"
 
 
+def workspace_manifest_changes(
+    update_notes: str,
+    *,
+    source_digest: str,
+    snapshot_note: str,
+) -> list[str]:
+    """Keep release notes and workspace provenance inside manifest-v1 item bounds."""
+    values = [update_notes.strip(), f"Workspace source SHA-256: {source_digest}. {snapshot_note}"]
+    changes: list[str] = []
+    for value in values:
+        remaining = value
+        while len(remaining) > _MANIFEST_CHANGE_LIMIT:
+            boundary = remaining.rfind(" ", 0, _MANIFEST_CHANGE_LIMIT + 1)
+            if boundary <= 0:
+                boundary = _MANIFEST_CHANGE_LIMIT
+            changes.append(remaining[:boundary].rstrip())
+            remaining = remaining[boundary:].lstrip()
+        if remaining:
+            changes.append(remaining)
+    if not changes or len(changes) > _MANIFEST_CHANGES_LIMIT:
+        raise BuildError("workspace_manifest_changes_invalid")
+    return changes
+
+
 def _replace_once(path: Path, old: str, new: str) -> None:
     source = path.read_text()
     if source.count(old) != 1:
@@ -245,10 +271,8 @@ def _stage_snapshot(
     web_lock_path.write_text(json.dumps(web_lock, ensure_ascii=False, indent=2) + "\n")
     metadata_path = stage / "deploy/release-metadata.json"
     metadata = json.loads(metadata_path.read_text())
-    metadata["update_notes"] = (
-        f"{metadata['update_notes'].strip().replace(base_version, version, 1)} "
-        f"Workspace source SHA-256: {source_digest}. "
-        "Uncommitted clean-install snapshot; inspect SOURCE-SNAPSHOT.json."
+    metadata["update_notes"] = metadata["update_notes"].strip().replace(
+        base_version, version, 1
     )
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
     subprocess.run(["git", "init", "-q", str(stage)], check=True)
@@ -283,7 +307,19 @@ def build_workspace_install_archive(repository: Path, output: Path) -> Path:
         version = _stage_snapshot(
             repository, stage, files, source_digest, archive_identity,
         )
-        ota = build_ota(stage, scratch / "ota", git_sha=base_sha)
+        metadata = json.loads((stage / "deploy/release-metadata.json").read_text())
+        ota = build_ota(
+            stage,
+            scratch / "ota",
+            git_sha=base_sha,
+            manifest_changes=workspace_manifest_changes(
+                metadata["update_notes"],
+                source_digest=source_digest,
+                snapshot_note=(
+                    "Uncommitted clean-install snapshot; inspect SOURCE-SNAPSHOT.json."
+                ),
+            ),
+        )
         ota_data = ota.read_bytes()
         snapshot = {
             "kind": "uncommitted-worktree", "base_git_sha": base_sha,

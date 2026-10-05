@@ -4,7 +4,7 @@ from threading import Barrier
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 from sqlalchemy.orm import Session
 
 from conftest import login_as, role_id_for
@@ -1688,4 +1688,112 @@ def test_active_operator_prefers_current_shift_then_username(db_session, seed_pa
     assert (
         schedules.resolve_active_operator(db_session, park_id=seed_park_with_tracker.id, at=now).id
         == fallback.id
+    )
+
+
+@pytest.mark.parametrize("zone", ["America/New_York", "Pacific/Auckland", "Europe/Moscow"])
+def test_pattern_keeps_instant_after_sqlite_reload_and_list(
+    client, db_session, seed_mechanic, seed_park_with_tracker, zone
+):
+    login_as(client, seed_mechanic.username, "secret")
+    created = client.post(
+        "/schedules/pattern",
+        json=_pattern_payload(
+            seed_park_with_tracker.id,
+            [seed_mechanic.id],
+            timezone=zone,
+            start_date="2026-11-01",
+            end_date="2026-11-01",
+            pattern="none",
+        ),
+    )
+    assert created.status_code == 201
+    entry_id = created.json()[0]["id"]
+    expected = datetime(2026, 11, 1, 9, tzinfo=ZoneInfo(zone)).astimezone(UTC)
+    db_session.expire_all()
+    persisted = db_session.get(ScheduleEntry, entry_id)
+    assert schedules._moscow_datetime(persisted.start_at).astimezone(UTC) == expected
+    listed = client.get(
+        "/schedules",
+        params={
+            "park_id": seed_park_with_tracker.id,
+            "start_at": expected.isoformat(),
+            "end_at": (expected + timedelta(minutes=1)).isoformat(),
+        },
+    )
+    assert listed.status_code == 200
+    assert [item["id"] for item in listed.json()] == [entry_id]
+    assert datetime.fromisoformat(listed.json()[0]["start_at"]).astimezone(UTC) == expected
+
+
+def test_operator_routing_normalizes_timezone_at_exact_shift_boundaries(
+    db_session, seed_park_with_tracker
+):
+    operator = _add_user(
+        db_session,
+        username="timezone-operator",
+        role=RoleSlug.OPERATOR,
+        park_id=seed_park_with_tracker.id,
+    )
+    start = datetime(2026, 11, 1, 9, tzinfo=ZoneInfo("America/New_York"))
+    end = start + timedelta(hours=12)
+    db_session.add(
+        ScheduleEntry(
+            owner_user_id=operator.id,
+            park_id=seed_park_with_tracker.id,
+            kind="shift",
+            start_at=start,
+            end_at=end,
+            created_by_user_id=operator.id,
+            updated_by_user_id=operator.id,
+        )
+    )
+    db_session.commit()
+    db_session.expire_all()
+    for instant, active in (
+        (start - timedelta(seconds=1), False),
+        (start, True),
+        (end - timedelta(seconds=1), True),
+        (end, False),
+    ):
+        selected = schedules.resolve_active_operator(
+            db_session,
+            park_id=seed_park_with_tracker.id,
+            at=instant.astimezone(UTC),
+            allow_off_shift_fallback=False,
+        )
+        assert (selected.id if selected else None) == (operator.id if active else None)
+
+
+def test_legacy_sqlite_schedule_keeps_moscow_wall_time(
+    db_session, seed_mechanic, seed_park_with_tracker
+):
+    row = ScheduleEntry(
+        owner_user_id=seed_mechanic.id,
+        park_id=seed_park_with_tracker.id,
+        kind="shift",
+        start_at=datetime(2026, 11, 1, 9),
+        end_at=datetime(2026, 11, 1, 21),
+        created_by_user_id=seed_mechanic.id,
+        updated_by_user_id=seed_mechanic.id,
+    )
+    db_session.add(row)
+    db_session.commit()
+    row_id = row.id
+    # Raw SQL models an old on-disk row without using the current bind processor.
+    db_session.execute(
+        text("UPDATE schedule_entries SET start_at=:start, end_at=:end WHERE id=:id"),
+        {"id": row_id, "start": "2026-11-01 09:00:00.000000", "end": "2026-11-01 21:00:00.000000"},
+    )
+    db_session.commit()
+    db_session.expire_all()
+    loaded = db_session.get(ScheduleEntry, row_id)
+    assert loaded.start_at.tzinfo is not None
+    assert loaded.start_at.astimezone(UTC) == datetime(2026, 11, 1, 6, tzinfo=UTC)
+    assert loaded.end_at.astimezone(UTC) == datetime(2026, 11, 1, 18, tzinfo=UTC)
+    assert (
+        db_session.execute(
+            text("SELECT start_at FROM schedule_entries WHERE id=:id"), {"id": row_id}
+        ).scalar_one()
+        == "2026-11-01 09:00:00.000000"
     )

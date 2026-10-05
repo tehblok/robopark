@@ -235,7 +235,7 @@ def test_batch_orders_comment_before_review_and_returns_revisions(
     login_as(client, seed_mechanic.username, "secret")
     calls = []
 
-    def dispatch(_db, _user, item):
+    def dispatch(_db, _user, item, _consumed_media=None):
         calls.append(item.client_action_id)
         return {"kind": item.action, "id": item.client_action_id}
 
@@ -268,7 +268,7 @@ def test_replaying_batch_after_response_loss_returns_receipt_without_second_acti
     login_as(client, seed_mechanic.username, "secret")
     calls = 0
 
-    def dispatch(_db, _user, item):
+    def dispatch(_db, _user, item, _consumed_media=None):
         nonlocal calls
         calls += 1
         return {"message_id": "message-1", "action": item.action}
@@ -354,7 +354,7 @@ def test_sqlite_concurrent_sync_replay_uses_one_dispatch_and_one_receipt(
         with original_lock(db, key):
             yield
 
-    def dispatch(_db, _user, item):
+    def dispatch(_db, _user, item, _consumed_media=None):
         calls.append(item.client_action_id)
         dispatch_entered.set()
         assert allow_dispatch.wait(timeout=watchdog), "owner was not released"
@@ -789,32 +789,33 @@ def test_offline_review_persists_operator_notification_with_review(
         "result": None,
     }
 
-    response = client.post(
-        "/sync/batch",
-        json=_batch(
-            _action(
-                "offline-review",
-                action="submit_review",
-                park_id=seed_park_with_tracker.id,
-                payload={
-                    "media_id": "offline-review-photo",
-                    "defect_code": "BD-01",
-                    "repair_fields": {
-                        "component_ids": ["lidar"],
-                        "solution_method": "REPAIR",
-                        "expected": {
-                            "component_ids": ["162206"],
-                            "defect_code": None,
-                            "solution_method": None,
-                        },
+    review_body = _batch(
+        _action(
+            "offline-review",
+            action="submit_review",
+            park_id=seed_park_with_tracker.id,
+            payload={
+                "media_id": "offline-review-photo",
+                "defect_code": "BD-01",
+                "comment": "Проверка выполнена атомарно",
+                "repair_fields": {
+                    "component_ids": ["lidar"],
+                    "solution_method": "REPAIR",
+                    "expected": {
+                        "component_ids": ["162206"],
+                        "defect_code": None,
+                        "solution_method": None,
                     },
                 },
-            )
-        ),
+            },
+        )
     )
+    response = client.post("/sync/batch", json=review_body)
+    replay = client.post("/sync/batch", json=review_body)
 
     assert response.status_code == 200
     assert response.json()["results"][0]["state"] == "confirmed", response.json()
+    assert replay.json() == response.json()
     assert (
         db_session.scalar(select(TaskReview).where(TaskReview.issue_key == "ROBOPARK-51"))
         is not None
@@ -826,6 +827,19 @@ def test_offline_review_persists_operator_notification_with_review(
         )
     )
     assert json.loads(fields_action.payload_json)["solution_method"] == "REPAIR"
+    atomic_actions = list(
+        db_session.scalars(
+            select(ReliableAction).where(
+                ReliableAction.resource_id == "ROBOPARK-51",
+                ReliableAction.idempotency_key == "sync-offline-review-key",
+                ReliableAction.action.in_(["comment", "review"]),
+            )
+        )
+    )
+    assert [action.action for action in atomic_actions].count("comment") == 1
+    assert [action.action for action in atomic_actions].count("review") == 1
+    comment_action = next(action for action in atomic_actions if action.action == "comment")
+    assert "Проверка выполнена атомарно" in json.loads(comment_action.payload_json)["text"]
     assert (
         db_session.scalar(
             select(NotificationEvent).where(
@@ -843,7 +857,7 @@ def test_mixed_batch_classifies_closed_task_stale_stock_and_server_failure(
     login_as(client, seed_mechanic.username, "secret")
     from robopark_api.services import offline_sync
 
-    def dispatch(_db, _user, item):
+    def dispatch(_db, _user, item, _consumed_media=None):
         outcome = item.payload["outcome"]
         if outcome == "closed":
             raise HTTPException(409, "task_already_closed")
@@ -888,7 +902,7 @@ def test_failed_dependency_is_not_dispatched(
 
     calls = []
 
-    def dispatch(_db, _user, item):
+    def dispatch(_db, _user, item, _consumed_media=None):
         calls.append(item.client_action_id)
         raise HTTPException(409, "task_already_closed")
 
@@ -927,7 +941,7 @@ def test_missing_dependency_from_prior_batch_never_dispatches(
     monkeypatch.setattr(
         offline_sync,
         "dispatch_action",
-        lambda _db, _user, item: calls.append(item.client_action_id) or {"ok": True},
+        lambda _db, _user, item, _media=None: calls.append(item.client_action_id) or {"ok": True},
     )
     batch = offline_sync.SyncBatchIn.model_validate(
         _batch(
@@ -978,7 +992,7 @@ def test_confirmed_dependency_from_prior_batch_allows_dispatch_and_replay(
     monkeypatch.setattr(
         offline_sync,
         "dispatch_action",
-        lambda _db, _user, item: calls.append(item.client_action_id) or {"ok": True},
+        lambda _db, _user, item, _media=None: calls.append(item.client_action_id) or {"ok": True},
     )
     comment = offline_sync.SyncBatchIn.model_validate(
         _batch(_action("saved-comment", park_id=seed_park_with_tracker.id))
@@ -1025,6 +1039,7 @@ def test_review_media_survives_beyond_retention_until_retry_is_acknowledged(
     now = time.time()
     row = MediaUploadSession(
         actor_user_id=seed_mechanic.id,
+        park_id=seed_park_with_tracker.id,
         media_id="durable-review-photo",
         issue_key="ROBOPARK-51",
         original_name="review.jpg",
@@ -1085,13 +1100,14 @@ def test_review_media_survives_beyond_retention_until_retry_is_acknowledged(
 
 
 def test_permanently_rejected_review_acknowledges_bound_media(
-    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch, tmp_path
 ):
-    from robopark_api.services import offline_sync
+    from robopark_api.services import media_uploads, offline_sync
 
     now = time.time()
     row = MediaUploadSession(
         actor_user_id=seed_mechanic.id,
+        park_id=seed_park_with_tracker.id,
         media_id="rejected-review-photo",
         issue_key="ROBOPARK-51",
         original_name="review.jpg",
@@ -1111,6 +1127,8 @@ def test_permanently_rejected_review_acknowledges_bound_media(
     )
     db_session.add(row)
     db_session.commit()
+    monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    (tmp_path / row.blob_name).write_bytes(b"data")
     monkeypatch.setattr(
         offline_sync,
         "dispatch_action",
@@ -1131,7 +1149,7 @@ def test_permanently_rejected_review_acknowledges_bound_media(
         ),
     )
 
-    assert response.json()["results"][0]["state"] == "rejected"
+    assert response.json()["results"][0]["state"] == "rejected", response.json()
     db_session.expire_all()
     assert db_session.get(MediaUploadSession, row.id).dependency_terminal_at is not None
 
@@ -1142,6 +1160,7 @@ def test_park_revocation_rejection_acknowledges_already_bound_media(
     now = time.time()
     row = MediaUploadSession(
         actor_user_id=seed_mechanic.id,
+        park_id=seed_park_with_tracker.id,
         media_id="revoked-review-photo",
         issue_key="ROBOPARK-51",
         original_name="review.jpg",
@@ -1285,6 +1304,7 @@ def test_review_media_conflict_is_nonterminal_and_survives_until_resolved(
     now = time.time()
     row = MediaUploadSession(
         actor_user_id=seed_mechanic.id,
+        park_id=seed_park_with_tracker.id,
         media_id="conflicting-review-photo",
         issue_key="ROBOPARK-51",
         original_name="review.jpg",
@@ -1337,18 +1357,25 @@ def test_review_media_conflict_is_nonterminal_and_survives_until_resolved(
     assert terminal_at is not None
 
 
-def test_missing_completed_review_media_reopens_and_replays_same_action_once(
+def test_retention_cleanup_allows_same_review_media_reupload_and_receipt_replay(
     client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch, tmp_path
 ):
-    from robopark_api.services import media_uploads, offline_sync
+    from robopark_api.services import (
+        media_uploads,
+        offline_sync,
+        platform_settings,
+        tracker_cache,
+    )
 
     monkeypatch.setattr(offline_sync, "_authorize_review", lambda *_args: {})
     content = b"\xff\xd8\xffrecovered-review"
     now = time.time()
+    media_id = "recovered-review-photo"
+    action_id = "recovered-review-action"
     row = MediaUploadSession(
         actor_user_id=seed_mechanic.id,
         park_id=seed_park_with_tracker.id,
-        media_id="recovered-review-photo",
+        media_id=media_id,
         issue_key="ROBOPARK-51",
         original_name="review.jpg",
         mime_type="image/jpeg",
@@ -1357,20 +1384,35 @@ def test_missing_completed_review_media_reopens_and_replays_same_action_once(
         received_offset=len(content),
         blob_name="lost.ready",
         completed=True,
-        created_at=now,
-        updated_at=now,
-        completed_at=now,
-        expires_at=now + 86400,
+        created_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 10,
+        updated_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 10,
+        completed_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 1,
+        expires_at=now - 1,
         dependent_device_id="phone-1",
-        dependent_action_id="recovered-review-action",
-        dependency_bound_at=now,
+        dependent_action_id=action_id,
+        dependency_bound_at=now - media_uploads.PENDING_DEPENDENCY_RETENTION_SECONDS - 10,
     )
     db_session.add(row)
     db_session.commit()
+    old_upload_id = row.id
     monkeypatch.setattr(media_uploads, "uploads_root", lambda: tmp_path)
+    (tmp_path / row.blob_name).write_bytes(content)
+    assert media_uploads.cleanup_expired(db_session, now=now) == 1
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        lambda **kwargs: {
+            "key": kwargs["key"],
+            "queue": "ROBOPARK",
+            "tags": [seed_park_with_tracker.tag],
+            "status": "Open",
+            "status_key": "open",
+        },
+    )
     applied = 0
 
-    def dispatch(db, user, item):
+    def dispatch(db, user, item, _consumed_media=None):
         nonlocal applied
         upload = db.scalar(
             select(MediaUploadSession).where(
@@ -1386,10 +1428,10 @@ def test_missing_completed_review_media_reopens_and_replays_same_action_once(
     login_as(client, seed_mechanic.username, "secret")
     body = _batch(
         _action(
-            "recovered-review-action",
+            action_id,
             action="submit_review",
             park_id=seed_park_with_tracker.id,
-            payload={"media_id": row.media_id, "defect_code": "BD-01"},
+            payload={"media_id": media_id, "defect_code": "BD-01"},
         )
     )
 
@@ -1397,26 +1439,28 @@ def test_missing_completed_review_media_reopens_and_replays_same_action_once(
     reopened = client.post(
         "/media/uploads",
         json={
-            "media_id": row.media_id,
-            "issue_key": row.issue_key,
-            "dependent_action_id": row.dependent_action_id,
-            "device_id": row.dependent_device_id,
-            "name": row.original_name,
-            "mime_type": row.mime_type,
-            "size_bytes": row.size_bytes,
-            "sha256": row.sha256,
+            "media_id": media_id,
+            "issue_key": "ROBOPARK-51",
+            "dependent_action_id": action_id,
+            "device_id": "phone-1",
+            "name": "review.jpg",
+            "mime_type": "image/jpeg",
+            "size_bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
         },
     )
 
-    assert missing.json()["results"][0]["code"] == "media_upload_missing"
-    assert reopened.json()["status"] == "reinitialized"
-    assert reopened.json()["upload_id"] == row.id
+    assert missing.json()["results"][0]["code"] == "media_dependency_pending"
+    assert reopened.status_code == 201, reopened.json()
+    assert reopened.json()["status"] == "active"
+    new_upload_id = reopened.json()["upload_id"]
+    assert new_upload_id != old_upload_id
     uploaded = client.put(
-        f"/media/uploads/{row.id}/chunks/0",
+        f"/media/uploads/{new_upload_id}/chunks/0",
         content=content,
         headers={"X-Chunk-SHA256": hashlib.sha256(content).hexdigest()},
     )
-    completed = client.post(f"/media/uploads/{row.id}/complete")
+    completed = client.post(f"/media/uploads/{new_upload_id}/complete")
     assert uploaded.status_code == completed.status_code == 200
 
     applied_response = client.post("/sync/batch", json=body)

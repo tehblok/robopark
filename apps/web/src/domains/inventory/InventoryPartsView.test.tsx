@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { InventoryCatalogSearchItem, InventoryPageEnvelope, InventorySearchParams, InventoryStockView } from '../../api'
 import { InventoryPartsView } from './InventoryPartsView'
+import { retainInventoryPartRecords } from './inventoryPartRetention'
 import { ApiError } from '../../api'
 
 const part: InventoryCatalogSearchItem = {
@@ -58,6 +59,18 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('InventoryPartsView', () => {
+  it('retains only the current page and explicitly selected labels', () => {
+    const second = { ...part, id: 32, name: 'Колесо', article: 'WH-01' }
+    const third = { ...part, id: 33, name: 'Амортизатор', article: 'SH-01' }
+    const retained = retainInventoryPartRecords(
+      [third],
+      new Set([part.id]),
+      new Map([[part.id, part], [second.id, second]]),
+    )
+
+    expect([...retained.keys()]).toEqual([third.id, part.id])
+  })
+
   it.each([401, 403])('clears protected catalog and selected labels after %s', async status => {
     const search = vi.fn().mockResolvedValueOnce(page()).mockRejectedValue(new ApiError(status, 'denied'))
     const lateComponents = deferred<{ items: Array<{ id: number; name: string; is_active: boolean; has_photo: boolean }>; limit: number; offset: number; total: number }>()

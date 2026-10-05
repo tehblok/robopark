@@ -13,23 +13,23 @@
   {
     "id": "TD-002",
     "module": "release-contract",
-    "impact": "Валидаторы manifest дублируются в API, host-tools и автономном verifier.",
+    "impact": "OTA v1 manifest разбирают два валидатора: API admission и автономный verifier; host consumer делегирует автономному verifier.",
     "risk": "maintainability",
     "owner": "platform",
     "target_version": "1.1.0",
-    "acceptance": "Один генерируемый набор контрактных fixtures проходит всеми тремя независимыми валидаторами.",
-    "status": "open",
-    "evidence": null
+    "acceptance": "Один генерируемый набор контрактных fixtures проверяет одинаковое принятие, нормализацию и отказ обоих реальных валидаторов; host consumer использует проверенный standalone путь.",
+    "status": "closed",
+    "evidence": "docs/reviews/2026-10-04-ota-contract-parity.md"
   },
   {
     "id": "TD-003",
     "module": "schedules",
-    "impact": "В legacy SQLite даты расписания содержат локальное wall-time представление; механическая нормализация существующих строк в UTC меняет смысл смен.",
+    "impact": "В legacy SQLite границы смен явно хранятся как Moscow wall time; параметры записи и сравнения нормализуются одинаково, PostgreSQL сохраняет timestamptz.",
     "risk": "maintainability",
     "owner": "backend",
     "target_version": "0.3.0",
-    "acceptance": "Подготовить явную миграцию и проверки границ суток для исторических SQLite данных; сохранить PostgreSQL timestamptz и часовой пояс устройства в редакторе.",
-    "status": "open",
-    "evidence": null
+    "acceptance": "Сохранить смысл исторических SQLite строк без переписывания, проверить смены других часовых поясов после чтения, границы маршрутизации и неизменность PostgreSQL/схемы.",
+    "status": "closed",
+    "evidence": "docs/reviews/2026-10-04-sqlite-schedule-time.md"
   }
 ]

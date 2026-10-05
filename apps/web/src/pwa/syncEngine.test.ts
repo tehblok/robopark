@@ -21,6 +21,216 @@ function coordinator(db: Awaited<ReturnType<typeof openOfflineDb>>) {
 }
 
 describe('SyncEngine', () => {
+  it('retries a ready action after a contended Web Lock becomes available', async () => {
+    const db = await openOfflineDb(scope)
+    let lockAvailable = false
+    const lockManager = {
+      request: async <T,>(_name: string, _options: { ifAvailable: true }, callback: (lock: unknown | null) => Promise<T> | T) =>
+        callback(lockAvailable ? {} : null),
+    }
+    let retry: (() => void) | undefined
+    const sendBatch = vi.fn(async (batch: SyncBatchRequest) => ({
+      results: batch.actions.map(action => ({ client_action_id: action.client_action_id, state: 'confirmed' as const, code: null, result: {} })),
+      deltas: {}, revisions: {}, revoked_scopes: [],
+    }))
+    const engine = new SyncEngine({
+      db, coordinator: new SyncCoordinator({ ownerId: 'next-account', leaseStore: db, lockManager }), deviceId: 'phone', sendBatch,
+      scheduleRetry: vi.fn((callback: () => void, delayMs: number) => {
+        expect(delayMs).toBe(1_000)
+        retry = callback
+        return 1 as unknown as ReturnType<typeof setTimeout>
+      }),
+    })
+    await engine.enqueueAction({ ...input('handoff-after-switch'), action: 'handoff' })
+
+    expect(await engine.syncNow('batch')).toBe(false)
+    expect(await db.getAction('handoff-after-switch')).toMatchObject({ state: 'ready' })
+    expect(retry).toBeTypeOf('function')
+
+    lockAvailable = true
+    retry?.()
+    await vi.waitFor(() => expect(sendBatch).toHaveBeenCalledOnce())
+    expect(await db.getAction('handoff-after-switch')).toMatchObject({ state: 'confirmed' })
+    engine.dispose()
+  })
+
+  it('does not retry lock contention when the durable queue is empty', async () => {
+    const db = await openOfflineDb(scope)
+    const scheduleRetry = vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>)
+    const engine = new SyncEngine({
+      db,
+      coordinator: new SyncCoordinator({
+        ownerId: 'empty-account', leaseStore: db,
+        lockManager: { request: async (_name, _options, callback) => callback(null) },
+      }),
+      deviceId: 'phone', scheduleRetry,
+      sendBatch: async () => ({ results: [], deltas: {}, revisions: {}, revoked_scopes: [] }),
+    })
+
+    expect(await engine.syncNow('start')).toBe(false)
+    expect(scheduleRetry).not.toHaveBeenCalled()
+    engine.dispose()
+  })
+
+  it('does not retry lock contention for an attention-only queue', async () => {
+    const db = await openOfflineDb(scope)
+    await db.putAction({ ...input('needs-user'), state: 'attention', attempts: 1, createdAt: 1, updatedAt: 1 })
+    const scheduleRetry = vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>)
+    const engine = new SyncEngine({
+      db,
+      coordinator: new SyncCoordinator({
+        ownerId: 'attention-account', leaseStore: db,
+        lockManager: { request: async (_name, _options, callback) => callback(null) },
+      }),
+      deviceId: 'phone', scheduleRetry,
+      sendBatch: async () => ({ results: [], deltas: {}, revisions: {}, revoked_scopes: [] }),
+    })
+
+    expect(await engine.syncNow('start')).toBe(false)
+    expect(scheduleRetry).not.toHaveBeenCalled()
+    engine.dispose()
+  })
+
+  it('preserves a manual attention-media retry across lock contention', async () => {
+    const db = await openOfflineDb(scope)
+    await db.putMedia({ id: 'attention-photo', actionId: 'attention-review', issueKey: 'TASK-1',
+      name: 'robot.jpg', blob: new Blob(['photo']), mimeType: 'image/jpeg', sha256: 'a',
+      sizeBytes: 5, state: 'attention', attempts: 1, createdAt: 1, updatedAt: 1 })
+    let lockAvailable = false
+    let retry: (() => void) | undefined
+    const uploadMedia = vi.fn(async () => undefined)
+    const engine = new SyncEngine({
+      db,
+      coordinator: new SyncCoordinator({
+        ownerId: 'manual-retry', leaseStore: db,
+        lockManager: { request: async (_name, _options, callback) => callback(lockAvailable ? {} : null) },
+      }),
+      deviceId: 'phone', uploadMedia,
+      scheduleRetry: callback => { retry = callback; return 1 as unknown as ReturnType<typeof setTimeout> },
+      cancelRetry: () => { retry = undefined },
+      sendBatch: async () => ({ results: [], deltas: {}, revisions: {}, revoked_scopes: [] }),
+    })
+
+    expect(await engine.syncNow('manual')).toBe(false)
+    expect(retry).toBeTypeOf('function')
+    expect(await engine.syncNow('event')).toBe(false)
+    expect(retry).toBeTypeOf('function')
+    lockAvailable = true
+    retry?.()
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledOnce())
+    expect(await db.getMedia('attention-photo')).toMatchObject({ state: 'confirmed' })
+    engine.dispose()
+  })
+
+  it('preserves a manual attention-media retry when a fallback lease expires before upload', async () => {
+    const db = await openOfflineDb(scope)
+    await db.putMedia({ id: 'expired-lease-photo', actionId: 'expired-lease-review', issueKey: 'TASK-1',
+      name: 'robot.jpg', blob: new Blob(['photo']), mimeType: 'image/jpeg', sha256: 'a',
+      sizeBytes: 5, state: 'attention', attempts: 1, createdAt: 1, updatedAt: 1 })
+    const renewLease = db.renewLease.bind(db)
+    let renewals = 0
+    vi.spyOn(db, 'renewLease').mockImplementation(async (owner, now, leaseMs) => {
+      if (++renewals === 1) return false
+      return renewLease(owner, now, leaseMs)
+    })
+    let retry: (() => void) | undefined
+    const uploadMedia = vi.fn(async () => undefined)
+    const engine = new SyncEngine({
+      db, coordinator: coordinator(db), deviceId: 'phone', uploadMedia,
+      scheduleRetry: callback => { retry = callback; return 1 as unknown as ReturnType<typeof setTimeout> },
+      cancelRetry: () => { retry = undefined },
+      sendBatch: async () => ({ results: [], deltas: {}, revisions: {}, revoked_scopes: [] }),
+    })
+
+    expect(await engine.syncNow('manual')).toBe(false)
+    expect(uploadMedia).not.toHaveBeenCalled()
+    expect(await db.getMedia('expired-lease-photo')).toMatchObject({ state: 'attention' })
+    expect(retry).toBeTypeOf('function')
+
+    retry?.()
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledOnce())
+    expect(await db.getMedia('expired-lease-photo')).toMatchObject({ state: 'confirmed' })
+    engine.dispose()
+  })
+
+  it('preserves a manual attention-media retry when fenced recovery loses its lease', async () => {
+    const db = await openOfflineDb(scope)
+    await db.putMedia({ id: 'recovery-photo', actionId: 'recovery-review', issueKey: 'TASK-1',
+      name: 'robot.jpg', blob: new Blob(['photo']), mimeType: 'image/jpeg', sha256: 'a',
+      sizeBytes: 5, state: 'attention', attempts: 1, createdAt: 1, updatedAt: 1 })
+    await db.putAction({ ...input('interrupted-action'), state: 'sending', attempts: 0, createdAt: 1, updatedAt: 1 })
+    const transactionIfLease = db.transactionIfLease.bind(db)
+    let writes = 0
+    vi.spyOn(db, 'transactionIfLease').mockImplementation(async (owner, now, mutator) => {
+      if (++writes === 1) return false
+      return transactionIfLease(owner, now, mutator)
+    })
+    let retry: (() => void) | undefined
+    const uploadMedia = vi.fn(async () => undefined)
+    const engine = new SyncEngine({
+      db, coordinator: coordinator(db), deviceId: 'phone', uploadMedia,
+      scheduleRetry: callback => { retry = callback; return 1 as unknown as ReturnType<typeof setTimeout> },
+      cancelRetry: () => { retry = undefined },
+      sendBatch: async batch => ({
+        results: batch.actions.map(action => ({ client_action_id: action.client_action_id, state: 'confirmed' as const, code: null, result: {} })),
+        deltas: {}, revisions: {}, revoked_scopes: [],
+      }),
+    })
+
+    expect(await engine.syncNow('manual')).toBe(false)
+    expect(uploadMedia).not.toHaveBeenCalled()
+    expect(retry).toBeTypeOf('function')
+
+    retry?.()
+    await vi.waitFor(() => expect(uploadMedia).toHaveBeenCalledOnce())
+    expect(await db.getMedia('recovery-photo')).toMatchObject({ state: 'confirmed' })
+    engine.dispose()
+  })
+
+  it('does not repeat an acquired manual attention-media retry after a permanent error', async () => {
+    const db = await openOfflineDb(scope)
+    await db.putMedia({ id: 'permanent-photo', actionId: 'permanent-review', issueKey: 'TASK-1',
+      name: 'robot.jpg', blob: new Blob(['photo']), mimeType: 'image/jpeg', sha256: 'a',
+      sizeBytes: 5, state: 'attention', attempts: 1, createdAt: 1, updatedAt: 1 })
+    const scheduleRetry = vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>)
+    const uploadMedia = vi.fn(async () => { throw { status: 400 } })
+    const engine = new SyncEngine({
+      db, coordinator: coordinator(db), deviceId: 'phone', uploadMedia, scheduleRetry,
+      sendBatch: async () => ({ results: [], deltas: {}, revisions: {}, revoked_scopes: [] }),
+    })
+
+    expect(await engine.syncNow('manual')).toBe(false)
+    expect(uploadMedia).toHaveBeenCalledOnce()
+    expect(await db.getMedia('permanent-photo')).toMatchObject({ state: 'attention', attempts: 2 })
+    expect(scheduleRetry).not.toHaveBeenCalled()
+    engine.dispose()
+  })
+
+  it('cancels a lock-contention retry when the scoped engine is disposed', async () => {
+    const db = await openOfflineDb(scope)
+    let retry: (() => void) | undefined
+    const timer = 17 as unknown as ReturnType<typeof setTimeout>
+    const cancelRetry = vi.fn()
+    const sendBatch = vi.fn(async () => ({ results: [], deltas: {}, revisions: {}, revoked_scopes: [] }))
+    const engine = new SyncEngine({
+      db,
+      coordinator: new SyncCoordinator({
+        ownerId: 'retired-account', leaseStore: db,
+        lockManager: { request: async (_name, _options, callback) => callback(null) },
+      }),
+      deviceId: 'phone', sendBatch, cancelRetry,
+      scheduleRetry: callback => { retry = callback; return timer },
+    })
+    await engine.enqueueAction({ ...input('retired-handoff'), action: 'handoff' })
+    await engine.syncNow('batch')
+
+    engine.dispose()
+    expect(cancelRetry).toHaveBeenCalledWith(timer)
+    retry?.()
+    await Promise.resolve()
+    expect(sendBatch).not.toHaveBeenCalled()
+  })
+
   it('keeps a photo queued if its cross-tab lease is lost during upload', async () => {
     const db = await openOfflineDb(scope)
     await db.putMedia({ id: 'lease-photo', actionId: 'lease-review', issueKey: 'TASK-1',

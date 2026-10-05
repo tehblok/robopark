@@ -412,6 +412,8 @@ for (const role of geometryRoles) {
   const user = userForRole(role)
   for (const theme of geometryThemes) for (const viewport of geometryViewports) {
     test(`${role} routes satisfy ${theme} ${viewport.name} geometry`, async ({ page }) => {
+      // This batch visits every permitted route; individual route assertions retain their own deadlines.
+      test.setTimeout(45_000)
       for (const route of geometryRouteIdsFor(user)) await test.step(route, async () => {
         await page.setViewportSize(viewport)
         await page.addInitScript(themeName => localStorage.setItem('robopark-theme', themeName), theme)

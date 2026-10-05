@@ -104,6 +104,31 @@ def test_long_manual_excerpt_keeps_initial_conditions_and_marks_gap():
     assert len(excerpt) <= 2400
 
 
+def test_long_incomplete_instruction_keeps_early_conditions_when_step_is_in_second_chunk(
+    db_session, seed_admin
+):
+    beginning = (
+        "Общие сведения. " * 26 + "Обязательное условие: обесточьте стенд и закрепите корпус.\n\n"
+    )
+    preparation = "Подготовка рабочего места. " * 58 + "\n\n"
+    step = "Отсоедините калибровочный модуль от синего разъёма.\n\n"
+    tail = "Контроль сборки.\n\n" * 90
+    guide = put(
+        db_session,
+        seed_admin,
+        "Неполная инструкция: обслуживание стенда",
+        beginning + preparation + step + tail,
+        "note",
+    )
+
+    found = knowledge.search(db_session, seed_admin, "Как отсоединить калибровочный модуль?")
+
+    assert found[0]["id"] == guide.id
+    assert "обесточьте стенд и закрепите корпус" in found[0]["excerpt"]
+    assert step.strip() in found[0]["excerpt"]
+    assert len(found[0]["excerpt"]) <= 2400
+
+
 def test_ranking_is_independent_of_inaccessible_corpus(
     db_session, seed_admin, seed_mechanic, seed_park_with_tracker
 ):

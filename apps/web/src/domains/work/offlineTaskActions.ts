@@ -83,15 +83,13 @@ export function buildInventoryWriteoffAction(base: ActionBase & { partId: number
 export function buildSubmitReviewAction(base: ActionBase & {
   defectCode: string
   mediaActionId: string
-  commentActionId?: string | null
   repairFields?: TaskRepairFields
   comment?: string
 }): OfflineActionInput {
-  const dependencies = [base.mediaActionId, base.commentActionId].filter((value): value is string => Boolean(value))
   return action(base, 'submit_review', {
     defect_code: base.defectCode,
     media_id: base.mediaActionId,
     ...(base.comment?.trim() ? { comment: base.comment.trim() } : {}),
     ...(base.repairFields ? { repair_fields: repairFieldsPayload(base.repairFields) } : {}),
-  }, dependencies)
+  }, [base.mediaActionId])
 }

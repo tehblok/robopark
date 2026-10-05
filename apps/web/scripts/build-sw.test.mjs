@@ -675,3 +675,87 @@ test('silent client cannot force a reload while in-memory work may exist', async
   assert.equal(navigated, 1)
   db.close()
 })
+
+async function cacheFailureWorker(failingOperation, network = async () => new Response('Available online', {
+  headers: { 'content-type': 'text/javascript' },
+}), shellContents = {}) {
+  const source = await readFile(new URL('./sw-template.js', import.meta.url), 'utf8')
+  const handlers = new Map()
+  const failAt = operation => {
+    if (operation === failingOperation) throw Object.assign(new Error('Browser storage is unavailable'), { name: 'QuotaExceededError' })
+  }
+  const cache = {
+    match: async path => { failAt('shell-match'); return shellContents[path]?.clone() },
+    put: async () => { failAt('put') },
+    keys: async () => { failAt('keys'); return Array.from({ length: 101 }, (_, i) => ({ url: String(i) })) },
+    delete: async () => { failAt('delete'); return true },
+  }
+  const caches = {
+    match: async () => { failAt('match'); return undefined },
+    open: async () => { failAt('open'); return cache },
+  }
+  const scope = { location: { origin: 'https://robopark.test' }, addEventListener: (name, handler) => handlers.set(name, handler) }
+  vm.runInNewContext(source, { self: scope, caches, URL, fetch: network })
+  return (path, mode = 'cors') => {
+    let response
+    handlers.get('fetch')({
+      request: { url: new URL(path, scope.location.origin).href, method: 'GET', mode },
+      respondWith: promise => { response = promise },
+    })
+    return response
+  }
+}
+
+for (const operation of ['match', 'open', 'put', 'keys', 'delete']) {
+  test(`a runtime cache ${operation} failure cannot discard a successful network response`, async () => {
+    const dispatch = await cacheFailureWorker(operation)
+    const response = await dispatch('/assets/photo-a1.webp')
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), 'Available online')
+  })
+}
+
+for (const operation of ['open', 'shell-match']) {
+  test(`navigation stays online when shell cache ${operation} fails`, async () => {
+    const dispatch = await cacheFailureWorker(operation)
+    assert.equal(await (await dispatch('/work', 'navigate')).text(), 'Available online')
+  })
+}
+
+test('an unavailable cache does not hide a real network failure', async () => {
+  const offline = new TypeError('Network offline')
+  const dispatch = await cacheFailureWorker('match', async () => { throw offline })
+  await assert.rejects(dispatch('/assets/photo-a1.webp'), error => error === offline)
+})
+
+test('terminal assets bypass the runtime cache as well as the offline precache', async () => {
+  const dispatch = await cacheFailureWorker('open')
+  for (const path of ['/terminal.html', '/assets/terminal/terminal-a1.js', '/assets/terminal/terminal-b2.css']) {
+    assert.equal(dispatch(path), undefined, path)
+  }
+})
+
+for (const operation of ['open', 'shell-match', undefined]) {
+  test(`navigation preserves network failure when no offline shell can be read (${operation ?? 'empty cache'})`, async () => {
+    const offline = new TypeError('Network offline')
+    const dispatch = await cacheFailureWorker(operation, async () => { throw offline })
+    await assert.rejects(dispatch('/work', 'navigate'), error => error === offline)
+  })
+}
+
+test('navigation can still use the cached offline page after a network failure', async () => {
+  const dispatch = await cacheFailureWorker(undefined, async () => { throw new TypeError('Network offline') }, {
+    '/offline.html': new Response('Offline page'),
+  })
+  assert.equal(await (await dispatch('/work', 'navigate')).text(), 'Offline page')
+})
+
+for (const status of [401, 503]) {
+  test(`navigation preserves an HTTP ${status} response when the shell cache is unavailable`, async () => {
+    const response = new Response('Server response', { status })
+    const dispatch = await cacheFailureWorker('shell-match', async () => response, {
+      '/offline.html': new Response('Offline page'),
+    })
+    assert.equal(await dispatch('/work', 'navigate'), response)
+  })
+}

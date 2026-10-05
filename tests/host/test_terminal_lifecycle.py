@@ -102,6 +102,22 @@ def test_root_expiry_is_absolute_and_ended_uuid_cannot_restart():
     assert created is False and row.reason == "expired"
 
 
+def test_first_finish_sets_retention_order_but_repeated_finish_does_not_refresh_it():
+    from dataclasses import replace
+
+    reg, req, _clock = registry()
+    first, _ = reg.admit(req)
+    reg.finish(req.session_id, "closed")
+    second_request = replace(req, session_id=str(uuid4()))
+    reg.admit(second_request)
+    reg.finish(second_request.session_id, "expired")
+
+    reg.finish(req.session_id, "revoked")
+
+    assert list(reg.sessions) == [req.session_id, second_request.session_id]
+    assert first.reason == "closed"
+
+
 @pytest.mark.parametrize("operation", ["renew", "input_seen", "attach"])
 def test_expired_session_cannot_be_revived_before_watchdog(operation):
     reg, req, clock = registry()

@@ -430,13 +430,20 @@ test('driver canonical check loads sections, automatically refreshes, and reques
   expect(new Set(trackerRequests)).toEqual(new Set([`/api/tracker/robots/${snapshot.vin}/tickets`]))
 })
 
-test('robot offline and browser offline remain different states with automatic recovery', async ({ page, context }) => {
+for (const jitter of [0, 0.5, 0.9999]) test(`robot offline and browser offline remain different states with automatic recovery at jitter ${jitter}`, async ({ page, context }) => {
   let snapshots = 0
   page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/snapshot')) snapshots += 1 })
   await installOperational(page, { snapshot: { ...snapshot, online: false } })
+  // Controlled real-I/O delay: the browser clock must not expire a healthy mock request.
+  await page.route('**/snapshot', async route => {
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    await route.fallback()
+  })
   await page.clock.install({ time: new Date('2026-09-02T09:05:00Z') })
   await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=wheels`)
   await expect(page.getByText('Робот не в сети', { exact: true })).toBeVisible()
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000))
+  await page.evaluate(value => { Math.random = () => value }, jitter)
   await expect(page.getByText('Нет сети на этом устройстве', { exact: true })).toHaveCount(0)
   await context.setOffline(true)
   await expect(page.getByText('Нет сети на этом устройстве', { exact: true })).toBeVisible()
@@ -445,11 +452,17 @@ test('robot offline and browser offline remain different states with automatic r
   const before = snapshots
   await page.clock.runFor(20_000)
   expect(snapshots).toBe(before)
+  const recovered = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/snapshot') && response.status() === 200, { timeout: 5000 })
   await context.setOffline(false)
   await expect(page.getByText('Нет сети на этом устройстве', { exact: true })).toHaveCount(0)
-  expect(snapshots).toBe(before)
-  await page.clock.runFor(15_000)
-  await expect.poll(() => snapshots).toBeGreaterThan(before)
+  // Stop advancing simulated time once the reconnect request starts. Advancing
+  // the whole jitter window can also expire its 30s HTTP timeout before real
+  // mock I/O resolves, or pass against a stale label while the request fails.
+  for (let elapsed = 0; snapshots === before && elapsed < 30_000; elapsed += 1000) {
+    await page.clock.runFor(1000)
+  }
+  expect(snapshots).toBeGreaterThan(before)
+  await recovered
   await expect(page.getByText('Робот не в сети', { exact: true })).toBeVisible()
 })
 
@@ -520,10 +533,13 @@ for (const view of [
       sort_order: 0, part: 'Робот', view: view.id, x: .5, y: .5, indicator: 'point' as const,
     }
     await installOperational(page, { snapshot: { ...snapshot, diagnostic_events: [event] } })
-    await page.goto(`/robots/${snapshot.vin}/check?park=7&tab=scheme`)
-    const photo = page.locator('.rp-check-photo-frame img')
-    await photo.scrollIntoViewIfNeeded()
+    // This checks image selection, not the legacy /check redirect (which
+    // replaces the route boundary and remounts the whole robot workspace).
+    await page.goto(`/robots/${snapshot.vin}?park=7&tab=scheme`)
+    const frame = page.locator('.rp-check-photo-frame')
+    const photo = frame.locator('img')
     await expect(photo).toHaveAttribute('alt', new RegExp(view.label))
+    await frame.scrollIntoViewIfNeeded()
     await expect.poll(() => photo.evaluate((element: HTMLImageElement) => [element.naturalWidth, element.naturalHeight])).toEqual([view.width, view.height])
     await expect(page.getByRole('button', { name: 'Ошибка: Активная ошибка' })).toBeVisible()
     expect(images).toEqual([`${view.id}.webp`])

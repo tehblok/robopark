@@ -9,12 +9,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  verify:
-    name: Verify repository
+  verify-core:
+    name: Verify application and host
     runs-on: ubuntu-latest
-    # Includes the complete route/role/theme/viewport matrix and three engines.
-    timeout-minutes: 180
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -46,14 +48,102 @@ jobs:
           docker build -t robopark-bot:verify apps/bot
           docker run --rm --entrypoint python robopark-bot:verify -c "import pandas, requests, matplotlib, qrcode, PIL"
 
+  responsive:
+    name: Responsive browsers (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      ROBOPARK_PLAYWRIGHT_ARTIFACTS: test-results/linux-shard-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
       - name: Verify responsive browser journeys in the pinned Linux image
-        working-directory: apps/web
-        run: npm run test:e2e:linux -- --workers=2
+        run: npm run test:e2e:linux -- --workers=2 --shard=${{ matrix.shard }}/4
+      - name: Preserve browser failure evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: responsive-${{ matrix.shard }}
+          path: apps/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
 
+  browser-workflows:
+    name: Production PWA and cross-browser workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
       - name: Verify the production PWA in the pinned Linux image
-        working-directory: apps/web
-        run: npm run test:e2e:pwa:linux
-
+        env:
+          ROBOPARK_PLAYWRIGHT_ARTIFACTS: test-results/linux-pwa
+        shell: bash
+        run: |
+          mkdir -p test-results
+          npm run test:e2e:pwa:linux 2>&1 | tee test-results/pwa-run.log
+      - name: Preserve PWA evidence before the remaining browser workflows
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pwa-workflows
+          path: |
+            apps/web/test-results/linux-pwa/
+            apps/web/test-results/pwa-run.log
+          if-no-files-found: error
+          retention-days: 14
       - name: Verify workflows in Chromium, Firefox and WebKit
-        working-directory: apps/web
+        # Collect independent workflow evidence even if the PWA gate fails.
+        if: ${{ !cancelled() }}
+        env:
+          ROBOPARK_PLAYWRIGHT_ARTIFACTS: test-results/linux-crossbrowser
         run: npm run test:e2e:crossbrowser:linux -- --workers=2
+      - name: Preserve browser failure evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-workflows
+          path: apps/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  verify:
+    # Preserve the existing required check name as the aggregate of every gate.
+    name: Verify repository
+    runs-on: ubuntu-latest
+    needs: [verify-core, responsive, browser-workflows]
+    if: ${{ always() }}
+    timeout-minutes: 5
+    steps:
+      - name: Require every verification job to pass
+        env:
+          VERIFICATION_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          results = json.loads(os.environ["VERIFICATION_RESULTS"])
+          failed = {name: job["result"] for name, job in results.items() if job["result"] != "success"}
+          if failed:
+              raise SystemExit(f"Required verification jobs did not pass: {failed}")
+          print("All application, host and browser gates passed.")
+          PYTHON

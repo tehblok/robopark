@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 from dataclasses import replace
 from uuid import uuid4
 
@@ -56,6 +57,17 @@ def build(tmp_path):
         )
     )
     return broker, req, runtime
+
+
+def seed_ended(broker, request, count, *, reason="closed"):
+    requests = []
+    for _ in range(count):
+        candidate = replace(request, session_id=str(uuid4()))
+        _row, created = broker.registry.admit(candidate)
+        assert created
+        broker.registry.finish(candidate.session_id, reason)
+        requests.append(candidate)
+    return requests
 
 
 def test_create_replay_and_terminate_release_process_and_lock(tmp_path):
@@ -171,6 +183,139 @@ def test_private_history_prunes_old_records_and_rotates_audit(tmp_path):
         broker.prune_history()
         assert not journal.exists() and not event.exists()
         assert req.session_id not in broker.registry.sessions
+
+    asyncio.run(scenario())
+
+
+def test_history_rotation_fences_old_root_replay_and_admits_fresh_request(tmp_path):
+    async def scenario():
+        broker, req, rt = build(tmp_path)
+        old_root = replace(
+            req,
+            session_id=str(uuid4()),
+            profile="root",
+            remaining_seconds=900,
+        )
+        _row, created = broker.registry.admit(old_root)
+        assert created
+        broker.registry.finish(old_root.session_id, "expired")
+        seeded = seed_ended(broker, req, 3071, reason="closed")
+        old_epoch, old_revision = broker.epoch, broker.revision
+
+        await broker.maintain_history()
+
+        assert broker.epoch != old_epoch
+        assert broker.revision != old_revision
+        capabilities = json.loads(
+            (broker.paths.ops / "public/terminal-capabilities.json").read_text()
+        )
+        assert capabilities["broker_epoch"] == broker.epoch
+        assert capabilities["capability_revision"] == broker.revision
+        assert len(broker.registry.sessions) == 2048
+        assert old_root.session_id not in broker.registry.sessions
+        assert broker.registry.sessions[seeded[-1].session_id].reason == "closed"
+        with pytest.raises(ValueError, match="terminal_capabilities_changed"):
+            await broker.create(old_root)
+        assert rt.starts == 0
+
+        fresh = replace(
+            req,
+            session_id=str(uuid4()),
+            broker_epoch=broker.epoch,
+            capability_revision=broker.revision,
+        )
+        result = await broker.create(fresh)
+        assert result["state"] == "detached"
+        assert rt.starts == 1
+
+    asyncio.run(scenario())
+
+
+def test_history_rotation_retains_oldest_admission_when_it_finishes_last(tmp_path):
+    async def scenario():
+        broker, req, _rt = build(tmp_path)
+        oldest, created = broker.registry.admit(req)
+        assert created
+        roots = seed_ended(
+            broker,
+            replace(req, profile="root", remaining_seconds=900),
+            3071,
+            reason="closed",
+        )
+        oldest.input_bytes = 17
+        oldest.output_bytes = 29
+        broker.registry.finish(req.session_id, "expired")
+
+        await broker.maintain_history()
+
+        assert req.session_id in broker.registry.sessions
+        assert broker.registry.sessions[req.session_id].public() == {
+            "id": req.session_id,
+            "profile": "maintenance",
+            "state": "ended",
+            "termination_reason": "expired",
+            "input_bytes": 17,
+            "output_bytes": 29,
+        }
+        assert roots[0].session_id not in broker.registry.sessions
+
+    asyncio.run(scenario())
+
+
+def test_history_rotation_waits_for_live_session_and_keeps_cap_fail_closed(tmp_path):
+    async def scenario():
+        broker, req, rt = build(tmp_path)
+        seed_ended(broker, req, 4095)
+        await broker.create(req)
+        old_epoch, old_revision = broker.epoch, broker.revision
+
+        await broker.maintain_history()
+
+        assert (broker.epoch, broker.revision) == (old_epoch, old_revision)
+        assert req.session_id in rt.live
+        fresh = replace(
+            req, session_id=str(uuid4()), profile="root", remaining_seconds=900
+        )
+        with pytest.raises(ValueError, match="terminal_history_limit"):
+            await broker.create(fresh)
+        assert rt.starts == 1
+
+    asyncio.run(scenario())
+
+
+def test_history_rotation_does_not_clear_tombstones_when_fence_publish_fails(
+    tmp_path, monkeypatch
+):
+    async def scenario():
+        broker, req, _rt = build(tmp_path)
+        seeded = seed_ended(broker, req, 3072)
+        old_epoch, old_revision = broker.epoch, broker.revision
+
+        def fail_publish():
+            raise OSError("disk full")
+
+        monkeypatch.setattr(broker, "publish", fail_publish)
+        with pytest.raises(OSError, match="disk full"):
+            await broker.maintain_history()
+
+        assert (broker.epoch, broker.revision) == (old_epoch, old_revision)
+        assert len(broker.registry.sessions) == 3072
+        assert all(item.session_id in broker.registry.sessions for item in seeded)
+
+    asyncio.run(scenario())
+
+
+def test_repeated_watch_maintenance_does_not_churn_epoch_without_new_records(tmp_path):
+    async def scenario():
+        broker, req, _rt = build(tmp_path)
+        seed_ended(broker, req, 3072)
+        await broker.maintain_history()
+        fenced = broker.epoch, broker.revision
+
+        await broker.maintain_history()
+
+        assert (broker.epoch, broker.revision) == fenced
+        assert len(broker.registry.sessions) == 2048
 
     asyncio.run(scenario())
 

@@ -250,9 +250,16 @@ def excerpt(document, chunk, *, limit=2400, include_start=False):
     if start < 0:
         return chunk[:limit]
     left = max(0, start - 350)
-    boundary = document.find("\n\n", left, start)
-    if boundary >= 0:
-        left = boundary + 2
+    # Prefer one contiguous prefix when it can retain both the preconditions and
+    # at least half a context window around the matched span.
+    local_span = max(len(chunk), limit // 2)
+    keep_start = include_start and start + local_span <= limit - 2
+    if keep_start:
+        left = 0
+    else:
+        boundary = document.find("\n\n", left, start)
+        if boundary >= 0:
+            left = boundary + 2
     prefix = "…\n" if left else ""
     if include_start and left > 800:
         head_end = document.rfind("\n\n", 400, 800)
@@ -263,7 +270,10 @@ def excerpt(document, chunk, *, limit=2400, include_start=False):
         prefix = document[:head_end] + "\n\n[… часть источника пропущена …]\n\n"
     available = limit - len(prefix) - 2
     right = min(len(document), left + available)
-    boundary = document.rfind("\n\n", left + available // 2, right)
+    boundary_floor = left + available // 2
+    if keep_start:
+        boundary_floor = max(boundary_floor, start + len(chunk))
+    boundary = document.rfind("\n\n", boundary_floor, right)
     if boundary >= 0:
         right = boundary
     return prefix + document[left:right] + ("\n…" if right < len(document) else "")

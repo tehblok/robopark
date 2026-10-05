@@ -185,7 +185,9 @@ async function returnReview(page: Page) {
 
 async function assertMobileContract(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-  for (const control of await page.locator('button:visible, label.btn:visible').all()) expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44)
+  // Firefox can expose an exact 44 CSS px box as 43.999877… through DOMRect.
+  const cssPixelEpsilon = 0.001
+  for (const control of await page.locator('button:visible, label.btn:visible').all()) expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44 - cssPixelEpsilon)
   await expect(page.locator('main')).toHaveAttribute('id', 'main-content')
 }
 
@@ -195,11 +197,23 @@ async function runLifecycle(page: Page, width: number) {
   const mobile = width === 390
   let tearingDown = false
   const handlers = trackerRoutes(bridge, session)
+  const syncExchanges: Array<Record<string, unknown>> = []
   const http = await startHttpFixture(async request => {
     if (tearingDown) return new Response(null, { status: 503 })
     const handler = handlers.find(item => item.method === request.method)
     if (!handler) return new Response(null, { status: 405 })
+    const isSyncBatch = new URL(request.url).pathname === '/api/sync/batch'
+    const exchange: Record<string, unknown> = { at: Date.now(), actor: session.actor }
+    if (isSyncBatch) {
+      syncExchanges.push(exchange)
+      if (syncExchanges.length > 100) syncExchanges.shift()
+    }
     const response = await handler.handler(request)
+    if (isSyncBatch) {
+      exchange.status = response.status ?? 200
+      const result = response.json as { results?: unknown } | undefined
+      exchange.results = result?.results
+    }
     const status = response.status ?? 200
     const headers = new Headers(response.headers)
     // The bridge returns decoded bytes; framing belongs to this HTTP server.
@@ -230,11 +244,11 @@ async function runLifecycle(page: Page, width: number) {
       await bridgeCall(bridge, { control: 'tracker', available: true })
       await page.reload()
     } else await page.getByRole('button', { name: 'Взять в работу', exact: true }).dblclick()
-    await openIssue(page)
     await expect.poll(
       async () => (await snapshot(bridge)).actions.some(action => action.action === 'start'),
       { timeout: 15_000 },
     ).toBe(true)
+    await openIssue(page)
     if (mobile) {
       await bridgeCall(bridge, { control: 'tracker', available: false })
       await drain(bridge)
@@ -294,6 +308,7 @@ async function runLifecycle(page: Page, width: number) {
     await drain(bridge)
 
     await openIssue(page)
+    await expect(page.locator('.issue-detail .rp-status-badge[data-tone="success"]', { hasText: 'Закрыта' })).toBeVisible()
     await openTaskConversation(page)
     const timeline = page.getByRole('region', { name: 'Чат задачи' }).locator('.task-message .issue-comment-text')
     const expected = ['Задача взята в работу', 'Заменено крепление колеса', 'Конец смены', 'Проверка второй сменой завершена', 'Проверено после передачи', 'Заменил мотор-колесо BD-01', 'Передано на проверку', 'Повторить проверку', 'Исправлено после возврата', 'Уточнение после возврата', 'Передано на проверку']
@@ -326,6 +341,37 @@ async function runLifecycle(page: Page, width: number) {
     expect(new Set(evidence.actions.map(action => action.id)).size).toBe(evidence.actions.length)
     expect(evidence.actions.every(action => action.state === 'succeeded')).toBe(true)
     if (mobile) await assertMobileContract(page)
+  } catch (error) {
+    // Keep the original assertion; collect bounded evidence before teardown can
+    // close the bridge or discard the queue. No extra synchronization on success.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const evidence = await Promise.race([
+        Promise.allSettled([
+          snapshot(bridge),
+          page.evaluate(() => new Promise<unknown>((resolve, reject) => {
+            const open = indexedDB.open('robopark-offline')
+            open.onerror = () => reject(open.error)
+            open.onsuccess = () => {
+              const db = open.result
+              if (!db.objectStoreNames.contains('actions')) { db.close(); resolve([]); return }
+              const transaction = db.transaction('actions', 'readonly')
+              const request = transaction.objectStore('actions').getAll()
+              request.onsuccess = () => resolve(request.result)
+              request.onerror = () => reject(request.error)
+              transaction.oncomplete = transaction.onabort = () => db.close()
+            }
+          })),
+        ]),
+        new Promise<string>(resolve => { timer = setTimeout(() => resolve('diagnostics timed out'), 2000) }),
+      ])
+      await test.info().attach('task-lifecycle-sync.json', {
+        body: JSON.stringify({ actor: session.actor, syncExchanges, evidence }, null, 2),
+        contentType: 'application/json',
+      })
+    } catch { /* Diagnostic collection must not replace the original failure. */ }
+    finally { clearTimeout(timer) }
+    throw error
   } finally {
     tearingDown = true
     await page.context().setOffline(true).catch(() => {})
@@ -335,6 +381,8 @@ async function runLifecycle(page: Page, width: number) {
     await bridge.close()
   }
 }
+
+test.use({ trace: 'retain-on-failure' })
 
 test.beforeEach(() => { process.env.DIAGNOSTIC_E2E_MUTATION = 'task-lifecycle' })
 test.afterEach(() => { delete process.env.DIAGNOSTIC_E2E_MUTATION })

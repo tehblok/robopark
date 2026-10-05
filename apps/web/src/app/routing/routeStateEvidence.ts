@@ -171,8 +171,8 @@ const ROUTE_ASYNC_CONTRACTS: Partial<Record<AppRouteId, RouteAsyncContract>> = {
 
 const TARGETS: Partial<Record<AppRouteId, Record<string, Omit<OwnerStateDriver, 'stateKey' | 'stateKind'>>>> = {
   assistant: {
-    chat: { action: 'tab', tabName: 'Помощник', targetSelector: '#assistant-panel-chat', expectedSelector: '#assistant-panel-chat' },
-    knowledge: { action: 'tab', tabName: 'База знаний', targetSelector: '#assistant-panel-knowledge', expectedSelector: '#assistant-panel-knowledge' },
+    chat: { action: 'tab', tabName: 'Помощник', targetSelector: '#tab-chat', expectedSelector: '#assistant-panel-chat' },
+    knowledge: { action: 'tab', tabName: 'База знаний', targetSelector: '#tab-knowledge', expectedSelector: '#assistant-panel-knowledge' },
   },
   schedule: {
     week: { action: 'button', targetSelector: '[aria-label="Масштаб календаря"] button:has-text("Неделя")', expectedSelector: '.rp-schedule-calendar__days--week' },
@@ -337,7 +337,7 @@ function ownerDriver(routeId: AppRouteId, stateId: string, kind: NestedStateKind
     }
   }
   const dialogDrivers: Record<string, Omit<OwnerStateDriver, 'stateKey' | 'stateKind'>> = {
-    'work-issue:review': { action: 'button', targetSelector: '.issue-actions button:has-text("\u041f\u0435\u0440\u0435\u0434\u0430\u0442\u044c \u043d\u0430 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443")', expectedSelector: 'form:has(input[aria-label="\u041a\u043e\u0434 \u0434\u0435\u0444\u0435\u043a\u0442\u0430"])' },
+    'work-issue:review': { action: 'button', targetSelector: '.issue-actions button:has-text("\u041f\u0435\u0440\u0435\u0434\u0430\u0442\u044c \u043d\u0430 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443")', expectedSelector: 'form:has(select[aria-label="Что случилось?"])' },
     'robots:scanner': { action: 'dialog', targetSelector: 'button:has-text("\u0421\u043a\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u0442\u044c")', expectedSelector: '[role="dialog"]:has-text("\u0421\u043a\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0440\u043e\u0431\u043e\u0442\u0430")', triggerSelector: 'button:has-text("\u0421\u043a\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u0442\u044c")', dialogSelector: '[role="dialog"]:has-text("\u0421\u043a\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0440\u043e\u0431\u043e\u0442\u0430")' },
     'legacy-robot-check:scanner': { action: 'dialog', targetSelector: 'button:has-text("\u0421\u043a\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u0442\u044c")', expectedSelector: '[role="dialog"]:has-text("\u0421\u043a\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0440\u043e\u0431\u043e\u0442\u0430")', triggerSelector: 'button:has-text("\u0421\u043a\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u0442\u044c")', dialogSelector: '[role="dialog"]:has-text("\u0421\u043a\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0440\u043e\u0431\u043e\u0442\u0430")' },
     'robot-check:ignore-error': { action: 'dialog', tabName: '\u041e\u0448\u0438\u0431\u043a\u0438', targetSelector: '[role="tabpanel"]', expectedSelector: '[role="tabpanel"]', triggerSelector: '[role="tab"]:has-text("\u041e\u0448\u0438\u0431\u043a\u0438")', dialogSelector: '[role="tabpanel"]' },

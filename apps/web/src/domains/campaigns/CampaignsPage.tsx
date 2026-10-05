@@ -1,4 +1,5 @@
 import { type CSSProperties, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   api,
@@ -81,6 +82,7 @@ function CampaignCreateForm({ apiClient, onCreated, campaign }: { apiClient: Cam
     return { kind: 'service_company', name: '', tracker_tag: '', starts_on: today, due_on: today, park_ids: [] }
   })
   const [busy, setBusy] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
   const pending = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const submit = async (event: FormEvent) => {
@@ -88,10 +90,15 @@ function CampaignCreateForm({ apiClient, onCreated, campaign }: { apiClient: Cam
     if (pending.current) return
     pending.current = true
     setBusy(true); setError(null)
-    try { onCreated(await (campaign ? apiClient.updateCampaign(campaign.id, payload) : apiClient.createCampaign(payload))) }
+    try {
+      const item = await (campaign ? apiClient.updateCampaign(campaign.id, payload) : apiClient.createCampaign(payload))
+      if (!campaign) flushSync(() => setSubmitted(true))
+      onCreated(item)
+    }
     catch (reason) { setError(classifyApiError(reason, 'Не удалось создать кампанию.').description) }
     finally { pending.current = false; setBusy(false) }
   }
+  if (submitted) return <LoadingState label="Открываем кампанию" variant="inline" />
   return <ResponsiveDisclosureGroup label={campaign ? 'Настройки кампании' : 'Создание кампании'}><ResponsiveDisclosure id="create" title={campaign ? 'Настройки кампании' : 'Новая кампания'}>
     <form className="form-grid campaign-create" onSubmit={submit}>
       <label className="field"><span>Тип</span><select disabled={Boolean(campaign)} value={payload.kind} onChange={event => setPayload(current => ({ ...current, kind: event.target.value as Campaign['kind'] }))}><option value="service_company">Сервисная кампания</option><option value="wrapping">Оклейка</option></select></label>

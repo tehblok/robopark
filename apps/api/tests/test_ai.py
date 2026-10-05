@@ -241,6 +241,36 @@ def test_cancel_discards_running_answer(
     assert len(client.get(f"/ai/conversations/{convo['id']}").json()["messages"]) == 1
 
 
+def test_delete_conversation_during_inference_does_not_recreate_answer(
+    client, db_engine, seed_admin, seed_park_with_tracker, test_settings, tmp_path, monkeypatch
+):
+    from sqlalchemy import select
+    from sqlalchemy.orm import sessionmaker
+
+    from robopark_api.ai_models import AIConversation, AIJob, AIMessage
+    from robopark_api.services.ai import jobs
+
+    convo, job = chat_fixture(client, test_settings, tmp_path, seed_park_with_tracker)
+    factory = sessionmaker(bind=db_engine)
+    inference_calls = []
+
+    def complete(settings, messages):
+        inference_calls.append(True)
+        assert client.get(f"/ai/jobs/{job['id']}").json()["state"] == "running"
+        assert client.delete(f"/ai/conversations/{convo['id']}").status_code == 200
+        return "Never recreate the deleted conversation"
+
+    monkeypatch.setattr(jobs.runtime, "complete", complete)
+    assert jobs.process_job(factory, test_settings)
+    assert inference_calls == [True]
+    assert client.get(f"/ai/conversations/{convo['id']}").status_code == 404
+    assert client.get(f"/ai/jobs/{job['id']}").status_code == 404
+    with factory() as db:
+        assert db.get(AIConversation, convo["id"]) is None
+        assert db.get(AIJob, job["id"]) is None
+        assert db.scalar(select(AIMessage).where(AIMessage.conversation_id == convo["id"])) is None
+
+
 def test_source_change_during_inference_discards_answer(
     client, db_engine, seed_admin, seed_park_with_tracker, test_settings, tmp_path, monkeypatch
 ):
@@ -364,8 +394,8 @@ def test_cancel_while_preparing_cannot_resurrect_job(
     _, job = chat_fixture(client, test_settings, tmp_path, seed_park_with_tracker)
     prepare = jobs._prepare
 
-    def cancelled_prepare(db, settings, row):
-        result = prepare(db, settings, row)
+    def cancelled_prepare(db, settings, row, issue_snapshot):
+        result = prepare(db, settings, row, issue_snapshot)
         client.post(f"/ai/jobs/{job['id']}/cancel")
         return result
 

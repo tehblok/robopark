@@ -109,3 +109,81 @@ def test_collect_park_metrics_keys_by_park_not_user():
         tracker_cache.collect_park_metrics(token="t1", queue="ROBOPARK", tag="Beta")
 
     assert calls == ["Alpha", "Beta"]
+
+
+def test_metrics_cache_bounds_unique_report_keys_and_keeps_recent_reads(monkeypatch):
+    monkeypatch.setattr(tracker_metrics, "METRICS_CACHE_MAX_ENTRIES", 2, raising=False)
+    tracker_metrics.clear_metrics_cache()
+    tracker_metrics.set_cached_now_report("old", {"value": 1})
+    tracker_metrics.set_cached_now_report("recent", {"value": 2})
+    assert tracker_metrics.get_cached_now_report("old") == {"value": 1}
+    tracker_metrics.set_cached_now_report("new", {"value": 3})
+    assert tracker_metrics.get_cached_now_report("recent") is None
+    assert tracker_metrics.get_cached_now_report("old") == {"value": 1}
+    assert tracker_metrics.get_cached_now_report("new") == {"value": 3}
+
+
+def test_metrics_cache_purges_expired_unrelated_keys():
+    tracker_metrics.clear_metrics_cache()
+    with patch("robopark_api.services.tracker_metrics.time.monotonic", return_value=100):
+        tracker_metrics.set_cached_now_report("obsolete-park-set", {"value": 1}, ttl_sec=5)
+    with patch("robopark_api.services.tracker_metrics.time.monotonic", return_value=106):
+        assert tracker_metrics.get_cached_now_report("different-user") is None
+    assert not tracker_metrics._METRICS_CACHE
+
+
+def test_metrics_cache_bounds_retained_bytes_and_skips_oversized_report(monkeypatch):
+    monkeypatch.setattr(tracker_metrics, "METRICS_CACHE_MAX_BYTES", 100, raising=False)
+    tracker_metrics.clear_metrics_cache()
+    tracker_metrics.set_cached_now_report("first", {"value": "x" * 60})
+    tracker_metrics.set_cached_now_report("second", {"value": "y" * 60})
+    assert tracker_metrics.get_cached_now_report("first") is None
+    assert tracker_metrics.get_cached_now_report("second") == {"value": "y" * 60}
+    tracker_metrics.set_cached_now_report("huge", {"value": "z" * 200})
+    assert tracker_metrics.get_cached_now_report("huge") is None
+    assert tracker_metrics.get_cached_now_report("second") == {"value": "y" * 60}
+
+
+def test_metrics_cache_payload_cannot_grow_through_caller_mutation():
+    tracker_metrics.clear_metrics_cache()
+    payload = {"parks": [{"name": "initial"}]}
+    tracker_metrics.set_cached_now_report("report", payload)
+    payload["parks"].append({"name": "added later"})
+    read = tracker_metrics.get_cached_now_report("report")
+    assert read == {"parks": [{"name": "initial"}]}
+    read["parks"][0]["name"] = "changed by caller"
+    assert tracker_metrics.get_cached_now_report("report") == {"parks": [{"name": "initial"}]}
+
+
+def test_metrics_cache_replacement_and_clear_release_the_byte_budget(monkeypatch):
+    monkeypatch.setattr(tracker_metrics, "METRICS_CACHE_MAX_BYTES", 100)
+    tracker_metrics.clear_metrics_cache()
+    tracker_metrics.set_cached_now_report("same", {"value": "x" * 60})
+    tracker_metrics.set_cached_now_report("same", {"value": 1})
+    tracker_metrics.set_cached_now_report("other", {"value": 2})
+    assert tracker_metrics.get_cached_now_report("same") == {"value": 1}
+    assert tracker_metrics.get_cached_now_report("other") == {"value": 2}
+    tracker_metrics.clear_metrics_cache()
+    tracker_metrics.set_cached_now_report("fresh", {"value": "z" * 60})
+    assert tracker_metrics.get_cached_now_report("fresh") == {"value": "z" * 60}
+
+
+def test_metrics_cache_bounds_memory_during_concurrent_access(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(tracker_metrics, "METRICS_CACHE_MAX_ENTRIES", 8)
+    tracker_metrics.clear_metrics_cache()
+
+    def write_and_read(index):
+        key = f"report-{index}"
+        tracker_metrics.set_cached_now_report(key, {"value": index})
+        value = tracker_metrics.get_cached_now_report(key)
+        # Another caller may already have evicted this key.
+        assert value is None or value == {"value": index}
+        if index % 20 == 0:
+            tracker_metrics.clear_metrics_cache()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(write_and_read, range(200)))
+    retained = [tracker_metrics.get_cached_now_report(f"report-{index}") for index in range(200)]
+    assert sum(value is not None for value in retained) <= 8

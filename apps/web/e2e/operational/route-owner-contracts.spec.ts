@@ -92,6 +92,8 @@ async function exerciseAsyncOwnerState(page: Page, owner: RouteStateEvidence, dr
       })
     }
     navigation = page.reload({ waitUntil: 'domcontentloaded' }).catch(() => null)
+  } else if (owner.routeId === 'assistant' && refreshesInBackground && !actionDriven) {
+    await page.clock.runFor(5001)
   } else if (refreshesInBackground && !actionDriven) {
     await page.evaluate(() => {
       const currentNow = Date.now
@@ -157,6 +159,9 @@ async function openSimpleOwner(page: Page, owner: RouteStateEvidence) {
   const route = ROUTE_MANIFEST.find(item => item.id === owner.routeId)!
   if (owner.routeId === 'not-found') {
     await installOperational(page, { user: userForRole('operator') })
+  } else if (owner.routeId === 'assistant') {
+    await openRouteFixture(page, 'assistant', userForRole('mechanic'))
+    return
   } else if (owner.routeId === 'login' || owner.routeId === 'register') {
     await installMockApi(page, { user: null })
   } else {
@@ -292,6 +297,7 @@ test.describe.configure({ mode: 'parallel' })
 
 for (const owner of owners) {
   test(`${owner.caseId} [Классический]`, async ({ page }) => {
+    if (owner.routeId === 'assistant') await page.clock.install({ time: new Date('2026-09-02T09:05:00Z') })
     const apiRequests: string[] = []
     page.on('request', request => {
       const url = new URL(request.url())

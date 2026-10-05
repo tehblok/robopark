@@ -15,7 +15,7 @@ export default defineConfig({
   use: {
     baseURL,
     serviceWorkers: 'allow',
-    trace: 'on-first-retry',
+    trace: 'retain-on-failure',
   },
   webServer: {
     command: `"${process.execPath}" scripts/serve-pwa-fixture.mjs ${port}`,

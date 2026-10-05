@@ -41,11 +41,11 @@ describe('offline task actions', () => {
     })
   })
 
-  it('orders review after its media and latest comment dependencies', () => {
-    const result = buildSubmitReviewAction({ ...common, defectCode: 'BD-01', mediaActionId: 'media-12345678', commentActionId: 'comment-12345678' })
+  it('embeds the completion comment in the review and depends only on its media', () => {
+    const result = buildSubmitReviewAction({ ...common, defectCode: 'BD-01', mediaActionId: 'media-12345678', comment: '  Repair completed  ' })
     expect(result).toMatchObject({
-      action: 'submit_review', dependencies: ['media-12345678', 'comment-12345678'],
-      payload: { defect_code: 'BD-01', media_id: 'media-12345678', park_id: 7 },
+      action: 'submit_review', dependencies: ['media-12345678'],
+      payload: { defect_code: 'BD-01', media_id: 'media-12345678', park_id: 7, comment: 'Repair completed' },
     })
   })
 })

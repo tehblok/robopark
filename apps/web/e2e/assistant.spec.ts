@@ -119,3 +119,103 @@ test('unsupported host only requests status and stays read-only', async ({ page 
   await assertNoSeriousA11yViolations(page)
   await page.screenshot({ path: testInfo.outputPath('unsupported-host.png'), fullPage: true, animations: 'disabled' })
 })
+
+test('admin cleans old history and sees accurate conversation and job counts', async ({ page }) => {
+  let cleanupBody: unknown
+  await openAssistant(page, adminUser, [
+    { method: 'GET', path: '/api/ai/status', handler: () => ({ json: { ...readyStatus, can_manage: true } }) },
+    { method: 'GET', path: '/api/ai/conversations', handler: () => ({ json: [] }) },
+    { method: 'POST', path: '/api/ai/maintenance', handler: async request => {
+      cleanupBody = await request.json()
+      return { json: { deleted: 1, conversations_deleted: 1, jobs_deleted: 5, messages_deleted: 2 } }
+    } },
+    ...emptyManagementRoutes(),
+  ])
+  await page.getByRole('tab', { name: 'Настройки и журнал' }).click()
+  await page.getByText('Очистка журналов', { exact: true }).click()
+  await page.getByRole('button', { name: 'Очистить историю старше 30 дней' }).click()
+
+  await expect(page.getByText('Удалено бесед: 1; заданий: 5; сообщений: 2')).toBeVisible()
+  expect(cleanupBody).toEqual({ kind: 'history', before_days: 30 })
+})
+
+
+test('conversation creation retries once and ignores a late response after another selection', async ({ page }) => {
+  const first = { id: 'c-1', title: 'Первый разговор', park_id: 7, issue_key: null, updated_at: '', messages: [], jobs: [] }
+  const second = { ...first, id: 'c-2', title: 'Второй разговор' }
+  let creations = 0
+  let finishCreate!: () => void
+  const pendingCreate = new Promise<void>(resolve => { finishCreate = resolve })
+  await openAssistant(page, mechanicUser, [
+    { method: 'GET', path: '/api/ai/status', handler: () => ({ json: readyStatus }) },
+    { method: 'GET', path: '/api/ai/conversations', handler: () => ({ json: [first, second] }) },
+    { method: 'GET', path: '/api/ai/conversations/c-1', handler: () => ({ json: first }) },
+    { method: 'GET', path: '/api/ai/conversations/c-2', handler: () => ({ json: second }) },
+    { method: 'POST', path: '/api/ai/conversations', handler: async () => {
+      creations += 1
+      if (creations === 1) return { status: 503, json: { detail: 'temporarily_unavailable' } }
+      await pendingCreate
+      return { json: { ...first, id: 'c-late', title: 'Поздний разговор' } }
+    } },
+  ])
+  const create = page.getByRole('button', { name: 'Новый', exact: true })
+  const draft = page.getByLabel('Сообщение помощнику')
+  await draft.fill('Проверить питание')
+  await create.click()
+  await expect(page.getByRole('alert')).toContainText('Не удалось создать разговор')
+  await expect(create).toBeEnabled()
+  await expect(draft).toHaveValue('Проверить питание')
+  await create.click()
+  await expect(create).toBeDisabled()
+  await expect(draft).toBeDisabled()
+  expect(creations).toBe(2)
+  await page.getByRole('button', { name: 'Второй разговор', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+  const response = page.waitForResponse(value => value.request().method() === 'POST' && new URL(value.url()).pathname === '/api/ai/conversations' && value.status() === 200)
+  finishCreate()
+  await response
+  await expect(page.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Поздний разговор', exact: true })).toHaveCount(0)
+  await expect(draft).toBeEnabled()
+  await expect(draft).toHaveValue('Проверить питание')
+  expect(creations).toBe(2)
+})
+
+test('failed conversation deletion can be retried without clearing a newer selection', async ({ page }) => {
+  const first = { id: 'c-1', title: 'Первый разговор', park_id: 7, issue_key: null, updated_at: '', messages: [], jobs: [] }
+  const second = { ...first, id: 'c-2', title: 'Второй разговор' }
+  let deletions = 0
+  let finishDelete!: () => void
+  const pendingDelete = new Promise<void>(resolve => { finishDelete = resolve })
+  await openAssistant(page, mechanicUser, [
+    { method: 'GET', path: '/api/ai/status', handler: () => ({ json: readyStatus }) },
+    { method: 'GET', path: '/api/ai/conversations', handler: () => ({ json: [first, second] }) },
+    { method: 'GET', path: '/api/ai/conversations/c-1', handler: () => ({ json: first }) },
+    { method: 'GET', path: '/api/ai/conversations/c-2', handler: () => ({ json: second }) },
+    { method: 'DELETE', path: '/api/ai/conversations/c-1', handler: async () => {
+      deletions += 1
+      if (deletions === 1) return { status: 503, json: { detail: 'temporarily_unavailable' } }
+      await pendingDelete
+      return { json: { deleted: true } }
+    } },
+  ])
+  const remove = page.getByRole('button', { name: 'Удалить Первый разговор', exact: true })
+  const draft = page.getByLabel('Сообщение помощнику')
+  await draft.fill('Проверить питание')
+  await remove.click()
+  await expect(page.getByRole('alert')).toContainText('Не удалось удалить разговор')
+  await expect(remove).toBeEnabled()
+  await expect(page.getByRole('heading', { name: 'Первый разговор' })).toBeVisible()
+  await remove.click()
+  await expect(remove).toBeDisabled()
+  expect(deletions).toBe(2)
+  await page.getByRole('button', { name: 'Второй разговор', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+  finishDelete()
+  await expect(remove).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Первый разговор', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+  await expect(draft).toHaveValue('Проверить питание')
+  await expect(draft).toBeEnabled()
+  expect(deletions).toBe(2)
+})

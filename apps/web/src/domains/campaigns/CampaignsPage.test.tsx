@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StrictMode } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, ApiError, type CampaignDetail, type Park, type User } from '../../api'
 import { ParkScopeContext } from '../../app/park/parkScope'
@@ -155,6 +155,35 @@ it.each(['classic'] as const)('fails closed for a denied campaign list in %s mod
 it.each(['classic'] as const)('renders the manager campaign create form in %s mode', async mode => {
   renderList({ ...api, campaigns: vi.fn(async () => []) }, { ...user, role: 'royal' }, mode)
   expect(await screen.findByRole('button', { name: 'Новая кампания' })).toBeVisible()
+})
+
+it('removes the create draft atomically when the successful create refreshes to campaign detail', async () => {
+  window.history.replaceState(null, '', '/campaigns')
+  let pushed!: () => void
+  const routePushed = new Promise<void>(resolve => { pushed = resolve })
+  const pushState = vi.spyOn(window.history, 'pushState').mockImplementation((...args) => {
+    History.prototype.pushState.apply(window.history, args)
+    pushed()
+  })
+  const campaign = vi.fn(() => new Promise<CampaignDetail>(() => {}))
+  render(<PresentationModeContext.Provider value="classic"><BrowserRouter><AuthContext.Provider value={{ user: { ...user, role: 'royal' }, loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><ParkScopeContext.Provider value={{ allowAllParks: false, parkId: 7, selectedPark: park, parks: [park], loading: false, locked: true, setParkId: vi.fn(), refreshParks: vi.fn() }}><Routes><Route element={<CampaignsPage apiClient={{ ...api, campaigns: vi.fn(async () => []), campaign, createCampaign: vi.fn(async () => detail) }} />} path="/campaigns" /><Route element={<CampaignsPage apiClient={{ ...api, campaigns: vi.fn(async () => []), campaign, createCampaign: vi.fn(async () => detail) }} />} path="/campaigns/:campaignId" /></Routes></ParkScopeContext.Provider></AuthContext.Provider></BrowserRouter></PresentationModeContext.Provider>)
+
+  const name = await screen.findByRole('textbox', { name: 'Название' })
+  fireEvent.change(name, { target: { value: 'СК сентября' } })
+  fireEvent.change(screen.getByRole('textbox', { name: 'Часть названия тикета' }), { target: { value: 'замена колёс' } })
+  await userEvent.click(screen.getByRole('button', { name: /Парки кампании. Выбрано/ }))
+  await userEvent.click(screen.getByRole('checkbox', { name: 'Север' }))
+  fireEvent.submit(screen.getByRole('button', { name: 'Создать кампанию' }).closest('form')!)
+
+  try {
+    await routePushed
+    expect(window.location.pathname).toBe('/campaigns/4')
+    expect(screen.queryByRole('textbox', { name: 'Часть названия тикета' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Открываем кампанию')).toBeVisible()
+  } finally {
+    pushState.mockRestore()
+    window.history.replaceState(null, '', '/')
+  }
 })
 
 it.each(['classic'] as const)('removes protected campaign data when a refresh loses access in %s mode', async mode => {

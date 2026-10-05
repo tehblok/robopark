@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import threading
 import time
+from collections import OrderedDict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -28,23 +31,46 @@ DEFAULT_STATUS_KEYS: dict[str, list[str]] = {
     "waiting_team": ["waitingForAnotherTeam", "Ждём смежников"],
 }
 
-_METRICS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+# Reports contain only JSON data. Retain an immutable encoded snapshot so callers
+# cannot mutate cached payloads or grow them beyond the accounted byte budget.
+_METRICS_CACHE: OrderedDict[str, tuple[float, bytes, int]] = OrderedDict()
+_METRICS_CACHE_LOCK = threading.Lock()
+_METRICS_CACHE_BYTES = 0
 METRICS_CACHE_TTL_SEC = 90
+METRICS_CACHE_MAX_ENTRIES = 128
+METRICS_CACHE_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _remove_cached_report(cache_key: str) -> None:
+    global _METRICS_CACHE_BYTES
+    entry = _METRICS_CACHE.pop(cache_key, None)
+    if entry is not None:
+        _METRICS_CACHE_BYTES -= entry[2]
+
+
+def _prune_cached_reports(now: float) -> None:
+    # Called under the lock; at most MAX_ENTRIES rows are inspected.
+    for key, entry in list(_METRICS_CACHE.items()):
+        if entry[0] <= now:
+            _remove_cached_report(key)
 
 
 def clear_metrics_cache() -> None:
-    _METRICS_CACHE.clear()
+    global _METRICS_CACHE_BYTES
+    with _METRICS_CACHE_LOCK:
+        _METRICS_CACHE.clear()
+        _METRICS_CACHE_BYTES = 0
 
 
 def get_cached_now_report(cache_key: str) -> dict[str, Any] | None:
-    entry = _METRICS_CACHE.get(cache_key)
-    if entry is None:
-        return None
-    expires_at, payload = entry
-    if expires_at <= time.monotonic():
-        _METRICS_CACHE.pop(cache_key, None)
-        return None
-    return payload
+    with _METRICS_CACHE_LOCK:
+        _prune_cached_reports(time.monotonic())
+        entry = _METRICS_CACHE.get(cache_key)
+        if entry is None:
+            return None
+        _METRICS_CACHE.move_to_end(cache_key)
+        encoded = entry[1]
+    return json.loads(encoded)
 
 
 def set_cached_now_report(
@@ -53,7 +79,22 @@ def set_cached_now_report(
     *,
     ttl_sec: int = METRICS_CACHE_TTL_SEC,
 ) -> None:
-    _METRICS_CACHE[cache_key] = (time.monotonic() + ttl_sec, payload)
+    global _METRICS_CACHE_BYTES
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    retained_bytes = len(cache_key.encode("utf-8")) + len(encoded)
+    with _METRICS_CACHE_LOCK:
+        now = time.monotonic()
+        _prune_cached_reports(now)
+        _remove_cached_report(cache_key)
+        if ttl_sec <= 0 or retained_bytes > METRICS_CACHE_MAX_BYTES:
+            return
+        _METRICS_CACHE[cache_key] = (now + ttl_sec, encoded, retained_bytes)
+        _METRICS_CACHE_BYTES += retained_bytes
+        while (
+            len(_METRICS_CACHE) > METRICS_CACHE_MAX_ENTRIES
+            or _METRICS_CACHE_BYTES > METRICS_CACHE_MAX_BYTES
+        ):
+            _remove_cached_report(next(iter(_METRICS_CACHE)))
 
 
 def _status_or_clause(statuses: list[str]) -> str:

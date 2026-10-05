@@ -65,22 +65,34 @@ for (const role of ['mechanic', 'royal'] as const) for (const width of [390, 144
     // race the safe-activation reload and abort either navigation; the offline
     // reload below is the actual restart exercised by this test.
     await expect(page.getByRole('heading', { name: 'Проверить переднее левое колесо робота 447', exact: true })).toBeVisible()
-    // Wait for the same protected resource to be durably written before simulating a closed PWA.
-    await expect.poll(() => page.evaluate(async () => {
-      const opening = indexedDB.open('robopark-resource-cache')
-      const db = await new Promise<IDBDatabase>(resolve => { opening.onsuccess = () => resolve(opening.result) })
-      const records = await new Promise<Array<{ key: string; data?: { key?: string } }>>(resolve => {
-        const request = db.transaction('resources').objectStore('resources').getAll()
-        request.onsuccess = () => resolve(request.result)
-      })
-      db.close()
-      return records.some(record => record.key.endsWith(':issue:ROBOPARK-42') && record.data?.key === 'ROBOPARK-42')
-    })).toBe(true)
-    // Emulate a first route loaded before worker control: its code must be
-    // available from the install cache even without a runtime-cache hit.
-    await page.evaluate(async () => {
-      await Promise.all((await caches.keys()).filter(name => name.startsWith('robopark-runtime-')).map(name => caches.delete(name)))
-    })
+    // Prepare the offline restart only in a controlled document. A safe first
+    // activation can still reload this page; all preparation is idempotent.
+    await expect.poll(async () => {
+      try {
+        return await page.evaluate(async () => {
+          const registration = await navigator.serviceWorker.getRegistration('/')
+          if (registration?.active?.state !== 'activated' || !navigator.serviceWorker.controller) return false
+          const opening = indexedDB.open('robopark-resource-cache')
+          const db = await new Promise<IDBDatabase>(resolve => { opening.onsuccess = () => resolve(opening.result) })
+          const records = await new Promise<Array<{ key: string; data?: { key?: string } }>>(resolve => {
+            const request = db.transaction('resources').objectStore('resources').getAll()
+            request.onsuccess = () => resolve(request.result)
+          })
+          db.close()
+          if (!records.some(record => record.key.endsWith(':issue:ROBOPARK-42') && record.data?.key === 'ROBOPARK-42')) return false
+          // Emulate a first route loaded before worker control: its code must
+          // be available from the install cache even without a runtime hit.
+          await Promise.all((await caches.keys()).filter(name => name.startsWith('robopark-runtime-')).map(name => caches.delete(name)))
+          return true
+        })
+      } catch (error) {
+        // Retry only the expected first-worker activation navigation.
+        if (error instanceof Error && /Execution context was destroyed/.test(error.message)) return false
+        throw error
+      }
+    }).toBe(true)
+    await waitForActiveWorker(page)
+    await expect(page.getByRole('heading', { name: 'Проверить переднее левое колесо робота 447', exact: true })).toBeVisible()
     await setOffline(page, context, true)
     await page.reload()
     if (width >= 768) await expect(page.getByRole('heading', { name: 'Работа', exact: true })).toBeVisible()
@@ -140,13 +152,22 @@ async function settleOfflineRecord(page: Page, store: 'actions' | 'media', state
       opening.onsuccess = () => resolve(opening.result)
       opening.onerror = () => reject(opening.error)
     })
-    const transaction = db.transaction(store, 'readwrite')
     const key = store === 'actions' ? 'scope-a\0action' : 'scope-b\0photo'
-    const request = transaction.objectStore(store).get(key)
-    request.onsuccess = () => transaction.objectStore(store).put({ ...request.result, state })
+    const reading = db.transaction(store, 'readonly').objectStore(store).get(key)
+    const record = await new Promise<Record<string, unknown> & { blob?: Blob }>((resolve, reject) => {
+      reading.onsuccess = () => resolve(reading.result)
+      reading.onerror = () => reject(reading.error)
+    })
+    // This fixture writes native IndexedDB records rather than using OfflineDb.
+    // Materialize the persisted bytes before replacing its file-backed Blob:
+    // WebKit intermittently loses read access when this fixture reuses it.
+    // Real OfflineDb metadata updates are covered separately in all engines.
+    const blob = record.blob ? new Blob([await record.blob.arrayBuffer()], { type: record.blob.type }) : undefined
+    const transaction = db.transaction(store, 'readwrite')
+    transaction.objectStore(store).put({ ...record, state, ...(blob ? { blob } : {}) })
     await new Promise<void>((resolve, reject) => {
       transaction.oncomplete = () => resolve()
-      transaction.onerror = () => reject(transaction.error)
+      transaction.onerror = transaction.onabort = () => reject(transaction.error)
     })
     db.close()
   }, { store, state })

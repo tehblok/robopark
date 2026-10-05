@@ -29,6 +29,9 @@ from .terminal_protocol import (
 )
 from .terminal_state import TerminalRegistry
 
+TERMINAL_HISTORY_ROTATE_AT = 3072
+TERMINAL_HISTORY_RETAIN = 2048
+
 
 def worker_remaining_seconds(row, now):
     # The broker enforces the exact deadline; rounding down could let the worker
@@ -89,9 +92,41 @@ class TerminalBroker:
             row = self.registry.sessions.get(path.stem)
             if row and (not row.reason or row.request.broker_epoch == self.epoch):
                 continue
-            if path.stat().st_mtime < cutoff.timestamp() or index >= 2048:
+            if (
+                path.stat().st_mtime < cutoff.timestamp()
+                or index >= TERMINAL_HISTORY_RETAIN
+            ):
                 path.unlink()
                 self.registry.sessions.pop(path.stem, None)
+
+    def _rotate_history(self):
+        if len(self.registry.sessions) < TERMINAL_HISTORY_ROTATE_AT or any(
+            not row.reason for row in self.registry.sessions.values()
+        ):
+            return False
+        previous_epoch, previous_revision = self.epoch, self.revision
+        self.epoch = str(uuid4())
+        self.revision = capability_revision(self.boot_id, self.epoch)
+        try:
+            self.publish()
+        except BaseException:
+            self.epoch, self.revision = previous_epoch, previous_revision
+            raise
+        excess = len(self.registry.sessions) - TERMINAL_HISTORY_RETAIN
+        for session_id, row in list(self.registry.sessions.items()):
+            if excess <= 0:
+                break
+            if row.reason:
+                self.registry.sessions.pop(session_id)
+                excess -= 1
+        return True
+
+    async def maintain_history(self):
+        async with self.gate:
+            rotated = self._rotate_history()
+            self.prune_history()
+            if not rotated:
+                self.publish()
 
     async def create(self, request):
         async with self.gate:
@@ -189,7 +224,10 @@ class TerminalBroker:
     async def recover(self):
         await self.runtime.stop_all()
         self.prune_history()
-        for path in self.private.glob("*.json"):
+        records = sorted(
+            self.private.glob("*.json"), key=lambda path: path.stat().st_mtime
+        )
+        for path in records:
             if path.name == "capabilities.json":
                 continue
             identity(path.stem)
@@ -428,8 +466,7 @@ class TerminalBroker:
             for session_id, reason in self.registry.expired():
                 await self.terminate(session_id, reason=reason)
             if time.monotonic() >= publish_at:
-                self.prune_history()
-                self.publish()
+                await self.maintain_history()
                 publish_at = time.monotonic() + 10
             await asyncio.sleep(1)
 

@@ -115,17 +115,23 @@ export function writeReportPhotoDraft(draft: ReportPhotoDraft): Promise<void> {
         const request = store.getAll()
         request.onsuccess = () => {
           if (requestedEpoch !== epoch || requestedScope !== scopeEpoch.get(draft.key)) { done(); return }
-          const others = (request.result as ReportPhotoDraft[]).filter((item) => item.key !== draft.key)
+          const stored = request.result as ReportPhotoDraft[]
+          const occupied = stored.find(item => item.key === draft.key)
+          const archiveKey = occupied && occupied.ownerKey !== draft.ownerKey
+            ? retiredKey(draft.key, occupied.ownerKey) : null
+          // Account for the records that this transaction will actually retain.
+          // A principal change preserves the occupied slot under its retired key.
+          const others = stored.filter(item => item.key !== draft.key && item.key !== archiveKey)
+          if (archiveKey && occupied) others.push(occupied)
           const total = others.reduce((sum, item) => sum + (item.attachment?.blob.size ?? 0), bytes)
           if (others.length >= 8 || total > 60 * 1024 * 1024) {
             fail(new Error('Хранилище черновиков заполнено. Удалите ненужные черновики.'))
             return
           }
-          const occupied = (request.result as ReportPhotoDraft[]).find(item => item.key === draft.key)
-          if (occupied && occupied.ownerKey !== draft.ownerKey) {
+          if (occupied && archiveKey) {
             // A new principal may inherit the physical account/park key after
             // a browser restart. Preserve the previous owner before replacing it.
-            store.put({ ...occupied, key: retiredKey(draft.key, occupied.ownerKey) })
+            store.put({ ...occupied, key: archiveKey })
             const nextScopeLease = crypto.randomUUID()
             meta.put(nextScopeLease, `scope:${draft.key}`)
             const [globalLease] = JSON.parse(lease) as [string, string]
@@ -199,14 +205,23 @@ export function quarantineReportPhotoDraftsForScope(scope: OfflineScope): Promis
     })
     for (const draft of drafts) {
       if (!draft.key.includes(':retired:') && belongsToScope(draft, scope)) {
-        // Inline transaction: this queued operation must not await another enqueue.
+        // Revoke this module's queued writers even if another tab has already
+        // replaced the physical key with a different owner.
         scopeEpoch.set(draft.key, (scopeEpoch.get(draft.key) ?? 0) + 1)
         leases.delete(draft.key)
         await transaction<void>('readwrite', (store, done, _fail, meta) => {
-          store.put({ ...draft, key: retiredKey(draft.key, draft.ownerKey) })
-          store.delete(draft.key)
-          meta.put(crypto.randomUUID(), `scope:${draft.key}`)
-          done()
+          // Another tab may replace the physical key after the scope scan.
+          // Decide and archive from the current value inside this transaction.
+          const current = store.get(draft.key)
+          current.onsuccess = () => {
+            const fresh = current.result as ReportPhotoDraft | undefined
+            if (fresh && belongsToScope(fresh, scope)) {
+              store.put({ ...fresh, key: retiredKey(fresh.key, fresh.ownerKey) })
+              store.delete(fresh.key)
+              meta.put(crypto.randomUUID(), `scope:${fresh.key}`)
+            }
+            done()
+          }
         })
       }
     }
@@ -225,11 +240,16 @@ export function restoreReportPhotoDraftsForScope(scope: OfflineScope): Promise<v
       await transaction<void>('readwrite', (store, done) => {
         const active = store.get(key)
         active.onsuccess = () => {
-          if (!active.result) {
-            store.put({ ...draft, key })
-            store.delete(draft.key)
+          if (active.result) { done(); return }
+          const archived = store.get(draft.key)
+          archived.onsuccess = () => {
+            const fresh = archived.result as ReportPhotoDraft | undefined
+            if (fresh && retiredKey(key, fresh.ownerKey) === draft.key && belongsToScope(fresh, scope)) {
+              store.put({ ...fresh, key })
+              store.delete(draft.key)
+            }
+            done()
           }
-          done()
         }
       })
     }

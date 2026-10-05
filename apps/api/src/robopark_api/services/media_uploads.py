@@ -30,6 +30,7 @@ from robopark_api.task_workflow_models import MediaUploadSession
 MAX_CHUNK_BYTES = 1024 * 1024
 SESSION_TTL_SECONDS = 24 * 60 * 60
 COMPLETED_RETENTION_SECONDS = 7 * 24 * 60 * 60
+PENDING_DEPENDENCY_RETENTION_SECONDS = 30 * 24 * 60 * 60
 ALLOWED_MIMES = {"image/jpeg", "image/png", "image/webp"}
 MAX_UNCONSUMED_SESSIONS_PER_USER = 8
 MAX_RETAINED_BYTES_PER_USER = 256 * 1024 * 1024
@@ -46,8 +47,30 @@ class StartedUpload:
     status: Literal["active", "reinitialized", "completed"]
 
 
+@dataclass(frozen=True)
+class ConsumedUpload:
+    original_name: str
+    mime_type: str
+    content: bytes
+
+
 def uploads_root() -> Path:
     return staged_attachments_root() / "resumable"
+
+
+def _unlink_session_blobs(row: MediaUploadSession) -> bool:
+    names = {row.blob_name}
+    if not row.completed:
+        names.add(f"{row.id}.ready")
+    failed = False
+    for name in names:
+        try:
+            (uploads_root() / name).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            failed = True
+    return not failed
 
 
 def _validate_name(value: str) -> str:
@@ -310,12 +333,8 @@ def _start_locked(
         elif existing_dependency != requested_dependency:
             raise HTTPException(409, "media_dependency_conflict")
         if not existing.completed and existing.expires_at <= time.time():
-            try:
-                (uploads_root() / existing.blob_name).unlink()
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                raise HTTPException(503, "media_storage_unavailable") from exc
+            if not _unlink_session_blobs(existing):
+                raise HTTPException(503, "media_storage_unavailable")
             now = time.time()
             _ensure_disk_capacity(db, existing.size_bytes, exclude_session_id=existing.id)
             existing.received_offset = 0
@@ -381,6 +400,12 @@ def append_chunk(
 ) -> int:
     with database_idempotency_lock(db, _RESERVATION_LOCK_KEY):
         return _append_chunk_locked(db, actor, upload_id, offset, content, chunk_sha256)
+
+
+def authorize_chunk(db: Session, actor: User, upload_id: str) -> None:
+    # The append operation rechecks this under the reservation lock. This early
+    # check prevents unauthorized requests from making the server read their body.
+    _session(db, actor, upload_id)
 
 
 def _append_chunk_locked(
@@ -454,7 +479,14 @@ def complete(db: Session, actor: User, upload_id: str) -> MediaUploadSession:
         row.blob_name = ready_name
         row.completed = True
         row.completed_at = row.updated_at = time.time()
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            # Commit failures can be reported before or after durability. Keep the
+            # deterministic ready file in place so a fresh session can distinguish
+            # those outcomes and cleanup can reclaim either representation.
+            db.rollback()
+            raise
         return row
 
 
@@ -476,6 +508,27 @@ def bind_action_dependency(
     device_id: str,
     action_id: str,
 ) -> MediaUploadSession:
+    with database_idempotency_lock(db, _RESERVATION_LOCK_KEY):
+        return _bind_action_dependency_locked(
+            db,
+            actor,
+            media_id=media_id,
+            issue_key=issue_key,
+            device_id=device_id,
+            action_id=action_id,
+        )
+
+
+def _bind_action_dependency_locked(
+    db: Session,
+    actor: User,
+    *,
+    media_id: str,
+    issue_key: str,
+    device_id: str,
+    action_id: str,
+) -> MediaUploadSession:
+    _assert_upload_capability(db, actor)
     row = db.scalar(
         select(MediaUploadSession)
         .where(
@@ -484,10 +537,11 @@ def bind_action_dependency(
             MediaUploadSession.issue_key == issue_key,
             MediaUploadSession.completed.is_(True),
         )
-        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if row is None:
         raise HTTPException(409, "media_dependency_pending")
+    _ensure_local_scope(db, actor, row)
     requested = (device_id, action_id)
     if (row.dependent_device_id, row.dependent_action_id) == requested:
         return row
@@ -511,6 +565,32 @@ def bind_action_dependency(
     db.commit()
     db.refresh(row)
     return row
+
+
+def consume_action_dependency(
+    db: Session,
+    actor: User,
+    *,
+    media_id: str,
+    issue_key: str,
+    device_id: str,
+    action_id: str,
+) -> ConsumedUpload:
+    with database_idempotency_lock(db, _RESERVATION_LOCK_KEY):
+        row = _bind_action_dependency_locked(
+            db,
+            actor,
+            media_id=media_id,
+            issue_key=issue_key,
+            device_id=device_id,
+            action_id=action_id,
+        )
+        content = content_path(row).read_bytes()
+        return ConsumedUpload(
+            original_name=row.original_name,
+            mime_type=row.mime_type,
+            content=content,
+        )
 
 
 def acknowledge_action_dependency(
@@ -559,6 +639,12 @@ def _cleanup_expired_locked(db: Session, *, now: float | None = None) -> int:
                         ),
                         MediaUploadSession.dependency_terminal_at
                         <= cutoff - COMPLETED_RETENTION_SECONDS,
+                        and_(
+                            MediaUploadSession.dependent_action_id.is_not(None),
+                            MediaUploadSession.dependency_terminal_at.is_(None),
+                            MediaUploadSession.completed_at
+                            <= cutoff - PENDING_DEPENDENCY_RETENTION_SECONDS,
+                        ),
                     )
                 )
             )
@@ -566,12 +652,7 @@ def _cleanup_expired_locked(db: Session, *, now: float | None = None) -> int:
     )
     deleted = []
     for row in rows:
-        path = uploads_root() / row.blob_name
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
+        if not _unlink_session_blobs(row):
             continue
         db.delete(row)
         deleted.append(row)

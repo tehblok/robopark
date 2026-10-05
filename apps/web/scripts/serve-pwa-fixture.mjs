@@ -5,16 +5,15 @@ import { extname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 import { createServer as createViteServer } from 'vite'
+import { readProductionCsp } from './pwa-fixture-csp.mjs'
 
 const port = Number(process.argv[2])
 if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('A valid fixture port is required')
 
 const dist = resolve(fileURLToPath(new URL('../dist', import.meta.url)))
 const nginxConfig = readFileSync(new URL('../nginx.conf', import.meta.url), 'utf8')
-const productionCspValues = [...nginxConfig.matchAll(/^\s*add_header\s+Content-Security-Policy\s+"([^"]+)"\s+always;/gm)].map(match => match[1])
-const uniqueProductionCspValues = [...new Set(productionCspValues)]
-if (uniqueProductionCspValues.length !== 1) throw new Error('nginx.conf must define one consistent production Content-Security-Policy')
-const productionSecurityHeaders = { 'content-security-policy': uniqueProductionCspValues[0] }
+const productionSecurityHeaders = { 'content-security-policy': readProductionCsp(nginxConfig, '/index.html') }
+const terminalSecurityHeaders = { 'content-security-policy': readProductionCsp(nginxConfig, '/terminal.html') }
 // Reuse the same operational fixtures through real HTTP. Browser route mocks
 // cannot reliably intercept requests controlled by a service worker.
 const fixtureLoader = await createViteServer({ configFile: false, server: { middlewareMode: true, watch: null }, appType: 'custom' })
@@ -221,7 +220,7 @@ const server = createServer(async (request, response) => {
     return
   }
   response.writeHead(200, {
-    ...productionSecurityHeaders,
+    ...(file === join(dist, 'terminal.html') ? terminalSecurityHeaders : productionSecurityHeaders),
     'cache-control': 'no-cache',
     'content-type': contentTypes.get(extname(file)) ?? 'application/octet-stream',
   })

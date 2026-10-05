@@ -1,8 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { Link, MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
-import type { User } from '../../api'
+import { ApiError, type User } from '../../api'
 import { AuthContext } from '../../auth-context'
 import { ParkScopeContext } from '../../app/park/parkScope'
 import { AssistantPage } from './AssistantPage'
@@ -35,13 +35,13 @@ function client(status: AiStatus = ready): AssistantApiClient {
   }
 }
 
-function page(apiClient: AssistantApiClient, user: User = operator, path = '/assistant', activePark = park) {
+function page(apiClient: AssistantApiClient, user: User = operator, path = '/assistant', activePark = park, navigationTarget?: string) {
   return <MemoryRouter initialEntries={[path]}><AuthContext.Provider value={{
     user, loading: false, login: vi.fn(), refreshUser: vi.fn(), logout: vi.fn(),
   }}><ParkScopeContext.Provider value={{
     parkId: activePark.id, selectedPark: activePark, parks: user.parks, loading: false, locked: false,
     setParkId: vi.fn(), refreshParks: vi.fn(),
-  }}><AssistantPage apiClient={apiClient} /></ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
+  }}><AssistantPage apiClient={apiClient} />{navigationTarget ? <Link to={navigationTarget}>Следующий тикет</Link> : null}</ParkScopeContext.Provider></AuthContext.Provider></MemoryRouter>
 }
 
 function renderPage(apiClient: AssistantApiClient, user: User = operator, path = '/assistant') {
@@ -143,6 +143,64 @@ describe('AssistantPage', () => {
     interval.mockRestore()
   })
 
+  it.each([401, 403])('hides protected assistant panels after a %s status poll', async statusCode => {
+    const apiClient = client()
+    vi.mocked(apiClient.status).mockResolvedValueOnce(ready).mockRejectedValue(new ApiError(statusCode, 'forbidden'))
+    let tick!: () => Promise<void>
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation((handler, delay) => {
+      if (delay === 5000) tick = handler as () => Promise<void>
+      return 123 as unknown as ReturnType<typeof setInterval>
+    })
+    try {
+      renderPage(apiClient)
+      const draft = await screen.findByRole('textbox', { name: 'Сообщение помощнику' })
+      fireEvent.change(draft, { target: { value: 'Private repair context' } })
+      await act(async () => tick())
+      expect(screen.queryByRole('textbox', { name: 'Сообщение помощнику' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: 'Локальный помощник' })).not.toBeInTheDocument()
+      expect(screen.getByRole('alert')).toBeVisible()
+    } finally { interval.mockRestore() }
+  })
+
+  it('keeps the current draft after a transient status poll error', async () => {
+    const apiClient = client()
+    vi.mocked(apiClient.status).mockResolvedValueOnce(ready).mockRejectedValue(new ApiError(503, 'unavailable'))
+    let tick!: () => Promise<void>
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation((handler, delay) => {
+      if (delay === 5000) tick = handler as () => Promise<void>
+      return 123 as unknown as ReturnType<typeof setInterval>
+    })
+    try {
+      renderPage(apiClient)
+      const draft = await screen.findByRole('textbox', { name: 'Сообщение помощнику' })
+      fireEvent.change(draft, { target: { value: 'Pending repair question' } })
+      await act(async () => tick())
+      expect(draft).toHaveValue('Pending repair question')
+      expect(screen.getByRole('heading', { name: 'Локальный помощник' })).toBeVisible()
+    } finally { interval.mockRestore() }
+  })
+
+  it('does not reuse a previous identity status when the next identity is denied', async () => {
+    const apiClient = client()
+    const nextUser = { ...operator, id: 9, username: 'next-operator' }
+    vi.mocked(apiClient.status).mockResolvedValueOnce(ready).mockRejectedValueOnce(new ApiError(403, 'forbidden'))
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation(() => 123 as unknown as ReturnType<typeof setInterval>)
+    try {
+      const view = render(page(apiClient, operator))
+      expect(await screen.findByRole('textbox', { name: 'Сообщение помощнику' })).toBeVisible()
+      expect(apiClient.conversations).toHaveBeenCalledTimes(1)
+      expect(apiClient.documents).toHaveBeenCalledTimes(1)
+      const initialStatusIntervalCalls = interval.mock.calls.filter(([, delay]) => delay === 5000).length
+
+      view.rerender(page(apiClient, nextUser))
+      expect(await screen.findByRole('alert')).toBeVisible()
+      expect(screen.queryByRole('heading', { name: 'Локальный помощник' })).not.toBeInTheDocument()
+      expect(apiClient.conversations).toHaveBeenCalledTimes(1)
+      expect(apiClient.documents).toHaveBeenCalledTimes(1)
+      expect(interval.mock.calls.filter(([, delay]) => delay === 5000)).toHaveLength(initialStatusIntervalCalls)
+    } finally { interval.mockRestore() }
+  })
+
   it('aborts the initial status request when the page unmounts', () => {
     const apiClient = client()
     vi.mocked(apiClient.status).mockImplementation(() => new Promise(() => {}))
@@ -172,6 +230,24 @@ describe('AssistantPage', () => {
     expect(signal).toBeInstanceOf(AbortSignal)
     expect(signal.aborted).toBe(true)
     interval.mockRestore()
+  })
+
+  it('does not run a queued status poll after the page unmounts', async () => {
+    const apiClient = client()
+    let tick!: () => Promise<void>
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation((handler, delay) => {
+      if (delay === 5000) tick = handler as () => Promise<void>
+      return 123 as unknown as ReturnType<typeof setInterval>
+    })
+    try {
+      const view = renderPage(apiClient)
+      await screen.findByRole('tab', { name: 'Помощник' })
+      await waitFor(() => expect(tick).toBeTypeOf('function'))
+      view.unmount()
+
+      await act(async () => tick())
+      expect(apiClient.status).toHaveBeenCalledTimes(1)
+    } finally { interval.mockRestore() }
   })
 
   it('keeps the newest park documents when an older load resolves late', async () => {
@@ -231,6 +307,7 @@ describe('AssistantPage', () => {
     const user = userEvent.setup()
 
     const input = await screen.findByLabelText('Сообщение помощнику')
+    await waitFor(() => expect(input).toBeEnabled())
     await user.type(input, 'Как проверить лидар?')
     await user.click(screen.getByRole('button', { name: 'Отправить' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось отправить')
@@ -287,6 +364,118 @@ describe('AssistantPage', () => {
     expect(await screen.findByRole('heading', { name: 'RP-B' })).toBeVisible()
   })
 
+  it('keeps one automatic issue conversation while creation is pending', async () => {
+    const apiClient = client()
+    let finish!: (value: Awaited<ReturnType<AssistantApiClient['createConversation']>>) => void
+    const conversation = { id: 'c-new', title: 'RP-NEW', park_id: 4, issue_key: 'RP-NEW', updated_at: '' }
+    vi.mocked(apiClient.createConversation).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    vi.mocked(apiClient.conversation).mockResolvedValue({ ...conversation, messages: [], jobs: [] })
+    renderPage(apiClient, operator, '/assistant?issue_key=RP-NEW&park_id=4')
+    await waitFor(() => expect(apiClient.createConversation).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole('button', { name: 'Новый' })).toBeDisabled()
+    expect(screen.getByLabelText('Сообщение помощнику')).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Новый' }))
+    expect(apiClient.createConversation).toHaveBeenCalledTimes(1)
+    await act(async () => finish(conversation))
+    await waitFor(() => expect(screen.getByLabelText('Сообщение помощнику')).toBeEnabled())
+    expect(screen.getByRole('heading', { name: 'RP-NEW' })).toBeVisible()
+    expect(apiClient.createConversation).toHaveBeenCalledTimes(1)
+  })
+
+  it('coalesces rapid New clicks into one conversation creation', async () => {
+    const apiClient = client()
+    let finish!: (value: Awaited<ReturnType<AssistantApiClient['createConversation']>>) => void
+    vi.mocked(apiClient.createConversation).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    renderPage(apiClient)
+    const create = await screen.findByRole('button', { name: 'Новый' })
+    await waitFor(() => expect(create).toBeEnabled())
+    act(() => { fireEvent.click(create); fireEvent.click(create) })
+    expect(apiClient.createConversation).toHaveBeenCalledTimes(1)
+    await act(async () => finish({ id: 'c-new', title: 'Новый разговор', park_id: 4, issue_key: null, updated_at: '' }))
+    expect(create).toBeEnabled()
+  })
+
+  it('ignores a late created conversation after the user selects another conversation', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    const second = { ...first, id: 'c-2', title: 'Второй разговор' }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    vi.mocked(apiClient.conversation).mockImplementation(async id => id === first.id ? first : second)
+    let finish!: (value: Awaited<ReturnType<AssistantApiClient['createConversation']>>) => void
+    vi.mocked(apiClient.createConversation).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    renderPage(apiClient)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Новый' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: 'Новый' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Второй разговор' }))
+    await screen.findByRole('heading', { name: 'Второй разговор' })
+    await act(async () => finish({ id: 'c-late', title: 'Поздний разговор', park_id: 4, issue_key: null, updated_at: '' }))
+    expect(screen.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Поздний разговор' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Поздний разговор' })).not.toBeInTheDocument()
+  })
+
+  it.each(['manual', 'issue'] as const)('recovers from a failed %s conversation creation on an explicit retry', async mode => {
+    const apiClient = client()
+    const issueKey = mode === 'issue' ? 'RP-RETRY' : null
+    const conversation = { id: 'c-retry', title: 'Повторный разговор', park_id: 4, issue_key: issueKey, updated_at: '' }
+    vi.mocked(apiClient.createConversation).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(conversation)
+    vi.mocked(apiClient.conversation).mockResolvedValue({ ...conversation, messages: [], jobs: [] })
+    renderPage(apiClient, operator, issueKey ? `/assistant?issue_key=${issueKey}&park_id=4` : '/assistant')
+    const create = await screen.findByRole('button', { name: 'Новый' })
+    const input = screen.getByLabelText('Сообщение помощнику')
+    if (mode === 'manual') {
+      await waitFor(() => expect(create).toBeEnabled())
+      await userEvent.type(input, 'Проверить питание')
+      await userEvent.click(create)
+    }
+    expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось создать разговор')
+    expect(apiClient.createConversation).toHaveBeenCalledTimes(1)
+    expect(create).toBeEnabled()
+    expect(input).toBeEnabled()
+    if (mode === 'manual') expect(input).toHaveValue('Проверить питание')
+    await userEvent.click(create)
+    expect(await screen.findByRole('heading', { name: 'Повторный разговор' })).toBeVisible()
+    expect(apiClient.createConversation).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(input).toBeEnabled()
+    if (mode === 'manual') expect(input).toHaveValue('Проверить питание')
+  })
+
+  it('keeps the new issue conversation when an automatic creation for the old issue resolves last', async () => {
+    const apiClient = client()
+    const first = { id: 'c-a', title: 'RP-A', park_id: 4, issue_key: 'RP-A', updated_at: '' }
+    const second = { ...first, id: 'c-b', title: 'RP-B', issue_key: 'RP-B' }
+    let finishFirst!: (value: typeof first) => void
+    vi.mocked(apiClient.createConversation).mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve })).mockResolvedValueOnce(second)
+    vi.mocked(apiClient.conversation).mockResolvedValue({ ...second, messages: [], jobs: [] })
+    render(page(apiClient, operator, '/assistant?issue_key=RP-A&park_id=4', park, '/assistant?issue_key=RP-B&park_id=4'))
+    await waitFor(() => expect(apiClient.createConversation).toHaveBeenCalledTimes(1))
+    await userEvent.click(screen.getByRole('link', { name: 'Следующий тикет' }))
+    await screen.findByRole('heading', { name: 'RP-B' })
+    await waitFor(() => expect(screen.getByLabelText('Сообщение помощнику')).toBeEnabled())
+    await act(async () => finishFirst(first))
+    expect(screen.getByRole('heading', { name: 'RP-B' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'RP-A RP-A' })).not.toBeInTheDocument()
+    expect(apiClient.createConversation).toHaveBeenCalledTimes(2)
+    expect(apiClient.conversation).not.toHaveBeenCalledWith('c-a', expect.anything())
+  })
+
+  it('keeps the draft and allows retry when creating a conversation during submit fails', async () => {
+    const apiClient = client()
+    vi.mocked(apiClient.createConversation).mockRejectedValueOnce(new Error('offline'))
+    renderPage(apiClient)
+    const input = await screen.findByLabelText('Сообщение помощнику')
+    await waitFor(() => expect(input).toBeEnabled())
+    await userEvent.type(input, 'Проверить питание')
+    await userEvent.click(screen.getByRole('button', { name: 'Отправить' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось создать разговор')
+    expect(apiClient.createConversation).toHaveBeenCalledTimes(1)
+    expect(apiClient.sendMessage).not.toHaveBeenCalled()
+    expect(input).toHaveValue('Проверить питание')
+    expect(input).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled()
+  })
+
   it('does not open an issue conversation created after the page unmounts', async () => {
     const apiClient = client()
     let finishCreate!: (value: Awaited<ReturnType<AssistantApiClient['createConversation']>>) => void
@@ -334,6 +523,192 @@ describe('AssistantPage', () => {
     expect(apiClient.cancelJob).not.toHaveBeenCalled()
   })
 
+  it('ignores a final answer detail that resolves after selecting another conversation', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    const second = { ...first, id: 'c-2', title: 'Второй разговор' }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    let finishAnswer!: (value: typeof first) => void
+    let firstReads = 0
+    vi.mocked(apiClient.conversation).mockImplementation(id => {
+      if (id === second.id) return Promise.resolve(second)
+      if (++firstReads === 1) return Promise.resolve(first)
+      return new Promise(resolve => { finishAnswer = resolve })
+    })
+    renderPage(apiClient)
+    const input = await screen.findByLabelText('Сообщение помощнику')
+    await waitFor(() => expect(input).toBeEnabled())
+    await userEvent.type(input, 'Проверить питание')
+    await userEvent.click(screen.getByRole('button', { name: 'Отправить' }))
+    await waitFor(() => expect(firstReads).toBe(2))
+    await userEvent.click(screen.getByRole('button', { name: 'Второй разговор' }))
+    await screen.findByRole('heading', { name: 'Второй разговор' })
+    await act(async () => finishAnswer(first))
+    expect(screen.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+    expect(input).toHaveValue('Проверить питание')
+  })
+
+  it('keeps the current selection when deleting an earlier selected conversation completes late', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    const second = { ...first, id: 'c-2', title: 'Второй разговор' }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    vi.mocked(apiClient.conversation).mockImplementation(async id => id === first.id ? first : second)
+    let finishDelete!: () => void
+    vi.mocked(apiClient.deleteConversation).mockImplementation(() => new Promise(resolve => { finishDelete = resolve }))
+    renderPage(apiClient)
+    await screen.findByRole('heading', { name: 'Первый разговор' })
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Первый разговор' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Второй разговор' }))
+    await screen.findByRole('heading', { name: 'Второй разговор' })
+    await act(async () => finishDelete())
+    expect(screen.getByRole('heading', { name: 'Второй разговор' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Первый разговор' })).not.toBeInTheDocument()
+  })
+
+  it('keeps both conversations removed when parallel deletions finish in reverse order', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    const second = { ...first, id: 'c-2', title: 'Второй разговор' }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    vi.mocked(apiClient.conversation).mockResolvedValue(first)
+    const finishes = new Map<string, () => void>()
+    vi.mocked(apiClient.deleteConversation).mockImplementation(id => new Promise(resolve => { finishes.set(id, resolve) }))
+    renderPage(apiClient)
+    await screen.findByRole('heading', { name: 'Первый разговор' })
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Первый разговор' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Второй разговор' }))
+    await act(async () => finishes.get(second.id)!())
+    await act(async () => finishes.get(first.id)!())
+    expect(screen.queryByRole('button', { name: 'Первый разговор' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Второй разговор' })).not.toBeInTheDocument()
+    expect(screen.getByText('Начните новый разговор.')).toBeVisible()
+  })
+
+  it('does not reopen a deleted conversation when its initial detail request resolves late', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Удалённый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first])
+    let finishOpen!: (value: typeof first) => void
+    vi.mocked(apiClient.conversation).mockImplementation(() => new Promise(resolve => { finishOpen = resolve }))
+    vi.mocked(apiClient.deleteConversation).mockResolvedValue(undefined)
+    renderPage(apiClient)
+    await waitFor(() => expect(apiClient.conversation).toHaveBeenCalledTimes(1))
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Удалённый разговор' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Удалённый разговор' })).not.toBeInTheDocument())
+    await act(async () => finishOpen(first))
+    expect(screen.queryByRole('heading', { name: 'Удалённый разговор' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Сообщение помощнику')).toBeEnabled()
+  })
+
+  it('coalesces duplicate delete clicks and exposes a failed deletion for retry', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first])
+    vi.mocked(apiClient.conversation).mockResolvedValue(first)
+    let failDelete!: (error: Error) => void
+    vi.mocked(apiClient.deleteConversation).mockImplementationOnce(() => new Promise((_resolve, reject) => { failDelete = reject })).mockResolvedValue(undefined)
+    renderPage(apiClient)
+    const remove = await screen.findByRole('button', { name: 'Удалить Первый разговор' })
+    act(() => { fireEvent.click(remove); fireEvent.click(remove) })
+    expect(apiClient.deleteConversation).toHaveBeenCalledTimes(1)
+    expect(remove).toBeDisabled()
+    await act(async () => failDelete(new Error('offline')))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось удалить разговор')
+    expect(remove).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Первый разговор' })).toBeVisible()
+    await userEvent.click(remove)
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Первый разговор' })).not.toBeInTheDocument())
+    expect(apiClient.deleteConversation).toHaveBeenCalledTimes(2)
+  })
+
+  it('aborts resumed polling after successful deletion and discards its late result', async () => {
+    const apiClient = client()
+    const pending = { id: 'j-pending', kind: 'chat', state: 'running' as const, created_at: '', updated_at: '', error: null, result: null }
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [pending] }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first])
+    vi.mocked(apiClient.conversation).mockResolvedValue(first)
+    let finishJob!: (value: Awaited<ReturnType<AssistantApiClient['job']>>) => void
+    vi.mocked(apiClient.job).mockImplementation(() => new Promise(resolve => { finishJob = resolve }))
+    vi.mocked(apiClient.deleteConversation).mockResolvedValue(undefined)
+    renderPage(apiClient)
+    await waitFor(() => expect(apiClient.job).toHaveBeenCalledTimes(1))
+    const signal = vi.mocked(apiClient.job).mock.calls[0][1]!
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Первый разговор' }))
+    await waitFor(() => expect(signal.aborted).toBe(true))
+    await act(async () => finishJob({ ...pending, state: 'succeeded' }))
+    expect(apiClient.conversation).toHaveBeenCalledTimes(1)
+    expect(apiClient.job).toHaveBeenCalledTimes(1)
+    expect(apiClient.cancelJob).not.toHaveBeenCalled()
+    expect(screen.queryByRole('heading', { name: 'Первый разговор' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Ответ ещё готовится/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Сообщение помощнику')).toBeEnabled()
+  })
+
+  it('preserves a new conversation creation when deletion of the old selection finishes first', async () => {
+    const apiClient = client()
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    const next = { ...first, id: 'c-new', title: 'Новый ремонт' }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first])
+    vi.mocked(apiClient.conversation).mockResolvedValue(first)
+    let finishDelete!: () => void
+    let finishCreate!: (value: typeof first) => void
+    vi.mocked(apiClient.deleteConversation).mockImplementation(() => new Promise(resolve => { finishDelete = resolve }))
+    vi.mocked(apiClient.createConversation).mockImplementation(() => new Promise(resolve => { finishCreate = resolve }))
+    renderPage(apiClient)
+    const create = await screen.findByRole('button', { name: 'Новый' })
+    await waitFor(() => expect(create).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: 'Удалить Первый разговор' }))
+    await userEvent.click(create)
+    await act(async () => finishDelete())
+    expect(screen.getByLabelText('Сообщение помощнику')).toBeDisabled()
+    await act(async () => finishCreate(next))
+    expect(screen.getByRole('heading', { name: 'Новый ремонт' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Новый ремонт' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Первый разговор' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Сообщение помощнику')).toBeEnabled()
+  })
+
+  it('waits for the initial conversation list before accepting a message or creating a new conversation', async () => {
+    const apiClient = client()
+    let finishList!: (value: Awaited<ReturnType<AssistantApiClient['conversations']>>) => void
+    let finishDetail!: (value: Awaited<ReturnType<AssistantApiClient['conversation']>>) => void
+    const existing = { id: 'c-existing', title: 'Текущий ремонт', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
+    vi.mocked(apiClient.conversations).mockImplementation(() => new Promise(resolve => { finishList = resolve }))
+    vi.mocked(apiClient.conversation).mockImplementation(() => new Promise(resolve => { finishDetail = resolve }))
+    renderPage(apiClient)
+    const input = await screen.findByLabelText('Сообщение помощнику')
+    expect(input).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Новый' })).toBeDisabled()
+    fireEvent.submit(input.closest('form')!)
+    expect(apiClient.createConversation).not.toHaveBeenCalled()
+    expect(apiClient.sendMessage).not.toHaveBeenCalled()
+
+    await act(async () => finishList([existing]))
+    expect(input).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Отправить' })).toBeDisabled()
+    await act(async () => finishDetail(existing))
+    expect(input).toBeEnabled()
+    await userEvent.type(input, 'Как проверить лидар?')
+    expect(input).toHaveValue('Как проверить лидар?')
+    expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled()
+    expect(apiClient.createConversation).not.toHaveBeenCalled()
+  })
+
+  it('keeps message creation unavailable after the initial conversation list fails and recovers on retry', async () => {
+    const apiClient = client()
+    vi.mocked(apiClient.conversations).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([])
+    renderPage(apiClient)
+    await screen.findByText('Не удалось загрузить разговоры')
+    const input = screen.getByLabelText('Сообщение помощнику')
+    expect(input).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Новый' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Повторить' }))
+    await waitFor(() => expect(input).toBeEnabled())
+    expect(screen.getByRole('button', { name: 'Новый' })).toBeEnabled()
+    expect(apiClient.createConversation).not.toHaveBeenCalled()
+  })
+
   it('disables message submission while a newly selected conversation is loading', async () => {
     const apiClient = client()
     const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [] }
@@ -379,6 +754,26 @@ describe('AssistantPage', () => {
     expect(apiClient.job).toHaveBeenCalledWith('j-pending', expect.any(AbortSignal))
   })
 
+  it('resumes an unfinished job again after switching away and reopening its conversation', async () => {
+    const apiClient = client()
+    const pending = { id: 'j-pending', kind: 'chat', state: 'running' as const, created_at: '', updated_at: '', error: null, result: null }
+    const first = { id: 'c-1', title: 'Первый разговор', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [pending] }
+    const second = { ...first, id: 'c-2', title: 'Второй разговор', jobs: [] }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    vi.mocked(apiClient.conversation).mockImplementation(async id => id === first.id ? first : second)
+    vi.mocked(apiClient.job).mockImplementation(() => new Promise(() => {}))
+    renderPage(apiClient)
+    await waitFor(() => expect(apiClient.job).toHaveBeenCalledTimes(1))
+    const firstSignal = vi.mocked(apiClient.job).mock.calls[0][1]!
+    await userEvent.click(screen.getByRole('button', { name: 'Второй разговор' }))
+    await screen.findByRole('heading', { name: 'Второй разговор' })
+    expect(firstSignal.aborted).toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: 'Первый разговор' }))
+    await waitFor(() => expect(apiClient.job).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(apiClient.job).mock.calls[1][1]!.aborted).toBe(false)
+    expect(apiClient.cancelJob).not.toHaveBeenCalled()
+  })
+
   it('stops UI job polling on unmount without cancelling the durable job', async () => {
     const apiClient = client()
     const pending = { id: 'j-pending', kind: 'chat', state: 'running' as const, created_at: '', updated_at: '', error: null, result: null }
@@ -417,6 +812,7 @@ describe('AssistantPage', () => {
     ['ai_context_too_large', 'Уменьшите запрос'],
     ['ai_sources_changed', 'Источники изменились'],
     ['ai_queue_full', 'Очередь помощника заполнена'],
+    ['ai_finalize_busy', 'Не удалось сохранить результат'],
     ['issue_park_mismatch', 'Задача относится к другому парку'],
     ['script_test_required', 'Сначала проверьте текущую ревизию скрипта'],
     ['connector_url_invalid', 'Проверьте HTTPS-адрес подключения'],
@@ -490,6 +886,22 @@ describe('AssistantPage', () => {
     expect(confirm).toHaveBeenCalledWith('Удалить подключение «Сервис»?')
     expect(apiClient.deleteConnector).not.toHaveBeenCalled()
     confirm.mockRestore()
+  })
+
+  it('reports separate history cleanup counts including completed script jobs', async () => {
+    const apiClient = client({ ...ready, can_manage: true })
+    vi.mocked(apiClient.config).mockResolvedValue({ enabled: true, learning_enabled: true, revision: 1 })
+    vi.mocked(apiClient.prompts).mockResolvedValue([])
+    vi.mocked(apiClient.runs).mockResolvedValue([])
+    vi.mocked(apiClient.maintenance).mockResolvedValue({ deleted: 1, conversations_deleted: 1, jobs_deleted: 5, messages_deleted: 2 })
+    renderPage(apiClient, admin)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('tab', { name: 'Настройки и журнал' }))
+    await user.click(screen.getByText('Очистка журналов'))
+    await user.click(screen.getByRole('button', { name: 'Очистить историю старше 30 дней' }))
+
+    expect(apiClient.maintenance).toHaveBeenCalledWith('history', 30)
+    expect(await screen.findByText('Удалено бесед: 1; заданий: 5; сообщений: 2')).toBeVisible()
   })
 
   it('guards runtime actions, confirms model removal, and reports cleanup failures', async () => {

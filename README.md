@@ -3,10 +3,10 @@
 ## Установка и обновление
 
 На Ubuntu/Armbian с Python 3.10+, `curl` и `sudo` одна команда скачивает
-кандидат выпуска rc.27, сверяет SHA-256 и запускает меню установки:
+кандидат выпуска rc.31, сверяет SHA-256 и запускает меню установки:
 
 ```sh
-d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.27/robopark-0.2.0-rc.27.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' '865ad98f897ef5c80c71bc2d5533daf3819ea6ce5780390ccd603e0b8a4b51f6  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
+d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.31/robopark-0.2.0-rc.31.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' '91949b83b83d7aa662704e6c25200267dfb19ed261ecbdea38b2dfbd7916f2eb  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
 ```
 
 Выберите «Чистая установка» на новом хосте. Установщик интерактивно запросит
@@ -16,8 +16,8 @@ Tuna token, домен и пароль первого владельца. При
 ARM64/AMD64, поддерживаемые ОС и требования к памяти/диску перечислены в
 [руководстве установки](docs/runbooks/usb-clean-install.md).
 Происхождение и границы проверки опубликованного пакета — в
-[описании rc.27](docs/releases/0.2.0-rc.27.md) и
-[отчёте о проверке](docs/reviews/2026-10-04-runtime-hardening.md).
+[описании rc.31](docs/releases/0.2.0-rc.31.md) и
+[отчёте о проверке помощника](docs/reviews/2026-10-04-ai-controls.md).
 
 > **GEACX1 и NVMe:** rc.25 поддерживает NVMe с ОС и eMMC с ОС + NVMe для данных.
 > Порядок выбора и проверки описан в

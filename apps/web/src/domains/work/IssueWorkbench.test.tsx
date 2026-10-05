@@ -691,7 +691,7 @@ it('displays and writes task parts from the backend claim park despite tag and u
 
   expect(await screen.findByRole('option', { name: 'Колёса' })).toBeInTheDocument()
   fireEvent.change(screen.getByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   expect(screen.getByText('Склад парка A')).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
 
@@ -728,7 +728,7 @@ it('announces a write-off and collapses the form after success', async () => {
   renderWorkbench({ client, currentUser: mechanic })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
 
   expect(await screen.findByText('Запчасть списана', { selector: '[role="status"]' })).toBeVisible()
@@ -803,7 +803,7 @@ it('keeps one queued write-off across close and reopen, then collapses only afte
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, syncEngine })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
   expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
@@ -820,7 +820,7 @@ it('keeps one queued write-off across close and reopen, then collapses only afte
 
   fireEvent.click(screen.getByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
 
   await waitFor(() => expect(enqueueAction).toHaveBeenCalledTimes(2))
@@ -841,7 +841,7 @@ it('blocks an early write-off until durable pending-action hydration completes',
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
 
   expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
   fireEvent.submit(screen.getByRole('form', { name: 'Списание запчасти' }))
@@ -868,7 +868,7 @@ it('fails closed when durable write-off hydration fails and retries the original
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
 
   expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось проверить ожидающее списание')
   expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
@@ -893,7 +893,7 @@ it('clears a confirmed legacy desktop write-off while mounted and creates a fres
   const sync: SyncContextValue = { state: { status: 'idle', pending: 0, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction: vi.fn(async () => current), subscribeAction }
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => legacyIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
   expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
@@ -935,7 +935,7 @@ it('keeps legacy phone write-off durable across close and confirms through the s
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => legacyIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Использовать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(sync.subscribeAction).toHaveBeenCalled())
   fireEvent.click(screen.getByRole('button', { name: 'Использовать запчасть' }))
@@ -961,7 +961,7 @@ it('retires a terminal claim conflict and confirms an explicit retry with a fres
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
   fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
   fireEvent.click(screen.getByRole('button', { name: 'Списать в задачу' }))
   await waitFor(() => expect(enqueueAction).toHaveBeenCalledOnce())
   await waitFor(() => expect(sync.subscribeAction).toHaveBeenCalled())
@@ -1221,11 +1221,11 @@ describe('IssueWorkbench', () => {
     expect(await screen.findByRole('textbox', { name: 'Добавить уточнение' })).not.toBeRequired()
   })
 
-  it('stores exactly one review photo locally before queueing the review', async () => {
+  it.each([true, false])('stores the review photo and completion comment together (existing comment: %s)', async hasComment => {
     const mechanic = { ...user, username: 'mech', role: 'mechanic' as const }
     const workflowIssue: TrackerIssueDetail = {
       ...issue, claim: { park_id: park.id },
-      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: true },
+      workflow: { owner: { display: 'mech', login: 'mech' }, review_state: null, display_status: 'in_progress', sync_state: 'saved', has_current_cycle_comment: hasComment },
     }
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:review')
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
@@ -1253,6 +1253,7 @@ describe('IssueWorkbench', () => {
     await screen.findByRole('button', { name: 'Передать на проверку' })
     fireEvent.click(screen.getAllByRole('button', { name: 'Передать на проверку' }).at(-1)!)
     fireEvent.change(screen.getByLabelText('Код дефекта'), { target: { value: 'BD-01' } })
+    if (!hasComment) fireEvent.change(screen.getByLabelText('\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439 \u043e \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u043d\u043e\u0439 \u0440\u0430\u0431\u043e\u0442\u0435'), { target: { value: '  Repair completed  ' } })
     const photo = new File(['photo'], 'robot.jpg', { type: 'image/jpeg' })
     fireEvent.change(screen.getByLabelText('Сделать фото или выбрать файл'), { target: { files: [photo] } })
     fireEvent.click(screen.getAllByRole('button', { name: 'Передать на проверку' }).at(-1)!)
@@ -1260,7 +1261,9 @@ describe('IssueWorkbench', () => {
     await waitFor(() => expect(enqueueMedia).toHaveBeenCalledOnce())
     expect(enqueueMedia).toHaveBeenCalledWith(
       expect.objectContaining({ issueKey: issue.key, name: 'robot.jpg', blob: expect.any(Blob) }),
-      expect.objectContaining({ action: 'submit_review', dependencies: [expect.stringMatching(/^media-/)] }),
+      expect.objectContaining({ action: 'submit_review', dependencies: [expect.stringMatching(/^media-/)],
+        ...(!hasComment ? { payload: expect.objectContaining({ comment: 'Repair completed' }) } : {}),
+      }),
     )
     expect(enqueueAction).not.toHaveBeenCalled()
     expect(taskSubmitReview).not.toHaveBeenCalled()
@@ -2179,6 +2182,35 @@ describe('IssueWorkbench', () => {
     expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}comments:${issue.key}`)
     expect(revalidate).toHaveBeenCalledWith(`${accessPrefix()}transitions:${issue.key}`)
     expect(clearAll).not.toHaveBeenCalled()
+  })
+
+  it('does not let a pre-mutation detail refresh replace the saved task', async () => {
+    const pending = deferred<TrackerIssueDetail>()
+    const saved = { ...queuedWorkflowIssue, summary: 'Изменение сохранено' }
+    const trackerIssue = vi.fn()
+      .mockResolvedValueOnce(queuedWorkflowIssue)
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue(saved)
+    const client = apiClient({
+      trackerIssue,
+      taskMessage: vi.fn(async () => taskMessageResult('Новая деталь')),
+    })
+    renderWorkbench({ client })
+
+    await screen.findByRole('heading', { name: queuedWorkflowIssue.summary })
+    await openTaskChat()
+    act(() => resourceStore.revalidate(`${accessPrefix()}issue:${issue.key}`))
+    await waitFor(() => expect(trackerIssue).toHaveBeenCalledTimes(2))
+
+    fireEvent.change(screen.getByLabelText(ru.tracker.comments), {
+      target: { value: 'Новая деталь' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.commentSubmit }))
+    expect(await screen.findByRole('heading', { name: saved.summary })).toBeInTheDocument()
+
+    await act(async () => pending.resolve(queuedWorkflowIssue))
+    expect(screen.getByRole('heading', { name: saved.summary })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: queuedWorkflowIssue.summary })).not.toBeInTheDocument()
   })
 
   it('keeps cached protected work visible only for a transient revalidation failure', async () => {

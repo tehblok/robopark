@@ -272,6 +272,74 @@ describe('ReportForms', () => {
     expect(screen.queryByLabelText('Вложения к репорту')).not.toBeInTheDocument()
   })
 
+
+  it.each(['owner', 'discard'] as const)('drops a late restored photo after %s changes while its bytes load', async (change) => {
+    const bytes = deferred<ArrayBuffer>()
+    const blob = new Blob(['saved photo'], { type: 'image/jpeg' })
+    const originalBytes = await blob.arrayBuffer()
+    const readBytes = vi.spyOn(blob, 'arrayBuffer').mockReturnValue(bytes.promise)
+    vi.spyOn(drafts, 'readReportPhotoDraft').mockResolvedValueOnce({
+      key: 'robopark:report-draft:1:7', ownerKey: 'owner-a', revision: 'saved',
+      activeForm: 'problem', title: 'Saved title', body: '', trackerKey: '', createdReportId: 42,
+      attachmentKind: 'device_photo', attachment: { blob, name: 'saved.jpg', lastModified: 0 },
+    }).mockResolvedValue(null)
+    const view = render(form())
+    await waitFor(() => expect(readBytes).toHaveBeenCalledOnce())
+    if (change === 'owner') view.rerender(form({ ownerKey: 'owner-b', principalId: 2, parkId: 8 }))
+    else await userEvent.setup().click(screen.getByRole('button', { name: 'Удалить черновик' }))
+    await act(async () => bytes.resolve(originalBytes))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toBeEnabled())
+    expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('')
+    expect(screen.queryByText(/saved.jpg/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Вложения к репорту')).not.toBeInTheDocument()
+  })
+
+
+  it('preserves an acknowledged IDB-only report when its photo bytes cannot be read', async () => {
+    const blob = new Blob(['saved photo'], { type: 'image/jpeg' })
+    vi.spyOn(blob, 'arrayBuffer').mockRejectedValue(new Error('unreadable photo'))
+    const original: drafts.ReportPhotoDraft = {
+      key: 'robopark:report-draft:1:7', ownerKey: 'owner-a', revision: 'saved',
+      activeForm: 'problem', title: 'Saved title', body: 'Saved body', trackerKey: '', createdReportId: 42,
+      attachmentKind: 'device_photo', attachment: { blob, name: 'saved.jpg', lastModified: 0 },
+    }
+    vi.spyOn(drafts, 'readReportPhotoDraft').mockResolvedValue(original)
+    const write = vi.spyOn(drafts, 'writeReportPhotoDraft')
+    render(form())
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toBeEnabled())
+    expect(screen.getByRole('textbox', { name: 'Заголовок *' })).toHaveValue('Saved title')
+    expect(screen.getByRole('textbox', { name: 'Описание' })).toHaveValue('Saved body')
+    expect(screen.getByText(/Репорт №42/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Создать' })).toBeDisabled()
+    expect(screen.queryByText(/Выбран файл: saved.jpg/)).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toBeVisible()
+    expect(write).not.toHaveBeenCalled()
+    expect(JSON.parse(localStorage.getItem('robopark:report-draft:1:7')!)).toMatchObject({ createdReportId: 42 })
+    await userEvent.setup().upload(screen.getByLabelText('Файл'), new File(['replacement'], 'replacement.jpg', { type: 'image/jpeg' }))
+    await waitFor(() => expect(write).toHaveBeenCalledWith(expect.objectContaining({
+      createdReportId: 42, attachment: expect.objectContaining({ name: 'replacement.jpg' }),
+    })))
+  })
+
+  it('keeps attachment type locked while restoring photo bytes', async () => {
+    const bytes = deferred<ArrayBuffer>()
+    const blob = new Blob(['saved photo'], { type: 'image/jpeg' })
+    const originalBytes = await blob.arrayBuffer()
+    const readBytes = vi.spyOn(blob, 'arrayBuffer').mockReturnValue(bytes.promise)
+    vi.spyOn(drafts, 'readReportPhotoDraft').mockResolvedValue({
+      key: 'robopark:report-draft:1:7', ownerKey: 'owner-a', revision: 'saved',
+      activeForm: 'problem', title: 'Saved title', body: '', trackerKey: '', createdReportId: 42,
+      attachmentKind: 'ui_snapshot', attachment: { blob, name: 'saved.jpg', lastModified: 0 },
+    })
+    render(form())
+    await waitFor(() => expect(readBytes).toHaveBeenCalledOnce())
+    expect(screen.getByRole('combobox', { name: 'Тип вложения' })).toBeDisabled()
+    await act(async () => bytes.resolve(originalBytes))
+    expect(screen.getByRole('combobox', { name: 'Тип вложения' })).toBeEnabled()
+    expect(screen.getByRole('combobox', { name: 'Тип вложения' })).toHaveValue('ui_snapshot')
+    expect(screen.getByText(/Выбран файл: saved.jpg/)).toBeVisible()
+  })
+
   it('does not show an unscoped legacy text draft to a newly authorized scope', () => {
     localStorage.setItem('robopark:report-draft:1:7', JSON.stringify({ title: 'Legacy secret', body: 'private' }))
     render(form({ ownerKey: 'new-scope' }))

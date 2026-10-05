@@ -32,6 +32,32 @@ it('allows manual offline/hidden work, coalesces, but refuses disabled work', as
   view.rerender(<Probe task={task} enabled={false} />)
   fireEvent.click(screen.getByRole('button')); await flush(); expect(task).toHaveBeenCalledTimes(1)
 })
+it('recovers an offline robot poll immediately at the minimum reconnect jitter', async () => {
+  const task = vi.fn(async () => undefined)
+  const view = render(<Probe task={task} online={false} />)
+  await flush()
+  expect(task).not.toHaveBeenCalled()
+
+  view.rerender(<Probe task={task} online />)
+  await flush()
+
+  expect(task).toHaveBeenCalledTimes(1)
+})
+
+it('recovers an offline robot poll before the maximum reconnect jitter elapses', async () => {
+  vi.spyOn(Math, 'random').mockReturnValue(0.999999)
+  const task = vi.fn(async () => undefined)
+  const view = render(<Probe task={task} online={false} />)
+  await flush()
+  expect(task).not.toHaveBeenCalled()
+
+  view.rerender(<Probe task={task} online />)
+  await act(async () => vi.advanceTimersByTimeAsync(29_998))
+  expect(task).not.toHaveBeenCalled()
+  await act(async () => vi.advanceTimersByTimeAsync(1))
+  expect(task).toHaveBeenCalledTimes(1)
+})
+
 it('new task identity does not coalesce with or inherit old completion', async () => {
   let done!: () => void
   const old = vi.fn(() => new Promise<void>(resolve => { done = resolve }))

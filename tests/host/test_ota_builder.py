@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -53,6 +54,47 @@ def test_built_ota_is_self_executable_and_independently_verifiable(tmp_path: Pat
     assert verified.manifest.app_version == (ROOT / "VERSION").read_text().strip()
 
 
+def test_packaged_readme_has_no_stale_install_hash_or_unshipped_doc_links(tmp_path: Path):
+    artifact = build_ota(ROOT, tmp_path, git_sha="b" * 40)
+    with zipfile.ZipFile(artifact) as archive:
+        readme = archive.read("release/README.md").decode("utf-8")
+
+    assert "releases/download/" not in readme
+    assert "(docs/" not in readme
+    assert "https://github.com/tehblok/robopark" in readme
+    assert "sudo python3" in readme
+
+
+@pytest.mark.parametrize("root_readme", ["missing", "symlink"])
+def test_packaged_guide_is_independent_of_workspace_root_readme(tmp_path: Path, root_readme: str):
+    repository = tmp_path / "source"
+    paths = [
+        "VERSION", "README.md", "deploy/release-metadata.json",
+        "deploy/ota/__main__.py", "deploy/ota/README.installed.md",
+        *(str(path.relative_to(ROOT)) for path in (ROOT / "deploy/ota/robopark_ota").glob("*.py")),
+        *(f"deploy/host/robopark_host/{name}.py"
+          for name in ("storage_layout", "storage_setup", "storage_watchdog")),
+    ]
+    for relative in paths:
+        target = repository / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    (repository / "README.md").unlink()
+    if root_readme == "symlink":
+        external = tmp_path / "external.txt"
+        external.write_text("must-not-be-packaged")
+        (repository / "README.md").symlink_to(external)
+
+    artifact = build_ota(repository, tmp_path / "out", git_sha="c" * 40)
+    with zipfile.ZipFile(artifact) as archive:
+        readme = archive.read("release/README.md")
+
+    assert readme == (ROOT / "deploy/ota/README.installed.md").read_bytes()
+    assert b"must-not-be-packaged" not in readme
+
+
 def test_manifest_inventory_exactly_matches_regular_members(tmp_path: Path):
     artifact = build_ota(ROOT, tmp_path, git_sha="c" * 40)
 
@@ -89,6 +131,8 @@ def test_manifest_is_readable_by_installed_browser_without_decompression(tmp_pat
         ".git/",
         ".pnpm-store/",
         "output/",
+        "/e2e/",
+        "/e2e-production/",
         "__pycache__/",
         ".pyc",
         ".log",
@@ -117,6 +161,31 @@ def test_artifact_excludes_runtime_environment_files_but_keeps_examples(tmp_path
 def test_source_filter_distinguishes_secret_env_from_public_example():
     assert include_source_path(Path("deploy/.env")) is False
     assert include_source_path(Path("deploy/host.env.example")) is True
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "apps/web/e2e/app-shell.spec.ts",
+        "apps/web/e2e/operational/interface-visual-acceptance.spec.ts-snapshots/classic-work-light-1440.png",
+        "apps/web/e2e-production/pwa-production.spec.ts",
+    ],
+)
+def test_ota_source_filter_omits_browser_acceptance_files(relative: str):
+    assert include_source_path(Path(relative)) is False
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "apps/web/src/pwa/offlineDb.ts",
+        "apps/web/src/domains/assistant/AssistantPage.tsx",
+        "apps/web/public/manifest.webmanifest",
+        "apps/api/knowledge/repair-v1/seed.jsonl",
+    ],
+)
+def test_ota_source_filter_retains_runtime_and_knowledge(relative: str):
+    assert include_source_path(Path(relative)) is True
 
 
 def test_output_directory_must_be_absolute_and_outside_repository(tmp_path: Path):

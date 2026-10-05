@@ -32,3 +32,19 @@ test('production CSP permits local photo previews without weakening script or ob
   expect(policy).toContain("object-src 'none'")
   expect(policy).toContain("frame-ancestors 'none'")
 })
+
+test('terminal document retains its separate restrictive production CSP', async ({ request }) => {
+  const application = await request.get('/index.html')
+  const terminal = await request.get('/terminal.html')
+  expect(application.ok()).toBe(true)
+  expect(terminal.ok()).toBe(true)
+  const applicationPolicy = application.headers()['content-security-policy']
+  const terminalPolicy = terminal.headers()['content-security-policy']
+  expect(applicationPolicy).toContain("img-src 'self' data: blob:")
+  expect(applicationPolicy).toContain("base-uri 'self'")
+  expect(terminalPolicy).toContain("img-src 'self' data:;")
+  expect(terminalPolicy).toContain("base-uri 'none'")
+  expect(terminalPolicy).not.toContain('blob:')
+  expect(terminalPolicy).toContain("script-src 'self';")
+  expect(terminalPolicy).toContain("object-src 'none';")
+})

@@ -12,7 +12,7 @@ for (const role of ['mechanic', 'operator', 'driver'] as const) {
   })
 }
 
-test('50 work-tab cycles retain one File, draft and bounded intervals without writes', async ({ page }) => {
+test('50 work-tab cycles retain one File, draft and bounded intervals without writes', async ({ page, browserName }) => {
   test.setTimeout(120_000)
   await page.addInitScript(() => {
     const ids = new Set<number>()
@@ -24,7 +24,9 @@ test('50 work-tab cycles retain one File, draft and bounded intervals without wr
   const writes: string[] = []
   const presenceHeartbeats: string[] = []
   let resolutionReads = 0
+  let documentLoads = 0
   page.on('request', request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) documentLoads++
     if (!request.url().includes('/api/') || request.method() === 'GET') return
     const path = new URL(request.url()).pathname
     if (path === '/api/emergency/resolve') resolutionReads++
@@ -48,13 +50,24 @@ test('50 work-tab cycles retain one File, draft and bounded intervals without wr
   await file.setInputFiles({ name: 'repair.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA/0AAAAASUVORK5CYII=', 'base64') })
   const count = () => page.evaluate(() => (window as unknown as { __intervalCount: number }).__intervalCount)
   const initial = await count()
+  const historyWindowStarted = Date.now()
   for (let cycle = 0; cycle < 50; cycle++) {
+    if (browserName === 'webkit' && cycle === 25) {
+      // WebKit allows 100 push/replaceState calls per 10 seconds. Keep all 50
+      // cycles, but split their 100 writes across quota windows; exceeding the
+      // browser limit makes React Router fall back to a full document reload.
+      const remaining = 10_250 - (Date.now() - historyWindowStarted)
+      if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining))
+    }
     await page.getByRole('tab', { name: 'Открытые задачи', exact: true }).click()
+    await expect(page.getByRole('tab', { name: 'Открытые задачи', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.getByRole('tab', { name: 'Задача', exact: true }).click()
+    await expect(page.getByRole('tab', { name: 'Задача', exact: true })).toHaveAttribute('aria-selected', 'true')
     await expect(comment).toHaveValue('Черновик после ремонта')
     expect(await file.evaluate((input: HTMLInputElement) => input.files?.[0]?.name)).toBe('repair.png')
     expect(await count()).toBeLessThanOrEqual(initial)
   }
+  expect(documentLoads).toBe(1)
   expect(resolutionReads).toBe(initialResolutionReads)
   expect(writes).toEqual([])
   expect(presenceHeartbeats.length).toBeGreaterThan(0)

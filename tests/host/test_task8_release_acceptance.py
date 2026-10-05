@@ -213,6 +213,21 @@ def test_source_enumeration_includes_bot_and_untracked_source_but_skips_deleted_
         api["source_tree_digest"](tmp_path, ["apps/api/alias.py"])
 
 
+@pytest.mark.parametrize("folder", ["e2e", "e2e-production"])
+def test_browser_acceptance_sources_remain_bound_to_evidence(tmp_path, folder):
+    api = acceptance_module()
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    relative = f"apps/web/{folder}/journey.spec.ts"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    path.write_text("assert protected workflow\n")
+    sources = api["tracked_source_paths"](tmp_path, set())
+    assert relative in sources
+    before = api["source_tree_digest"](tmp_path, sources)
+    path.write_text("changed assertion after verification\n")
+    assert api["source_tree_digest"](tmp_path, sources) != before
+
+
 def test_current_ota_source_filter_excludes_local_artifacts_and_secrets():
     from scripts.build_ota import include_source_path
 
