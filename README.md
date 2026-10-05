@@ -6,7 +6,7 @@
 кандидат выпуска rc.33, сверяет SHA-256 и запускает меню установки:
 
 ```sh
-d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.33/robopark-0.2.0-rc.33.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' 'c92b775740b6fcbb7ee229c97276ca678acf7ea7a495e827d2d365f0977e4397  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
+d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.33/robopark-0.2.0-rc.33.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' 'd09fac418db611f79d08a2eb76e8a0c2e973d92bd28d30d4f7a16193438f44ba  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
 ```
 
 На AGX Orin установщик также скачает полную базу знаний и исходники с NVMe-хранением.
