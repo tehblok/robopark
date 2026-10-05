@@ -25,7 +25,7 @@ function client(status: AiStatus = ready): AssistantApiClient {
     conversations: vi.fn().mockResolvedValue([]),
     conversation: vi.fn(), createConversation: vi.fn().mockResolvedValue({ id: 'c-1', title: 'Новый разговор', park_id: 4, issue_key: null, updated_at: '2026-10-04T10:00:00Z' }),
     deleteConversation: vi.fn(), sendMessage: vi.fn().mockResolvedValue({ id: 'j-1', kind: 'chat', state: 'queued', created_at: '', updated_at: '', error: null, result: null }),
-    job: vi.fn().mockResolvedValue({ id: 'j-1', kind: 'chat', state: 'succeeded', created_at: '', updated_at: '', error: null, result: {} }), cancelJob: vi.fn(),
+    job: vi.fn().mockResolvedValue({ id: 'j-1', kind: 'chat', state: 'succeeded', created_at: '', updated_at: '', error: null, result: {} }), cancelJob: vi.fn(), confirmAction: vi.fn(),
     documents: vi.fn().mockResolvedValue({ items: [], total: 0, offset: 0, limit: 30 }), document: vi.fn(), createDocument: vi.fn(), updateDocument: vi.fn(), deleteDocument: vi.fn(), importDocuments: vi.fn(),
     config: vi.fn(), updateConfig: vi.fn(), runtime: vi.fn(), prompts: vi.fn(), updatePrompt: vi.fn(),
     connectors: vi.fn(), createConnector: vi.fn(), updateConnector: vi.fn(), deleteConnector: vi.fn(),
@@ -49,6 +49,49 @@ function renderPage(apiClient: AssistantApiClient, user: User = operator, path =
 }
 
 describe('AssistantPage', () => {
+  it('ignores a late confirmation response after another conversation is selected', async () => {
+    const apiClient = client()
+    const pending = { id: 'j-1', kind: 'chat', state: 'waiting' as const, created_at: '', updated_at: '', error: null, result: null, actions: [{ id: 'a-1', tool: 'script_delete', state: 'waiting' as const, preview: 'Удалить старый скрипт', arguments: {}, result: null, error: null, digest: 'binding', expires_at: null, created_at: '' }] }
+    const first = { id: 'c-1', title: 'Первый', park_id: 4, issue_key: null, updated_at: '', messages: [], jobs: [pending] }
+    const second = { ...first, id: 'c-2', title: 'Второй', jobs: [] }
+    vi.mocked(apiClient.conversations).mockResolvedValue([first, second])
+    vi.mocked(apiClient.conversation).mockImplementation(async id => id === 'c-1' ? first : second)
+    let finish!: (value: typeof pending) => void
+    vi.mocked(apiClient.confirmAction).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    renderPage(apiClient)
+    await userEvent.click(await screen.findByRole('button', { name: 'Подтвердить действие' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Второй' }))
+    await act(async () => finish(pending))
+    expect(screen.getByRole('heading', { name: 'Второй' })).toBeVisible()
+    expect(screen.queryByText('Удалить старый скрипт')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Сообщение помощнику')).toBeEnabled()
+  })
+
+  it('shows exact pending action and only confirms it after a click', async () => {
+    const apiClient = client()
+    const pending = { id: 'j-1', kind: 'chat', state: 'waiting' as const, created_at: '', updated_at: '', error: null, result: null, actions: [{ id: 'a-1', tool: 'script_delete', state: 'waiting' as const, preview: 'Удалить скрипт Mapping, ревизия 3', arguments: { script_id: 's-1', revision: 3 }, result: null, error: null, digest: 'abc123', expires_at: '2027-01-01T00:00:00Z', created_at: '' }] }
+    const conversation = { id: 'c-1', title: 'Ремонт', park_id: 4, issue_key: null, updated_at: '' }
+    vi.mocked(apiClient.conversations).mockResolvedValue([conversation])
+    vi.mocked(apiClient.conversation).mockResolvedValue({ ...conversation, messages: [], jobs: [pending] })
+    vi.mocked(apiClient.confirmAction).mockResolvedValue({ ...pending, state: 'queued', actions: [{ ...pending.actions[0], state: 'approved', digest: null }] })
+    renderPage(apiClient)
+    expect(await screen.findByText('Удалить скрипт Mapping, ревизия 3')).toBeVisible()
+    expect(apiClient.confirmAction).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Подтвердить действие' }))
+    expect(apiClient.confirmAction).toHaveBeenCalledExactlyOnceWith('a-1', 'abc123')
+  })
+
+  it('keeps a completed action visible when the following model answer fails', async () => {
+    const apiClient = client()
+    const conversation = { id: 'c-1', title: 'Ремонт', park_id: 4, issue_key: null, updated_at: '' }
+    vi.mocked(apiClient.conversations).mockResolvedValue([conversation])
+    vi.mocked(apiClient.conversation).mockResolvedValue({ ...conversation, messages: [], jobs: [{ id: 'j-1', kind: 'chat', state: 'failed', created_at: '', updated_at: '', error: 'ai_context_too_large', result: null, actions: [{ id: 'a-1', tool: 'script_create', state: 'succeeded', preview: 'Создать скрипт Mapping', arguments: {}, result: { id: 's-1', enabled: false }, error: null, digest: null, expires_at: null, created_at: '' }] }] })
+    renderPage(apiClient)
+    expect(await screen.findByText('Создать скрипт Mapping')).toBeVisible()
+    expect(screen.getByText('Выполнено')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Подтвердить действие' })).not.toBeInTheDocument()
+  })
+
   it('shows the AGX requirement without making chat or import calls on unsupported hardware', async () => {
     const apiClient = client({ ...ready, supported: false, ready: false, reason: 'AGX Orin required' })
     renderPage(apiClient)

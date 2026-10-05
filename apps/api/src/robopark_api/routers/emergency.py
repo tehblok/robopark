@@ -20,6 +20,7 @@ from robopark_api.services import (
     emergency_scope,
     emergency_sections,
     emergency_vin,
+    rbac,
     tracker_client,
 )
 from robopark_api.services import platform_settings as settings_svc
@@ -90,18 +91,36 @@ def _enforce_vin_scope(db: Session, user: User, vin: str) -> None:
         )
 
 
-def resolve_robot_for_user(
-    payload: EmergencyResolveRequest, user: User, db: Session
-) -> EmergencyResolveOut:
+def authorize_emergency_vin(
+    db: Session, user: User | None, value: str, *, park_id: int | None = None
+) -> str:
+    """Normalize and authorize a VIN for any trusted in-process caller."""
+    if user is not None:
+        rbac.assert_approved(user)
+        if not rbac.has_permission(db, user, rbac.PERMISSION_NAV_EMERGENCY):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     try:
-        vin = emergency_vin.normalize_robot_id(payload.robot_number)
+        vin = emergency_vin.normalize_robot_id(value)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="invalid_robot_number",
         ) from exc
-
     _enforce_vin_scope(db, user, vin)
+    if park_id is not None and user is not None:
+        try:
+            allowed = emergency_scope.vin_allowed_for_park(db, user, vin, park_id)
+        except tracker_client.TrackerError as exc:
+            raise HTTPException(502, "tracker_upstream_error") from exc
+        if not allowed:
+            raise HTTPException(403, "emergency_vin_out_of_scope")
+    return vin
+
+
+def resolve_robot_for_user(
+    payload: EmergencyResolveRequest, user: User, db: Session
+) -> EmergencyResolveOut:
+    vin = authorize_emergency_vin(db, user, payload.robot_number)
 
     _get_robot_payload(db, vin)
     sections = [
@@ -114,15 +133,7 @@ def resolve_robot_for_user(
 def emergency_section_for_user(
     vin: str, section_id: str, user: User, db: Session
 ) -> EmergencySectionOut:
-    try:
-        vin = emergency_vin.normalize_robot_id(vin)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="invalid_robot_number",
-        ) from exc
-
-    _enforce_vin_scope(db, user, vin)
+    vin = authorize_emergency_vin(db, user, vin)
     payload = _get_robot_payload(db, vin)
     try:
         rendered = emergency_sections.render_section(db, payload, section_id, role=user.role)
@@ -161,15 +172,7 @@ def _snapshot_from_result(
 
 
 def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencySnapshotOut:
-    try:
-        vin = emergency_vin.normalize_robot_id(vin)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="invalid_robot_number",
-        ) from exc
-
-    _enforce_vin_scope(db, user, vin)
+    vin = authorize_emergency_vin(db, user, vin)
     result = _get_robot_payload_result(db, vin)
     return _snapshot_from_result(db, vin, user, result)
 
@@ -180,15 +183,7 @@ def emergency_view_for_user(
     user: User,
     db: Session,
 ) -> EmergencyViewOut:
-    try:
-        vin = emergency_vin.normalize_robot_id(vin)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="invalid_robot_number",
-        ) from exc
-
-    _enforce_vin_scope(db, user, vin)
+    vin = authorize_emergency_vin(db, user, vin)
     result = _get_robot_payload_result(db, vin)
     snapshot = _snapshot_from_result(db, vin, user, result)
     section = None

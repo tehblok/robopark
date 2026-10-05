@@ -17,7 +17,15 @@ from robopark_api.ai_models import (
 )
 from robopark_api.crypto import MissingSecretKeyError, encrypt_secret
 from robopark_api.routers.ai import DB, Manager, Settings, private_response
-from robopark_api.services.ai import automations, connectors, jobs, knowledge, learning, policy
+from robopark_api.services.ai import (
+    automations,
+    connectors,
+    jobs,
+    knowledge,
+    learning,
+    policy,
+    script_domain,
+)
 from robopark_api.services.database_locks import database_idempotency_lock
 
 router = APIRouter(
@@ -44,6 +52,9 @@ def encrypted_token(value, settings):
 def disable_dependencies(db, key, row_id):
     # JSON extraction syntax differs across supported DBs; the admin catalog
     # is small and revision invalidation must be identical on SQLite/Postgres.
+    if key == "script_id":
+        script_domain.disable_dependencies(db, row_id)
+        return
     for rule in db.scalars(select(AIAutomation)):
         if rule.action.get(key) == row_id:
             rule.enabled, rule.enabled_at = False, None
@@ -309,7 +320,8 @@ def _purge_history(db, cutoff):
         AIConversation.updated_at < cutoff,
         ~AIConversation.id.in_(
             select(AIJob.conversation_id).where(
-                AIJob.state.in_(("queued", "running")), AIJob.conversation_id.is_not(None)
+                AIJob.state.in_(("queued", "running", "waiting")),
+                AIJob.conversation_id.is_not(None),
             )
         ),
     )

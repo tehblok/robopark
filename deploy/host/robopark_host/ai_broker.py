@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import selectors
 import signal
@@ -20,6 +21,7 @@ from http.server import BaseHTTPRequestHandler
 
 MAX_BODY = 65536
 CONTEXT_TOKENS = 8192
+MAX_TOOLS = 16
 RESULT_MARKER = b"__ROBOPARK_RESULT__="
 class BrokerError(ValueError):
     pass
@@ -227,25 +229,168 @@ def resolve_app_image(paths) -> str:
     return image
 
 
+def _bounded_json(value, *, depth=0):
+    if depth > 8:
+        raise ValueError("json_depth")
+    if value is None or isinstance(value, (str, bool, int)):
+        if isinstance(value, str) and len(value.encode("utf-8")) > 16384:
+            raise ValueError("json_string")
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("non_finite_json")
+        return
+    if isinstance(value, list):
+        if len(value) > 128:
+            raise ValueError("json_items")
+        for item in value:
+            _bounded_json(item, depth=depth + 1)
+        return
+    if isinstance(value, dict):
+        if len(value) > 128 or any(not isinstance(key, str) for key in value):
+            raise ValueError("json_object")
+        for key, item in value.items():
+            _bounded_json(key, depth=depth + 1)
+            _bounded_json(item, depth=depth + 1)
+        return
+    raise ValueError("json_type")
+
+
+def _function_call(call, tool_names):
+    if not isinstance(call, dict) or set(call) != {"id", "type", "function"}:
+        raise ValueError("tool_call")
+    function = call["function"]
+    if (
+        call["type"] != "function"
+        or not isinstance(call["id"], str)
+        or not 1 <= len(call["id"]) <= 128
+        or not isinstance(function, dict)
+        or set(function) != {"name", "arguments"}
+        or not isinstance(function["name"], str)
+        or function["name"] not in tool_names
+        or not isinstance(function["arguments"], str)
+        or len(function["arguments"].encode("utf-8")) > 16384
+    ):
+        raise ValueError("tool_call")
+    arguments = _strict_json(function["arguments"])
+    if not isinstance(arguments, dict):
+        raise TypeError("tool_arguments")
+    _bounded_json(arguments)
+
+
+def _bounded_tools(payload):
+    if "tools" not in payload:
+        return None, set()
+    tools = payload["tools"]
+    if not isinstance(tools, list) or not 1 <= len(tools) <= MAX_TOOLS:
+        raise ValueError("tools")
+    names = set()
+    for tool in tools:
+        if not isinstance(tool, dict) or set(tool) != {"type", "function"}:
+            raise ValueError("tool")
+        function = tool["function"]
+        if (
+            tool["type"] != "function"
+            or not isinstance(function, dict)
+            or not {"name", "parameters"} <= set(function) <= {
+                "name",
+                "description",
+                "parameters",
+            }
+            or not isinstance(function["name"], str)
+            or not 1 <= len(function["name"]) <= 64
+            or any(
+                character
+                not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+                for character in function["name"]
+            )
+            or function["name"] in names
+            or not isinstance(function.get("description", ""), str)
+            or len(function.get("description", "").encode("utf-8")) > 4096
+            or not isinstance(function["parameters"], dict)
+        ):
+            raise ValueError("tool")
+        _bounded_json(function["parameters"])
+        names.add(function["name"])
+    return tools, names
+
+
+def _bounded_messages(messages, tool_names):
+    if not isinstance(messages, list) or not 1 <= len(messages) <= 64:
+        raise ValueError("messages")
+    normalized = []
+    pending_call_id = None
+    seen_call_ids = set()
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            raise TypeError("message")
+        role = message.get("role")
+        if role in {"system", "user"}:
+            if set(message) != {"role", "content"} or not isinstance(
+                message["content"], str
+            ):
+                raise ValueError("message")
+            if role == "system" and index != 0:
+                raise ValueError("system_message")
+            if pending_call_id is not None:
+                raise ValueError("missing_tool_result")
+            normalized.append(message)
+            continue
+        if role == "assistant":
+            if index == 0 or messages[index - 1].get("role") not in {"user", "tool"}:
+                raise ValueError("assistant_sequence")
+            if "tool_calls" not in message:
+                if set(message) != {"role", "content"} or not isinstance(
+                    message["content"], str
+                ):
+                    raise ValueError("message")
+                normalized.append(message)
+                continue
+            if set(message) != {"role", "content", "tool_calls"}:
+                raise ValueError("message")
+            content = message["content"]
+            calls = message["tool_calls"]
+            if content is not None and not isinstance(content, str):
+                raise ValueError("message")
+            if not isinstance(calls, list) or len(calls) != 1:
+                raise ValueError("tool_calls")
+            _function_call(calls[0], tool_names)
+            pending_call_id = calls[0]["id"]
+            if pending_call_id in seen_call_ids:
+                raise ValueError("reused_tool_call_id")
+            seen_call_ids.add(pending_call_id)
+            normalized.append({**message, "content": "" if content is None else content})
+            continue
+        if role == "tool":
+            if (
+                set(message) != {"role", "content", "tool_call_id"}
+                or not isinstance(message["content"], str)
+                or not isinstance(message["tool_call_id"], str)
+                or message["tool_call_id"] != pending_call_id
+            ):
+                raise ValueError("tool_result")
+            pending_call_id = None
+            normalized.append(message)
+            continue
+        raise ValueError("message_role")
+    if pending_call_id is not None or normalized[-1]["role"] not in {"user", "tool"}:
+        raise ValueError("message_end")
+    if sum(message["role"] == "system" for message in normalized) > 1:
+        raise ValueError("system_message")
+    return normalized
+
+
 def bounded_chat_body(body: bytes) -> bytes:
     try:
         payload = _strict_json(body)
+        if not isinstance(payload, dict):
+            raise TypeError("payload")
         messages = payload["messages"]
-        if (
-            not isinstance(payload, dict)
-            or not isinstance(messages, list)
-            or not 1 <= len(messages) <= 64
-            or any(
-                not isinstance(message, dict)
-                or message.get("role") not in {"system", "user", "assistant"}
-                or not isinstance(message.get("content"), str)
-                for message in messages
-            )
-        ):
-            raise ValueError()
+        tools, tool_names = _bounded_tools(payload)
+        messages = _bounded_messages(messages, tool_names)
         requested = payload.get("max_tokens", 1024)
         if type(requested) is not int or requested < 1:
-            raise ValueError()
+            raise ValueError("max_tokens")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise BrokerError("chat_request_invalid") from error
     bounded = {
@@ -254,9 +399,50 @@ def bounded_chat_body(body: bytes) -> bytes:
         "stream": False,
         "reasoning_effort": "none",
     }
-    for key in ("temperature", "top_p", "stop", "seed"):
-        if key in payload:
-            bounded[key] = payload[key]
+    if tools is not None:
+        bounded["tools"] = tools
+        bounded["parallel_tool_calls"] = False
+    temperature = payload.get("temperature")
+    if temperature is not None:
+        if (
+            isinstance(temperature, bool)
+            or not isinstance(temperature, (int, float))
+            or not math.isfinite(temperature)
+            or not 0 <= temperature <= 2
+        ):
+            raise BrokerError("chat_request_invalid")
+        bounded["temperature"] = temperature
+    top_p = payload.get("top_p")
+    if top_p is not None:
+        if (
+            isinstance(top_p, bool)
+            or not isinstance(top_p, (int, float))
+            or not math.isfinite(top_p)
+            or not 0 < top_p <= 1
+        ):
+            raise BrokerError("chat_request_invalid")
+        bounded["top_p"] = top_p
+    stop = payload.get("stop")
+    if stop is not None:
+        if isinstance(stop, str):
+            valid_stop = len(stop.encode("utf-8")) <= 128
+        else:
+            valid_stop = (
+                isinstance(stop, list)
+                and 1 <= len(stop) <= 4
+                and all(
+                    isinstance(item, str) and len(item.encode("utf-8")) <= 128
+                    for item in stop
+                )
+            )
+        if not valid_stop:
+            raise BrokerError("chat_request_invalid")
+        bounded["stop"] = stop
+    if "seed" in payload:
+        seed = payload["seed"]
+        if type(seed) is not int or not -(2**31) <= seed < 2**31:
+            raise BrokerError("chat_request_invalid")
+        bounded["seed"] = seed
     result = json.dumps(bounded, ensure_ascii=False, separators=(",", ":")).encode()
     if len(result) > MAX_BODY:
         raise BrokerError("request_too_large")

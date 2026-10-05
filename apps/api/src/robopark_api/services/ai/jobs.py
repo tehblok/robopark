@@ -32,12 +32,16 @@ FINAL = {"succeeded", "failed", "cancelled"}
 FINALIZE_LOCK_ATTEMPTS = 5
 
 
-def view(row):
+def view(row, *, db=None, user=None):
     value = policy.columns(
         row, ("owner_id", "conversation_id", "park_id", "idempotency_key", "payload")
     )
     for key in ("created_at", "updated_at"):
         value[key] = datetime.fromtimestamp(value[key], UTC).isoformat()
+    if db is not None and user is not None and row.payload.get("request", {}).get("use_tools"):
+        from robopark_api.services.ai import tool_actions
+
+        value["actions"] = tool_actions.views(db, user, row)
     return value
 
 
@@ -116,11 +120,33 @@ def sources_valid(db, user, sources):
     return True
 
 
+def message_tools_valid(db, user, row):
+    if row.role != "assistant":
+        return True
+    job = db.scalar(
+        select(AIJob).where(
+            AIJob.conversation_id == row.conversation_id,
+            AIJob.result["message_id"].as_string() == row.id,
+        )
+    )
+    if job is None or not job.payload.get("request", {}).get("use_tools"):
+        return True
+    from robopark_api.services.ai import tool_actions
+
+    try:
+        tool_actions.authorize_views(db, user, job)
+        return True
+    except HTTPException:
+        return False
+
+
 def visible_message(db, user, row):
     value = policy.public_columns(row, ("conversation_id",))
-    if row.sources and not sources_valid(db, user, row.sources):
+    if (row.sources and not sources_valid(db, user, row.sources)) or not message_tools_valid(
+        db, user, row
+    ):
         value.update(
-            content="Ответ скрыт: источник изменён или больше недоступен. Задайте вопрос заново.",
+            content="Ответ скрыт: источник или данные действия изменились либо больше недоступны. Задайте вопрос заново.",
             sources=[],
         )
     return value
@@ -141,12 +167,14 @@ def enqueue(db, user, *, kind, payload, park_id=None, conversation_id=None, key=
                 raise HTTPException(409, "ai_idempotency_conflict")
             return existing
         total = db.scalar(
-            select(func.count()).select_from(AIJob).where(AIJob.state.in_(("queued", "running")))
+            select(func.count())
+            .select_from(AIJob)
+            .where(AIJob.state.in_(("queued", "running", "waiting")))
         )
         own = db.scalar(
             select(func.count())
             .select_from(AIJob)
-            .where(AIJob.owner_id == user.id, AIJob.state.in_(("queued", "running")))
+            .where(AIJob.owner_id == user.id, AIJob.state.in_(("queued", "running", "waiting")))
         )
         if total >= 50 or own >= 3:
             raise HTTPException(429, "ai_queue_full")
@@ -154,7 +182,10 @@ def enqueue(db, user, *, kind, payload, park_id=None, conversation_id=None, key=
             row = conversation(db, user, conversation_id)
             if db.scalar(
                 select(AIJob.id)
-                .where(AIJob.conversation_id == row.id, AIJob.state.in_(("queued", "running")))
+                .where(
+                    AIJob.conversation_id == row.id,
+                    AIJob.state.in_(("queued", "running", "waiting")),
+                )
                 .limit(1)
             ):
                 raise HTTPException(409, "ai_conversation_busy")
@@ -191,6 +222,14 @@ def _prepare(db, settings, job, issue_snapshot):
         if script.revision != request["revision"]:
             raise HTTPException(409, "ai_script_changed")
         return {"source": script.source, "input": request["input"]}, []
+    use_tools = job.kind == "chat" and request.get("use_tools", False)
+    if use_tools and job.payload.get("tool_messages"):
+        return job.payload["tool_messages"], job.payload.get("sources", [])
+    definitions = None
+    if use_tools:
+        from robopark_api.services.ai import tool_domain
+
+        definitions = tool_domain.catalog(db, user)
     question = request.get("content") or request["instruction"]
     issue_text = ""
     if job.conversation_id:
@@ -215,7 +254,11 @@ def _prepare(db, settings, job, issue_snapshot):
         # Last user message is the queued request. History is bounded separately.
         budget = 2000
         for message in reversed(history[:-1]):
-            if len(message.content) > budget or not sources_valid(db, user, message.sources):
+            if (
+                len(message.content) > budget
+                or not sources_valid(db, user, message.sources)
+                or not message_tools_valid(db, user, message)
+            ):
                 break
             prior.insert(0, {"role": message.role, "content": message.content})
             budget -= len(message.content)
@@ -227,7 +270,10 @@ def _prepare(db, settings, job, issue_snapshot):
         issue=issue_text,
         history=prior,
         draft=request.get("kind") if job.kind == "draft" else None,
-        token_count=lambda messages: runtime.context_tokens(settings, messages),
+        token_count=(lambda messages: runtime.context_tokens(settings, messages, tools=definitions))
+        if use_tools
+        else (lambda messages: runtime.context_tokens(settings, messages)),
+        tools=use_tools,
     )
 
 
@@ -298,6 +344,10 @@ def _publish_result(
             _validate_issue_snapshot(db, actor, conversation_row, issue_snapshot, issue_error)
             if not sources_valid(db, actor, sources):
                 raise HTTPException(409, "ai_sources_changed")
+            if kind == "chat" and job.payload.get("request", {}).get("use_tools"):
+                from robopark_api.services.ai import tool_actions
+
+                tool_actions.authorize_views(db, actor, job)
             if error:
                 job.state, job.error = "failed", error
             elif kind == "chat":
@@ -327,6 +377,10 @@ def _publish_result(
                 job.state, job.result = "succeeded", result
         except HTTPException as exc:
             job.state, job.error, job.result = "cancelled", str(exc.detail), None
+        if job.state in {"failed", "cancelled"} and job.payload.get("request", {}).get("use_tools"):
+            from robopark_api.services.ai import tool_actions
+
+            tool_actions.cancel_pending(db, [job.id])
         job.updated_at = time.time()
         db.commit()
 
@@ -387,6 +441,7 @@ def process_job(session_factory, settings):
         if job is None:
             return False
         job_id, kind = job.id, job.kind
+        use_tools = kind == "chat" and job.payload.get("request", {}).get("use_tools", False)
         try:
             # Tracker is fetched without an open request transaction. Mutable
             # local authorization is repeated later under both AI locks.
@@ -446,10 +501,20 @@ def process_job(session_factory, settings):
                     updated_at=time.time(),
                 )
             )
+            if use_tools:
+                from robopark_api.services.ai import tool_actions
+
+                tool_actions.cancel_pending(db, [job_id])
             db.commit()
             return True
     try:
-        if kind == "script_test":
+        if use_tools:
+            from robopark_api.services.ai import tool_actions
+
+            result = tool_actions.step(session_factory, settings, job_id, request)
+            if result is None:
+                return True
+        elif kind == "script_test":
             result = runtime.broker(settings, "/sandbox", request, timeout=30)
             automations.bounded_json(result)
         else:
@@ -459,7 +524,11 @@ def process_job(session_factory, settings):
     except (runtime.RuntimeFailure, HTTPException) as exc:
         result, error = (
             None,
-            str(exc) if isinstance(exc, runtime.RuntimeFailure) else "ai_output_invalid",
+            str(exc)
+            if isinstance(exc, runtime.RuntimeFailure)
+            else str(exc.detail)
+            if use_tools
+            else "ai_output_invalid",
         )
     except Exception:
         result, error = None, "ai_execution_failed"
@@ -484,6 +553,9 @@ def process_job(session_factory, settings):
 
 
 def recover(db):
+    from robopark_api.services.ai import tool_actions
+
+    tool_actions.recover(db)
     db.execute(
         update(AIJob)
         .where(AIJob.state == "running")
@@ -498,11 +570,18 @@ def recover(db):
 
 
 def tick(session_factory, settings, *, first=False):
-    if host_maintenance_active(settings) or not policy.host_status(settings)["supported"]:
-        return False
-    with session_factory() as db:
-        if first:
+    # Recovery only reads/writes the application DB; it must not depend on CUDA,
+    # a valid runtime state file, or the availability of host services.
+    if first:
+        with session_factory() as db:
             recover(db)
+    if host_maintenance_active(settings) or not policy.host_status(settings)["supported"]:
+        return first
+    with session_factory() as db:
+        from robopark_api.services.ai import tool_actions
+
+        tool_actions.maintain(db)
+        db.commit()
         learning.process_events(db, settings)
     process_job(session_factory, settings)
     automations.process_run(session_factory, settings)
@@ -518,9 +597,7 @@ async def run_loop(session_factory, stop, settings):
     recovery_pending = True
     while not stop.is_set():
         try:
-            if not host_maintenance_active(settings) and await asyncio.to_thread(
-                tick, session_factory, settings, first=recovery_pending
-            ):
+            if await asyncio.to_thread(tick, session_factory, settings, first=recovery_pending):
                 recovery_pending = False
         except Exception:
             # Optional AI failures must not stop Tracker delivery or core jobs.

@@ -14,8 +14,13 @@ export type AiPrompt = { role: 'mechanic' | 'operator' | 'admin'; content: strin
 export type AiSource = { id: string; title: string; excerpt: string; trust: KnowledgeTrust }
 export type AiMessage = { id: string; role: 'user' | 'assistant'; content: string; sources: AiSource[]; created_at: string }
 export type AiJob = {
-  id: string; kind: string; state: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
-  created_at: string; updated_at: string; error: string | null; result: unknown
+  id: string; kind: string; state: 'queued' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled'
+  created_at: string; updated_at: string; error: string | null; result: unknown; actions?: AiAction[]
+}
+export type AiAction = {
+  id: string; tool: string; state: 'ready' | 'waiting' | 'approved' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'uncertain'
+  preview: string; arguments: Record<string, unknown> | null; result: unknown; error: string | null
+  digest: string | null; expires_at: string | null; created_at: string
 }
 export type Conversation = { id: string; title: string; park_id: number; issue_key: string | null; updated_at: string }
 export type ConversationDetail = Conversation & { messages: AiMessage[]; jobs: AiJob[] }
@@ -70,8 +75,9 @@ export const assistantApi = {
   createConversation: (value: { title?: string; park_id: number; issue_key?: string }) => request<Conversation>('/ai/conversations', mutation('POST', value)),
   conversation: (id: string, signal?: AbortSignal) => request<ConversationDetail>(`/ai/conversations/${encoded(id)}`, { signal }),
   deleteConversation: (id: string) => request<void>(`/ai/conversations/${encoded(id)}`, mutation('DELETE')),
-  sendMessage: (conversationId: string, content: string, idempotency_key: string) => request<AiJob>(`/ai/conversations/${encoded(conversationId)}/messages`, mutation('POST', { content, idempotency_key })),
+  sendMessage: (conversationId: string, content: string, idempotency_key: string) => request<AiJob>(`/ai/conversations/${encoded(conversationId)}/messages`, mutation('POST', { content, idempotency_key, use_tools: true })),
   job: (id: string, signal?: AbortSignal) => request<AiJob>(`/ai/jobs/${encoded(id)}`, { signal }),
+  confirmAction: (id: string, digest: string) => request<AiJob>(`/ai/actions/${encoded(id)}/confirm`, mutation('POST', { digest })),
   cancelJob: (id: string) => request<AiJob>(`/ai/jobs/${encoded(id)}/cancel`, mutation('POST')),
 
   connectors: (signal?: AbortSignal) => request<Connector[]>('/ai/connectors', { signal }),

@@ -18,6 +18,7 @@ from robopark_api.services.ai import (
     policy,
     prompts,
     runtime,
+    tool_actions,
 )
 from robopark_api.services.database_locks import database_idempotency_lock
 
@@ -66,7 +67,7 @@ def status_value(db, settings, user):
         counts["jobs"] = db.scalar(
             select(func.count())
             .select_from(AIJob)
-            .where(AIJob.owner_id == user.id, AIJob.state.in_(("queued", "running")))
+            .where(AIJob.owner_id == user.id, AIJob.state.in_(("queued", "running", "waiting")))
         )
         if not policy.config(db)["enabled"]:
             status.update(enabled=False, ready=False, reason="ai_disabled")
@@ -260,7 +261,7 @@ def get_conversation(conversation_id: str, db: DB, user: Supported):
     return {
         **policy.public_columns(row, ("owner_id",)),
         "messages": [jobs.visible_message(db, user, msg) for msg in messages],
-        "jobs": [jobs.view(job) for job in active_jobs],
+        "jobs": [jobs.view(job, db=db, user=user) for job in active_jobs],
     }
 
 
@@ -268,6 +269,7 @@ def get_conversation(conversation_id: str, db: DB, user: Supported):
 def delete_conversation(conversation_id: str, db: DB, user: Supported):
     with database_idempotency_lock(db, "ai-controls"):
         row = jobs.conversation(db, user, conversation_id)
+        tool_actions.cancel_pending(db, select(AIJob.id).where(AIJob.conversation_id == row.id))
         db.execute(delete(AIJob).where(AIJob.conversation_id == row.id))
         db.execute(delete(AIMessage).where(AIMessage.conversation_id == row.id))
         db.delete(row)
@@ -291,7 +293,7 @@ def send_message(
             kind="chat",
             conversation_id=row.id,
             park_id=row.park_id,
-            payload={"content": content},
+            payload={"content": content, **({"use_tools": True} if value.use_tools else {})},
             key=value.idempotency_key,
         )
     )
@@ -301,7 +303,7 @@ def send_message(
 def get_job(job_id: str, db: DB, user: Supported):
     row = policy.get_row(db, AIJob, job_id)
     jobs.authorize(db, user, row)
-    value = jobs.view(row)
+    value = jobs.view(row, db=db, user=user)
     if not jobs.sources_valid(db, user, row.payload.get("sources", [])):
         value.update(result=None, error="ai_sources_changed")
     return value
@@ -314,7 +316,16 @@ def cancel_job(job_id: str, db: DB, user: Supported):
     with database_idempotency_lock(db, "ai-controls"):
         row = policy.get_row(db, AIJob, job_id)
         jobs.authorize(db, user, row)
-        if row.state in {"queued", "running"}:
+        if row.state in {"queued", "running", "waiting"}:
+            tool_actions.cancel_pending(db, [row.id])
             row.state, row.updated_at = "cancelled", time.time()
             db.commit()
-        return jobs.view(row)
+        return jobs.view(row, db=db, user=user)
+
+
+@router.post("/actions/{action_id}/confirm")
+def confirm_action(
+    action_id: str, value: S.ActionConfirmation, db: DB, settings: Settings, user: Supported
+):
+    row = tool_actions.confirm(db, settings, user, action_id, value.digest)
+    return jobs.view(row, db=db, user=user)
