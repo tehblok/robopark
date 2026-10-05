@@ -3,11 +3,18 @@
 ## Установка и обновление
 
 На Ubuntu/Armbian с Python 3.10+, `curl` и `sudo` одна команда скачивает
-кандидат выпуска rc.32, сверяет SHA-256 и запускает меню установки:
+кандидат выпуска rc.33, сверяет SHA-256 и запускает меню установки:
 
 ```sh
-d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.32/robopark-0.2.0-rc.32.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' '958aef5bc4f38a842618e13732209c55cd9a1d1071dfa589ec3facdb80a17ffb  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
+d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.33/robopark-0.2.0-rc.33.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' 'c92b775740b6fcbb7ee229c97276ca678acf7ea7a495e827d2d365f0977e4397  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
 ```
+
+На AGX Orin установщик также скачает полную базу знаний и исходники с NVMe-хранением.
+После скачивания один раз вставьте строку `AGE-SECRET-KEY-…` из личного файла
+ключа владельца; ввод скрыт. Файл ключа храните отдельно — в GitHub его нет.
+При обрыве загрузки сайт остаётся установленным, а корпус можно докачать командой
+`sudo /opt/robopark/host-tools/robopark knowledge-install`.
+[Состав базы и восстановление загрузки](docs/runbooks/local-ai.md#полная-приватная-база-при-новой-установке).
 
 Выберите «Чистая установка» на новом хосте. Установщик интерактивно запросит
 Tuna token, домен и пароль первого владельца. При найденных данных Robopark
@@ -16,7 +23,7 @@ Tuna token, домен и пароль первого владельца. При
 ARM64/AMD64, поддерживаемые ОС и требования к памяти/диску перечислены в
 [руководстве установки](docs/runbooks/usb-clean-install.md).
 Происхождение и границы проверки опубликованного пакета — в
-[описании rc.32](docs/releases/0.2.0-rc.32.md) и
+[описании rc.33](docs/releases/0.2.0-rc.33.md) и
 [отчёте о проверке помощника](docs/reviews/2026-10-05-ai-operation-tools.md).
 
 > **GEACX1 и NVMe:** rc.25 поддерживает NVMe с ОС и eMMC с ОС + NVMe для данных.
