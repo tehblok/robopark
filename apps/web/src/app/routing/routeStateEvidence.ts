@@ -172,7 +172,6 @@ const ROUTE_ASYNC_CONTRACTS: Partial<Record<AppRouteId, RouteAsyncContract>> = {
 const TARGETS: Partial<Record<AppRouteId, Record<string, Omit<OwnerStateDriver, 'stateKey' | 'stateKind'>>>> = {
   assistant: {
     chat: { action: 'tab', tabName: 'Помощник', targetSelector: '#tab-chat', expectedSelector: '#assistant-panel-chat' },
-    knowledge: { action: 'tab', tabName: 'База знаний', targetSelector: '#tab-knowledge', expectedSelector: '#assistant-panel-knowledge' },
   },
   schedule: {
     week: { action: 'button', targetSelector: '[aria-label="Масштаб календаря"] button:has-text("Неделя")', expectedSelector: '.rp-schedule-calendar__days--week' },

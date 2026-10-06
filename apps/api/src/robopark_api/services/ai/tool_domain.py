@@ -24,7 +24,14 @@ from robopark_api.services import (
     tracker_signatures,
     tracker_submissions,
 )
-from robopark_api.services.ai import automations, issue_context, policy, runtime, script_domain
+from robopark_api.services.ai import (
+    automations,
+    issue_context,
+    policy,
+    runtime,
+    script_domain,
+    system_api,
+)
 from robopark_api.services.database_locks import database_idempotency_lock
 from robopark_api.services.tracker_policy import ensure_action_allowed
 from robopark_api.task_workflow_models import TaskMessage, TaskReview
@@ -103,7 +110,7 @@ class _ScriptInput(_ScriptRevision):
     input: Any = Field(default_factory=dict)
 
 
-_MODELS: dict[str, type[_Input]] = {
+_MODELS: dict[str, type[BaseModel]] = {
     "task_get": _Task,
     "task_claim": _Task,
     "task_comment": _Comment,
@@ -119,6 +126,7 @@ _MODELS: dict[str, type[_Input]] = {
     "script_test": _ScriptInput,
     "script_run": _ScriptInput,
     "script_delete": _ScriptRevision,
+    "system_api": system_api.SystemAPIInput,
 }
 
 _DESCRIPTIONS = {
@@ -137,6 +145,7 @@ _DESCRIPTIONS = {
     "script_test": "Запустить текущую ревизию в sandbox и отметить её протестированной.",
     "script_run": "Запустить включённую протестированную ревизию в sandbox.",
     "script_delete": "Удалить sandbox-скрипт.",
+    "system_api": "Найти, описать или вызвать операцию локального API с текущими правами.",
 }
 
 
@@ -161,6 +170,8 @@ def _can_robot(db, user: User) -> bool:
 
 def _allowed(db, user: User, name: str) -> bool:
     role = rbac.role_slug(user)
+    if name == "system_api":
+        return True
     if name == "task_get":
         return rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_READ)
     if name == "task_claim":
@@ -192,6 +203,12 @@ def _authorize_name(db, user: User, name: str) -> None:
         raise HTTPException(403, "ai_tool_forbidden")
 
 
+def readonly(name: str, arguments: dict[str, Any]) -> bool:
+    if name in {"task_get", "robot_check", "script_list", "script_get"}:
+        return True
+    return name == "system_api" and system_api.is_readonly(arguments)
+
+
 def catalog(db, user: User) -> list[dict[str, Any]]:
     policy.staff(db, user)
     return [
@@ -200,7 +217,9 @@ def catalog(db, user: User) -> list[dict[str, Any]]:
             "function": {
                 "name": name,
                 "description": _DESCRIPTIONS[name],
-                "parameters": model.model_json_schema(),
+                "parameters": system_api.schema()
+                if name == "system_api"
+                else model.model_json_schema(),
             },
         }
         for name, model in _MODELS.items()
@@ -290,6 +309,9 @@ def _script_view(row: AIScript, *, source: bool = False) -> dict[str, Any]:
 def prepare(
     db, user: User, park_id: int | None, name: str, arguments: dict[str, Any]
 ) -> dict[str, Any]:
+    if name == "system_api":
+        _authorize_name(db, user, name)
+        return system_api.prepare(db, user, arguments, park_id=park_id)
     args = _parse(name, arguments)
     _authorize_name(db, user, name)
     expected: dict[str, Any] = {}
@@ -388,21 +410,38 @@ def authorize_view(
     name: str,
     arguments: dict[str, Any],
     scope_cache: dict[tuple, Any] | None = None,
+    expected: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
 ) -> None:
+    if name == "system_api":
+        _authorize_name(db, user, name)
+        system_api.authorize_view(
+            db,
+            user,
+            arguments,
+            expected=expected,
+            result=result,
+            scope_cache=scope_cache,
+        )
+        return
     args = _parse(name, arguments)
     _authorize_name(db, user, name)
     if name in _TASK_NAMES:
-        cache_key = ("task", park_id, args["key"])
+        cache_key = ("tracker_issue", user.id, args["key"], park_id)
         if scope_cache is None or cache_key not in scope_cache:
+            system_api.claim_remote_guard(scope_cache if scope_cache is not None else {})
             issue = _fresh_issue(db, user, park_id, args["key"])
             if scope_cache is not None:
                 scope_cache[cache_key] = issue
     elif name == "robot_check":
         from robopark_api.routers.emergency import authorize_emergency_vin
+        from robopark_api.services import sdc_inventory
 
         policy.park(db, user, park_id)
-        cache_key = ("robot", park_id, args["vin"])
+        robot = sdc_inventory.robot_name(args["vin"])
+        cache_key = ("emergency_robot", user.id, robot, park_id)
         if scope_cache is None or cache_key not in scope_cache:
+            system_api.claim_remote_guard(scope_cache if scope_cache is not None else {})
             vin = authorize_emergency_vin(db, user, args["vin"], park_id=park_id)
             if scope_cache is not None:
                 scope_cache[cache_key] = vin
@@ -519,6 +558,16 @@ def _execute(
     prepared = prepare(db, user, park_id, name, arguments)
     args = prepared["arguments"]
     _same_expected(prepared["expected"], expected)
+    if name == "system_api":
+        return system_api.execute(
+            db,
+            settings,
+            user,
+            args,
+            expected=expected,
+            idempotency_key=idempotency_key,
+            park_id=park_id,
+        )
     if name == "task_get":
         return _task_result(db, user, _fresh_issue(db, user, park_id, args["key"]))
     if name == "robot_check":

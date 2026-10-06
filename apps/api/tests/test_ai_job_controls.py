@@ -1,6 +1,5 @@
 """AI jobs revalidate mutable controls at claim and publication boundaries."""
 
-import asyncio
 import json
 import threading
 from contextlib import contextmanager
@@ -235,11 +234,8 @@ def test_worker_recovers_actual_final_commit_failure_without_reexecuting(
         db.get(AIJob, job["id"]).state = "held-for-next-tick"
         db.commit()
 
-    stop = asyncio.Event()
-    recovery_flags = []
     inference_calls = []
     failure = {"armed": True}
-    real_tick = jobs.tick
 
     class FailFinalCommitSession(Session):
         def commit(self):
@@ -259,29 +255,12 @@ def test_worker_recovers_actual_final_commit_failure_without_reexecuting(
         ),
     )
 
-    def controlled_tick(_factory, settings, *, first):
-        recovery_flags.append(first)
-        result = real_tick(_factory, settings, first=first)
-        if len(recovery_flags) == 1:
-            with ordinary_factory() as db:
-                db.get(AIJob, job["id"]).state = "queued"
-                db.commit()
-        if len(recovery_flags) == 3:
-            stop.set()
-        return result
+    with ordinary_factory() as db:
+        db.get(AIJob, job["id"]).state = "queued"
+        db.commit()
+    with pytest.raises(OperationalError):
+        jobs.process_job(factory, test_settings)
 
-    async def no_wait(awaitable, *, timeout):
-        del timeout
-        awaitable.close()
-        raise TimeoutError
-
-    monkeypatch.setattr(jobs, "tick", controlled_tick)
-    monkeypatch.setattr(jobs, "host_maintenance_active", lambda _settings: False)
-    monkeypatch.setattr(jobs.asyncio, "wait_for", no_wait)
-
-    asyncio.run(jobs.run_loop(factory, stop, test_settings))
-
-    assert recovery_flags == [True, False, True]
     assert inference_calls == ["sandbox"]
     assert failure["armed"] is False
     with ordinary_factory() as db:
@@ -398,7 +377,7 @@ def test_claim_lock_contention_keeps_job_queued_for_next_tick(
         lambda *_args, **_kwargs: calls.append("sandbox") or {"output": {"a": 1}, "stdout": ""},
     )
     try:
-        assert jobs.process_job(factory, test_settings)
+        assert not jobs.process_job(factory, test_settings)
         with factory() as db:
             waiting = db.get(AIJob, job["id"])
             assert (waiting.state, waiting.error, waiting.result) == ("queued", None, None)

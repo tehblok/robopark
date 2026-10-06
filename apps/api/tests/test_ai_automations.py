@@ -294,17 +294,12 @@ def test_learning_requires_review_and_survives_dedup_delete(
     learning.stage_verified_close(db_session, **kwargs)
     db_session.commit()
     learning.process_events(db_session, test_settings)
-    doc = db_session.scalar(select(AIDocument))
-    assert doc.trust == "experience" and doc.state == "active"
-    assert doc.park_id == seed_park_with_tracker.id
-    from robopark_api.services.ai import knowledge
-
-    knowledge.remove(db_session, doc)
+    assert db_session.scalar(select(AIDocument)) is None
+    assert db_session.get(AIEvent, "close1").processed is True
     db_session.get(AIEvent, "close1").processed = False
     db_session.commit()
     learning.process_events(db_session, test_settings)
-    assert len(list(db_session.scalars(select(AIDocument)))) == 1
-    assert db_session.scalar(select(AIDocument)).state == "deleted"
+    assert db_session.scalar(select(AIDocument)) is None
 
 
 def test_authorization_rechecked_after_sandbox(
@@ -436,4 +431,5 @@ def test_normal_approval_retains_park_after_claim_release(
     event = db_session.scalar(select(AIEvent))
     assert event is not None and event.park_id == seed_park_with_tracker.id
     learning.process_events(db_session, test_settings)
-    assert db_session.scalar(select(AIDocument)).trust == "experience"
+    assert db_session.scalar(select(AIDocument)) is None
+    assert event.processed is True

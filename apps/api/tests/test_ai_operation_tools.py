@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from conftest import login_as
 from robopark_api.ai_models import AIAction, AIJob, AIScript
-from robopark_api.services.ai import jobs, runtime
+from robopark_api.services.ai import jobs, runtime, system_api
 from test_ai import enable_host
 
 
@@ -296,9 +296,9 @@ def test_repeated_model_write_is_deduplicated_and_bounded(
         tmp_path,
         seed_park_with_tracker,
         monkeypatch,
-        [call("script_create", arguments, f"call_{index}") for index in range(7)],
+        [call("script_create", arguments, f"call_{index}") for index in range(13)],
     )
-    for _ in range(8):
+    for _ in range(14):
         step(db_engine, test_settings)
     db_session.expire_all()
     assert [row.name for row in db_session.scalars(select(AIScript))] == ["Only once"]
@@ -306,6 +306,57 @@ def test_repeated_model_write_is_deduplicated_and_bounded(
     row = db_session.get(AIJob, job["id"])
     assert row.state == "failed"
     assert row.error == "ai_tool_limit"
+
+
+def test_readonly_system_api_error_is_bounded_and_model_can_finish(
+    client,
+    db_engine,
+    db_session,
+    seed_admin,
+    seed_park_with_tracker,
+    test_settings,
+    tmp_path,
+    monkeypatch,
+):
+    operation = next(
+        item
+        for item in system_api.registry()
+        if item["method"] == "GET" and item["path"] == "/inventory/parks/{park_id}/counts"
+    )
+    _, job = queue(
+        client,
+        test_settings,
+        tmp_path,
+        seed_park_with_tracker,
+        monkeypatch,
+        [
+            call(
+                "system_api",
+                {
+                    "action": "call",
+                    "operation_id": operation["operation_id"],
+                    "path": {"park_id": "not-an-int"},
+                },
+            ),
+            {"role": "assistant", "content": "Нужен числовой идентификатор парка."},
+        ],
+    )
+
+    step(db_engine, test_settings)
+    step(db_engine, test_settings)
+    jobs.process_job(sessionmaker(bind=db_engine), test_settings)
+    db_session.expire_all()
+    receipt = db_session.scalar(select(AIAction).where(AIAction.job_id == job["id"]))
+    current_job = db_session.get(AIJob, job["id"])
+    assert receipt.state == "failed", (
+        receipt.state,
+        receipt.error,
+        receipt.result,
+        current_job.state,
+        current_job.error,
+    )
+    assert receipt.result == {"status_code": 422, "error": "ai_action_failed"}
+    assert current_job.state == "succeeded"
 
 
 def test_expired_confirmation_does_not_allow_deletion(

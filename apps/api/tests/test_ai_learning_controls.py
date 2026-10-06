@@ -1,4 +1,4 @@
-"""Learning batches serialize with administrative and knowledge changes."""
+"""Automation-event batches serialize with controls but never mutate knowledge."""
 
 import json
 import threading
@@ -123,12 +123,16 @@ def test_successful_ai_disable_waits_for_inflight_learning_batch(
     assert disable_finished.is_set()
     db_session.expire_all()
     assert db_session.get(AIConfig, 1).enabled is False
-    assert db_session.scalar(
-        select(AIDocument.id).where(AIDocument.source_ref == "repair:verified-close")
+    assert db_session.get(AIEvent, "verified-close").processed is True
+    assert (
+        db_session.scalar(
+            select(AIDocument.id).where(AIDocument.source_ref == "repair:verified-close")
+        )
+        is None
     )
 
 
-def test_knowledge_change_waits_for_inflight_learning_batch(
+def test_knowledge_change_is_independent_of_automation_event_batch(
     db_session,
     db_engine,
     seed_park_with_tracker,
@@ -155,7 +159,7 @@ def test_knowledge_change_waits_for_inflight_learning_batch(
     thread.start()
     assert change_started.wait(3)
     try:
-        assert not change_finished.wait(0.25)
+        assert change_finished.wait(1)
     finally:
         release.set()
         processor.join(3)

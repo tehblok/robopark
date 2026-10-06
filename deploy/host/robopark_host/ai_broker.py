@@ -16,15 +16,84 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from http.server import BaseHTTPRequestHandler
 
 MAX_BODY = 65536
 CONTEXT_TOKENS = 8192
+PARALLEL_SLOTS = 4
+TOTAL_CONTEXT_TOKENS = PARALLEL_SLOTS * CONTEXT_TOKENS
+MAX_QUEUED_REQUESTS = 8
+MAX_HANDLER_THREADS = 16
+QUEUE_WAIT_SECONDS = 30
 MAX_TOOLS = 16
 RESULT_MARKER = b"__ROBOPARK_RESULT__="
 class BrokerError(ValueError):
     pass
+
+
+class BrokerOverloaded(BrokerError):
+    def __init__(self, status: int, reason: str):
+        super().__init__(reason)
+        self.status = status
+
+
+class Admission:
+    """Bound native slot use while leaving handler capacity for control/health."""
+
+    def __init__(
+        self,
+        *,
+        active_limit=PARALLEL_SLOTS,
+        queued_limit=MAX_QUEUED_REQUESTS,
+        wait_timeout=QUEUE_WAIT_SECONDS,
+    ):
+        self.active_limit = active_limit
+        self.queued_limit = queued_limit
+        self.wait_timeout = wait_timeout
+        self._active = 0
+        self._queued = 0
+        self._condition = threading.Condition()
+
+    @contextmanager
+    def request(self):
+        admitted = False
+        with self._condition:
+            if self._active < self.active_limit:
+                self._active += 1
+                admitted = True
+            else:
+                if self._queued >= self.queued_limit:
+                    raise BrokerOverloaded(429, "ai_queue_full")
+                self._queued += 1
+                deadline = time.monotonic() + self.wait_timeout
+                try:
+                    while self._active >= self.active_limit:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0 or not self._condition.wait(remaining):
+                            raise BrokerOverloaded(503, "ai_queue_timeout")
+                    self._active += 1
+                    admitted = True
+                finally:
+                    self._queued -= 1
+        try:
+            yield
+        finally:
+            if admitted:
+                with self._condition:
+                    self._active -= 1
+                    self._condition.notify()
+
+    def snapshot(self):
+        with self._condition:
+            return {
+                "parallel_slots": self.active_limit,
+                "context_tokens_per_slot": CONTEXT_TOKENS,
+                "total_context_tokens": self.active_limit * CONTEXT_TOKENS,
+                "active_requests": self._active,
+                "queued_requests": self._queued,
+                "max_queued_requests": self.queued_limit,
+            }
 
 
 def _strict_json(value):
@@ -548,13 +617,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/health":
             self._reply(404, {"error": "not_found"})
         else:
-            self._reply(200, {"ok": True})
+            self._reply(200, {"ok": True, **self.server.admission.snapshot()})
 
     def do_POST(self):
         try:
             body = self._body()
             if self.path == "/v1/chat/completions":
-                status, data = _forward_chat(self.server.paths, body)
+                with self.server.admission.request():
+                    status, data = _forward_chat(self.server.paths, body)
                 self._reply(status, data)
                 return
             if self.path == "/v1/chat/tokens":
@@ -573,6 +643,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, control(self.server.paths, payload["action"], SystemRunner()))
             else:
                 self._reply(404, {"error": "not_found"})
+        except BrokerOverloaded as error:
+            self._reply(error.status, {"error": str(error)})
         except (BrokerError, ValueError, KeyError, json.JSONDecodeError) as error:
             self._reply(400, {"error": str(error) if str(error) else "request_invalid"})
         except (OSError, RuntimeError):
@@ -584,10 +656,37 @@ class Handler(BaseHTTPRequestHandler):
 
 class Server(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
+    request_queue_size = MAX_HANDLER_THREADS
 
     def __init__(self, path, paths):
         self.paths = paths
+        self.admission = Admission()
+        self._handler_slots = threading.BoundedSemaphore(MAX_HANDLER_THREADS)
         super().__init__(path, Handler)
+
+    def process_request(self, request, client_address):
+        if not self._handler_slots.acquire(blocking=False):
+            data = json.dumps({"error": "broker_overloaded"}).encode()
+            with suppress(OSError):
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Type: application/json\r\n"
+                    + f"Content-Length: {len(data)}\r\nConnection: close\r\n\r\n".encode()
+                    + data
+                )
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._handler_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._handler_slots.release()
 
     def verify_request(self, request, _client_address):
         _pid, uid, _gid = struct.unpack("3i", request.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))

@@ -511,7 +511,6 @@ export function useCachedResource<T>(
   const [syncTime, setSyncTime] = useState(() => ({ key, time: enabled ? resourceStore.updatedAt(key, persist) : null }))
   const [error, setError] = useState<unknown>(null)
   const [isRevalidating, setIsRevalidating] = useState(false)
-  const [deviceHydrated, setDeviceHydrated] = useState(!devicePersist)
 
   const loaderRef = useRef(loader)
   useEffect(() => { loaderRef.current = loader }, [loader])
@@ -531,15 +530,8 @@ export function useCachedResource<T>(
   }, [key])
 
   useEffect(() => {
-    if (!enabled || !devicePersist || resourceStore.get(key, persist) !== undefined) {
-      setDeviceHydrated(true)
-      return
-    }
-    const generation = ownerGenerationRef.current
-    setDeviceHydrated(false)
-    void resourceStore.hydrate<T>(key).finally(() => {
-      if (generation === ownerGenerationRef.current) setDeviceHydrated(true)
-    })
+    if (!enabled || !devicePersist || resourceStore.get(key, persist) !== undefined) return
+    void resourceStore.hydrate<T>(key).catch(() => undefined)
   }, [devicePersist, enabled, key, persist])
 
   useEffect(() => {
@@ -618,13 +610,25 @@ export function useCachedResource<T>(
   }, [enabled, key, canLoadAutomatically, runLoad])
 
   useEffect(() => {
-    if (!enabled || !deviceHydrated || !canLoadAutomatically()) return
-    const cached = resourceStore.get<T>(key, persist)
-    if (cached === undefined || refreshOnMount === true ||
-        (refreshOnMount !== false && resourceStore.isStale(key, staleTimeMs, persist))) {
-      void runLoad(cached !== undefined)
+    if (!enabled || !canLoadAutomatically()) return
+    const startLoad = () => {
+      if (!canLoadAutomatically()) return
+      const cached = resourceStore.get<T>(key, persist)
+      if (cached === undefined || refreshOnMount === true ||
+          (refreshOnMount !== false && resourceStore.isStale(key, staleTimeMs, persist))) {
+        void runLoad(cached !== undefined)
+      }
     }
-  }, [enabled, key, refreshOnMount, staleTimeMs, runLoad, canLoadAutomatically, persist, deviceHydrated])
+    if (!devicePersist) {
+      startLoad()
+      return
+    }
+    let active = true
+    queueMicrotask(() => {
+      if (active) startLoad()
+    })
+    return () => { active = false }
+  }, [devicePersist, enabled, key, refreshOnMount, staleTimeMs, runLoad, canLoadAutomatically, persist])
 
   useEffect(() => {
     if (!enabled) return

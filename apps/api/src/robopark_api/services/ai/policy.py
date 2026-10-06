@@ -1,6 +1,7 @@
 """Authority comes from the host and RBAC, never from an LLM or imported document."""
 
 import json
+import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,6 +61,8 @@ def host_status(settings):
         "schema": 1,
         "supported": False,
         "installed": False,
+        "runtime_installed": False,
+        "model_available": False,
         "enabled": False,
         "ready": False,
         "reason": "agx_required",
@@ -78,7 +81,15 @@ def host_status(settings):
             return unavailable
         if any(not isinstance(value.get(k), bool) for k in ("installed", "enabled", "ready")):
             return unavailable
-        if value.get("model") != RUNTIME_MODEL:
+        registered = (
+            value.get("model_source") == "registered"
+            and value.get("model_family") == "gemma-4-E4B"
+            and isinstance(value.get("model"), str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", value["model"]) is not None
+            and isinstance(value.get("model_sha256"), str)
+            and re.fullmatch(r"[a-f0-9]{64}", value["model_sha256"]) is not None
+        )
+        if value.get("model") != RUNTIME_MODEL and not registered:
             return {
                 **unavailable,
                 "supported": True,
@@ -88,6 +99,16 @@ def host_status(settings):
             **unavailable,
             **{k: value[k] for k in unavailable if k in value},
             "supported": True,
+            "model_source": "registered" if registered else "builtin",
+            "runtime_installed": value.get("runtime_installed", value["installed"]) is True,
+            "model_available": value.get("model_available", value["installed"]) is True,
+            "parallel_slots": value.get("parallel_slots")
+            if type(value.get("parallel_slots")) is int and 1 <= value["parallel_slots"] <= 4
+            else 1,
+            "context_tokens_per_slot": value.get("context_tokens_per_slot")
+            if type(value.get("context_tokens_per_slot")) is int
+            and 1 <= value["context_tokens_per_slot"] <= 8192
+            else 8192,
         }
     except (OSError, ValueError, TypeError):
         return unavailable
@@ -103,9 +124,9 @@ def hardware(settings):
 def config(db):
     row = db.get(AIConfig, 1)
     return (
-        {"enabled": row.enabled, "learning_enabled": row.learning_enabled, "revision": row.revision}
+        {"enabled": row.enabled, "learning_enabled": False, "revision": row.revision}
         if row
-        else {"enabled": True, "learning_enabled": True, "revision": 1}
+        else {"enabled": True, "learning_enabled": False, "revision": 1}
     )
 
 

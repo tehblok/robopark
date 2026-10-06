@@ -1,4 +1,4 @@
-"""Old event bodies expire without losing delivery/learning deduplication."""
+"""Old event bodies expire without losing delivery deduplication."""
 
 from sqlalchemy import select
 
@@ -50,7 +50,7 @@ def test_event_cleanup_keeps_pending_unprocessed_and_recent_payloads(
     assert learning.purge_event_payloads(db_session, before=100) == 1
 
 
-def test_user_history_cleanup_scrubs_completed_event_but_preserves_learned_document(
+def test_user_history_cleanup_scrubs_completed_event_without_learning_document(
     client, db_session, seed_admin, seed_park_with_tracker, test_settings, tmp_path
 ):
     enable_host(test_settings, tmp_path)
@@ -63,8 +63,7 @@ def test_user_history_cleanup_scrubs_completed_event_but_preserves_learned_docum
     db_session.add(event)
     db_session.commit()
     learning.process_events(db_session, test_settings)
-    doc = db_session.scalar(select(AIDocument))
-    assert "Confirmed repair" in doc.content
+    assert db_session.scalar(select(AIDocument)) is None
     db_session.add(
         AIRun(
             automation_id="rule",
@@ -84,7 +83,7 @@ def test_user_history_cleanup_scrubs_completed_event_but_preserves_learned_docum
     assert db_session.get(AIEvent, event.key).payload == {}
     run = db_session.scalar(select(AIRun))
     assert run.state == "purged" and run.result is None
-    assert "Confirmed repair" in db_session.get(AIDocument, doc.id).content
+    assert db_session.scalar(select(AIDocument)) is None
 
 
 def test_worker_automatically_scrubs_only_after_agx_gate(

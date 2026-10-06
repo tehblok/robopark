@@ -34,7 +34,7 @@ async function openAssistant(page: Page, user: User, routes: MockRoute[]) {
   await expect(page.getByRole('heading', { name: 'Локальный помощник' })).toBeVisible()
 }
 
-test('desktop mechanic receives a sourced answer and opens the cited document', async ({ page }, testInfo) => {
+test('desktop mechanic receives an answer with no knowledge dependency', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   let answered = false
   await openAssistant(page, mechanicUser, [
@@ -42,59 +42,61 @@ test('desktop mechanic receives a sourced answer and opens the cited document', 
     { method: 'GET', path: '/api/ai/conversations', handler: () => ({ json: [{ id: 'c-1', title: 'Диагностика лидара', park_id: 7, issue_key: 'RP-42', updated_at: '2026-10-04T10:00:00Z' }] }) },
     { method: 'GET', path: '/api/ai/conversations/c-1', handler: () => ({ json: {
       id: 'c-1', title: 'Диагностика лидара', park_id: 7, issue_key: 'RP-42', updated_at: '2026-10-04T10:00:00Z', jobs: [],
-      messages: answered ? [{ id: 'm-1', role: 'assistant', content: 'Отключите питание и проверьте разъём лидара.', created_at: '2026-10-04T10:01:00Z', sources: [{ id: 'd-1', title: 'Проверка лидара', excerpt: 'Перед осмотром отключите питание.', trust: 'instruction' }] }] : [],
+      messages: answered ? [{ id: 'm-1', role: 'assistant', content: 'Отключите питание и проверьте разъём лидара.', created_at: '2026-10-04T10:01:00Z', sources: [] }] : [],
     } }) },
     { method: 'POST', path: '/api/ai/conversations/c-1/messages', handler: () => { answered = true; return { json: { id: 'j-1', kind: 'chat', state: 'queued', created_at: '', updated_at: '', error: null, result: null } } } },
     { method: 'GET', path: '/api/ai/jobs/j-1', handler: () => ({ json: { id: 'j-1', kind: 'chat', state: 'succeeded', created_at: '', updated_at: '', error: null, result: {} } }) },
-    { method: 'GET', path: '/api/ai/documents', handler: () => ({ json: { items: [], total: 0, offset: 0, limit: 30 } }) },
-    { method: 'GET', path: '/api/ai/documents/d-1', handler: () => ({ json: { id: 'd-1', title: 'Проверка лидара', kind: 'manual', state: 'active', trust: 'instruction', park_id: 7, source_ref: 'manual:lidar', updated_at: '', revision: 1, content: 'Перед осмотром отключите питание.' } }) },
   ])
 
   await expect(page.locator('.rp-assistant-receipts')).toHaveCount(0)
   await assertNoSeriousA11yViolations(page)
   await page.getByLabel('Сообщение помощнику').fill('Как проверить лидар?')
   await page.getByRole('button', { name: 'Отправить' }).click()
-  const source = page.getByRole('link', { name: 'Проверка лидара' })
-  await expect(source).toBeVisible()
+  await expect(page.getByText('Отключите питание и проверьте разъём лидара.')).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'База знаний' })).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('mechanic-chat-desktop.png'), fullPage: true, animations: 'disabled' })
-  await source.click()
-  await expect(page.getByRole('heading', { name: 'Проверка лидара' })).toBeVisible()
-  await expect(page.getByText('Перед осмотром отключите питание.')).toBeVisible()
   await assertNoSeriousA11yViolations(page)
 })
 
-test('admin imports knowledge at 320px with explicit activation choices', async ({ page }, testInfo) => {
+test('admin opens model controls at 320px without knowledge import', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 800 })
-  let importBody: Record<string, unknown> | null = null
+  const requested: string[] = []
+  page.on('request', request => { requested.push(new URL(request.url()).pathname) })
   await openAssistant(page, adminUser, [
-    { method: 'GET', path: '/api/ai/status', handler: () => ({ json: { ...readyStatus, can_manage: true } }) },
+    { method: 'GET', path: '/api/ai/status', handler: () => ({ json: { ...readyStatus, can_manage: true, parallel_slots: 4 } }) },
     { method: 'GET', path: '/api/ai/conversations', handler: () => ({ json: [] }) },
-    { method: 'GET', path: '/api/ai/documents', handler: () => ({ json: { items: [], total: 0, offset: 0, limit: 30 } }) },
-    { method: 'POST', path: '/api/ai/documents/import', handler: async request => { importBody = await request.json() as Record<string, unknown>; return { json: { created: 2, duplicates: 0, rejected: 0 } } } },
     ...emptyManagementRoutes(),
   ])
-
-  await page.getByRole('tab', { name: 'База знаний' }).click()
-  await page.getByText('Пакетный импорт JSON/JSONL').click()
-  await page.getByLabel('Файл базы знаний').setInputFiles({
-    name: 'seed.jsonl', mimeType: 'application/x-ndjson',
-    buffer: Buffer.from([
-      JSON.stringify({ title: 'Проверка лидара', content: 'Отключите питание.', kind: 'manual', source_ref: 'seed:1' }),
-      JSON.stringify({ title: 'Опыт ремонта', content: 'Проверили разъём.', kind: 'ticket', source_ref: 'seed:2' }),
-    ].join('\n')),
-  })
-  await page.getByLabel('Сразу активировать инструкции').check()
-  await page.getByText('Использовать тикеты, переписку и заметки как непроверенный опыт').click()
-  await page.getByRole('button', { name: 'Импортировать' }).click()
-
-  await expect(page.getByRole('status').filter({ hasText: 'Добавлено: 2' })).toBeVisible()
-  expect(importBody).toMatchObject({ park_id: 7, activate_manuals: true, activate_unverified: true })
-  expect((importBody?.documents as unknown[])).toHaveLength(2)
-  await page.locator('.rp-assistant-knowledge').screenshot({
-    path: testInfo.outputPath('admin-import-mobile-320.png'), animations: 'disabled',
-    style: '.rp-shell__skip-link, .rp-shell__topbar, .rp-shell__bottom-nav { visibility: hidden !important; }',
-  })
+  await expect(page.getByRole('tab', { name: 'База знаний' })).toHaveCount(0)
+  expect(requested).not.toContain('/api/ai/config')
+  await page.getByRole('tab', { name: 'Настройки и журнал' }).click()
+  await expect(page.getByRole('heading', { name: 'Модель и запуск' })).toBeVisible()
+  await expect(page.getByText('Одновременные ответы')).toBeVisible()
+  await expect(page.getByText('Сохранять подтверждённый опыт ремонта')).toHaveCount(0)
+  expect(requested.some(path => path.startsWith('/api/ai/documents'))).toBe(false)
+  await page.screenshot({ path: testInfo.outputPath('admin-runtime-mobile.png'), fullPage: true, animations: 'disabled' })
   await expect(page.locator('html')).toHaveJSProperty('scrollWidth', 320)
+  await assertNoSeriousA11yViolations(page)
+})
+
+test('prepared host waits for the trained model without starting inference', async ({ page }) => {
+  const writes: string[] = []
+  page.on('request', request => {
+    if (new URL(request.url()).pathname.startsWith('/api/ai/') && request.method() !== 'GET') writes.push(request.url())
+  })
+  await openAssistant(page, adminUser, [
+    { method: 'GET', path: '/api/ai/status', handler: () => ({ json: { ...readyStatus, installed: false, enabled: false, ready: false, runtime_installed: true, model_available: false, reason: 'awaiting_model', can_manage: true } }) },
+    { method: 'GET', path: '/api/ai/conversations', handler: () => ({ json: [] }) },
+    ...emptyManagementRoutes(),
+  ])
+  await expect(page.getByText('Ожидается обученная модель.', { exact: false })).toBeVisible()
+  await expect(page.getByLabel('Сообщение помощнику')).toBeDisabled()
+  await page.getByRole('tab', { name: 'Настройки и журнал' }).click()
+  await expect(page.getByText('подготовлена', { exact: true })).toBeVisible()
+  await page.getByText('Управление runtime').click()
+  await expect(page.getByRole('button', { name: 'Включить', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Подготовить среду' })).toBeEnabled()
+  expect(writes).toEqual([])
   await assertNoSeriousA11yViolations(page)
 })
 

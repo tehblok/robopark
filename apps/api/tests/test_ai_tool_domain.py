@@ -37,6 +37,7 @@ def test_catalog_is_role_filtered_and_rejects_open_argument_shapes(
         "script_test",
         "script_run",
         "script_delete",
+        "system_api",
     }
     assert _names(mechanic) == {
         "task_get",
@@ -44,6 +45,7 @@ def test_catalog_is_role_filtered_and_rejects_open_argument_shapes(
         "task_comment",
         "task_handoff",
         "robot_check",
+        "system_api",
     }
     assert all(
         item["function"]["parameters"]["additionalProperties"] is False for item in admin + mechanic

@@ -1,4 +1,0 @@
-# Offline-only converter dependencies. They are not installed on the host or
-# included in the API runtime.
-pypdf==6.10.0
-xlrd==2.0.2

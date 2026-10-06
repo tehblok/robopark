@@ -135,6 +135,20 @@ def test_fit_context_rejects_question_that_cannot_fit_with_fixed_policy():
         )
 
 
+def test_empty_knowledge_does_not_add_source_contract_or_require_citations():
+    messages, sources = prompts.fit_context(
+        PromptDB("Помогай механику."),
+        SimpleNamespace(role="mechanic"),
+        [],
+        "Что проверить?",
+    )
+
+    assert sources == []
+    assert prompts.SOURCES_HEADER not in messages[0]["content"]
+    assert "Если источников нет, прямо скажи это" not in messages[0]["content"]
+    assert "Ссылайся только" not in messages[0]["content"]
+
+
 def test_complete_knowledge_articles_are_kept_whole_or_omitted():
     header = "База знаний Robopark\nОбласть применения: R3.9\n"
     sources = [

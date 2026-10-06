@@ -12,14 +12,12 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy import func, select, update
 
-from robopark_api.ai_models import AIConversation, AIDocument, AIJob, AIMessage, AIRun, AIScript
+from robopark_api.ai_models import AIConversation, AIEvent, AIJob, AIMessage, AIRun, AIScript
 from robopark_api.models import User
 from robopark_api.services.ai import (
     automations,
-    bundle,
     issue_context,
     knowledge,
-    learning,
     policy,
     prompts,
     runtime,
@@ -32,7 +30,7 @@ FINAL = {"succeeded", "failed", "cancelled"}
 FINALIZE_LOCK_ATTEMPTS = 5
 
 
-def view(row, *, db=None, user=None):
+def view(row, *, db=None, user=None, scope_cache=None):
     value = policy.columns(
         row, ("owner_id", "conversation_id", "park_id", "idempotency_key", "payload")
     )
@@ -41,7 +39,7 @@ def view(row, *, db=None, user=None):
     if db is not None and user is not None and row.payload.get("request", {}).get("use_tools"):
         from robopark_api.services.ai import tool_actions
 
-        value["actions"] = tool_actions.views(db, user, row)
+        value["actions"] = tool_actions.views(db, user, row, scope_cache=scope_cache)
     return value
 
 
@@ -120,30 +118,34 @@ def sources_valid(db, user, sources):
     return True
 
 
-def message_tools_valid(db, user, row):
+def message_tools_valid(db, user, row, *, scope_cache=None):
     if row.role != "assistant":
         return True
-    job = db.scalar(
-        select(AIJob).where(
-            AIJob.conversation_id == row.conversation_id,
-            AIJob.result["message_id"].as_string() == row.id,
+    cache_key = ("message_job", row.id)
+    if scope_cache is not None and cache_key in scope_cache:
+        job = scope_cache[cache_key]
+    else:
+        job = db.scalar(
+            select(AIJob).where(
+                AIJob.conversation_id == row.conversation_id,
+                AIJob.result["message_id"].as_string() == row.id,
+            )
         )
-    )
     if job is None or not job.payload.get("request", {}).get("use_tools"):
         return True
     from robopark_api.services.ai import tool_actions
 
     try:
-        tool_actions.authorize_views(db, user, job)
+        tool_actions.authorize_views(db, user, job, scope_cache=scope_cache)
         return True
     except HTTPException:
         return False
 
 
-def visible_message(db, user, row):
+def visible_message(db, user, row, *, scope_cache=None):
     value = policy.public_columns(row, ("conversation_id",))
     if (row.sources and not sources_valid(db, user, row.sources)) or not message_tools_valid(
-        db, user, row
+        db, user, row, scope_cache=scope_cache
     ):
         value.update(
             content="Ответ скрыт: источник или данные действия изменились либо больше недоступны. Задайте вопрос заново.",
@@ -234,14 +236,9 @@ def _prepare(db, settings, job, issue_snapshot):
     issue_text = ""
     if job.conversation_id:
         issue_text = issue_context.context(db, user, issue_snapshot)
-    sources = knowledge.search(
-        db, user, question, context=issue_text[:1200], park_id=job.park_id, limit=3
-    )
-    for source in sources:
-        doc = db.get(AIDocument, source["id"])
-        source["revision"] = doc.revision
-        if not prompts.atomic_source(source):
-            source["excerpt"] = source["excerpt"][:2400]
+    # Knowledge retrieval is retired. Legacy source metadata remains validated
+    # when old messages or an already-started tool turn refer to it.
+    sources = []
     prior = []
     if job.conversation_id:
         history = list(
@@ -273,7 +270,7 @@ def _prepare(db, settings, job, issue_snapshot):
         draft=request.get("kind") if job.kind == "draft" else None,
         token_count=(lambda messages: runtime.context_tokens(settings, messages, tools=definitions))
         if use_tools
-        else (lambda messages: runtime.context_tokens(settings, messages)),
+        else None,
         tools=use_tools,
     )
 
@@ -431,126 +428,161 @@ def _finalize_result(
         db.commit()
 
 
-def process_job(session_factory, settings):
+def _claim_job(session_factory):
+    """Atomically reserve the oldest job before doing remote or model work."""
     with session_factory() as db:
-        job = db.scalar(
-            select(AIJob)
-            .where(AIJob.state == "queued")
-            .order_by(AIJob.created_at, AIJob.id)
-            .limit(1)
-        )
-        if job is None:
-            return False
-        job_id, kind = job.id, job.kind
-        use_tools = kind == "chat" and job.payload.get("request", {}).get("use_tools", False)
         try:
-            # Tracker is fetched without an open request transaction. Mutable
-            # local authorization is repeated later under both AI locks.
-            db.rollback()
-            issue_snapshot = _fresh_issue_snapshot(session_factory, job_id)
-            job = db.get(AIJob, job_id, populate_existing=True)
-            if job is None or job.state != "queued":
-                return True
-            request, sources = _prepare(db, settings, job, issue_snapshot)
-            draft_kind = job.payload["request"].get("kind")
-            # Do not retain preparation's read transaction while bounded lock
-            # acquisition waits for a concurrent administrative operation.
-            db.rollback()
-            # Tokenization and context fitting can outlive Tracker's cache TTL.
-            # Claim against a fresh remote snapshot, still outside AI locks.
-            issue_snapshot = _fresh_issue_snapshot(session_factory, job_id)
             with (
                 database_idempotency_lock(db, "ai-controls"),
                 database_idempotency_lock(db, "ai-knowledge"),
             ):
-                # Preparation can overlap cancel/delete/disable. End its read
-                # identity map before deciding whether execution may begin
-                # under both serialized mutation boundaries.
-                job = db.get(AIJob, job_id, populate_existing=True)
-                if job is None or job.state != "queued":
-                    return True
-                _validate_claim(db, settings, job, sources, issue_snapshot)
+                job_id = db.scalar(
+                    select(AIJob.id)
+                    .where(AIJob.state == "queued")
+                    .order_by(AIJob.created_at, AIJob.id)
+                    .limit(1)
+                )
+                if job_id is None:
+                    return None
                 claimed = db.execute(
                     update(AIJob)
                     .where(AIJob.id == job_id, AIJob.state == "queued")
-                    .values(
-                        payload={**job.payload, "sources": sources},
-                        state="running",
-                        updated_at=time.time(),
-                    )
+                    .values(state="running", updated_at=time.time())
                     .execution_options(synchronize_session=False)
                 ).rowcount
-                if claimed != 1:
-                    db.rollback()
-                    return True
                 db.commit()
-        except (HTTPException, prompts.ContextTooLarge) as exc:
-            if isinstance(exc, HTTPException) and exc.detail == "idempotency_lock_busy":
+                return job_id if claimed == 1 else None
+        except HTTPException as exc:
+            if exc.detail == "idempotency_lock_busy":
                 db.rollback()
+                return None
+            raise
+
+
+def _interrupt_job(session_factory, job_id):
+    """Fail only this worker's claim; other parallel jobs remain untouched."""
+    with session_factory() as db:
+        db.execute(
+            update(AIJob)
+            .where(AIJob.id == job_id, AIJob.state == "running")
+            .values(state="failed", error="ai_worker_interrupted", updated_at=time.time())
+        )
+        db.commit()
+
+
+def process_job(session_factory, settings):
+    job_id = _claim_job(session_factory)
+    if job_id is None:
+        return False
+    try:
+        with session_factory() as db:
+            job = db.get(AIJob, job_id, populate_existing=True)
+            if job is None or job.state != "running":
                 return True
-            error = (
-                "ai_context_too_large"
-                if isinstance(exc, prompts.ContextTooLarge)
-                else str(exc.detail)
-            )
-            db.execute(
-                update(AIJob)
-                .where(AIJob.id == job_id, AIJob.state == "queued")
-                .values(
-                    state="failed" if isinstance(exc, prompts.ContextTooLarge) else "cancelled",
-                    error=error,
-                    updated_at=time.time(),
+            kind = job.kind
+            use_tools = kind == "chat" and job.payload.get("request", {}).get("use_tools", False)
+            try:
+                # Tracker is fetched without an open request transaction. Mutable
+                # local authorization is repeated later under both AI locks.
+                db.rollback()
+                issue_snapshot = _fresh_issue_snapshot(session_factory, job_id)
+                job = db.get(AIJob, job_id, populate_existing=True)
+                if job is None or job.state != "running":
+                    return True
+                request, sources = _prepare(db, settings, job, issue_snapshot)
+                draft_kind = job.payload["request"].get("kind")
+                # Do not retain preparation's read transaction while bounded lock
+                # acquisition waits for a concurrent administrative operation.
+                db.rollback()
+                # Context fitting can outlive Tracker's cache TTL. Validate a
+                # fresh snapshot before model execution.
+                issue_snapshot = _fresh_issue_snapshot(session_factory, job_id)
+                with (
+                    database_idempotency_lock(db, "ai-controls"),
+                    database_idempotency_lock(db, "ai-knowledge"),
+                ):
+                    job = db.get(AIJob, job_id, populate_existing=True)
+                    if job is None or job.state != "running":
+                        return True
+                    _validate_claim(db, settings, job, sources, issue_snapshot)
+                    job.payload = {**job.payload, "sources": sources}
+                    job.updated_at = time.time()
+                    db.commit()
+            except (HTTPException, prompts.ContextTooLarge) as exc:
+                if isinstance(exc, HTTPException) and exc.detail == "idempotency_lock_busy":
+                    db.execute(
+                        update(AIJob)
+                        .where(AIJob.id == job_id, AIJob.state == "running")
+                        .values(state="queued", updated_at=time.time())
+                    )
+                    db.commit()
+                    return True
+                error = (
+                    "ai_context_too_large"
+                    if isinstance(exc, prompts.ContextTooLarge)
+                    else str(exc.detail)
                 )
-            )
+                db.execute(
+                    update(AIJob)
+                    .where(AIJob.id == job_id, AIJob.state == "running")
+                    .values(
+                        state="failed" if isinstance(exc, prompts.ContextTooLarge) else "cancelled",
+                        error=error,
+                        updated_at=time.time(),
+                    )
+                )
+                if use_tools:
+                    from robopark_api.services.ai import tool_actions
+
+                    tool_actions.cancel_pending(db, [job_id])
+                db.commit()
+                return True
+        try:
             if use_tools:
                 from robopark_api.services.ai import tool_actions
 
-                tool_actions.cancel_pending(db, [job_id])
-            db.commit()
-            return True
-    try:
-        if use_tools:
-            from robopark_api.services.ai import tool_actions
-
-            result = tool_actions.step(session_factory, settings, job_id, request)
-            if result is None:
-                return True
-        elif kind == "script_test":
-            result = runtime.broker(settings, "/sandbox", request, timeout=30)
-            automations.bounded_json(result)
-        else:
-            content = knowledge.redact(runtime.complete(settings, request))
-            result = _draft(content, draft_kind) if kind == "draft" else {"content": content}
-        error = None
-    except (runtime.RuntimeFailure, HTTPException) as exc:
-        result, error = (
-            None,
-            str(exc)
-            if isinstance(exc, runtime.RuntimeFailure)
-            else str(exc.detail)
-            if use_tools
-            else "ai_output_invalid",
+                result = tool_actions.step(session_factory, settings, job_id, request)
+                if result is None:
+                    return True
+            elif kind == "script_test":
+                result = runtime.broker(settings, "/sandbox", request, timeout=30)
+                automations.bounded_json(result)
+            else:
+                content = knowledge.redact(runtime.complete(settings, request))
+                result = _draft(content, draft_kind) if kind == "draft" else {"content": content}
+            error = None
+        except (runtime.RuntimeFailure, HTTPException) as exc:
+            result, error = (
+                None,
+                str(exc)
+                if isinstance(exc, runtime.RuntimeFailure)
+                else str(exc.detail)
+                if use_tools
+                else "ai_output_invalid",
+            )
+        except Exception:
+            result, error = None, "ai_execution_failed"
+            logger.warning("Local AI execution failed")
+        try:
+            issue_snapshot = _fresh_issue_snapshot(session_factory, job_id)
+            issue_error = None
+        except HTTPException as exc:
+            issue_snapshot, issue_error = None, exc
+        _finalize_result(
+            session_factory,
+            settings,
+            job_id,
+            kind,
+            sources,
+            result,
+            error,
+            issue_snapshot,
+            issue_error,
         )
-    except Exception:
-        result, error = None, "ai_execution_failed"
-        logger.warning("Local AI execution failed")
-    try:
-        issue_snapshot = _fresh_issue_snapshot(session_factory, job_id)
-        issue_error = None
-    except HTTPException as exc:
-        issue_snapshot, issue_error = None, exc
-    _finalize_result(
-        session_factory,
-        settings,
-        job_id,
-        kind,
-        sources,
-        result,
-        error,
-        issue_snapshot,
-        issue_error,
-    )
-    return True
+        return True
+    except BaseException:
+        _interrupt_job(session_factory, job_id)
+        raise
 
 
 def recover(db):
@@ -570,6 +602,26 @@ def recover(db):
     db.commit()
 
 
+def _stage_automation_events(db):
+    """Turn verified repair events into runs without creating knowledge docs."""
+    with database_idempotency_lock(db, "ai-controls"):
+        db.expire_all()
+        if not policy.config(db)["enabled"]:
+            return
+        events = list(
+            db.scalars(
+                select(AIEvent)
+                .where(AIEvent.processed.is_(False))
+                .order_by(AIEvent.occurred_at, AIEvent.key)
+                .limit(20)
+            )
+        )
+        for event in events:
+            automations.stage_runs(db, event)
+            event.processed = True
+        db.commit()
+
+
 def tick(session_factory, settings, *, first=False):
     # Recovery only reads/writes the application DB; it must not depend on CUDA,
     # a valid runtime state file, or the availability of host services.
@@ -583,29 +635,94 @@ def tick(session_factory, settings, *, first=False):
 
         tool_actions.maintain(db)
         db.commit()
-        learning.process_events(db, settings)
-    process_job(session_factory, settings)
+        _stage_automation_events(db)
     automations.process_run(session_factory, settings)
-    with session_factory() as db:
-        bundle.step(db, settings)
     with session_factory() as db, database_idempotency_lock(db, "ai-controls"):
-        learning.purge_event_payloads(db, before=time.time() - 30 * 86400)
+        # Keep event payload retention independent of the retired learning path.
+        pending = (
+            select(AIRun.id)
+            .where(AIRun.event_key == AIEvent.key, AIRun.state.in_(("queued", "running")))
+            .exists()
+        )
+        rows = list(
+            db.scalars(
+                select(AIEvent)
+                .where(
+                    AIEvent.processed.is_(True),
+                    AIEvent.payload_retained.is_(True),
+                    AIEvent.occurred_at < time.time() - 30 * 86400,
+                    ~pending,
+                )
+                .order_by(AIEvent.occurred_at, AIEvent.key)
+                .limit(100)
+            )
+        )
+        for row in rows:
+            row.payload = {}
+            row.payload_retained = False
         db.commit()
     return True
 
 
-async def run_loop(session_factory, stop, settings):
-    recovery_pending = True
+async def _thread_call(function, *args, **kwargs):
+    """Cancellation waits for the mutating thread before unwinding its owner."""
+    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
+
+
+async def _wait_or_stop(stop, timeout):
+    with suppress(TimeoutError):
+        await asyncio.wait_for(stop.wait(), timeout=timeout)
+
+
+async def _job_loop(session_factory, stop, settings):
     while not stop.is_set():
         try:
-            if await asyncio.to_thread(tick, session_factory, settings, first=recovery_pending):
-                recovery_pending = False
+            processed = await _thread_call(process_job, session_factory, settings)
         except Exception:
-            # Optional AI failures must not stop Tracker delivery or core jobs.
-            # No prompts, private text or exception details enter normal logs.
-            # The exclusive worker never overlaps ticks, so any running row at
-            # the next iteration belongs to this interrupted iteration.
-            recovery_pending = True
-            logger.warning("Local AI worker iteration failed")
-        with suppress(TimeoutError):
-            await asyncio.wait_for(stop.wait(), timeout=2)
+            processed = False
+            logger.warning("Local AI chat worker iteration failed")
+        await _wait_or_stop(stop, 0 if processed else 0.25)
+
+
+async def _maintenance_loop(session_factory, stop, settings):
+    while not stop.is_set():
+        try:
+            await _thread_call(tick, session_factory, settings)
+        except Exception:
+            logger.warning("Local AI maintenance iteration failed")
+        await _wait_or_stop(stop, 2)
+
+
+def _recover_workers(session_factory):
+    with session_factory() as db:
+        recover(db)
+
+
+async def run_loop(session_factory, stop, settings):
+    # Recovery finishes before parallel claims begin. It is never repeated while
+    # another chat worker may legitimately own a running row.
+    while not stop.is_set():
+        try:
+            await _thread_call(_recover_workers, session_factory)
+            break
+        except Exception:
+            logger.warning("Local AI recovery iteration failed")
+            await _wait_or_stop(stop, 2)
+    if stop.is_set():
+        return
+    tasks = [
+        asyncio.create_task(_job_loop(session_factory, stop, settings))
+        for _ in range(settings.ai_chat_workers)
+    ]
+    tasks.append(asyncio.create_task(_maintenance_loop(session_factory, stop, settings)))
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

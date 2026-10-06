@@ -81,6 +81,61 @@ def test_broker_accepts_only_root_and_app_peer():
     assert authorize_peer(10001) is True
 
 
+def test_chat_admission_is_four_active_eight_queued_and_fail_fast_when_full():
+    from robopark_host.ai_broker import Admission, BrokerOverloaded
+
+    admission = Admission(active_limit=4, queued_limit=8, wait_timeout=1)
+    active = [admission.request() for _ in range(4)]
+    for request in active:
+        request.__enter__()
+    release = threading.Event()
+
+    def wait_for_slot():
+        try:
+            with admission.request():
+                release.wait(1)
+        except BrokerOverloaded:
+            pass
+
+    threads = [threading.Thread(target=wait_for_slot) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for _ in range(100):
+        if admission.snapshot()["queued_requests"] == 8:
+            break
+        threading.Event().wait(0.005)
+    assert admission.snapshot() == {
+        "parallel_slots": 4,
+        "context_tokens_per_slot": 8192,
+        "total_context_tokens": 32768,
+        "active_requests": 4,
+        "queued_requests": 8,
+        "max_queued_requests": 8,
+    }
+    with pytest.raises(BrokerOverloaded) as error, admission.request():
+        pass
+    assert error.value.status == 429
+    for request in active:
+        request.__exit__(None, None, None)
+    release.set()
+    for thread in threads:
+        thread.join(timeout=2)
+    assert not any(thread.is_alive() for thread in threads)
+
+
+def test_chat_admission_timeout_is_service_unavailable():
+    from robopark_host.ai_broker import Admission, BrokerOverloaded
+
+    admission = Admission(active_limit=1, queued_limit=1, wait_timeout=0.01)
+    with (
+        admission.request(),
+        pytest.raises(BrokerOverloaded) as error,
+        admission.request(),
+    ):
+        pass
+    assert error.value.status == 503
+
+
 def test_chat_forward_is_nonstreaming_bounded_and_disables_reasoning():
     from robopark_host.ai_broker import bounded_chat_body
 

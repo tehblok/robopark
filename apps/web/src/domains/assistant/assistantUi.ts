@@ -1,5 +1,3 @@
-import type { KnowledgeImportDocument } from './assistantApi'
-
 const ERROR_MESSAGES: Record<string, string> = {
   ai_action_in_progress: 'Действие уже выполняется. Дождитесь результата перед отменой или удалением разговора.',
   ai_action_uncertain: 'Связь прервалась во время действия. Проверьте его результат перед повторной командой.',
@@ -7,12 +5,24 @@ const ERROR_MESSAGES: Record<string, string> = {
   ai_confirmation_changed: 'Параметры подтверждения не совпали. Обновите разговор.',
   ai_action_changed: 'Объект изменился после подготовки действия. Попросите помощника проверить свежие данные.',
   ai_tool_limit: 'Достигнут предел действий на одно сообщение. Проверьте результаты и задайте следующий шаг.',
+  ai_system_api_interactive: 'Эту операцию нужно выполнить в соответствующем разделе сайта с обычной проверкой доступа.',
+  ai_system_api_forbidden: 'Для этой операции у вашей учётной записи нет доступа.',
+  ai_system_api_operation_not_found: 'Операция API не найдена. Попросите помощника заново найти доступную операцию.',
+  ai_system_api_result_too_large: 'Ответ сервиса слишком большой. Уточните парк, робота или период проверки.',
+  ai_system_api_path_invalid: 'Не удалось определить объект операции. Уточните номер робота или задачи.',
+  ai_system_api_secret_forbidden: 'Секреты вводятся только в настройках соответствующего сервиса.',
+  sdc_inventory_token_not_configured: 'Для Inventory нужен корпоративный OAuth в настройках интеграции Tracker.',
+  sdc_inventory_access_denied: 'Корпоративный OAuth не получил доступ к SDC Inventory.',
+  sdc_inventory_not_found: 'Робот не найден в SDC Inventory. Проверьте его номер.',
+  sdc_inventory_unavailable: 'SDC Inventory сейчас недоступен. Повторите проверку позже.',
+  sdc_inventory_busy: 'Сейчас выполняется много проверок Inventory. Повторите немного позже.',
 
   ai_context_too_large: 'Запрос слишком большой. Уменьшите запрос или разделите его на несколько сообщений.',
   ai_sources_changed: 'Источники изменились. Задайте вопрос заново, чтобы получить актуальный ответ.',
   ai_not_ready: 'Помощник ещё не готов. Проверьте модель и повторите позже.',
   ai_disabled: 'Помощник выключен. Администратор может включить его в настройках.',
   disabled: 'Помощник выключен. Администратор может включить его в настройках.',
+  ai_runtime_busy: 'Сейчас все исполнители заняты. Повторите запрос немного позже.',
   ai_queue_full: 'Очередь помощника заполнена. Повторите попытку немного позже.',
   ai_finalize_busy: 'Не удалось сохранить результат: помощник занят системной операцией. Повторите запрос после её завершения.',
   queue_full: 'Очередь помощника заполнена. Повторите попытку немного позже.',
@@ -29,10 +39,13 @@ const STATUS_MESSAGES: Record<string, string> = {
   disabled: ERROR_MESSAGES.disabled, ai_disabled: ERROR_MESSAGES.ai_disabled,
   agx_required: 'Требуется NVIDIA AGX Orin.', p3701_required: 'Требуется NVIDIA AGX Orin P3701.',
   tegra234_required: 'Требуется платформа NVIDIA Tegra 234.', memory_below_24gib: 'Недостаточно оперативной памяти: требуется не менее 24 ГиБ.',
-  storage: 'Хранилище модели недоступно или не готово.', install_failed: 'Установка модели завершилась с ошибкой.',
+  storage: 'Хранилище модели недоступно или не готово.', install_failed: 'Подготовка среды завершилась с ошибкой.',
   model_missing: 'Файл модели не найден.', runtime_unavailable: ERROR_MESSAGES.runtime_unavailable,
-  runtime_model_mismatch: 'Версия модели изменилась. Установите Gemma 4 E4B в настройках помощника.',
-  installing: 'Устанавливаем локальную модель. Страница обновится автоматически.',
+  runtime_model_mismatch: 'Выбранная модель несовместима. Проверьте регистрацию и профиль модели.',
+  installing: 'Готовим среду запуска без скачивания модели. Страница обновится автоматически.',
+  awaiting_model: 'Ожидается обученная модель. Ответы ИИ выключены; настройки и инструменты можно подготовить заранее.',
+  startup_failed: 'Модель не запустилась. Проверьте выбранный файл и журнал службы.',
+  model_invalid: 'Файл модели не прошёл проверку. Повторите регистрацию правильного GGUF.',
   starting: 'Запускаем локальную модель.', not_installed: 'Локальная модель ещё не установлена.',
   cuda_unavailable: 'CUDA недоступна. Проверьте драйвер и конфигурацию устройства.',
   smoke_failed: 'Модель не прошла проверочный запуск. Повторите установку или проверьте журнал.',
@@ -50,21 +63,4 @@ export function assistantErrorText(error: unknown): string {
 
 export function statusReasonText(reason: string | null): string {
   return reason ? translatedMessage(reason, STATUS_MESSAGES) ?? `Локальный помощник недоступен (${reason}).` : 'Локальный помощник недоступен.'
-}
-
-const MAX_IMPORT_REQUEST_BYTES = 4 * 1024 * 1024
-
-export function createKnowledgeImportBatches(documents: KnowledgeImportDocument[], parkId: number | null, activateManuals: boolean, activateUnverified: boolean): KnowledgeImportDocument[][] {
-  const encoder = new TextEncoder()
-  const batches: KnowledgeImportDocument[][] = []
-  let current: KnowledgeImportDocument[] = []
-  const size = (items: KnowledgeImportDocument[]) => encoder.encode(JSON.stringify({ documents: items, park_id: parkId, activate_manuals: activateManuals, activate_unverified: activateUnverified })).byteLength
-  for (const document of documents) {
-    const next = [...current, document]
-    if (next.length <= 100 && size(next) <= MAX_IMPORT_REQUEST_BYTES) { current = next; continue }
-    if (!current.length || size([document]) > MAX_IMPORT_REQUEST_BYTES) throw new Error(`Документ «${document.title}» не помещается в пакет 4 МиБ`)
-    batches.push(current); current = [document]
-  }
-  if (current.length) batches.push(current)
-  return batches
 }

@@ -1,12 +1,11 @@
-"""Confirmed, operator-reviewed repairs become attributed experience, never policy."""
+"""Stage confirmed repair events for deterministic automations."""
 
-import hashlib
 import json
 import logging
 
 from sqlalchemy import select
 
-from robopark_api.ai_models import AIDocument, AIEvent, AIRun
+from robopark_api.ai_models import AIEvent, AIRun
 from robopark_api.services.ai import automations, knowledge, policy
 from robopark_api.services.database_locks import database_idempotency_lock
 from robopark_api.task_workflow_models import ReliableAction
@@ -127,45 +126,15 @@ def process_events(db, settings):
         config = policy.config(db)
         if not config["enabled"]:
             return
-        with database_idempotency_lock(db, "ai-knowledge"):
-            events = list(
-                db.scalars(
-                    select(AIEvent)
-                    .where(AIEvent.processed.is_(False))
-                    .order_by(AIEvent.occurred_at)
-                    .limit(20)
-                )
+        events = list(
+            db.scalars(
+                select(AIEvent)
+                .where(AIEvent.processed.is_(False))
+                .order_by(AIEvent.occurred_at)
+                .limit(20)
             )
-            for event in events:
-                if config["learning_enabled"]:
-                    ref = "repair:" + event.key
-                    source_key = hashlib.sha256(
-                        (str(event.park_id) + "\nticket\n" + ref).encode()
-                    ).hexdigest()
-                    if (
-                        db.scalar(select(AIDocument.id).where(AIDocument.source_key == source_key))
-                        is None
-                    ):
-                        content = (
-                            "Наблюдавшийся ремонт, проверенный оператором. "
-                            "Не универсальная инструкция.\n"
-                            + json.dumps(event.payload, ensure_ascii=False)
-                        )
-                        row = AIDocument(
-                            source_key=source_key,
-                            fingerprint=hashlib.sha256(content.encode()).hexdigest(),
-                            title="Опыт ремонта " + event.payload["issue_key"],
-                            content=content,
-                            kind="ticket",
-                            state="active",
-                            trust="experience",
-                            park_id=event.park_id,
-                            source_ref=ref,
-                            created_by=None,
-                        )
-                        db.add(row)
-                        db.flush()
-                        knowledge.reindex(db, row)
-                automations.stage_runs(db, event)
-                event.processed = True
-            db.commit()
+        )
+        for event in events:
+            automations.stage_runs(db, event)
+            event.processed = True
+        db.commit()

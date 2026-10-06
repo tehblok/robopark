@@ -38,9 +38,14 @@ def broker(settings, path, payload=None, *, timeout=120):
                     raise RuntimeFailure("ai_response_too_large")
         value = json.loads(body)
         if status_code != 200:
+            upstream = value.get("error") if isinstance(value, dict) else None
             code = (
-                "ai_context_too_large"
-                if isinstance(value, dict) and value.get("error") == "context_limit"
+                {
+                    "context_limit": "ai_context_too_large",
+                    "ai_queue_full": "ai_queue_full",
+                    "ai_queue_timeout": "ai_runtime_busy",
+                }.get(upstream, "ai_runtime_unavailable")
+                if isinstance(upstream, str)
                 else "ai_runtime_unavailable"
             )
             raise RuntimeFailure(code)

@@ -144,13 +144,20 @@ def run(paths, *, concurrency=(1, 5, 15)):
 
     before = _memory(paths)
     results = [run_stage(request, level) for level in stages]
+    selection = ai_runtime.selected_model(paths)
     return {
         "schema": 1,
         "state": "measured"
         if all(not r["failed_or_truncated"] for r in results)
         else "failed",
-        "model": ai_runtime.MODEL_ID,
+        "model": selection["model"],
+        "model_family": selection["model_family"],
+        "model_source": selection["model_source"],
+        "model_sha256": selection["model_sha256"],
         "llama_commit": ai_runtime.LLAMA_COMMIT,
+        "parallel_slots": ai_runtime.PARALLEL_SLOTS,
+        "context_tokens_per_slot": ai_runtime.CONTEXT_TOKENS_PER_SLOT,
+        "total_context_tokens": ai_runtime.TOTAL_CONTEXT_TOKENS,
         "layer": "native_inference_only",
         "semantic_quality_evaluated": False,
         "application_queue_evaluated": False,

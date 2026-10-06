@@ -80,6 +80,7 @@ def include_source_path(relative: Path) -> bool:
     return (
         (name in _SOURCE_FILES or name.startswith(_SOURCE_PREFIXES))
         and name not in _EXCLUDED_EXACT
+        and not name.startswith(("apps/api/knowledge/", "deploy/knowledge/"))
         and relative.name != ".env"
         and not any(part in _EXCLUDED_PARTS for part in relative.parts)
         and not name.endswith(_EXCLUDED_SUFFIXES)

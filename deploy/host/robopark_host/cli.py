@@ -357,7 +357,12 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("ai-verify")
     commands.add_parser("ai-check")
     commands.add_parser("ai-activate-intent")
-    commands.add_parser("knowledge-install")
+    register_model = commands.add_parser("ai-model-register")
+    register_model.add_argument("--file", type=Path, required=True)
+    register_model.add_argument("--sha256", required=True)
+    register_model.add_argument("--model-id", required=True)
+    select_model = commands.add_parser("ai-model-select")
+    select_model.add_argument("--model-id", required=True)
     terminal_worker = commands.add_parser("terminal-worker")
     terminal_worker.add_argument("--id", required=True)
     terminal_worker.add_argument("--profile", choices=("maintenance", "root"), required=True)
@@ -440,39 +445,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             paths, release, SystemRunner(), auto_install=arguments.command == "ai-prepare"
         )
         return 0
-    if arguments.command == "knowledge-install":
-        from .ai_install import reconcile_ai_compose
-        from .knowledge_delivery import install_knowledge
-        from .release import ReleaseError
-        from .updater import SystemRunner, compose
+    if arguments.command in {"ai-model-register", "ai-model-select"}:
+        from .ai_runtime import register_merged_gguf, select_model
+        from .updater import SystemRunner
 
-        if not install_knowledge(paths):
-            return 0
         try:
-            with host_operation(paths):
-                reconcile_ai_compose(paths)
-                runner = SystemRunner()
-                runner.run(
-                    compose("robopark", paths.state / "current-compose.json") + [
-                        "up", "-d", "--no-build", "--force-recreate", "api", "worker",
-                    ],
-                    timeout=180,
+            result = (
+                register_merged_gguf(
+                    paths, arguments.file, sha256=arguments.sha256, model_id=arguments.model_id
                 )
-                if not runner.wait_ready(
-                    project="robopark",
-                    config=paths.state / "current-compose.json",
-                    timeout=180,
-                ):
-                    raise ReleaseError("knowledge_reconcile_failed")
-        except HostBusy:
-            _print({"state": "busy", "error": "host_busy"})
-            return 75
+                if arguments.command == "ai-model-register"
+                else select_model(paths, arguments.model_id, SystemRunner())
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            code = str(error)
+            _print({"state": "failed", "error": code if re.fullmatch(r"ai_[a-z_]+", code) else "ai_model_operation_failed"})
+            return 2
+        _print(result)
         return 0
     if arguments.command == "ai-setup":
-        from .ai_runtime import reconcile
+        from .ai_runtime import reconcile, runtime_installed
 
         result = reconcile(paths, auto_install=True)
-        return int(not result["installed"] and result["supported"])
+        return int(result["supported"] and not runtime_installed(paths, verify=True))
     if arguments.command == "ai-broker":
         from .ai_broker import run_broker
 

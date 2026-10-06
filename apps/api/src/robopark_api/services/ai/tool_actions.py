@@ -16,7 +16,8 @@ from robopark_api.models import User
 from robopark_api.services.ai import knowledge, policy, runtime, tool_domain
 from robopark_api.services.database_locks import database_idempotency_lock
 
-MAX_ACTIONS = 6
+MAX_ACTIONS = 12
+MAX_TOOL_MESSAGE_BYTES = 18_000
 CONFIRM_SECONDS = 900
 ACTIVE = {"ready", "waiting", "approved", "running"}
 
@@ -27,21 +28,54 @@ def rows(db, job_id):
     )
 
 
-def authorize_views(db, user, job):
-    seen = set()
-    scope_cache = {}
+def _compact_messages(messages, *, keep_pairs=4):
+    """Drop already-consumed old tool pairs while keeping recent reasoning context."""
+    pairs = []
+    for index in range(len(messages) - 1):
+        current, following = messages[index], messages[index + 1]
+        if (
+            current.get("role") == "assistant"
+            and current.get("tool_calls")
+            and following.get("role") == "tool"
+        ):
+            pairs.append((index, index + 1))
+    removed = {index for pair in pairs[:-keep_pairs] for index in pair}
+    return [message for index, message in enumerate(messages) if index not in removed]
+
+
+def _drop_oldest_tool_pair(messages):
+    pairs = []
+    for index in range(len(messages) - 1):
+        if (
+            messages[index].get("role") == "assistant"
+            and messages[index].get("tool_calls")
+            and messages[index + 1].get("role") == "tool"
+        ):
+            pairs.append((index, index + 1))
+    if len(pairs) <= 1:
+        return messages
+    removed = set(pairs[0])
+    return [message for index, message in enumerate(messages) if index not in removed]
+
+
+def authorize_views(db, user, job, *, scope_cache=None):
+    scope_cache = {} if scope_cache is None else scope_cache
     for row in rows(db, job.id):
-        key = (row.tool, json.dumps(row.arguments, sort_keys=True))
-        if key not in seen:
-            tool_domain.authorize_view(
-                db, user, job.park_id, row.tool, row.arguments, scope_cache=scope_cache
-            )
-            seen.add(key)
+        tool_domain.authorize_view(
+            db,
+            user,
+            job.park_id,
+            row.tool,
+            row.arguments,
+            scope_cache=scope_cache,
+            expected=row.expected,
+            result=row.result,
+        )
 
 
-def views(db, user, job):
+def views(db, user, job, *, scope_cache=None):
     result = []
-    scope_cache = {}
+    scope_cache = {} if scope_cache is None else scope_cache
     for row in rows(db, job.id):
         value = {
             "id": row.id,
@@ -52,7 +86,14 @@ def views(db, user, job):
         }
         try:
             tool_domain.authorize_view(
-                db, user, row.park_id, row.tool, row.arguments, scope_cache=scope_cache
+                db,
+                user,
+                row.park_id,
+                row.tool,
+                row.arguments,
+                scope_cache=scope_cache,
+                expected=row.expected,
+                result=row.result,
             )
             value.update(
                 preview=row.preview,
@@ -162,7 +203,7 @@ def _plan(session_factory, settings, job_id, messages, response):
                 (
                     item
                     for item in previous
-                    if name not in {"task_get", "robot_check", "script_list", "script_get"}
+                    if not tool_domain.readonly(name, canonical)
                     and item.tool == name
                     and item.arguments == canonical
                 ),
@@ -245,6 +286,17 @@ def _execute(session_factory, settings, job_id, action_id):
         except Exception as exc:
             db.rollback()
             row = db.get(AIAction, action_id, populate_existing=True)
+            if isinstance(exc, HTTPException) and tool_domain.readonly(row.tool, row.arguments):
+                row.state = "failed"
+                row.error = _error(exc)
+                row.result = {"status_code": exc.status_code, "error": row.error}
+                row.updated_at = time.time()
+                job = db.get(AIJob, job_id, populate_existing=True)
+                if job is not None and job.state == "running":
+                    _append_result(db, job, job.payload["tool_messages"], row)
+                else:
+                    db.commit()
+                return
             row.state, row.error, row.updated_at = "uncertain", _error(exc), time.time()
             job = db.get(AIJob, job_id, populate_existing=True)
             if job:
@@ -284,7 +336,22 @@ def step(session_factory, settings, job_id, messages):
                     db.commit()
             raise
         return None
+    messages = _compact_messages(messages)
+    while (
+        len(json.dumps(messages, ensure_ascii=False, separators=(",", ":")).encode())
+        > MAX_TOOL_MESSAGE_BYTES
+    ):
+        compacted = _drop_oldest_tool_pair(messages)
+        if compacted is messages:
+            break
+        messages = compacted
     count, capacity = runtime.context_tokens(settings, messages, tools=definitions)
+    while count + 1400 > capacity:
+        compacted = _drop_oldest_tool_pair(messages)
+        if compacted is messages:
+            break
+        messages = compacted
+        count, capacity = runtime.context_tokens(settings, messages, tools=definitions)
     if count + 1400 > capacity:
         raise runtime.RuntimeFailure("ai_context_too_large")
     response = runtime.complete_turn(settings, messages, definitions)

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from robopark_ota import verify_ota
+
 from scripts.build_ota import (
     BuildError,
     build_ota,
@@ -181,10 +182,9 @@ def test_ota_source_filter_omits_browser_acceptance_files(relative: str):
         "apps/web/src/pwa/offlineDb.ts",
         "apps/web/src/domains/assistant/AssistantPage.tsx",
         "apps/web/public/manifest.webmanifest",
-        "apps/api/knowledge/repair-v1/seed.jsonl",
     ],
 )
-def test_ota_source_filter_retains_runtime_and_knowledge(relative: str):
+def test_ota_source_filter_retains_runtime(relative: str):
     assert include_source_path(Path(relative)) is True
 
 
@@ -225,3 +225,8 @@ def test_cleanliness_check_ignores_untracked_but_rejects_modified_tracked(tmp_pa
     (repository / "tracked.txt").write_text("two")
     with pytest.raises(BuildError, match="tracked_tree_is_dirty"):
         ensure_clean_tracked_tree(repository)
+
+
+@pytest.mark.parametrize("relative", ["apps/api/knowledge/repair-v1/seed.jsonl", "deploy/knowledge/manifest.json", "deploy/knowledge/snapshot/part.age"])
+def test_ota_excludes_retired_knowledge_even_if_left_in_a_checkout(relative):
+    assert include_source_path(Path(relative)) is False

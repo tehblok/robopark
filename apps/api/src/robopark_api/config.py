@@ -93,9 +93,10 @@ class Settings(BaseSettings):
     ops_dir: str | None = None
     #: Installed host bridge mount; unset for manual Compose installations.
     ops_host_root: str | None = None
-    ai_knowledge_bundle_path: str = str(_API_ROOT / "knowledge" / "repair-v1")
     ai_runtime_state_path: str = "/ops/ai-public/ai-runtime.json"
     ai_broker_socket: str = "/run/robopark-ai/broker.sock"
+    #: Parallel local-chat consumers. Bounded for the 32 GiB AGX runtime.
+    ai_chat_workers: int = Field(default=4, ge=1, le=4)
     terminal_broker_socket: str | None = None
     terminal_allowed_origins: str | None = None
     terminal_allow_loopback_http: bool = False

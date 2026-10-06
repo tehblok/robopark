@@ -1,17 +1,16 @@
-"""Local assistant and scoped knowledge. Management is a separate RBAC boundary."""
+"""Local assistant with live tools. Management is a separate RBAC boundary."""
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import delete, func, select
 
 from robopark_api import ai_schemas as S
-from robopark_api.ai_models import AIConfig, AIConversation, AIDocument, AIJob, AIMessage, AIPrompt
+from robopark_api.ai_models import AIConfig, AIConversation, AIJob, AIMessage, AIPrompt
 from robopark_api.config import get_settings
 from robopark_api.db import get_db
 from robopark_api.deps import require_user
 from robopark_api.services.ai import (
-    bundle,
     issue_context,
     jobs,
     knowledge,
@@ -54,16 +53,6 @@ def status_value(db, settings, user):
     status = policy.host_status(settings)
     counts = {"documents": 0, "candidates": 0, "jobs": 0}
     if status["supported"]:
-        scope = knowledge.scoped(db, user)
-        counts["documents"] = db.scalar(
-            select(func.count()).select_from(AIDocument).where(scope, AIDocument.state == "active")
-        )
-        if policy.can_manage(db, user):
-            counts["candidates"] = db.scalar(
-                select(func.count())
-                .select_from(AIDocument)
-                .where(scope, AIDocument.state == "candidate")
-            )
         counts["jobs"] = db.scalar(
             select(func.count())
             .select_from(AIJob)
@@ -75,7 +64,6 @@ def status_value(db, settings, user):
         **status,
         "can_manage": policy.can_manage(db, user),
         "counts": counts,
-        "knowledge_bundle": bundle.status(db, settings),
     }
 
 
@@ -91,6 +79,8 @@ def config(db: DB, user: Manager):
 
 @router.patch("/config")
 def update_config(value: S.ConfigUpdate, db: DB, user: Manager):
+    if value.learning_enabled is True:
+        raise HTTPException(410, "ai_knowledge_removed")
     with database_idempotency_lock(db, "ai-controls"):
         row = db.get(AIConfig, 1)
         if row is None:
@@ -138,77 +128,14 @@ def update_prompt(role: str, value: S.PromptUpdate, db: DB, user: Manager):
     return result
 
 
-@router.get("/documents")
-def documents(
-    db: DB,
-    user: Supported,
-    q: str = Query(default="", max_length=500),
-    park_id: int | None = None,
-    state: str | None = None,
-    offset: int = Query(default=0, ge=0, le=1000000),
-    limit: int = Query(default=30, ge=1, le=100),
-):
-    return knowledge.list_documents(
-        db, user, query=q, park_id=park_id, state=state, offset=offset, limit=limit
-    )
+@router.api_route("/documents", methods=["GET", "POST"])
+def retired_documents(user: Supported):
+    raise HTTPException(410, "ai_knowledge_removed")
 
 
-@router.post("/documents", status_code=201)
-def create_document(value: S.DocumentIn, db: DB, user: Manager):
-    with database_idempotency_lock(db, "ai-knowledge"):
-        row, created = knowledge.add(db, user, value)
-        db.commit()
-        if row.state == "deleted":
-            raise HTTPException(409, "ai_document_deleted")
-        result = knowledge.view(row, content=True)
-    if created:
-        policy.changed(db, user, "document_created", row.id)
-    return result
-
-
-@router.post("/documents/import")
-def import_documents(value: S.ImportIn, db: DB, user: Manager):
-    policy.park(db, user, value.park_id, global_allowed=True)
-    with database_idempotency_lock(db, "ai-knowledge"):
-        counts = {"created": 0, "duplicates": 0, "rejected": 0}
-        for item in value.documents:
-            data = item.model_dump()
-            data.update(
-                park_id=value.park_id,
-                state="active"
-                if (
-                    (value.activate_manuals and item.kind == "manual")
-                    or (value.activate_unverified and item.kind != "manual")
-                )
-                else "candidate",
-            )
-            _, created = knowledge.add(db, user, data)
-            counts["created" if created else "duplicates"] += 1
-        db.commit()
-    policy.changed(db, user, "knowledge_import", "batch")
-    return counts
-
-
-@router.get("/documents/{document_id}")
-def document(document_id: str, db: DB, user: Supported):
-    return knowledge.view(knowledge.get(db, user, document_id), content=True)
-
-
-@router.patch("/documents/{document_id}")
-def update_document(document_id: str, value: S.DocumentUpdate, db: DB, user: Manager):
-    with database_idempotency_lock(db, "ai-knowledge"):
-        row = knowledge.edit(db, user, knowledge.get(db, user, document_id), value)
-        result = knowledge.view(row, content=True)
-    policy.changed(db, user, "document_updated", document_id)
-    return result
-
-
-@router.delete("/documents/{document_id}")
-def delete_document(document_id: str, db: DB, user: Manager):
-    with database_idempotency_lock(db, "ai-knowledge"):
-        knowledge.remove(db, knowledge.get(db, user, document_id))
-    policy.changed(db, user, "document_deleted", document_id)
-    return {"deleted": True}
+@router.api_route("/documents/{document_id}", methods=["GET", "POST", "PATCH", "DELETE"])
+def retired_document(document_id: str, user: Supported):
+    raise HTTPException(410, "ai_knowledge_removed")
 
 
 @router.get("/conversations")
@@ -258,10 +185,26 @@ def get_conversation(conversation_id: str, db: DB, user: Supported):
             .limit(20)
         )
     )
+    message_ids = [message.id for message in messages if message.role == "assistant"]
+    scope_cache = {("message_job", message_id): None for message_id in message_ids}
+    if message_ids:
+        for job in db.scalars(
+            select(AIJob).where(
+                AIJob.conversation_id == row.id,
+                AIJob.result["message_id"].as_string().in_(message_ids),
+            )
+        ):
+            scope_cache[("message_job", job.result["message_id"])] = job
+    # Prioritize the current action cards and newest answers when the bounded
+    # request-local authorization budget cannot cover all old remote objects.
+    job_views = [jobs.view(job, db=db, user=user, scope_cache=scope_cache) for job in active_jobs]
+    message_views = [
+        jobs.visible_message(db, user, msg, scope_cache=scope_cache) for msg in reversed(messages)
+    ][::-1]
     return {
         **policy.public_columns(row, ("owner_id",)),
-        "messages": [jobs.visible_message(db, user, msg) for msg in messages],
-        "jobs": [jobs.view(job, db=db, user=user) for job in active_jobs],
+        "messages": message_views,
+        "jobs": job_views,
     }
 
 

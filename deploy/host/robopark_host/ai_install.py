@@ -64,32 +64,6 @@ def reconcile_ai_compose(paths) -> bool:
     if release.parent != paths.releases.resolve(strict=True):
         raise ReleaseError("ai_invalid_release")
     ai_present = ai_payload_present(release)
-    knowledge_base = paths.var / "knowledge"
-    knowledge_current = knowledge_base / "current"
-    knowledge_mount = None
-    if knowledge_current.exists() or knowledge_current.is_symlink():
-        try:
-            from .knowledge_delivery import _bundle_ready
-
-            version = knowledge_current.resolve(strict=True)
-            versions = (knowledge_base / "versions").resolve(strict=True)
-            if (
-                not knowledge_current.is_symlink()
-                or version.parent != versions
-                or not _bundle_ready(version)
-            ):
-                raise ValueError("knowledge")
-        except (OSError, ValueError) as error:
-            raise ReleaseError("knowledge_installed_corrupt") from error
-        knowledge_mount = {
-            "type": "bind",
-            "source": str(knowledge_current / "bundle"),
-            "target": KNOWLEDGE_TARGET,
-            "read_only": True,
-            "bind": {"create_host_path": False},
-        }
-    if not ai_present and knowledge_mount is None:
-        return False
     link = paths.state / "current-compose.json"
     target = link.resolve(strict=True)
     if not link.is_symlink() or target.parent != paths.state / "compose":
@@ -102,6 +76,13 @@ def reconcile_ai_compose(paths) -> bool:
             if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != expected_uid or info.st_nlink != 1 or info.st_size > 1024 * 1024:
                 raise ValueError("untrusted")
             document = json.loads(stream.read(), object_pairs_hook=unique_object)
+        encoded_document = json.dumps(document, sort_keys=True)
+        if (
+            not ai_present
+            and KNOWLEDGE_ENVIRONMENT not in encoded_document
+            and "robopark-knowledge" not in encoded_document
+        ):
+            return False
         if document.get("x-robopark-release") != str(release):
             raise ValueError("release")
         services = document["services"]
@@ -116,14 +97,9 @@ def reconcile_ai_compose(paths) -> bool:
                 "AI_RUNTIME_STATE_PATH": "/ops/ai-public/ai-runtime.json",
             })
             expected_mounts.extend((socket_mount, state_mount))
-        if knowledge_mount is not None:
-            expected_environment[KNOWLEDGE_ENVIRONMENT] = KNOWLEDGE_TARGET
-            expected_mounts.append(knowledge_mount)
-        managed_environment = {
-            "AI_BROKER_SOCKET", "AI_RUNTIME_STATE_PATH", KNOWLEDGE_ENVIRONMENT,
-        }
+        managed_environment = {"AI_BROKER_SOCKET", "AI_RUNTIME_STATE_PATH"}
         managed_volume_markers = (
-            "robopark-ai", "ai-runtime.json", "ai-public", "robopark-knowledge",
+            "robopark-ai", "ai-runtime.json", "ai-public",
         )
         for service_name, service in services.items():
             if not isinstance(service, dict):
@@ -132,6 +108,21 @@ def reconcile_ai_compose(paths) -> bool:
             volumes = service.get("volumes", [])
             if not isinstance(environment, dict) or not isinstance(volumes, list):
                 raise TypeError("service")
+            if KNOWLEDGE_ENVIRONMENT in environment:
+                del environment[KNOWLEDGE_ENVIRONMENT]
+                changed = True
+            retained_volumes = [
+                volume
+                for volume in volumes
+                if not (
+                    isinstance(volume, dict)
+                    and volume.get("target") == KNOWLEDGE_TARGET
+                )
+                and "robopark-knowledge" not in json.dumps(volume, sort_keys=True)
+            ]
+            if retained_volumes != volumes:
+                service["volumes"] = volumes = retained_volumes
+                changed = True
             for key in managed_environment:
                 if key in environment and (
                     service_name not in {"api", "worker"}
@@ -195,15 +186,22 @@ def reconcile_ai_installation(paths, release, runner, *, auto_install=False):
         publish_status(paths, supported=False, reason=reason)
         return
     if auto_install and enabled_intent is None:
-        write_enabled_intent(paths, True)
-        enabled_intent = True
-    from .ai_runtime import MODEL_SHA256, installed
+        write_enabled_intent(paths, False)
+        enabled_intent = False
+    from .ai_runtime import installed, runtime_installed
 
     present = installed(paths, verify=not auto_install)
+    runtime_present = runtime_installed(paths, verify=not auto_install)
     publish_status(
         paths, supported=True, installed=present, enabled=False, ready=False,
-        reason="starting" if present and enabled_intent else "disabled" if present else "not_installed",
-        model_sha256=MODEL_SHA256 if present else None,
+        reason=(
+            "starting" if present and enabled_intent
+            else "disabled" if present
+            else "awaiting_model" if runtime_present
+            else "installing" if auto_install
+            else "not_installed"
+        ),
+        model_sha256=None,
     )
     runner.run(["systemctl", "daemon-reload"], timeout=30)
     if not present:
@@ -235,7 +233,7 @@ def reconcile_ai_installation(paths, release, runner, *, auto_install=False):
         ensure_service_account(paths)
         from .ai_runtime import ensure_api_key
         ensure_api_key(paths)
-        if enabled_intent:
+        if not runtime_present:
             runner.run(["systemctl", "start", "--no-block", "robopark-ai-setup.service"], timeout=30)
     else:
         if present and enabled_intent:

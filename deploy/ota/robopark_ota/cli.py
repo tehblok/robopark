@@ -38,10 +38,7 @@ _INTERACTIVE_ERRORS = {
         "/etc/os-release и /etc/armbian-release; установка остановлена без удаления данных."
     ),
     "confirmation_required": "Операция отменена. Данные не удалялись.",
-    "knowledge_install_pending": (
-        "Robopark установлен и запущен, но полная база знаний не подключена. "
-        "Повторите отдельно: sudo /opt/robopark/host-tools/robopark knowledge-install"
-    ),
+
 }
 
 _STORAGE_ERRORS = {
@@ -164,10 +161,6 @@ def _clean_install(bundle: Path, root: Path) -> None:
 
 def _run_clean_install(runtime: HostInstallRuntime, credential_path: Path) -> None:
     CleanInstallCoordinator(runtime).run(credential_path)
-    try:
-        runtime.install_knowledge()
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise RuntimeError("knowledge_install_pending") from error
 
 
 def _update(bundle: Path) -> None:

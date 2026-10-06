@@ -35,6 +35,7 @@ def test_two_confirmations_produce_one_script_deletion(
                 "enabled": True,
                 "ready": True,
                 "backend": "cuda",
+                "model": "google/gemma-4-E4B-it-qat-q4_0-gguf",
             }
         )
     )

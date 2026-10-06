@@ -18,6 +18,15 @@ def test_ip_geo_provider_rejects_unknown_value():
         Settings(_env_file=None, ip_geo_provider="unexpected")
 
 
+def test_ai_chat_workers_defaults_to_four_and_is_bounded():
+    assert Settings(_env_file=None).ai_chat_workers == 4
+    assert Settings(_env_file=None, ai_chat_workers=1).ai_chat_workers == 1
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, ai_chat_workers=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, ai_chat_workers=5)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

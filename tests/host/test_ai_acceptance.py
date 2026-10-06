@@ -56,3 +56,35 @@ def test_probe_output_does_not_retain_answers_or_private_errors():
     result = ai_acceptance.sample(response)
     assert set(result) == {"ok", "seconds", "completion_tokens"}
     assert ai_acceptance.percentile([5, 1, 3], 0.95) == 5
+
+
+def test_probe_report_identifies_selected_model_and_fixed_runtime_profile(monkeypatch):
+    monkeypatch.setattr(ai_acceptance.ai_runtime, "probe_support", lambda paths: (True, None))
+    monkeypatch.setattr(ai_acceptance.ai_runtime, "installed", lambda paths, **kw: True)
+    monkeypatch.setattr(ai_acceptance.ai_runtime, "runtime_ready", lambda paths: (True, None))
+    monkeypatch.setattr(ai_acceptance.ai_runtime, "read_api_key", lambda paths: "secret")
+    monkeypatch.setattr(ai_acceptance, "_memory", lambda paths: {})
+    monkeypatch.setattr(
+        ai_acceptance,
+        "run_stage",
+        lambda request, level: {"failed_or_truncated": 0, "concurrent_requests": level},
+    )
+    monkeypatch.setattr(
+        ai_acceptance.ai_runtime,
+        "selected_model",
+        lambda paths: {
+            "model": "robopark/gemma-4-e4b-repair-v1",
+            "model_family": "gemma-4-E4B",
+            "model_source": "registered",
+            "model_sha256": "a" * 64,
+        },
+    )
+
+    result = ai_acceptance.run(SimpleNamespace(), concurrency=(1,))
+
+    assert result["model"] == "robopark/gemma-4-e4b-repair-v1"
+    assert result["model_family"] == "gemma-4-E4B"
+    assert result["model_source"] == "registered"
+    assert result["model_sha256"] == "a" * 64
+    assert result["parallel_slots"] == 4
+    assert result["context_tokens_per_slot"] == 8192
