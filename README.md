@@ -6,14 +6,14 @@
 без встроенного корпуса знаний. До получения модели генерация выключена,
 базовые веса автоматически не скачиваются. Профиль параллельной работы,
 подключение GGUF и состояние варианта TensorRT: [локальный ИИ](docs/runbooks/local-ai.md).
-Команда ниже устанавливает ранее опубликованный rc.33; эти изменения в него
-не входят. Старый установщик ещё предлагает загрузку прежнего корпуса.
+Эти изменения входят в rc.34 вместе с исправлениями кэшей и фоновых ресурсов.
+PWA проверена в Chromium, Firefox и WebKit.
 
 На Ubuntu/Armbian с Python 3.10+, `curl` и `sudo` одна команда скачивает
-кандидат выпуска rc.33, сверяет SHA-256 и запускает меню установки:
+кандидат выпуска rc.34, сверяет SHA-256 и запускает меню установки:
 
 ```sh
-d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.33/robopark-0.2.0-rc.33.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' 'd09fac418db611f79d08a2eb76e8a0c2e973d92bd28d30d4f7a16193438f44ba  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
+d=$(mktemp -d) && curl -fL --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.34/robopark-0.2.0-rc.34.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' 'd71e1650d0af054c7f175bc144a53962cd2c70b26238f8f7f06b3f641de39c52  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota)
 ```
 
 Выберите «Чистая установка» на новом хосте. Установщик интерактивно запросит
@@ -23,8 +23,8 @@ Tuna token, домен и пароль первого владельца. При
 ARM64/AMD64, поддерживаемые ОС и требования к памяти/диску перечислены в
 [руководстве установки](docs/runbooks/usb-clean-install.md).
 Происхождение и границы проверки опубликованного пакета — в
-[описании rc.33](docs/releases/0.2.0-rc.33.md) и
-[отчёте о проверке помощника](docs/reviews/2026-10-05-ai-operation-tools.md).
+[описании rc.34](docs/releases/0.2.0-rc.34.md) и
+[отчёте о проверке кэшей и PWA](docs/reviews/2026-10-06-cache-pwa-rc34.md).
 
 Независимый SSH-доступ для Khadas и AGX через постоянный TCP-порт Tuna
 настраивается отдельно: [установка, ключ и переезд на AGX](docs/runbooks/support-ssh.md).
