@@ -235,7 +235,7 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
     setCreating(true); setError(null)
     const current = () => !controller.signal.aborted && !parentSignal?.aborted && generation === openGeneration.current
     try {
-      const conversation = await api.createConversation({ park_id: parkId, ...(issueKey ? { issue_key: issueKey, title: issueKey } : {}) })
+      const conversation = await api.createConversation({ park_id: parkId, ...(issueKey ? { issue_key: issueKey, title: issueKey } : {}) }, controller.signal)
       if (!current()) return null
       setSessionData(previous => [conversation, ...(previous ?? []).filter(item => item.id !== conversation.id)])
       resumePollController.current?.abort(); resumePollController.current = null; resumedJob.current = null
@@ -313,7 +313,7 @@ function ChatPanel({ api, enabled, parkId, issueKey }: { api: AssistantApiClient
     setSending(true); setError(null)
     try {
       const conversation = detail ?? await create(controller.signal); if (!conversation || controller.signal.aborted) return
-      const job = await api.sendMessage(conversation.id, draft.trim(), crypto.randomUUID())
+      const job = await api.sendMessage(conversation.id, draft.trim(), crypto.randomUUID(), controller.signal)
       if (controller.signal.aborted) return
       setActiveJob(job)
       const result = await waitForJob(api, job, controller.signal, setActiveJob)

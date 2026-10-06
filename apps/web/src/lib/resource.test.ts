@@ -333,6 +333,21 @@ describe('in-flight invalidation', () => {
     expect(resourceStore.get(oldKey)).toBeUndefined()
     expect(resourceStore.get(newKey)).toEqual({ value: 'new principal' })
   })
+
+  it('does not repopulate a protected key after its consumer is disabled', async () => {
+    const key = 'admin:users:actor'
+    const request = deferred<TestPayload>()
+    const view = renderHook(
+      ({ enabled }) => useCachedResource(key, () => request.promise, { enabled, refreshIntervalMs: 0 }),
+      { initialProps: { enabled: true } },
+    )
+    await waitFor(() => expect(view.result.current.isLoading).toBe(true))
+
+    view.rerender({ enabled: false })
+    await resolveAndFlush(request, { value: 'late protected data' })
+
+    expect(resourceStore.get(key)).toBeUndefined()
+  })
 })
 
 describe('automatic cached refresh', () => {

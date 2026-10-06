@@ -715,6 +715,10 @@ async def run_loop(session_factory, stop, settings):
             await _wait_or_stop(stop, 2)
     if stop.is_set():
         return
+    while not stop.is_set() and not policy.host_status(settings)["supported"]:
+        await _wait_or_stop(stop, 2)
+    if stop.is_set():
+        return
     tasks = [
         asyncio.create_task(_job_loop(session_factory, stop, settings))
         for _ in range(settings.ai_chat_workers)

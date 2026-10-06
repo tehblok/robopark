@@ -154,6 +154,7 @@ def test_run_loop_waits_for_inflight_thread_after_stop(monkeypatch):
     monkeypatch.setattr(jobs, "process_job", delayed_process)
     monkeypatch.setattr(jobs, "_recover_workers", lambda *_args: None)
     monkeypatch.setattr(jobs, "tick", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(jobs.policy, "host_status", lambda _settings: {"supported": True})
     settings = type("Settings", (), {"ai_chat_workers": 1})()
 
     async def scenario():
@@ -164,6 +165,27 @@ def test_run_loop_waits_for_inflight_thread_after_stop(monkeypatch):
         await asyncio.sleep(0.05)
         assert not worker.done()
         release.set()
+        await asyncio.wait_for(worker, timeout=3)
+
+    asyncio.run(scenario())
+
+
+def test_run_loop_does_not_poll_jobs_while_host_is_unsupported(monkeypatch):
+    recovered = threading.Event()
+    processed = threading.Event()
+
+    monkeypatch.setattr(jobs, "_recover_workers", lambda *_args: recovered.set())
+    monkeypatch.setattr(jobs.policy, "host_status", lambda _settings: {"supported": False})
+    monkeypatch.setattr(jobs, "process_job", lambda *_args: processed.set())
+    settings = type("Settings", (), {"ai_chat_workers": 1})()
+
+    async def scenario():
+        stop = asyncio.Event()
+        worker = asyncio.create_task(jobs.run_loop(object(), stop, settings))
+        assert await asyncio.to_thread(recovered.wait, 1)
+        await asyncio.sleep(0.05)
+        assert not processed.is_set()
+        stop.set()
         await asyncio.wait_for(worker, timeout=3)
 
     asyncio.run(scenario())
@@ -187,6 +209,7 @@ def test_chat_workers_start_when_maintenance_fails(monkeypatch):
     monkeypatch.setattr(jobs, "_recover_workers", recovery, raising=False)
     monkeypatch.setattr(jobs, "tick", maintenance)
     monkeypatch.setattr(jobs, "process_job", chat)
+    monkeypatch.setattr(jobs.policy, "host_status", lambda _settings: {"supported": True})
     settings = type("Settings", (), {"ai_chat_workers": 1})()
 
     async def scenario():

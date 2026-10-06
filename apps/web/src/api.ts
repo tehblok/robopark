@@ -1658,7 +1658,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ shared_password, username, password, role_slug }),
     }),
-  parks: () => request<Park[]>('/parks'),
+  parks: (signal?: AbortSignal) => request<Park[]>('/parks', { signal }),
   createPark: (payload: {
     name: string
     tag: string

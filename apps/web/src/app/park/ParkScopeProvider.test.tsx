@@ -212,6 +212,18 @@ it('restores the fleet directory on a revisit while the network is unavailable',
 })
 
 describe('ParkScopeProvider', () => {
+  it('aborts the fleet directory request when the provider unmounts', async () => {
+    vi.spyOn(api, 'parks').mockImplementation(() => new Promise(() => undefined))
+    const view = renderScope('/work?park=7', customUser(['nav.dashboard', 'parks.manage'], [park(7)]))
+    await waitFor(() => expect(api.parks).toHaveBeenCalledTimes(1))
+    const signal = vi.mocked(api.parks).mock.calls[0][0]
+
+    view.unmount()
+
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal?.aborted).toBe(true)
+  })
+
   it('keeps the last permitted parks visible and recovers after a fleet load failure', async () => {
     const parksRequest = vi
       .spyOn(api, 'parks')

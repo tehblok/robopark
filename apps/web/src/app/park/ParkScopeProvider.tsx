@@ -156,6 +156,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!user || !fleetScope) return
 
+    const controller = new AbortController()
     const key = directoryKey(user, includeInactiveInventoryParks)
     const remembered = resourceStore.get<Park[]>(key)
     const fallbackParks = remembered ?? (includeInactiveInventoryParks ? user.parks : activeParks(user.parks))
@@ -165,7 +166,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
       if (saved !== undefined && !authoritative) commitLoad(generation, user, true, includeInactiveInventoryParks, saved)
     })
     void api
-      .parks()
+      .parks(controller.signal)
       .then((nextParks) => {
         authoritative = true
         commitLoad(generation, user, true, includeInactiveInventoryParks, includeInactiveInventoryParks ? nextParks : activeParks(nextParks), null, true)
@@ -182,6 +183,7 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
           PARK_LOAD_ERROR,
         )
       })
+    return () => controller.abort()
   }, [beginLoad, commitLoad, fleetScope, includeInactiveInventoryParks, user])
 
   const writeSelection = useCallback(

@@ -47,10 +47,10 @@ export const assistantApi = {
   updatePrompt: (role: AiPrompt['role'], content: string, revision: number) => request<AiPrompt>(`/ai/prompts/${role}`, mutation('PUT', { content, revision })),
 
   conversations: (signal?: AbortSignal) => request<Conversation[]>('/ai/conversations', { signal }),
-  createConversation: (value: { title?: string; park_id: number; issue_key?: string }) => request<Conversation>('/ai/conversations', mutation('POST', value)),
+  createConversation: (value: { title?: string; park_id: number; issue_key?: string }, signal?: AbortSignal) => request<Conversation>('/ai/conversations', { ...mutation('POST', value), signal }),
   conversation: (id: string, signal?: AbortSignal) => request<ConversationDetail>(`/ai/conversations/${encoded(id)}`, { signal }),
   deleteConversation: (id: string) => request<void>(`/ai/conversations/${encoded(id)}`, mutation('DELETE')),
-  sendMessage: (conversationId: string, content: string, idempotency_key: string) => request<AiJob>(`/ai/conversations/${encoded(conversationId)}/messages`, mutation('POST', { content, idempotency_key, use_tools: true })),
+  sendMessage: (conversationId: string, content: string, idempotency_key: string, signal?: AbortSignal) => request<AiJob>(`/ai/conversations/${encoded(conversationId)}/messages`, { ...mutation('POST', { content, idempotency_key, use_tools: true }), signal }),
   job: (id: string, signal?: AbortSignal) => request<AiJob>(`/ai/jobs/${encoded(id)}`, { signal }),
   confirmAction: (id: string, digest: string) => request<AiJob>(`/ai/actions/${encoded(id)}/confirm`, mutation('POST', { digest })),
   cancelJob: (id: string) => request<AiJob>(`/ai/jobs/${encoded(id)}/cancel`, mutation('POST')),

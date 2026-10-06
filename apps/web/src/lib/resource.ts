@@ -527,7 +527,7 @@ export function useCachedResource<T>(
         ownerGenerationRef.current = Symbol('cached-resource-owner')
       }
     }
-  }, [key])
+  }, [enabled, key])
 
   useEffect(() => {
     if (!enabled || !devicePersist || resourceStore.get(key, persist) !== undefined) return

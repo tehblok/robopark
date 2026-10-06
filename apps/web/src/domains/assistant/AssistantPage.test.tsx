@@ -375,7 +375,9 @@ describe('AssistantPage', () => {
 
     renderPage(apiClient, operator, '/assistant?issue_key=RP-B&park_id=4')
 
-    await waitFor(() => expect(apiClient.createConversation).toHaveBeenCalledWith({ park_id: 4, issue_key: 'RP-B', title: 'RP-B' }))
+    await waitFor(() => expect(apiClient.createConversation).toHaveBeenCalledWith(
+      { park_id: 4, issue_key: 'RP-B', title: 'RP-B' }, expect.any(AbortSignal),
+    ))
     expect(await screen.findByRole('heading', { name: 'RP-B' })).toBeVisible()
   })
 
@@ -497,10 +499,13 @@ describe('AssistantPage', () => {
     vi.mocked(apiClient.createConversation).mockImplementation(() => new Promise(resolve => { finishCreate = resolve }))
     const view = renderPage(apiClient, operator, '/assistant?issue_key=RP-LATE&park_id=4')
     await waitFor(() => expect(apiClient.createConversation).toHaveBeenCalledTimes(1))
+    const signal = (vi.mocked(apiClient.createConversation).mock.calls[0] as unknown[])[1] as AbortSignal
 
     view.unmount()
     await act(async () => finishCreate({ id: 'c-late', title: 'RP-LATE', park_id: 4, issue_key: 'RP-LATE', updated_at: '' }))
 
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal.aborted).toBe(true)
     expect(apiClient.conversation).not.toHaveBeenCalled()
   })
 
@@ -815,10 +820,13 @@ describe('AssistantPage', () => {
     fireEvent.change(input, { target: { value: 'Проверить питание' } })
     fireEvent.submit(input.closest('form')!)
     await waitFor(() => expect(apiClient.sendMessage).toHaveBeenCalledTimes(1))
+    const signal = (vi.mocked(apiClient.sendMessage).mock.calls[0] as unknown[])[3] as AbortSignal
 
     view.unmount()
     await act(async () => finishSend({ id: 'j-late', kind: 'chat', state: 'queued', created_at: '', updated_at: '', error: null, result: null }))
 
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal.aborted).toBe(true)
     expect(apiClient.job).not.toHaveBeenCalled()
     expect(apiClient.cancelJob).not.toHaveBeenCalled()
   })

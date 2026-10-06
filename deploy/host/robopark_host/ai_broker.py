@@ -25,6 +25,7 @@ PARALLEL_SLOTS = 4
 TOTAL_CONTEXT_TOKENS = PARALLEL_SLOTS * CONTEXT_TOKENS
 MAX_QUEUED_REQUESTS = 8
 MAX_HANDLER_THREADS = 16
+SOCKET_IO_TIMEOUT_SECONDS = 15
 QUEUE_WAIT_SECONDS = 30
 MAX_TOOLS = 16
 RESULT_MARKER = b"__ROBOPARK_RESULT__="
@@ -611,7 +612,12 @@ class Handler(BaseHTTPRequestHandler):
             raise BrokerError("request_invalid") from error
         if not 0 <= size <= MAX_BODY:
             raise BrokerError("request_too_large")
-        return self.rfile.read(size)
+        try:
+            return self.rfile.read(size)
+        except TimeoutError:
+            # A timed-out buffered reader cannot be reused for keep-alive.
+            self.close_connection = True
+            raise
 
     def do_GET(self):
         if self.path != "/health":
@@ -663,6 +669,13 @@ class Server(socketserver.ThreadingUnixStreamServer):
         self.admission = Admission()
         self._handler_slots = threading.BoundedSemaphore(MAX_HANDLER_THREADS)
         super().__init__(path, Handler)
+
+    def get_request(self):
+        request, address = super().get_request()
+        # Bound abandoned headers, bodies and keep-alive without limiting the
+        # separate native inference timeout or queue admission wait.
+        request.settimeout(SOCKET_IO_TIMEOUT_SECONDS)
+        return request, address
 
     def process_request(self, request, client_address):
         if not self._handler_slots.acquire(blocking=False):

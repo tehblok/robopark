@@ -149,7 +149,7 @@ def test_200_authenticated_sessions_keep_local_p95_and_duplicate_delivery_bounde
     monkeypatch.setattr(
         tracker_client,
         "list_queue_components",
-        lambda **_kwargs: [{"id": "capacity-repair", "label": "Capacity repair"}],
+        lambda **_kwargs: [{"id": "robot-unsorted", "label": "ROBOT_UNSORTED"}],
     )
     monkeypatch.setattr(
         tracker_client,
@@ -161,7 +161,7 @@ def test_200_authenticated_sessions_keep_local_p95_and_duplicate_delivery_bounde
         upstream["transition"] += 1
 
     def set_components(**kwargs):
-        assert kwargs["components"] == ["capacity-repair"]
+        assert kwargs["components"] == ["robot-unsorted"]
         upstream["component"] += 1
 
     def set_tags(**kwargs):

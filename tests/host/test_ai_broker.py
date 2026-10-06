@@ -564,3 +564,50 @@ def test_native_forward_uses_private_api_key(host_paths, monkeypatch):
         request.headers["Authorization"] == "Bearer " + "private-token" * 3
         for request, _ in seen
     )
+
+
+@pytest.mark.parametrize("request_bytes", [
+    b"",
+    b"GET /health HTTP/1.1\r\nHost:",
+    b"POST /control HTTP/1.1\r\nHost: broker\r\nContent-Length: 100\r\n\r\n{",
+    b"GET /health HTTP/1.1\r\nHost: broker\r\n\r\n",
+])
+def test_idle_connections_release_broker_handler_slots(host_paths, monkeypatch, request_bytes):
+    import socket
+
+    from robopark_host import ai_broker
+
+    monkeypatch.setattr(ai_broker, "SOCKET_IO_TIMEOUT_SECONDS", 0.1, raising=False)
+    monkeypatch.setattr(ai_broker, "MAX_HANDLER_THREADS", 1)
+    finished = threading.Event()
+    process_request_thread = ai_broker.Server.process_request_thread
+
+    def observe_finished(self, request, address):
+        try:
+            process_request_thread(self, request, address)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(ai_broker.Server, "process_request_thread", observe_finished)
+    with tempfile.TemporaryDirectory(prefix="rp-ai-", dir="/tmp") as directory:
+        path = directory + "/broker.sock"
+        server = ai_broker.Server(path, host_paths)
+        server.verify_request = lambda _request, _address: True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        client = socket.socket(socket.AF_UNIX)
+        try:
+            client.connect(path)
+            client.sendall(request_bytes)
+            assert finished.wait(1), "An abandoned client retained the only handler slot"
+            with socket.socket(socket.AF_UNIX) as health:
+                health.settimeout(1)
+                health.connect(path)
+                health.sendall(b"GET /health HTTP/1.1\r\nHost: broker\r\nConnection: close\r\n\r\n")
+                with health.makefile("rb") as response:
+                    assert response.read().startswith(b"HTTP/1.1 200")
+        finally:
+            client.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
