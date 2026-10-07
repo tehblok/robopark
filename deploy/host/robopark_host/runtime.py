@@ -29,6 +29,9 @@ from .state import atomic_write_json
 def source_compose_environment(paths: HostPaths) -> dict[str, str]:
     """Return only paths needed to render the signed source Compose file."""
     return {
+        # Compose omits inactive profiles from config output. Keep the bot in
+        # the build/OTA contract; its runtime start still uses enabled.json.
+        "COMPOSE_PROFILES": "bot",
         "HOST_ENV_FILE": str(paths.etc / "host.env"),
         "ROBOPARK_POSTGRES_PASSWORD_FILE": str(paths.etc / "postgres-password"),
         "ROBOPARK_PGPASS_FILE": str(paths.etc / "pgpass"),

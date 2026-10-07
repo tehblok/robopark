@@ -1,9 +1,31 @@
 """Optional Telegram bot lifecycle stays explicit, durable, and data preserving."""
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
+
+
+def test_source_compose_render_includes_optional_bot_on_real_compose(host_paths):
+    from robopark_host.runtime import source_compose_environment
+
+    _prepare_host(host_paths)
+    environment = dict(os.environ)
+    environment.pop("COMPOSE_PROFILES", None)
+    environment.update(source_compose_environment(host_paths))
+    result = subprocess.run(
+        [
+            "docker", "compose", "--project-name", "robopark-test",
+            "--file", "deploy/docker-compose.yml", "config",
+            "--no-env-resolution", "--format", "json",
+        ],
+        env=environment, check=True, capture_output=True, text=True,
+    )
+    rendered = json.loads(result.stdout)
+    assert "bot" in rendered["services"]
+    assert rendered["services"]["bot"]["profiles"] == ["bot"]
 
 
 def _prepare_host(host_paths):
