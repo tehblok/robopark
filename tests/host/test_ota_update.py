@@ -1164,6 +1164,7 @@ def test_candidate_compose_builds_carry_exact_image_ownership_labels(
         "db": {},
         "api": {"build": {"context": str(stage / "apps/api")}},
         "web": {"build": {"context": str(stage / "apps/web")}},
+        "bot": {"build": {"context": str(stage / "apps/bot")}},
     }}
 
     class ConfigRunner:
@@ -1184,6 +1185,8 @@ def test_candidate_compose_builds_carry_exact_image_ownership_labels(
                 "io.robopark.ota.operation-id": identity,
                 "io.robopark.ota.release": candidate,
             }
+    assert "bot" not in json.loads(smoke.read_text())["services"]
+    assert json.loads(production.read_text())["services"]["bot"]["build"]["context"] == str(stage / "apps/bot")
 
 
 def test_system_runtime_owns_candidate_images_before_build(monkeypatch, host_paths):

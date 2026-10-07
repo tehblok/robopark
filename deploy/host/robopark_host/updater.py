@@ -793,6 +793,15 @@ def _render_configs(paths, journal, runner, stage):
             "api": {"condition": "service_healthy"},
         }
     root = paths.state / "compose"
+    # The optional bot builds through this document, not the smoke document.
+    # Its source still lives in staging until smoke succeeds; pin_images removes
+    # build contexts before the production document becomes active.
+    bot = production["services"].get("bot", {})
+    if "build" in bot:
+        context = Path(bot["build"]["context"])
+        bot["build"]["context"] = str(
+            stage / context.relative_to(paths.releases / journal["candidate"])
+        )
     atomic_write_json(root / (journal["job_id"] + "-production.json"), production)
     atomic_write_json(root / (journal["job_id"] + "-smoke.json"), smoke)
     return work, root / (journal["job_id"] + "-smoke.json")
