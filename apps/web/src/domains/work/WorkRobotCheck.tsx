@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, type EmergencySnapshot, type User } from '../../api'
 import { canAccessRoute } from '../../app/routing/accessPolicy'
 import { Button } from '../../design-system/actions/Button'
 import { EmptyState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { CheckError, RobotCheckWorkspace } from '../robots/RobotCheckWorkspace'
-import { classifyCheckError, parseRobotCheckTab } from '../robots/robotCheckUrl'
+import { checkAccessIdentity, classifyCheckError, parseRobotCheckTab } from '../robots/robotCheckUrl'
 import type { DomainError } from '../../shared/api/classifyApiError'
 
 type CheckClient = Pick<typeof api, 'emergencyResolve' | 'emergencySnapshot' | 'emergencySection'>
@@ -19,8 +19,11 @@ export function WorkRobotCheck({ robot, user, activeTab, onTabChange, onOpenTask
   const [attempt, setAttempt] = useState(0)
   const owner = useRef(0)
   const notify = useRef(onAuthorizationFailure)
+  const currentUser = useRef(user)
+  useLayoutEffect(() => { currentUser.current = user }, [user])
   useEffect(() => { notify.current = onAuthorizationFailure }, [onAuthorizationFailure])
   const allowed = canAccessRoute(user, 'robot-check')
+  const accessIdentity = checkAccessIdentity(user)
   useEffect(() => {
     const generation = ++owner.current
     if (!allowed) return
@@ -30,12 +33,12 @@ export function WorkRobotCheck({ robot, user, activeTab, onTabChange, onOpenTask
       if (generation === owner.current) setResolved(value)
     }, error => {
       if (generation !== owner.current) return
-      const classified = classifyCheckError(error, user)
+      const classified = classifyCheckError(error, currentUser.current)
       setFailure(classified)
       if (classified.kind === 'unauthorized' || classified.kind === 'forbidden') notify.current?.(classified)
     })
     return () => { owner.current += 1 }
-  }, [robot, apiClient, attempt, allowed, user])
+  }, [robot, apiClient, attempt, allowed, accessIdentity, user.id])
 
   if (!allowed) return <EmptyState title="Проверка робота недоступна для вашей роли" />
   if (failure) return <CheckError failure={failure} user={user} onRetry={() => setAttempt(value => value + 1)} />

@@ -80,6 +80,46 @@ def test_operator_resolve_hides_service_raw(
     assert "service_raw" not in section_ids
 
 
+@pytest.mark.parametrize("operation", ["resolve", "snapshot"])
+@pytest.mark.parametrize("failure", ["waiting", "upstream", "auth"])
+def test_shared_probe_failure_preserves_upstream_or_auth_status(
+    client, db_session, seed_operator, monkeypatch, emergency_payload, tmp_path, operation, failure
+):
+    from robopark_api.services.live_merge import LiveMergeStore
+
+    configure_emergency(db_session, monkeypatch, emergency_payload)
+    login_as(client, "operator1", "secret")
+    store = LiveMergeStore(tmp_path / "live-merge", waiter_timeout=0.5)
+    monkeypatch.setattr(emergency_cache, "get_live_merge_store", lambda: store)
+    _, identity = settings_svc.get_emergency_cookie_probe(db_session)
+    shared_key = f"{identity or 'legacy'}:YASADR00000000447"
+    if failure == "waiting":
+        store._write_inflight("emergency.robot", shared_key)
+    else:
+        error = (
+            emergency_client.EmergencyAuthError("emergency cookie invalid")
+            if failure == "auth"
+            else emergency_client.EmergencyError("connect timeout")
+        )
+        store._write_error("emergency.robot", shared_key, error, stale_allowed=failure != "auth")
+
+    if operation == "resolve":
+        response = client.post("/emergency/resolve", json={"robot_number": "447"})
+    else:
+        response = client.get("/emergency/YASADR00000000447/snapshot")
+
+    if failure == "auth":
+        assert response.status_code == 403
+        assert response.json()["detail"] == "emergency_cookie_invalid"
+        assert settings_svc.get_emergency_cookie_status(db_session) == "invalid"
+        assert settings_svc.get_emergency_cookie_valid(db_session) is False
+    else:
+        assert response.status_code == 502
+        assert response.json()["detail"] == "emergency_upstream_error"
+        assert settings_svc.get_emergency_cookie_status(db_session) == "unavailable"
+        assert settings_svc.get_emergency_cookie_valid(db_session) is not False
+
+
 def test_operator_cannot_open_hidden_section(
     client, db_session, seed_operator, monkeypatch, emergency_payload
 ):

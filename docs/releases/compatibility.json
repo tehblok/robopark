@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "target_version": "0.2.0-rc.34",
+  "target_version": "0.2.0-rc.35",
   "migration_head": "0059_ai_action_receipts",
   "known_heads": [
     "0055_media_upload_park",

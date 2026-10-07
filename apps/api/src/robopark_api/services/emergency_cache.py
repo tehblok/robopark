@@ -16,7 +16,11 @@ from robopark_api.db import release_request_session
 from robopark_api.services import emergency_client, emergency_vin, reports
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.cache_metrics import family
-from robopark_api.services.live_merge import get_live_merge_store
+from robopark_api.services.live_merge import (
+    LiveMergeTimeout,
+    LiveMergeUpstreamError,
+    get_live_merge_store,
+)
 from robopark_api.services.ops.maintenance import host_maintenance_active
 
 PAYLOAD_CACHE_TTL_SECONDS = 3.0
@@ -347,19 +351,32 @@ def get_robot_payload(
 
             if merge is not None:
                 shared_key = _shared_key(identity, vin)
-                payload = merge.merge_load(
-                    _MERGE_NS,
-                    shared_key,
-                    PAYLOAD_CACHE_TTL_SECONDS,
-                    load,
-                    is_current=lambda: _flight_is_current(flight),
-                    max_stale_seconds=PAYLOAD_MAX_STALE_SECONDS,
-                    stale_if=lambda exc: (
-                        isinstance(exc, emergency_client.EmergencyError)
-                        and not isinstance(exc, emergency_client.EmergencyAuthError)
-                    ),
-                    on_stale=mark_shared_stale,
-                )
+                try:
+                    payload = merge.merge_load(
+                        _MERGE_NS,
+                        shared_key,
+                        PAYLOAD_CACHE_TTL_SECONDS,
+                        load,
+                        is_current=lambda: _flight_is_current(flight),
+                        max_stale_seconds=PAYLOAD_MAX_STALE_SECONDS,
+                        stale_if=lambda exc: (
+                            isinstance(exc, emergency_client.EmergencyError)
+                            and not isinstance(exc, emergency_client.EmergencyAuthError)
+                        ),
+                        on_stale=mark_shared_stale,
+                    )
+                except LiveMergeTimeout as exc:
+                    raise emergency_client.EmergencyError(
+                        "emergency request coordination timed out"
+                    ) from exc
+                except LiveMergeUpstreamError as exc:
+                    if exc.error_type == "EmergencyAuthError":
+                        raise emergency_client.EmergencyAuthError(
+                            "emergency cookie invalid"
+                        ) from exc
+                    raise emergency_client.EmergencyError(
+                        "emergency upstream request failed"
+                    ) from exc
             else:
                 payload = load()
             payload_loaded_at = (

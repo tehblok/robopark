@@ -59,6 +59,10 @@ class LiveMergeTimeout(TimeoutError):
 class LiveMergeUpstreamError(RuntimeError):
     """Shared failure recorded by the merge leader so waiters do not refetch."""
 
+    def __init__(self, message: str, *, error_type: str | None = None) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+
 
 class _LiveMergeSuperseded(RuntimeError):
     """Internal signal that invalidation retired the leader's claim."""
@@ -389,6 +393,7 @@ class LiveMergeStore:
                 "written_at": time.time(),
                 "ok": False,
                 "exc_msg": str(exc) or type(exc).__name__,
+                "exc_type": type(exc).__name__,
                 "stale_allowed": stale_allowed,
             },
         )
@@ -454,7 +459,11 @@ class LiveMergeStore:
         self.error_path(namespace, key).unlink(missing_ok=True)
 
     def _raise_shared_error(self, data: dict[str, Any]) -> None:
-        raise LiveMergeUpstreamError(str(data.get("exc_msg") or "upstream failed"))
+        error_type = data.get("exc_type")
+        raise LiveMergeUpstreamError(
+            str(data.get("exc_msg") or "upstream failed"),
+            error_type=error_type if isinstance(error_type, str) else None,
+        )
 
     def try_fresh(self, namespace: str, key: str, ttl: float) -> tuple[bool, Any]:
         """Best-effort blob read without taking the merge lock.
