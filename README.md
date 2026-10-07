@@ -8,13 +8,13 @@
 подключение GGUF и состояние варианта TensorRT: [локальный ИИ](docs/runbooks/local-ai.md).
 В rc.36 Telegram стал встроенным сервисом с общей БД парков и правами доступа.
 Отчёты используют оформление отдельного бота; поддерживаются расписания, Zoom,
-одобрение доступа, поиск и история роботов. [Состав выпуска](docs/releases/0.2.0-rc.36.md).
+одобрение доступа, поиск и история роботов. [Текущий выпуск rc.38](docs/releases/0.2.0-rc.38.md).
 
 На новом Ubuntu/Armbian-хосте с Python 3.10+, `curl` и `sudo` одна команда
-скачивает rc.36, сверяет SHA-256 и запускает преднастроенную установку владельца:
+скачивает rc.38, сверяет SHA-256 и запускает преднастроенную установку владельца:
 
 ```sh
-d=$(mktemp -d) && curl -fL --retry 3 --connect-timeout 20 --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.36/robopark-0.2.0-rc.36.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' 'f55c677700729f834b9d30f74ee257a05d09fbe75cfc5829a787da803e6ae7a2  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota install --preset robopark)
+d=$(mktemp -d) && curl -fL --retry 3 --connect-timeout 20 --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.38/robopark-0.2.0-rc.38.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' '3d0f3fa11d593a048e8a5ab8611b11dcef3752f0b1200291e0e6cc5dc2933fcd  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota install --preset robopark)
 ```
 
 Профиль задаёт `robopark.ru.tuna.am`, владельца `tehblokdan` и SSH через `ssh`.
