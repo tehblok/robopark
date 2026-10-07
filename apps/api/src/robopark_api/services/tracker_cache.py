@@ -6,18 +6,21 @@ results; JSON-safe lookup results may additionally be shared across workers.
 Issue objects retain live SDK resources and must stay in process memory.
 
 Each wrapper preserves the signature of the underlying ``tracker_client``
-function so router code stays a one-line swap. Cache keys never include
-the OAuth token because Robopark uses a single platform token.
+function so router code stays a one-line swap. General Tracker keys omit the
+single platform token; the native-bot cache hashes it to isolate rotations.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
-from robopark_api.services import tracker_client
+from robopark_api.services import bot_tracker_gateway, tracker_client
 from robopark_api.services.live_merge import LiveMergeTimeout, LiveMergeUpstreamError
 from robopark_api.services.response_cache import ResponseCache
 
@@ -51,6 +54,7 @@ _TTL_TRANSITIONS = 60.0
 _TTL_BLOCKERS = 20.0
 _TTL_ROBOT_TICKETS = 30.0
 _TTL_COUNTS = 20.0
+_TTL_NATIVE_ROBOT = 20.0
 
 
 def _shared_issue_payload(
@@ -87,6 +91,12 @@ _robot_tickets_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
 )
 _count_cache: ResponseCache[int] = _TrackerCache(_TTL_COUNTS, name="tracker.counts")
 _metrics_cache: ResponseCache[dict[str, int]] = _TrackerCache(_TTL_COUNTS, name="tracker.metrics")
+_native_robot_cache: ResponseCache[list[dict[str, Any]]] = _TrackerCache(
+    _TTL_NATIVE_ROBOT,
+    name="tracker.native_robot",
+    max_entries=256,
+    max_bytes=8 * 1024 * 1024,
+)
 
 _ALL_CACHES: tuple[ResponseCache[Any], ...] = (
     _issues_cache,
@@ -97,6 +107,7 @@ _ALL_CACHES: tuple[ResponseCache[Any], ...] = (
     _robot_tickets_cache,
     _count_cache,
     _metrics_cache,
+    _native_robot_cache,
 )
 
 _projection_lock = threading.Lock()
@@ -263,6 +274,99 @@ def search_robot_tickets(*, token: str, queue: str, query: str) -> list[dict[str
     )
 
 
+def search_native_robot_issues(
+    *,
+    token: str,
+    query: str,
+    order: list[str],
+    per_page: int,
+    max_pages: int,
+    allowed_queues: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Cache one authorized native-bot search without sharing mutable payloads."""
+    queues = bot_tracker_gateway._require_queues(allowed_queues)  # noqa: SLF001
+    # Authorization must execute for every caller, including cache hits.
+    bot_tracker_gateway._scoped_query(query, queues)  # noqa: SLF001
+    cache_key = json.dumps(
+        {
+            "token": hashlib.sha256(token.encode()).hexdigest(),
+            "query": query,
+            "order": order,
+            "per_page": per_page,
+            "max_pages": max_pages,
+            "allowed_queues": queues,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    value = _native_robot_cache.get_or_load(
+        cache_key,
+        lambda: bot_tracker_gateway.search(
+            token=token,
+            query=query,
+            order=order,
+            per_page=per_page,
+            max_pages=max_pages,
+            allowed_queues=queues,
+        ),
+        allow_stale=False,
+    )
+    return deepcopy(value)
+
+
+def peek_native_robot_source(queues: tuple[str, ...]) -> list[dict[str, Any]] | None:
+    """Reuse a fresh complete registry batch without loading Tracker."""
+    normalized = tuple(sorted({str(queue).strip() for queue in queues if str(queue).strip()}))
+    if not normalized:
+        return None
+    batch_query = " OR ".join(f"Queue: {tracker_client.ql_quote(queue)}" for queue in normalized)
+    key = f"False|[]|({batch_query})"
+    found, issues = _issues_cache.get_if_fresh(key)
+    if not found or issues is None:
+        return None
+    required = {
+        "resolution_key",
+        "rover",
+        "priority_key",
+        "status_start_time",
+        "home_port",
+    }
+    if any(not isinstance(issue, dict) or not required <= issue.keys() for issue in issues):
+        return None
+    return [
+        {
+            "key": str(issue.get("key") or ""),
+            "summary": str(issue.get("summary") or ""),
+            "description": str(issue.get("description") or ""),
+            "status": {
+                "key": str(issue.get("status_key") or ""),
+                "display": str(issue.get("status") or ""),
+            },
+            "type": {
+                "key": str(issue.get("type_key") or ""),
+                "display": str(issue.get("type") or ""),
+            },
+            "tags": deepcopy(issue.get("tags") or []),
+            "resolution": {
+                "key": str(issue.get("resolution_key") or ""),
+                "display": str(issue.get("resolution") or ""),
+            },
+            "priority": {
+                "key": str(issue.get("priority_key") or ""),
+                "display": str(issue.get("priority") or ""),
+            },
+            "rover": str(issue.get("rover") or ""),
+            "statusStartTime": str(issue.get("status_start_time") or ""),
+            "homePort": issue.get("home_port"),
+            "createdAt": str(issue.get("created") or ""),
+            "updatedAt": str(issue.get("updated") or ""),
+            "resolvedAt": str(issue.get("resolved") or ""),
+        }
+        for issue in issues
+    ]
+
+
 def count_issues(*, token: str, query: str) -> int:
     """Merge identical Startrek count queries across cabinets (not per user)."""
     return _count_cache.get_or_load(
@@ -304,6 +408,7 @@ def invalidate_issue(key: str, *, membership_changed: bool = True) -> None:
     _invalidate_issue_projections(key, membership_changed=membership_changed)
     _count_cache.clear()
     _metrics_cache.clear()
+    _native_robot_cache.clear(reason="issue_mutation")
 
 
 def invalidate_all_lists() -> None:
@@ -313,6 +418,7 @@ def invalidate_all_lists() -> None:
     _robot_tickets_cache.clear()
     _count_cache.clear()
     _metrics_cache.clear()
+    _native_robot_cache.clear()
     with _projection_lock:
         for projections in _issue_projections.values():
             projections.clear()

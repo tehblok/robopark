@@ -670,7 +670,9 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
     status = _status_display(_field(issue, "status"))
     status_key = _status_key(_field(issue, "status"))
     summary = str(_field(issue, "summary") or "")
-    resolution = _resolution_display(_field(issue, "resolution"))
+    raw_resolution = _field(issue, "resolution")
+    resolution = _resolution_display(raw_resolution)
+    resolution_key = _status_key(raw_resolution)
     queue = _queue_display(_field(issue, "queue"))
     key = str(_field(issue, "key") or "")
     tags = _tags_from(_field(issue, "tags"))
@@ -680,7 +682,9 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
     updated = str(_field(issue, "updatedAt") or "")
     assignee = _person(_field(issue, "assignee"), login_cache)
     reporter = _person(_field(issue, "createdBy"), login_cache)
-    priority = _plain(_field(issue, "priority"))
+    raw_priority = _field(issue, "priority")
+    priority = _plain(raw_priority)
+    priority_key = _status_key(raw_priority)
     issue_type = _plain(_field(issue, "type"))
     raw_components = _field(issue, "components")
     components = _tags_from(raw_components)
@@ -710,10 +714,13 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
         "robot": parse_robot_from_summary(summary),
         "status_key": status_key,
         "resolution": resolution,
+        "resolution_key": resolution_key,
+        "rover": _plain(_field(issue, "rover")),
         "description": description,
         "assignee": assignee,
         "reporter": reporter,
         "priority": priority,
+        "priority_key": priority_key,
         "type": issue_type,
         "type_key": str(_field(_field(issue, "type"), "key") or ""),
         "components": components,
@@ -723,6 +730,10 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
         "attachments": attachments,
         "queue": queue,
         "tags": tags,
+        "status_start_time": str(
+            _field(issue, "statusStartTime") or _field(issue, "status_start_time") or ""
+        ),
+        "home_port": _plain(_field(issue, "homePort") or _field(issue, "home_port")),
         **repair_sla_fields(issue),
     }
 

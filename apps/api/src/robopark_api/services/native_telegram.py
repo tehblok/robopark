@@ -5,6 +5,7 @@ import hmac
 import json
 import re
 import secrets
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -44,6 +45,7 @@ from robopark_api.services import (
     native_telegram_reports,
     native_telegram_usage,
     rbac,
+    tracker_cache,
     tracker_client,
 )
 
@@ -1234,12 +1236,77 @@ def normalize_robot(raw: str) -> str | None:
 
 
 def _exact_park_issue(issue: dict, park: Park, normalized: str) -> bool:
+    queue = str(issue.get("key") or "").rsplit("-", 1)[0]
+    if queue.upper() != (park.tracker_queue or "").strip().upper():
+        return False
     tags = {str(tag) for tag in issue.get("tags") or []}
     summary_robot = normalize_robot(
         tracker_client.parse_robot_from_summary(str(issue.get("summary") or "")) or ""
     )
     rover_robot = normalize_robot(str(issue.get("rover") or ""))
     return park.tag in tags and normalized in {summary_robot, rover_robot}
+
+
+def _robot_issue_batches(
+    token: str, parks: list[Park], queues: tuple[str, ...], normalized: str, view: str
+) -> Iterator[tuple[list[Park], list[dict]]]:
+    """Reuse complete fresh tasks, otherwise search all authorized tags per queue."""
+    if not parks:
+        return
+    cached = tracker_cache.peek_native_robot_source(queues)
+    if cached is not None:
+        yield (
+            parks,
+            sorted(cached, key=lambda issue: str(issue.get("createdAt") or ""), reverse=True),
+        )
+        return
+    by_queue: dict[str, list[Park]] = {}
+    for park in parks:
+        queue = (park.tracker_queue or "").strip().upper()
+        if queue:
+            by_queue.setdefault(queue, []).append(park)
+
+    def search(queue: str, scoped_parks: list[Park]) -> list[dict]:
+        tags = " OR ".join(
+            f"Tags: {tracker_client.ql_token(tag)}" for tag in sorted({p.tag for p in scoped_parks})
+        )
+        clauses = []
+        if view in {"open", "history"}:
+            clauses = [
+                tracker_client.open_issues_clause() if view == "open" else "Resolution: fixed",
+                "Type: repair, service, calibration",
+            ]
+        query = tracker_client.join_query(
+            f"Queue: {tracker_client.ql_token(queue)}",
+            f"({tags})",
+            (
+                f"({tracker_client.robot_summary_clause(normalized)} "
+                f"OR rover: {tracker_client.ql_quote(normalized)} "
+                f"OR rover: {tracker_client.ql_quote(f'a{normalized}')})"
+            ),
+            *clauses,
+        )
+        try:
+            return tracker_cache.search_native_robot_issues(
+                token=token,
+                query=query,
+                order=["-created"],
+                per_page=50,
+                max_pages=10,
+                allowed_queues=queues,
+            )
+        except (tracker_client.TrackerError, bot_tracker_gateway.TrackerResponseTooLarge) as exc:
+            raise HTTPException(status_code=502, detail="tracker_upstream_error") from exc
+
+    for queue, scoped_parks in by_queue.items():
+        issues = search(queue, scoped_parks)
+        # A capped combined result may hide another park behind partial-number
+        # matches. Keep the previous per-park coverage for this uncommon case.
+        if len(issues) >= CONTENT_LIMIT and len(scoped_parks) > 1:
+            for park in scoped_parks:
+                yield [park], search(queue, [park])
+        else:
+            yield scoped_parks, issues
 
 
 def _has_global_robot_access(db: Session, user: User) -> bool:
@@ -1293,7 +1360,9 @@ def robot_issues(
     if normalized is None:
         raise HTTPException(status_code=422, detail="invalid_robot_number")
     parks = readable_parks(db, user)
-    queues = tuple(sorted({park.tracker_queue for park in parks if park.tracker_queue}))
+    queues = tuple(
+        sorted({park.tracker_queue.strip().upper() for park in parks if park.tracker_queue})
+    )
     broad_access = _has_global_robot_access(db, user)
     auxiliary_view = view in {"moves", "moves_history", "parts"}
     if not queues and not (auxiliary_view and broad_access):
@@ -1307,42 +1376,13 @@ def robot_issues(
     collected: list[dict] = []
     seen: set[str] = set()
     anchored = broad_access
-    for park in () if auxiliary_view and broad_access else parks:
-        queue = (park.tracker_queue or "").strip()
-        if not queue:
-            continue
-        clauses: list[str] = []
-        if not auxiliary_view:
-            clauses.extend(
-                [
-                    tracker_client.open_issues_clause() if view == "open" else "Resolution: fixed",
-                    "Type: repair, service, calibration",
-                ]
-            )
-        query = tracker_client.join_query(
-            f"Queue: {tracker_client.ql_token(queue)}",
-            f"Tags: {tracker_client.ql_token(park.tag)}",
-            (
-                f"({tracker_client.robot_summary_clause(normalized)} "
-                f"OR rover: {tracker_client.ql_quote(normalized)} "
-                f"OR rover: {tracker_client.ql_quote(f'a{normalized}')})"
-            ),
-            *clauses,
-        )
-        try:
-            issues = bot_tracker_gateway.search(
-                token=token,
-                query=query,
-                order=["-created"],
-                per_page=50,
-                max_pages=10,
-                allowed_queues=queues,
-            )
-        except (tracker_client.TrackerError, bot_tracker_gateway.TrackerResponseTooLarge) as exc:
-            raise HTTPException(status_code=502, detail="tracker_upstream_error") from exc
+    search_parks = [] if auxiliary_view and broad_access else parks
+    for scoped_parks, issues in _robot_issue_batches(token, search_parks, queues, normalized, view):
         for issue in issues:
             key = str(issue.get("key") or "")
-            if not _exact_park_issue(issue, park, normalized) or not key:
+            if not key or not any(
+                _exact_park_issue(issue, park, normalized) for park in scoped_parks
+            ):
                 continue
             if not auxiliary_view:
                 issue_type = (issue.get("type") or {}).get("key")
@@ -1404,7 +1444,7 @@ def robot_issues(
         f"Queue: {tracker_client.ql_token(queue)}", rover_clause, state_clause
     )
     try:
-        issues = bot_tracker_gateway.search(
+        issues = tracker_cache.search_native_robot_issues(
             token=token,
             query=query,
             order=order,
@@ -1418,7 +1458,7 @@ def robot_issues(
         if normalize_robot(str(issue.get("rover") or "")) != normalized:
             continue
         key = str(issue.get("key") or "")
-        if not key or key in seen:
+        if not key or key.rsplit("-", 1)[0] != queue or key in seen:
             continue
         seen.add(key)
         collected.append(issue)
