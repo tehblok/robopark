@@ -986,7 +986,7 @@ def test_resume_restores_tuna_after_published_or_rolled_back_update(monkeypatch,
 
     monkeypatch.setattr(updater, "_maintenance", lambda _paths, _value: order.append("resume_writes"))
     SystemOtaUpdateRuntime(host_paths, Runner()).resume(request)
-    assert order == ["resume_writes", "show", "reset-failed", "start", "is-active"]
+    assert order == ["resume_writes", "show", "reset-failed", "start", "is-active", "compose"]
 
 
 def test_tuna_restart_failure_does_not_revert_published_data(monkeypatch, host_paths):
@@ -1091,17 +1091,27 @@ def test_system_rollback_restores_public_release_status_and_tmpfiles(
         "project": "robopark",
         "config": host_paths.state / "current-compose.json",
         "timeout": 180,
-        "bot_required": True,
+        "bot_required": False,
     }]
 
 
-def test_snapshot_abort_requires_enabled_bot_to_be_ready(host_paths):
+def test_snapshot_abort_checks_core_while_bot_is_blocked_by_maintenance(host_paths):
     request = request_for(host_paths)
     marker = host_paths.var / "data/telegram-bot/enabled.json"
     marker.parent.mkdir(parents=True)
     marker.write_text('{"schema": 1, "enabled": true}\n')
     marker.chmod(0o600)
-    runner = CandidateRunner()
+    from robopark_host.updater import _maintenance
+
+    _maintenance(host_paths, True)
+
+    class BarrierRunner(CandidateRunner):
+        def wait_ready(self, **kwargs):
+            assert (host_paths.ops / "public/maintenance.json").exists()
+            self.readiness.append(kwargs)
+            return not kwargs.get("bot_required", False)
+
+    runner = BarrierRunner()
 
     SystemOtaUpdateRuntime(host_paths, runner).abort_snapshot(
         request, SimpleNamespace()
@@ -1111,8 +1121,88 @@ def test_snapshot_abort_requires_enabled_bot_to_be_ready(host_paths):
         "project": "robopark",
         "config": host_paths.state / "current-compose.json",
         "timeout": 180,
-        "bot_required": True,
+        "bot_required": False,
     }]
+
+
+@pytest.mark.parametrize("outcome", ["ready", "timeout", "reconcile_error", "disabled", "invalid"])
+@pytest.mark.parametrize("fail_at", [None, "health_check"])
+def test_resume_checks_bot_only_after_durable_decision_and_opening_writes(
+    host_paths, monkeypatch, outcome, fail_at
+):
+    from robopark_host.updater import _maintenance
+
+    marker = host_paths.var / "data/telegram-bot/enabled.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"schema": 1, "enabled": outcome != "disabled"}))
+    if outcome == "invalid":
+        marker.write_text("invalid")
+    marker.chmod(0o600)
+    request = request_for(host_paths)
+    _maintenance(host_paths, True)
+    runtime = FakeRuntime(fail_at=fail_at)
+    system = SystemOtaUpdateRuntime(host_paths, None)
+
+    class BarrierRunner(CandidateRunner):
+        def run(self, argv, **kwargs):
+            assert not (host_paths.ops / "public/maintenance.json").exists()
+            journal = json.loads((host_paths.state / "ota-update-journal.json").read_text())
+            assert journal["phase"] == ("rolled_back" if fail_at else "published")
+            if argv[:2] == ["docker", "compose"]:
+                assert any(command[0][1] == "is-active" for command in self.commands)
+                if outcome == "reconcile_error":
+                    raise RuntimeError("docker_unavailable")
+            result = super().run(argv, **kwargs)
+            if argv[1] == "show":
+                return b"enabled\n"
+            if argv[1] == "is-active":
+                return b"active\n"
+            return result
+
+        def wait_ready(self, **kwargs):
+            assert not (host_paths.ops / "public/maintenance.json").exists()
+            self.readiness.append(kwargs)
+            return outcome == "ready"
+
+    runner = BarrierRunner()
+    system.runner = runner
+    monkeypatch.setattr(runtime, "resume", system.resume)
+    receipt = OtaUpdateEngine(host_paths, runtime).apply(request)
+    assert receipt.phase == ("rolled_back" if fail_at else "published")
+    assert runtime.calls.count("rollback") == bool(fail_at)
+    if outcome in {"ready", "timeout"}:
+        assert runner.readiness[-1]["bot_required"] is True
+    else:
+        assert runner.readiness == []
+    if outcome in {"disabled", "invalid"}:
+        assert runner.commands[-1][0][-4:] == ["stop", "--timeout", "30", "bot"]
+    status = json.loads((host_paths.ops / "public/host-status.json").read_text())
+    if outcome in {"ready", "disabled"}:
+        assert "bot_error" not in status
+    else:
+        assert status["publication"] == "degraded"
+        assert status["bot"] == "degraded"
+        assert status["bot_error"] == "ota_bot_resume_failed"
+
+
+def test_candidate_health_preserves_barrier_and_does_not_wait_for_bot(host_paths, monkeypatch):
+    from robopark_host.updater import _maintenance
+
+    _maintenance(host_paths, True)
+    monkeypatch.setattr(
+        "robopark_host.terminal_install.reconcile_terminal_installation", lambda *args: None
+    )
+    monkeypatch.setattr(
+        "robopark_host.ai_install.reconcile_ai_installation", lambda *args, **kwargs: None
+    )
+
+    class BarrierRunner(CandidateRunner):
+        def wait_ready(self, **kwargs):
+            assert (host_paths.ops / "public/maintenance.json").exists()
+            return not kwargs["bot_required"]
+
+    SystemOtaUpdateRuntime(host_paths, BarrierRunner()).health_check(None, None)
+    assert (host_paths.ops / "public/maintenance.json").exists()
 
 
 def _verified_package(host_paths, request):

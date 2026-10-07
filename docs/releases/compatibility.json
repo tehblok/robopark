@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "target_version": "0.2.0-rc.38",
+  "target_version": "0.2.0-rc.39",
   "migration_head": "0061_telegram_account_metadata",
   "known_heads": [
     "0055_media_upload_park",

@@ -728,12 +728,11 @@ class SystemOtaUpdateRuntime:
     def abort_snapshot(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
         self._require_storage(check_space=False)
         del request, package
-        from .runtime import bot_enabled
 
         self.runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
         if not self.runner.wait_ready(
             project="robopark", config=self.paths.state / "current-compose.json", timeout=180,
-            bot_required=bot_enabled(self.paths),
+            bot_required=False,
         ):
             raise RuntimeError("ota_rollback_failed")
 
@@ -893,11 +892,12 @@ class SystemOtaUpdateRuntime:
     def health_check(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
         self._require_storage()
         del request, package
-        from .runtime import bot_enabled
 
+        # The writer barrier intentionally blocks the bot token and scheduler.
+        # Its readiness can only be checked after the durable commit in resume.
         if not self.runner.wait_ready(
             project="robopark", config=self.paths.state / "current-compose.json", timeout=180,
-            bot_required=bot_enabled(self.paths),
+            bot_required=False,
         ):
             raise RuntimeError("ota_healthcheck_failed")
         from .terminal_install import reconcile_terminal_installation
@@ -972,6 +972,7 @@ class SystemOtaUpdateRuntime:
         self._require_storage(check_space=False)
         from robopark_ota.local_update import restart_enabled_tuna
 
+        from .runtime import bot_compose_command
         from .updater import _maintenance, _publish_status
 
         _maintenance(self.paths, False)
@@ -979,6 +980,24 @@ class SystemOtaUpdateRuntime:
         status = {"state": "current_healthy", "error": None, "job_id": str(request.operation_id)}
         if self.tuna_state == "failed":
             status.update(publication="degraded", publication_error="ota_tuna_restart_failed")
+        # Data is committed and writers are open. Optional bot failures must
+        # never restore an older snapshot or leave the website in maintenance.
+        try:
+            try:
+                command = bot_compose_command(self.paths, "reconcile")
+            except ValueError:
+                self.runner.run(bot_compose_command(self.paths, "stop"), timeout=90)
+                raise
+            enabled = command[-5:] == ["up", "-d", "--no-build", "--no-deps", "bot"]
+            self.runner.run(command, timeout=180)
+            if enabled and not self.runner.wait_ready(
+                project="robopark", config=self.paths.state / "current-compose.json", timeout=180,
+                bot_required=True,
+            ):
+                raise RuntimeError("ota_bot_resume_failed")
+        except (OSError, RuntimeError, ValueError):
+            status.update(publication="degraded", bot="degraded", bot_error="ota_bot_resume_failed")
+            status.setdefault("publication_error", "ota_bot_resume_failed")
         _publish_status(self.paths, status)
 
     def rollback(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:
@@ -1051,11 +1070,9 @@ class SystemOtaUpdateRuntime:
         atomic_symlink(current / "deploy/host", self.paths.opt / "host-tools")
         self.runner.run(["systemctl", "daemon-reload"], timeout=60)
         self.runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
-        from .runtime import bot_enabled
-
         if not self.runner.wait_ready(
             project="robopark", config=self.paths.state / "current-compose.json", timeout=180,
-            bot_required=bot_enabled(self.paths),
+            bot_required=False,
         ):
             raise RuntimeError("ota_rollback_failed")
 
