@@ -21,6 +21,41 @@ KNOWLEDGE_TARGET = "/opt/robopark-knowledge"
 KNOWLEDGE_ENVIRONMENT = "AI_KNOWLEDGE_BUNDLE_PATH"
 
 
+def _validate_ai_bridge(paths, bridge: Path) -> bool:
+    try:
+        info = bridge.lstat()
+    except FileNotFoundError:
+        return False
+    expected_uid = 0 if paths.root == Path("/") else os.geteuid()
+    expected_gid = 10001 if paths.root == Path("/") else os.getegid()
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != 0o750
+        or info.st_uid != expected_uid
+        or info.st_gid != expected_gid
+    ):
+        raise ReleaseError("ai_bridge_invalid")
+    return True
+
+
+def _prepare_ai_bridge(paths, runner) -> None:
+    bridge = paths.root / "run/robopark-ai"
+    if _validate_ai_bridge(paths, bridge):
+        return
+    policy = paths.root / "etc/tmpfiles.d/robopark.conf"
+    if policy.is_symlink() or not policy.is_file():
+        raise ReleaseError("ai_bridge_invalid")
+    runner.run(
+        [
+            "systemd-tmpfiles", "--create", "--prefix=/run/robopark-ai",
+            str(policy),
+        ],
+        timeout=30,
+    )
+    if not _validate_ai_bridge(paths, bridge):
+        raise ReleaseError("ai_bridge_invalid")
+
+
 def migration_compose(paths, config: Path, identity: str) -> Path:
     """Render a migration-only config without optional boot-time bind mounts."""
     document = json.loads(config.read_text())
@@ -161,18 +196,14 @@ def reconcile_ai_compose(paths) -> bool:
 
 
 def reconcile_ai_installation(paths, release, runner, *, auto_install=False):
+    ai_present = ai_payload_present(release)
+    if ai_present:
+        _prepare_ai_bridge(paths, runner)
     compose_link = paths.state / "current-compose.json"
     if compose_link.exists() or compose_link.is_symlink():
         reconcile_ai_compose(paths)
-    if not ai_payload_present(release):
+    if not ai_present:
         return
-    bridge = paths.root / "run/robopark-ai"
-    if bridge.is_symlink() or (bridge.exists() and not bridge.is_dir()):
-        raise ReleaseError("ai_bridge_invalid")
-    bridge.mkdir(parents=True, exist_ok=True, mode=0o750)
-    bridge.chmod(0o750)
-    if paths.root == Path("/"):
-        os.chown(bridge, 0, 10001)
     from .ai_runtime import read_enabled_intent, write_enabled_intent
 
     enabled_intent = read_enabled_intent(paths)

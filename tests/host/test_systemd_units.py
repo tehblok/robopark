@@ -114,6 +114,24 @@ def test_units_that_replay_update_activation_can_publish_tmpfiles_policy(name):
 
 
 @pytest.mark.parametrize(
+    "name", ["robopark-updater.service", "robopark-commands.service"]
+)
+def test_ota_units_prepare_only_ai_bridge_before_entering_readonly_namespace(name):
+    service = unit(name)["Service"]
+    assert service["ExecStartPre"] == (
+        "+/usr/bin/systemd-tmpfiles --create --prefix=/run/robopark-ai "
+        "/etc/tmpfiles.d/robopark.conf"
+    )
+    writable = service["ReadWritePaths"].split()
+    assert "-/run/robopark-ai" in writable
+    assert "/run/robopark-ai" not in writable
+    assert "/run" not in writable and "-/run" not in writable
+    assert service["ProtectSystem"] == "strict"
+    assert service["NoNewPrivileges"] == "true"
+    assert not service["ExecStart"].startswith("+")
+
+
+@pytest.mark.parametrize(
     "name,command",
     [
         ("updater", "update"),

@@ -10,6 +10,8 @@ Type=oneshot
 Restart=on-failure
 RestartSec=5
 User=root
+# Prepare the exact bridge before the command process enters its mount namespace.
+ExecStartPre=+/usr/bin/systemd-tmpfiles --create --prefix=/run/robopark-ai /etc/tmpfiles.d/robopark.conf
 ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark consume
 TimeoutStartSec=18000
 TimeoutStopSec=30
@@ -18,4 +20,4 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 UMask=0077
-ReadWritePaths=/var/lib/robopark /opt/robopark /etc/robopark /etc/systemd/system /etc/tmpfiles.d /var/log/robopark /var/backups/robopark -/run/lock/robopark -/mnt -/media -/run/media
+ReadWritePaths=/var/lib/robopark /opt/robopark /etc/robopark /etc/systemd/system /etc/tmpfiles.d /var/log/robopark /var/backups/robopark -/run/robopark-ai -/run/lock/robopark -/mnt -/media -/run/media

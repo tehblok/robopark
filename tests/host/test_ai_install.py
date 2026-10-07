@@ -1,6 +1,9 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from robopark_host.release import ReleaseError
 from robopark_host.state import atomic_write_json
 
 
@@ -11,6 +14,9 @@ def _release(host_paths):
     for name in ("robopark-ai-setup.service", "robopark-ai.service", "robopark-ai-broker.service"):
         (units / name).write_text("[Service]\n")
     host_paths.current.symlink_to(release)
+    bridge = host_paths.root / "run/robopark-ai"
+    bridge.mkdir(parents=True, mode=0o750)
+    bridge.chmod(0o750)
     return release
 
 
@@ -139,6 +145,95 @@ def test_reconcile_installation_never_auto_installs_on_unsupported_host(host_pat
 
     ai_install.reconcile_ai_installation(host_paths, release, Runner(), auto_install=True)
     assert calls == [{"supported": False, "reason": "agx_required"}]
+
+
+def test_reconcile_installation_does_not_rewrite_valid_bridge_metadata(
+    host_paths, monkeypatch
+):
+    from robopark_host import ai_install, ai_runtime
+
+    release = _release(host_paths)
+    bridge = host_paths.root / "run/robopark-ai"
+    monkeypatch.setattr(ai_install, "probe_support", lambda paths: (True, None))
+    monkeypatch.setattr(ai_runtime, "installed", lambda paths, **kwargs: False)
+    monkeypatch.setattr(ai_runtime, "runtime_installed", lambda paths, **kwargs: False)
+    original_chmod = Path.chmod
+
+    def reject_bridge_chmod(path, mode, *args, **kwargs):
+        if path == bridge:
+            raise OSError(30, "Read-only file system")
+        return original_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", reject_bridge_chmod)
+
+    ai_install.reconcile_ai_installation(
+        host_paths, release, SimpleNamespace(run=lambda *_args, **_kwargs: None)
+    )
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "mode", "owner"])
+def test_reconcile_installation_rejects_unsafe_bridge_before_compose(
+    host_paths, monkeypatch, unsafe
+):
+    from robopark_host import ai_install
+
+    release = _release(host_paths)
+    bridge = host_paths.root / "run/robopark-ai"
+    if unsafe == "symlink":
+        bridge.rmdir()
+        target = host_paths.root / "run/attacker"
+        target.mkdir()
+        bridge.symlink_to(target)
+    else:
+        if unsafe == "mode":
+            bridge.chmod(0o777)
+        else:
+            monkeypatch.setattr(ai_install.os, "geteuid", lambda: bridge.stat().st_uid + 1)
+    monkeypatch.setattr(
+        ai_install,
+        "reconcile_ai_compose",
+        lambda _paths: pytest.fail("unsafe bridge reached compose projection"),
+    )
+
+    with pytest.raises(ReleaseError, match="ai_bridge_invalid"):
+        ai_install.reconcile_ai_installation(
+            host_paths, release, SimpleNamespace(run=lambda *_args, **_kwargs: None)
+        )
+
+
+def test_missing_bridge_is_created_by_tmpfiles_before_compose_on_unsupported_host(
+    host_paths, monkeypatch
+):
+    from robopark_host import ai_install
+
+    release = _release(host_paths)
+    bridge = host_paths.root / "run/robopark-ai"
+    bridge.rmdir()
+    policy = host_paths.root / "etc/tmpfiles.d/robopark.conf"
+    policy.parent.mkdir(parents=True)
+    policy.write_text("d /run/robopark-ai 0750 root 10001 -\n")
+    compose = host_paths.state / "current-compose.json"
+    compose.parent.mkdir(parents=True, exist_ok=True)
+    compose.touch()
+    events = []
+
+    class Runner:
+        def run(self, argv, **kwargs):
+            assert argv[:3] == [
+                "systemd-tmpfiles", "--create", "--prefix=/run/robopark-ai",
+            ]
+            events.append("tmpfiles")
+            bridge.mkdir(mode=0o750)
+
+    monkeypatch.setattr(
+        ai_install, "reconcile_ai_compose", lambda _paths: events.append("compose")
+    )
+    monkeypatch.setattr(ai_install, "probe_support", lambda paths: (False, "agx_required"))
+    monkeypatch.setattr(ai_install, "publish_status", lambda *_args, **_kwargs: None)
+
+    ai_install.reconcile_ai_installation(host_paths, release, Runner(), auto_install=True)
+
+    assert events == ["tmpfiles", "compose"]
 
 
 def test_fresh_agx_install_prepares_runtime_disabled_and_waits_for_model(
