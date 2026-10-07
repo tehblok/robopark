@@ -82,6 +82,22 @@ def test_daily_retention_prunes_rows_but_preserves_total(db_session, seed_mechan
     assert result.stats.total == 41
 
 
+def test_greeting_prefers_telegram_display_name_and_escapes_it(
+    db_session, seed_mechanic, monkeypatch
+):
+    db_session.add(
+        TelegramAccount(user_id=seed_mechanic.id, telegram_user_id=9481, display_name="<Денис>")
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        native_telegram_usage, "utcnow", lambda: datetime(2026, 10, 7, 3, 0, tzinfo=UTC)
+    )
+    assert (
+        native_telegram_usage.record_success(db_session, seed_mechanic).greeting
+        == "Доброе утро, &lt;Денис&gt;!"
+    )
+
+
 def test_all_usage_limits_admin_to_users_in_assigned_parks(
     db_session, seed_admin, seed_royal, seed_mechanic, seed_park_with_tracker, monkeypatch
 ):

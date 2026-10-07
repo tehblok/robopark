@@ -145,9 +145,11 @@ def record_success(db: Session, user: User) -> NativeUsageQueryOut:
     cutoff = today - timedelta(days=DAILY_RETENTION_DAYS - 1)
     db.execute(delete(NativeBotUsageDaily).where(NativeBotUsageDaily.day < cutoff))
     db.commit()
+    account = db.get(TelegramAccount, user.id) if greeted is not None else None
+    display_name = account.display_name if account and account.display_name else user.username
     return NativeUsageQueryOut(
         stats=_stats_for_day(db, user.id, today),
-        greeting=_greeting(user.username, local.hour) if greeted is not None else None,
+        greeting=_greeting(display_name, local.hour) if greeted is not None else None,
     )
 
 
