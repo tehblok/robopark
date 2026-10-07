@@ -238,11 +238,64 @@ class AccessParkOut(BaseModel):
     name: str
 
 
+class TelegramOnboardingParksOut(BaseModel):
+    parks: list[AccessParkOut]
+
+
+class TelegramOnboardingRequestIn(BaseModel):
+    telegram_user_id: int = Field(ge=1, le=2**63 - 1)
+    role: Literal["mechanic", "operator"]
+    park_id: int = Field(ge=1)
+    display_name: str | None = Field(default=None, max_length=128)
+    telegram_username: str | None = Field(default=None, max_length=64)
+
+    @field_validator("display_name", "telegram_username")
+    @classmethod
+    def strip_optional_identity_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
+class TelegramOnboardingRequestOut(BaseModel):
+    state: Literal["pending", "active", "blocked", "rejected"]
+    user_id: int
+    request_id: int | None
+    role: Literal["mechanic", "operator"]
+    park_id: int
+    display_name: str | None
+    notify_admin_ids: list[int] = Field(default_factory=list)
+
+
+class NativeManagedUserOut(BaseModel):
+    user_id: int
+    username: str
+    role: Literal["mechanic", "operator", "admin", "royal"]
+    telegram_user_id: int
+    display_name: str | None
+    telegram_username: str | None
+    parks: list[AccessParkOut]
+
+
+class NativeManagedUserParkMutationIn(BaseModel):
+    expected_park_ids: list[int] = Field(max_length=10_000)
+
+    @field_validator("expected_park_ids")
+    @classmethod
+    def sorted_unique_park_ids(cls, value: list[int]) -> list[int]:
+        if any(park_id < 1 for park_id in value) or value != sorted(set(value)):
+            raise ValueError("expected_park_ids must be sorted unique positive ids")
+        return value
+
+
 class AccessRequestOut(BaseModel):
     id: int
     revision: int
     user_id: int
     username: str
+    telegram_user_id: int | None
+    display_name: str | None
+    telegram_username: str | None
     role: Literal["mechanic", "operator"]
     user_access_status: Literal["pending", "approved", "rejected"]
     park: AccessParkOut
@@ -274,6 +327,16 @@ class NativeAccessRequestCreate(AccessRequestCreate):
 class AccessDecisionIn(BaseModel):
     approve: bool
     revision: int = Field(ge=1)
+    target_park_id: int | None = Field(default=None, ge=1)
+    global_access: bool = False
+
+    @model_validator(mode="after")
+    def valid_access_target(self):
+        if not self.approve and (self.target_park_id is not None or self.global_access):
+            raise ValueError("rejection cannot select an access target")
+        if self.target_park_id is not None and self.global_access:
+            raise ValueError("target_park_id and global_access are mutually exclusive")
+        return self
 
 
 class AccessDecisionOut(BaseModel):

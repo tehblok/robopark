@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import secrets
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -11,14 +12,16 @@ from fastapi import HTTPException, status
 from pydantic import ValidationError
 from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, lazyload
 
 from robopark_api.models import (
     AccessStatus,
     NativeBotDelivery,
     NativeBotJob,
     Park,
+    ParkRequest,
     PlatformSetting,
+    Role,
     TelegramAccount,
     TelegramLinkAttempt,
     TelegramLinkCode,
@@ -33,6 +36,7 @@ from robopark_api.native_telegram_schemas import (
     NativeBotHealthOut,
     ParkBotOut,
 )
+from robopark_api.security import hash_password
 from robopark_api.services import (
     audit,
     bot_settings,
@@ -53,6 +57,9 @@ CONTENT_LIMIT = 500
 TERMINAL_STATES = frozenset({"sent", "failed", "unknown"})
 HEALTH_KEY = "native_telegram_health"
 HEALTH_STALE_AFTER = timedelta(seconds=120)
+ONBOARDING_ROLES = frozenset({rbac.RoleSlug.MECHANIC, rbac.RoleSlug.OPERATOR})
+ROBOT_VIEWS = ("open", "history", "moves", "moves_history", "parts")
+_TELEGRAM_USERNAME = re.compile(r"^[A-Za-z0-9_]{1,32}$")
 
 
 def utcnow() -> datetime:
@@ -194,6 +201,267 @@ def readable_parks(db: Session, user: User) -> list[Park]:
             .where(UserPark.user_id == user.id, Park.is_active.is_(True))
             .order_by(Park.id)
         )
+    )
+
+
+def onboarding_parks(db: Session) -> list[Park]:
+    """Return the public fields' source rows for active onboarding parks."""
+
+    return list(db.scalars(select(Park).where(Park.is_active.is_(True)).order_by(Park.id)))
+
+
+def onboarding_admin_telegram_ids(db: Session, park_id: int, *, limit: int = 100) -> list[int]:
+    """Return active, approved Telegram managers who can decide this park request."""
+
+    manager_user_ids = (
+        select(User.id)
+        .join(Role, Role.id == User.role_id)
+        .where(
+            User.is_active.is_(True),
+            User.access_status == AccessStatus.approved.value,
+            or_(
+                Role.slug == rbac.RoleSlug.ROYAL,
+                (Role.slug == rbac.RoleSlug.ADMIN)
+                & User.id.in_(select(UserPark.user_id).where(UserPark.park_id == park_id)),
+            ),
+        )
+    )
+    return list(
+        db.scalars(
+            select(TelegramAccount.telegram_user_id)
+            .where(TelegramAccount.user_id.in_(manager_user_ids))
+            .order_by(TelegramAccount.telegram_user_id)
+            .limit(limit)
+        )
+    )
+
+
+def _managed_user_parks(db: Session, user_id: int, park_ids: set[int]) -> list[Park]:
+    if not park_ids:
+        return []
+    return list(
+        db.scalars(
+            select(Park)
+            .join(UserPark, UserPark.park_id == Park.id)
+            .where(UserPark.user_id == user_id, Park.id.in_(park_ids))
+            .order_by(Park.id)
+        )
+    )
+
+
+def managed_telegram_users(
+    db: Session, actor: User
+) -> list[tuple[User, TelegramAccount, list[Park]]]:
+    park_ids = {park.id for park in manageable_parks(db, actor)}
+    if not park_ids:
+        return []
+    users = list(
+        db.execute(
+            select(User, TelegramAccount)
+            .join(TelegramAccount, TelegramAccount.user_id == User.id)
+            .join(UserPark, UserPark.user_id == User.id)
+            .where(
+                User.is_active.is_(True),
+                User.access_status == AccessStatus.approved.value,
+                UserPark.park_id.in_(park_ids),
+            )
+            .distinct()
+            .order_by(User.id)
+        ).unique()
+    )
+    return [(user, account, _managed_user_parks(db, user.id, park_ids)) for user, account in users]
+
+
+def update_managed_user_park(
+    db: Session,
+    actor: User,
+    *,
+    user_id: int,
+    park_id: int,
+    expected_park_ids: list[int],
+    assigned: bool,
+) -> tuple[User, TelegramAccount, list[Park]]:
+    actor_park_ids = {park.id for park in manageable_parks(db, actor)}
+    if park_id not in actor_park_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    target = db.scalar(
+        select(User)
+        .options(lazyload(User.role_ref))
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    account = db.get(TelegramAccount, user_id)
+    if (
+        target is None
+        or account is None
+        or not target.is_active
+        or target.access_status != AccessStatus.approved.value
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if actor.role == rbac.RoleSlug.ADMIN and target.role in {
+        rbac.RoleSlug.ADMIN,
+        rbac.RoleSlug.ROYAL,
+    }:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    current_ids = set(
+        db.scalars(
+            select(UserPark.park_id).where(
+                UserPark.user_id == target.id,
+                UserPark.park_id.in_(actor_park_ids),
+            )
+        )
+    )
+    if sorted(current_ids) != expected_park_ids:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="revision_conflict")
+    membership = db.get(UserPark, (target.id, park_id))
+    if assigned and membership is None:
+        db.add(UserPark(user_id=target.id, park_id=park_id))
+    elif not assigned and membership is not None:
+        db.delete(membership)
+    db.commit()
+    parks = _managed_user_parks(db, target.id, actor_park_ids)
+    audit.record(
+        db,
+        action=audit.ACTION_SETTINGS_CHANGED,
+        actor=actor,
+        park_id=park_id,
+        target_type="user",
+        target_id=target.id,
+        detail="telegram park membership added" if assigned else "telegram park membership removed",
+    )
+    return target, account, parks
+
+
+def _onboarding_account(db: Session, telegram_user_id: int) -> tuple[TelegramAccount, User] | None:
+    account = db.scalar(
+        select(TelegramAccount)
+        .where(TelegramAccount.telegram_user_id == telegram_user_id)
+        .with_for_update()
+    )
+    if account is None:
+        return None
+    user = db.get(User, account.user_id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="telegram_identity_invalid"
+        )
+    return account, user
+
+
+def _existing_onboarding_state(
+    db: Session, user: User, park_id: int
+) -> tuple[str, ParkRequest | None] | None:
+    if user.role not in ONBOARDING_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="telegram_identity_role_not_eligible",
+        )
+    if not user.is_active:
+        return "blocked", None
+    if user.access_status == AccessStatus.rejected.value:
+        return "rejected", None
+    if db.get(UserPark, (user.id, park_id)) is not None:
+        return "active", None
+    requests = list(
+        db.scalars(
+            select(ParkRequest)
+            .where(ParkRequest.user_id == user.id, ParkRequest.park_id == park_id)
+            .order_by(ParkRequest.id.desc())
+        )
+    )
+    pending = next((row for row in requests if row.status == AccessStatus.pending.value), None)
+    if pending is not None:
+        return "pending", pending
+    if any(row.status == AccessStatus.approved.value for row in requests):
+        return "blocked", None
+    rejected = next((row for row in requests if row.status == AccessStatus.rejected.value), None)
+    if rejected is not None:
+        return "rejected", rejected
+    return None
+
+
+def request_onboarding_access(
+    db: Session,
+    *,
+    telegram_user_id: int,
+    requested_role: str,
+    park_id: int,
+    display_name: str | None = None,
+    telegram_username: str | None = None,
+) -> tuple[str, User, ParkRequest | None, bool]:
+    """Create or reuse one Telegram identity and its park access request."""
+
+    if requested_role not in ONBOARDING_ROLES:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    park = db.get(Park, park_id)
+    if park is None or not park.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="park_unavailable")
+
+    for _attempt in range(3):
+        try:
+            linked = _onboarding_account(db, telegram_user_id)
+            if linked is not None:
+                _, user = linked
+                existing = _existing_onboarding_state(db, user, park_id)
+                if existing is not None:
+                    state, request = existing
+                    return state, user, request, False
+            else:
+                role = rbac.get_role_by_slug(db, requested_role)
+                if role is None or not role.is_active:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="onboarding_role_unavailable",
+                    )
+                identity = (
+                    telegram_username.lower()
+                    if telegram_username and _TELEGRAM_USERNAME.fullmatch(telegram_username)
+                    else str(telegram_user_id)
+                )
+                user = User(
+                    username=f"tg_{identity}_{secrets.token_hex(4)}",
+                    password_hash=hash_password(secrets.token_urlsafe(48)),
+                    role_id=role.id,
+                    access_status=AccessStatus.pending.value,
+                    is_active=True,
+                )
+                db.add(user)
+                db.flush()
+                db.add(
+                    TelegramAccount(
+                        user_id=user.id,
+                        telegram_user_id=telegram_user_id,
+                        display_name=display_name,
+                        telegram_username=telegram_username,
+                    )
+                )
+
+            request = ParkRequest(
+                user_id=user.id,
+                park_id=park_id,
+                status=AccessStatus.pending.value,
+            )
+            db.add(request)
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            continue
+        db.refresh(user)
+        db.refresh(request)
+        audit.record(
+            db,
+            action=audit.ACTION_ACCESS_REQUESTED,
+            actor=user,
+            park_id=park_id,
+            target_type="park_request",
+            target_id=request.id,
+        )
+        return "pending", user, request, True
+
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="telegram_onboarding_conflict",
     )
 
 
@@ -974,6 +1242,40 @@ def _exact_park_issue(issue: dict, park: Park, normalized: str) -> bool:
     return park.tag in tags and normalized in {summary_robot, rover_robot}
 
 
+def _has_global_robot_access(db: Session, user: User) -> bool:
+    if user.role == rbac.RoleSlug.ROYAL:
+        return True
+    if user.role != rbac.RoleSlug.OPERATOR:
+        return False
+    active_ids = set(db.scalars(select(Park.id).where(Park.is_active.is_(True))))
+    assigned_active_ids = set(
+        db.scalars(
+            select(UserPark.park_id)
+            .join(Park, Park.id == UserPark.park_id)
+            .where(UserPark.user_id == user.id, Park.is_active.is_(True))
+        )
+    )
+    return assigned_active_ids == active_ids
+
+
+def _robot_result(
+    normalized: str,
+    issues: list[dict],
+    *,
+    truncated: bool,
+    broad_access: bool,
+    anchored: bool,
+) -> dict:
+    can_qr = broad_access or anchored
+    return {
+        "robot": normalized,
+        "issues": issues,
+        "truncated": truncated,
+        "can_qr": can_qr,
+        "allowed_views": list(ROBOT_VIEWS if can_qr else ROBOT_VIEWS[:2]),
+    }
+
+
 def robot_issues(
     db: Session,
     user: User,
@@ -992,26 +1294,30 @@ def robot_issues(
         raise HTTPException(status_code=422, detail="invalid_robot_number")
     parks = readable_parks(db, user)
     queues = tuple(sorted({park.tracker_queue for park in parks if park.tracker_queue}))
-    if not queues:
-        return {"robot": normalized, "issues": [], "truncated": False}
+    broad_access = _has_global_robot_access(db, user)
+    auxiliary_view = view in {"moves", "moves_history", "parts"}
+    if not queues and not (auxiliary_view and broad_access):
+        return _robot_result(
+            normalized, [], truncated=False, broad_access=broad_access, anchored=False
+        )
     try:
         token = bot_tracker_gateway.tracker_token(db)
     except bot_tracker_gateway.TrackerNotConfigured as exc:
         raise HTTPException(status_code=503, detail="tracker_not_configured") from exc
     collected: list[dict] = []
     seen: set[str] = set()
-    auxiliary_view = view in {"moves", "moves_history", "parts"}
-    anchored = False
-    for park in parks:
+    anchored = broad_access
+    for park in () if auxiliary_view and broad_access else parks:
         queue = (park.tracker_queue or "").strip()
         if not queue:
             continue
-        state_clause = ""
+        clauses: list[str] = []
         if not auxiliary_view:
-            state_clause = (
-                tracker_client.open_issues_clause()
-                if view == "open"
-                else "Resolution: fixed Type: repair, service, calibration"
+            clauses.extend(
+                [
+                    tracker_client.open_issues_clause() if view == "open" else "Resolution: fixed",
+                    "Type: repair, service, calibration",
+                ]
             )
         query = tracker_client.join_query(
             f"Queue: {tracker_client.ql_token(queue)}",
@@ -1021,7 +1327,7 @@ def robot_issues(
                 f"OR rover: {tracker_client.ql_quote(normalized)} "
                 f"OR rover: {tracker_client.ql_quote(f'a{normalized}')})"
             ),
-            state_clause,
+            *clauses,
         )
         try:
             issues = bot_tracker_gateway.search(
@@ -1038,6 +1344,16 @@ def robot_issues(
             key = str(issue.get("key") or "")
             if not _exact_park_issue(issue, park, normalized) or not key:
                 continue
+            if not auxiliary_view:
+                issue_type = (issue.get("type") or {}).get("key")
+                resolution = (issue.get("resolution") or {}).get("key")
+                issue_status = (issue.get("status") or {}).get("key")
+                if issue_type not in {"repair", "service", "calibration"}:
+                    continue
+                if view == "open" and (resolution or issue_status == "closed"):
+                    continue
+                if view == "history" and resolution != "fixed":
+                    continue
             anchored = True
             if auxiliary_view:
                 break
@@ -1046,13 +1362,27 @@ def robot_issues(
             seen.add(key)
             collected.append(issue)
             if len(collected) >= CONTENT_LIMIT:
-                return {"robot": normalized, "issues": collected, "truncated": True}
+                return _robot_result(
+                    normalized,
+                    collected,
+                    truncated=True,
+                    broad_access=broad_access,
+                    anchored=anchored,
+                )
         if auxiliary_view and anchored:
             break
     if not auxiliary_view:
-        return {"robot": normalized, "issues": collected, "truncated": False}
+        return _robot_result(
+            normalized,
+            collected,
+            truncated=False,
+            broad_access=broad_access,
+            anchored=anchored,
+        )
     if not anchored:
-        return {"robot": normalized, "issues": [], "truncated": False}
+        return _robot_result(
+            normalized, [], truncated=False, broad_access=broad_access, anchored=False
+        )
 
     queue = "SDCWH" if view == "parts" else "ROBOMAINT"
     if queue not in auxiliary_queues:
@@ -1093,5 +1423,17 @@ def robot_issues(
         seen.add(key)
         collected.append(issue)
         if len(collected) >= CONTENT_LIMIT:
-            return {"robot": normalized, "issues": collected, "truncated": True}
-    return {"robot": normalized, "issues": collected, "truncated": False}
+            return _robot_result(
+                normalized,
+                collected,
+                truncated=True,
+                broad_access=broad_access,
+                anchored=anchored,
+            )
+    return _robot_result(
+        normalized,
+        collected,
+        truncated=False,
+        broad_access=broad_access,
+        anchored=anchored,
+    )

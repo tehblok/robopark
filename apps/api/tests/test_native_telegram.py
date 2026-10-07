@@ -10,9 +10,11 @@ from conftest import login_as, role_id_for
 from robopark_api.models import (
     AccessStatus,
     AuditLog,
+    AuthSession,
     NativeBotJob,
     Park,
     ParkRequest,
+    TelegramAccount,
     User,
     UserPark,
 )
@@ -52,6 +54,482 @@ def _job(park_id: int, **overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def test_telegram_onboarding_lists_only_active_public_park_fields(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    inactive = Park(name="Inactive", tag="inactive-onboarding", is_active=False)
+    db_session.add(inactive)
+    db_session.commit()
+
+    assert client.get("/internal/bot/native/onboarding/parks").status_code == 401
+    response = client.get("/internal/bot/native/onboarding/parks", headers=BOT_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "parks": [{"id": seed_park_with_tracker.id, "name": seed_park_with_tracker.name}]
+    }
+
+
+def test_telegram_onboarding_creates_pending_identity_without_web_session(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    existing = User(
+        username="telegram_nick",
+        password_hash=hash_password("unused"),
+        role_id=role_id_for(db_session, rbac.RoleSlug.OPERATOR),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(existing)
+    db_session.commit()
+
+    response = client.post(
+        "/internal/bot/native/onboarding/request",
+        headers=BOT_HEADERS,
+        json={
+            "telegram_user_id": 7001,
+            "role": "mechanic",
+            "park_id": seed_park_with_tracker.id,
+            "display_name": "Иван Механик",
+            "telegram_username": "telegram_nick",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "state": "pending",
+        "user_id": body["user_id"],
+        "request_id": body["request_id"],
+        "role": "mechanic",
+        "park_id": seed_park_with_tracker.id,
+        "display_name": "Иван Механик",
+        "notify_admin_ids": [],
+    }
+    account = db_session.scalar(
+        select(TelegramAccount).where(TelegramAccount.telegram_user_id == 7001)
+    )
+    assert account is not None
+    assert account.display_name == "Иван Механик"
+    assert account.telegram_username == "telegram_nick"
+    created = db_session.get(User, account.user_id)
+    assert created is not None
+    assert created.username.startswith("tg_telegram_nick_")
+    assert created.username != existing.username
+    assert created.role == rbac.RoleSlug.MECHANIC
+    assert created.access_status == AccessStatus.pending.value
+    assert db_session.query(AuthSession).filter_by(user_id=body["user_id"]).count() == 0
+    request = db_session.get(ParkRequest, body["request_id"])
+    assert request is not None
+    assert (request.user_id, request.park_id, request.status) == (
+        created.id,
+        seed_park_with_tracker.id,
+        AccessStatus.pending.value,
+    )
+
+
+def test_telegram_onboarding_repeat_uses_linked_identity_without_overwrite(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    payload = {
+        "telegram_user_id": 7002,
+        "role": "mechanic",
+        "park_id": seed_park_with_tracker.id,
+        "display_name": "First",
+    }
+    first = client.post(
+        "/internal/bot/native/onboarding/request", headers=BOT_HEADERS, json=payload
+    ).json()
+
+    repeated = client.post(
+        "/internal/bot/native/onboarding/request",
+        headers=BOT_HEADERS,
+        json={**payload, "role": "operator", "display_name": "Second"},
+    )
+
+    assert repeated.status_code == 200
+    assert repeated.json() == {**first, "display_name": "Second"}
+    user = db_session.get(User, first["user_id"])
+    assert user is not None and user.role == rbac.RoleSlug.MECHANIC
+    account = db_session.get(TelegramAccount, user.id)
+    assert account is not None
+    assert account.display_name == "First"
+    assert account.telegram_username is None
+    assert db_session.query(TelegramAccount).filter_by(telegram_user_id=7002).count() == 1
+    assert db_session.query(ParkRequest).filter_by(user_id=user.id).count() == 1
+    assert db_session.query(UserPark).filter_by(user_id=user.id).count() == 0
+
+
+def test_new_onboarding_request_returns_scoped_admin_notification_ids_once(
+    client,
+    db_session,
+    seed_admin,
+    seed_royal,
+    seed_park_with_tracker,
+    monkeypatch,
+):
+    _allow_bot(monkeypatch)
+    foreign_park = Park(name="Foreign notify", tag="foreign-notify", is_active=True)
+    foreign_admin = User(
+        username="foreign-notify-admin",
+        password_hash=hash_password("unused"),
+        role_id=role_id_for(db_session, rbac.RoleSlug.ADMIN),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add_all([foreign_park, foreign_admin])
+    db_session.flush()
+    db_session.add_all(
+        [
+            UserPark(user_id=seed_admin.id, park_id=seed_park_with_tracker.id),
+            UserPark(user_id=foreign_admin.id, park_id=foreign_park.id),
+            TelegramAccount(user_id=seed_admin.id, telegram_user_id=7101),
+            TelegramAccount(user_id=seed_royal.id, telegram_user_id=7102),
+            TelegramAccount(user_id=foreign_admin.id, telegram_user_id=7103),
+        ]
+    )
+    db_session.commit()
+    payload = {
+        "telegram_user_id": 7104,
+        "role": "operator",
+        "park_id": seed_park_with_tracker.id,
+        "display_name": "New operator",
+    }
+
+    created = client.post(
+        "/internal/bot/native/onboarding/request", headers=BOT_HEADERS, json=payload
+    )
+    repeated = client.post(
+        "/internal/bot/native/onboarding/request", headers=BOT_HEADERS, json=payload
+    )
+
+    assert created.status_code == 200
+    assert created.json()["notify_admin_ids"] == [7101, 7102]
+    assert repeated.status_code == 200
+    assert repeated.json()["notify_admin_ids"] == []
+
+
+def test_manager_lists_and_updates_only_scoped_telegram_user_memberships(
+    client,
+    db_session,
+    seed_admin,
+    seed_park_with_tracker,
+    monkeypatch,
+):
+    _allow_bot(monkeypatch)
+    foreign_park = Park(name="Foreign membership", tag="foreign-membership", is_active=True)
+    mechanic = User(
+        username="managed-telegram-mechanic",
+        password_hash=hash_password("unused"),
+        role_id=role_id_for(db_session, rbac.RoleSlug.MECHANIC),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    privileged = User(
+        username="managed-telegram-admin",
+        password_hash=hash_password("unused"),
+        role_id=role_id_for(db_session, rbac.RoleSlug.ADMIN),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add_all([foreign_park, mechanic, privileged])
+    db_session.flush()
+    db_session.add_all(
+        [
+            UserPark(user_id=seed_admin.id, park_id=seed_park_with_tracker.id),
+            UserPark(user_id=mechanic.id, park_id=seed_park_with_tracker.id),
+            UserPark(user_id=mechanic.id, park_id=foreign_park.id),
+            UserPark(user_id=privileged.id, park_id=seed_park_with_tracker.id),
+            TelegramAccount(
+                user_id=mechanic.id,
+                telegram_user_id=7110,
+                display_name="Managed Mechanic",
+                telegram_username="managed_mechanic",
+            ),
+            TelegramAccount(user_id=privileged.id, telegram_user_id=7111),
+            TelegramAccount(user_id=seed_admin.id, telegram_user_id=7112),
+        ]
+    )
+    db_session.commit()
+
+    listed = client.get(
+        "/internal/bot/native/manage/users",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 7112},
+    )
+
+    assert listed.status_code == 200
+    managed = next(item for item in listed.json() if item["user_id"] == mechanic.id)
+    assert managed["display_name"] == "Managed Mechanic"
+    assert managed["telegram_username"] == "managed_mechanic"
+    assert managed["parks"] == [
+        {"id": seed_park_with_tracker.id, "name": seed_park_with_tracker.name}
+    ]
+
+    forbidden_park = client.request(
+        "DELETE",
+        f"/internal/bot/native/manage/users/{mechanic.id}/parks/{foreign_park.id}",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 7112},
+        json={"expected_park_ids": [seed_park_with_tracker.id]},
+    )
+    assert forbidden_park.status_code == 403
+    forbidden_role = client.request(
+        "DELETE",
+        f"/internal/bot/native/manage/users/{privileged.id}/parks/{seed_park_with_tracker.id}",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 7112},
+        json={"expected_park_ids": [seed_park_with_tracker.id]},
+    )
+    assert forbidden_role.status_code == 403
+
+    removed = client.request(
+        "DELETE",
+        f"/internal/bot/native/manage/users/{mechanic.id}/parks/{seed_park_with_tracker.id}",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 7112},
+        json={"expected_park_ids": [seed_park_with_tracker.id]},
+    )
+    assert removed.status_code == 200
+    assert removed.json()["parks"] == []
+    assert db_session.get(UserPark, (mechanic.id, foreign_park.id)) is not None
+
+    stale = client.put(
+        f"/internal/bot/native/manage/users/{mechanic.id}/parks/{seed_park_with_tracker.id}",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 7112},
+        json={"expected_park_ids": [seed_park_with_tracker.id]},
+    )
+    assert stale.status_code == 409
+    restored = client.put(
+        f"/internal/bot/native/manage/users/{mechanic.id}/parks/{seed_park_with_tracker.id}",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 7112},
+        json={"expected_park_ids": []},
+    )
+    assert restored.status_code == 200
+    assert restored.json()["parks"] == [
+        {"id": seed_park_with_tracker.id, "name": seed_park_with_tracker.name}
+    ]
+
+
+def test_telegram_onboarding_returns_active_for_existing_park_member(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    db_session.add(TelegramAccount(user_id=seed_mechanic.id, telegram_user_id=7006))
+    db_session.commit()
+
+    response = client.post(
+        "/internal/bot/native/onboarding/request",
+        headers=BOT_HEADERS,
+        json={
+            "telegram_user_id": 7006,
+            "role": "operator",
+            "park_id": seed_park_with_tracker.id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "active"
+    assert response.json()["role"] == "mechanic"
+    assert response.json()["request_id"] is None
+    db_session.refresh(seed_mechanic)
+    assert seed_mechanic.role == rbac.RoleSlug.MECHANIC
+    assert db_session.query(UserPark).filter_by(user_id=seed_mechanic.id).count() == 1
+
+
+def test_telegram_onboarding_does_not_reopen_rejected_park_request(
+    client, db_session, seed_mechanic, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    park = Park(name="Rejected onboarding", tag="rejected-onboarding", is_active=True)
+    db_session.add(park)
+    db_session.flush()
+    rejected = ParkRequest(
+        user_id=seed_mechanic.id,
+        park_id=park.id,
+        status=AccessStatus.rejected.value,
+    )
+    db_session.add_all([rejected, TelegramAccount(user_id=seed_mechanic.id, telegram_user_id=7007)])
+    db_session.commit()
+
+    response = client.post(
+        "/internal/bot/native/onboarding/request",
+        headers=BOT_HEADERS,
+        json={
+            "telegram_user_id": 7007,
+            "role": "mechanic",
+            "park_id": park.id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "rejected"
+    assert response.json()["request_id"] == rejected.id
+    assert db_session.query(ParkRequest).filter_by(user_id=seed_mechanic.id).count() == 1
+
+
+def test_telegram_onboarding_treats_approved_request_without_membership_as_blocked(
+    client, db_session, seed_mechanic, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    park = Park(name="Revoked onboarding", tag="revoked-onboarding", is_active=True)
+    db_session.add(park)
+    db_session.flush()
+    approved = ParkRequest(
+        user_id=seed_mechanic.id,
+        park_id=park.id,
+        status=AccessStatus.approved.value,
+    )
+    db_session.add_all([approved, TelegramAccount(user_id=seed_mechanic.id, telegram_user_id=7010)])
+    db_session.commit()
+
+    response = client.post(
+        "/internal/bot/native/onboarding/request",
+        headers=BOT_HEADERS,
+        json={
+            "telegram_user_id": 7010,
+            "role": "mechanic",
+            "park_id": park.id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "blocked"
+    assert response.json()["request_id"] is None
+    assert db_session.get(UserPark, (seed_mechanic.id, park.id)) is None
+    assert db_session.query(ParkRequest).filter_by(user_id=seed_mechanic.id).count() == 1
+
+
+def test_telegram_onboarding_uses_numeric_fallback_for_unusable_telegram_username(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _allow_bot(monkeypatch)
+
+    response = client.post(
+        "/internal/bot/native/onboarding/request",
+        headers=BOT_HEADERS,
+        json={
+            "telegram_user_id": 7011,
+            "role": "operator",
+            "park_id": seed_park_with_tracker.id,
+            "telegram_username": "админ",
+        },
+    )
+
+    assert response.status_code == 200
+    user = db_session.get(User, response.json()["user_id"])
+    assert user is not None
+    assert user.username.startswith("tg_7011_")
+    assert "админ" not in user.username
+
+
+@pytest.mark.parametrize(
+    ("access_status", "is_active", "expected"),
+    [
+        (AccessStatus.rejected.value, True, "rejected"),
+        (AccessStatus.pending.value, False, "blocked"),
+    ],
+)
+def test_telegram_onboarding_does_not_reopen_denied_identity(
+    client,
+    db_session,
+    seed_park_with_tracker,
+    monkeypatch,
+    access_status,
+    is_active,
+    expected,
+):
+    _allow_bot(monkeypatch)
+    user = User(
+        username=f"onboarding-{expected}",
+        password_hash=hash_password("unused"),
+        role_id=role_id_for(db_session, rbac.RoleSlug.OPERATOR),
+        access_status=access_status,
+        is_active=is_active,
+    )
+    db_session.add(user)
+    db_session.flush()
+    db_session.add(TelegramAccount(user_id=user.id, telegram_user_id=7003 if is_active else 7004))
+    db_session.commit()
+
+    response = client.post(
+        "/internal/bot/native/onboarding/request",
+        headers=BOT_HEADERS,
+        json={
+            "telegram_user_id": 7003 if is_active else 7004,
+            "role": "mechanic",
+            "park_id": seed_park_with_tracker.id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["state"] == expected
+    assert response.json()["request_id"] is None
+    db_session.refresh(user)
+    assert user.role == rbac.RoleSlug.OPERATOR
+    assert db_session.query(ParkRequest).filter_by(user_id=user.id).count() == 0
+
+
+@pytest.mark.parametrize("role", ["admin", "royal", "driver"])
+def test_telegram_onboarding_rejects_non_applicant_roles(
+    client, seed_park_with_tracker, monkeypatch, role
+):
+    _allow_bot(monkeypatch)
+    response = client.post(
+        "/internal/bot/native/onboarding/request",
+        headers=BOT_HEADERS,
+        json={"telegram_user_id": 7005, "role": role, "park_id": seed_park_with_tracker.id},
+    )
+    assert response.status_code == 422
+
+
+def test_telegram_onboarding_never_downgrades_linked_admin(
+    client, db_session, seed_admin, seed_park_with_tracker, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    db_session.add(TelegramAccount(user_id=seed_admin.id, telegram_user_id=7008))
+    db_session.commit()
+
+    response = client.post(
+        "/internal/bot/native/onboarding/request",
+        headers=BOT_HEADERS,
+        json={
+            "telegram_user_id": 7008,
+            "role": "mechanic",
+            "park_id": seed_park_with_tracker.id,
+        },
+    )
+
+    assert response.status_code == 403
+    db_session.refresh(seed_admin)
+    assert seed_admin.role == rbac.RoleSlug.ADMIN
+    assert db_session.query(ParkRequest).filter_by(user_id=seed_admin.id).count() == 0
+
+
+def test_telegram_onboarding_rejects_inactive_park_without_partial_identity(
+    client, db_session, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    inactive = Park(name="Unavailable", tag="unavailable-onboarding", is_active=False)
+    db_session.add(inactive)
+    db_session.commit()
+
+    response = client.post(
+        "/internal/bot/native/onboarding/request",
+        headers=BOT_HEADERS,
+        json={"telegram_user_id": 7009, "role": "operator", "park_id": inactive.id},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "park_unavailable"
+    assert db_session.query(TelegramAccount).filter_by(telegram_user_id=7009).count() == 0
 
 
 def test_admin_native_scope_and_bigint_chat_revision(
@@ -232,6 +710,12 @@ def test_pending_account_can_link_request_access_and_be_approved_by_park_admin(
     assert pending_access.status_code == 200
     assert pending_access.json()["requests"][0]["id"] == request_body["id"]
 
+    telegram_account = db_session.get(TelegramAccount, applicant.id)
+    assert telegram_account is not None
+    telegram_account.display_name = "Pending Mechanic"
+    telegram_account.telegram_username = "pending_mechanic"
+    db_session.commit()
+
     login_as(client, seed_admin.username, "secret")
     admin_code = client.post("/bot/account/link-code").json()["code"]
     client.post(
@@ -246,6 +730,9 @@ def test_pending_account_can_link_request_access_and_be_approved_by_park_admin(
     )
     assert inbox.status_code == 200
     assert [item["id"] for item in inbox.json()] == [request_body["id"]]
+    assert inbox.json()[0]["telegram_user_id"] == 8001
+    assert inbox.json()[0]["display_name"] == "Pending Mechanic"
+    assert inbox.json()[0]["telegram_username"] == "pending_mechanic"
 
     approved = client.post(
         f"/internal/bot/native/access/requests/{request_body['id']}/decision",
@@ -255,6 +742,8 @@ def test_pending_account_can_link_request_access_and_be_approved_by_park_admin(
     )
     assert approved.status_code == 200
     assert approved.json()["request"]["revision"] == 2
+    assert approved.json()["request"]["telegram_user_id"] == 8001
+    assert approved.json()["request"]["display_name"] == "Pending Mechanic"
     assert approved.json()["user_access_status"] == "approved"
     db_session.refresh(applicant)
     assert applicant.role == rbac.RoleSlug.MECHANIC
@@ -276,6 +765,170 @@ def test_pending_account_can_link_request_access_and_be_approved_by_park_admin(
     )
     assert "access.park.requested" in actions
     assert "admin.access.park_request.approved" in actions
+
+
+def test_access_decision_can_select_another_managed_park_without_changing_role(
+    client, db_session, seed_admin, seed_park_with_tracker, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    selected = Park(name="Selected", tag="selected-access", is_active=True)
+    foreign = Park(name="Foreign target", tag="foreign-access", is_active=True)
+    applicant = User(
+        username="target-park-mechanic",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, rbac.RoleSlug.MECHANIC),
+        access_status=AccessStatus.pending.value,
+        is_active=True,
+    )
+    db_session.add_all([selected, foreign, applicant])
+    db_session.flush()
+    db_session.add_all(
+        [
+            UserPark(user_id=seed_admin.id, park_id=seed_park_with_tracker.id),
+            UserPark(user_id=seed_admin.id, park_id=selected.id),
+        ]
+    )
+    request = ParkRequest(
+        user_id=applicant.id,
+        park_id=seed_park_with_tracker.id,
+        status=AccessStatus.pending.value,
+    )
+    db_session.add(request)
+    db_session.commit()
+    login_as(client, seed_admin.username, "secret")
+    code = client.post("/bot/account/link-code").json()["code"]
+    client.post(
+        "/internal/bot/native/link",
+        headers=BOT_HEADERS,
+        json={"code": code, "telegram_user_id": 8030},
+    )
+
+    forbidden = client.post(
+        f"/internal/bot/native/access/requests/{request.id}/decision",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 8030},
+        json={"approve": True, "revision": 1, "target_park_id": foreign.id},
+    )
+    assert forbidden.status_code == 403
+    db_session.refresh(request)
+    assert request.status == AccessStatus.pending.value
+
+    invalid_rejection = client.post(
+        f"/internal/bot/native/access/requests/{request.id}/decision",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 8030},
+        json={"approve": False, "revision": 1, "target_park_id": selected.id},
+    )
+    assert invalid_rejection.status_code == 422
+
+    approved = client.post(
+        f"/internal/bot/native/access/requests/{request.id}/decision",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 8030},
+        json={"approve": True, "revision": 1, "target_park_id": selected.id},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["request"]["park"]["id"] == selected.id
+    db_session.refresh(applicant)
+    assert applicant.role == rbac.RoleSlug.MECHANIC
+    assert db_session.get(UserPark, (applicant.id, selected.id)) is not None
+    assert db_session.get(UserPark, (applicant.id, seed_park_with_tracker.id)) is None
+
+
+def test_global_access_requires_all_park_scope_and_only_promotes_pending_applicant(
+    client, db_session, seed_admin, seed_park_with_tracker, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    other = Park(name="Other global", tag="other-global", is_active=True)
+    applicant = User(
+        username="global-mechanic",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, rbac.RoleSlug.MECHANIC),
+        access_status=AccessStatus.pending.value,
+        is_active=True,
+    )
+    db_session.add_all([other, applicant])
+    db_session.flush()
+    db_session.add(UserPark(user_id=seed_admin.id, park_id=seed_park_with_tracker.id))
+    request = ParkRequest(
+        user_id=applicant.id,
+        park_id=seed_park_with_tracker.id,
+        status=AccessStatus.pending.value,
+    )
+    db_session.add(request)
+    db_session.commit()
+    login_as(client, seed_admin.username, "secret")
+    code = client.post("/bot/account/link-code").json()["code"]
+    client.post(
+        "/internal/bot/native/link",
+        headers=BOT_HEADERS,
+        json={"code": code, "telegram_user_id": 8031},
+    )
+
+    forbidden = client.post(
+        f"/internal/bot/native/access/requests/{request.id}/decision",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 8031},
+        json={"approve": True, "revision": 1, "global_access": True},
+    )
+    assert forbidden.status_code == 403
+    db_session.refresh(request)
+    assert request.status == AccessStatus.pending.value
+
+    db_session.add(UserPark(user_id=seed_admin.id, park_id=other.id))
+    db_session.commit()
+    approved = client.post(
+        f"/internal/bot/native/access/requests/{request.id}/decision",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 8031},
+        json={"approve": True, "revision": 1, "global_access": True},
+    )
+    assert approved.status_code == 200
+    db_session.refresh(applicant)
+    assert applicant.role == rbac.RoleSlug.OPERATOR
+    assert applicant.access_status == AccessStatus.approved.value
+    active_ids = set(db_session.scalars(select(Park.id).where(Park.is_active.is_(True))))
+    assigned_ids = set(
+        db_session.scalars(select(UserPark.park_id).where(UserPark.user_id == applicant.id))
+    )
+    assert assigned_ids == active_ids
+
+
+def test_global_access_cannot_change_an_already_approved_mechanic_role(
+    client, db_session, seed_royal, seed_mechanic, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    park = Park(name="Global denied", tag="global-denied", is_active=True)
+    db_session.add(park)
+    db_session.flush()
+    request = ParkRequest(
+        user_id=seed_mechanic.id,
+        park_id=park.id,
+        status=AccessStatus.pending.value,
+    )
+    db_session.add(request)
+    db_session.commit()
+    login_as(client, seed_royal.username, "secret")
+    code = client.post("/bot/account/link-code").json()["code"]
+    client.post(
+        "/internal/bot/native/link",
+        headers=BOT_HEADERS,
+        json={"code": code, "telegram_user_id": 8032},
+    )
+
+    response = client.post(
+        f"/internal/bot/native/access/requests/{request.id}/decision",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 8032},
+        json={"approve": True, "revision": 1, "global_access": True},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "global_role_change_forbidden"
+    db_session.refresh(seed_mechanic)
+    db_session.refresh(request)
+    assert seed_mechanic.role == rbac.RoleSlug.MECHANIC
+    assert request.status == AccessStatus.pending.value
 
 
 def test_access_requests_are_scoped_and_cannot_approve_privileged_roles(
@@ -807,8 +1460,9 @@ def test_delivery_content_uses_canonical_park_scope_and_reports_cap(
     assert captured["allowed_queues"] == (seed_park_with_tracker.tracker_queue,)
 
 
+@pytest.mark.parametrize("view", ["open", "history"])
 def test_robot_read_filters_foreign_tag_and_partial_number(
-    client, seed_mechanic, seed_park_with_tracker, monkeypatch
+    client, seed_mechanic, seed_park_with_tracker, monkeypatch, view
 ):
     _allow_bot(monkeypatch)
     login_as(client, "mech1", "secret")
@@ -831,6 +1485,8 @@ def test_robot_read_filters_foreign_tag_and_partial_number(
                 "key": "ROBOPARK-1",
                 "summary": "[447] repair",
                 "tags": [seed_park_with_tracker.tag],
+                "type": {"key": "repair"},
+                "resolution": {"key": "fixed"} if view == "history" else None,
             },
             {"key": "ROBOPARK-2", "summary": "[447] repair", "tags": ["Foreign"]},
             {
@@ -838,19 +1494,27 @@ def test_robot_read_filters_foreign_tag_and_partial_number(
                 "summary": "[1447] repair",
                 "tags": [seed_park_with_tracker.tag],
             },
+            {
+                "key": "ROBOPARK-4",
+                "summary": "[447] bug",
+                "tags": [seed_park_with_tracker.tag],
+                "type": {"key": "bug"},
+            },
         ]
 
     monkeypatch.setattr("robopark_api.services.native_telegram.bot_tracker_gateway.search", search)
     response = client.get(
         "/internal/bot/native/robots/A0447",
         headers=BOT_HEADERS,
-        params={"telegram_user_id": 811, "view": "history"},
+        params={"telegram_user_id": 811, "view": view},
     )
 
     assert response.status_code == 200
     assert response.json()["robot"] == "447"
     assert [item["key"] for item in response.json()["issues"]] == ["ROBOPARK-1"]
-    assert "Resolution: fixed" in queries[0]
+    if view == "history":
+        assert "Resolution: fixed" in queries[0]
+    assert "Type: repair, service, calibration" in queries[0]
     assert f"Tags: {seed_park_with_tracker.tag}" in queries[0]
 
 
@@ -928,6 +1592,69 @@ def test_auxiliary_robot_view_requires_park_anchor_and_configured_queue(
     assert [item["key"] for item in response.json()["issues"]] == ["ROBOMAINT-1"]
     assert calls[-1]["allowed_queues"] == ("ROBOMAINT",)
     assert "Status: inProgress, new, needEstimate, needInfo" in calls[-1]["query"]
+    assert response.json()["can_qr"] is True
+    assert response.json()["allowed_views"] == [
+        "open",
+        "history",
+        "moves",
+        "moves_history",
+        "parts",
+    ]
+
+
+def test_global_operator_reads_auxiliary_robot_without_main_ticket_anchor(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _allow_bot(monkeypatch)
+    second_park = Park(name="Second active", tag="second-active", is_active=True)
+    operator = User(
+        username="global-operator",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, rbac.RoleSlug.OPERATOR),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add_all([second_park, operator])
+    db_session.flush()
+    active_park_ids = list(db_session.scalars(select(Park.id).where(Park.is_active.is_(True))))
+    db_session.add_all(
+        [UserPark(user_id=operator.id, park_id=park_id) for park_id in active_park_ids]
+        + [TelegramAccount(user_id=operator.id, telegram_user_id=814)]
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        "robopark_api.routers.native_telegram.bot_shared_settings.auxiliary_tracker_queues",
+        lambda _path: ("ROBOMAINT",),
+    )
+    monkeypatch.setattr(
+        "robopark_api.services.native_telegram.bot_tracker_gateway.tracker_token",
+        lambda _db: "token",
+    )
+    calls = []
+
+    def search(**kwargs):
+        calls.append(kwargs)
+        return [{"key": "ROBOMAINT-1", "summary": "move", "tags": [], "rover": "a447"}]
+
+    monkeypatch.setattr("robopark_api.services.native_telegram.bot_tracker_gateway.search", search)
+
+    response = client.get(
+        "/internal/bot/native/robots/447",
+        headers=BOT_HEADERS,
+        params={"telegram_user_id": 814, "view": "moves"},
+    )
+
+    assert response.status_code == 200
+    assert [item["key"] for item in response.json()["issues"]] == ["ROBOMAINT-1"]
+    assert [call["allowed_queues"] for call in calls] == [("ROBOMAINT",)]
+    assert response.json()["can_qr"] is True
+    assert response.json()["allowed_views"] == [
+        "open",
+        "history",
+        "moves",
+        "moves_history",
+        "parts",
+    ]
 
 
 def test_invalid_link_attempts_are_bounded(client, seed_mechanic, monkeypatch):

@@ -72,6 +72,7 @@ run_bot() {
       tests/bot/test_native_campaigns.py \
       tests/bot/test_native_qr.py \
       tests/bot/test_native_service.py \
+      tests/bot/test_native_task_cards.py \
       tests/bot/test_native_transport.py \
       tests/bot/test_bot_runtime_packaging.py
 }

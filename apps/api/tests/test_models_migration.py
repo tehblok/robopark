@@ -164,10 +164,10 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_includes_bundle_receipts():
+def test_alembic_head_includes_telegram_account_metadata():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0060_native_telegram"]
+    assert script.get_heads() == ["0061_telegram_account_metadata"]
 
 
 def test_host_terminal_migration_builds_bounded_session_schema(sqlite_database_url, monkeypatch):
@@ -439,7 +439,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
     with engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0060_native_telegram"
+            == "0061_telegram_account_metadata"
         )
 
 

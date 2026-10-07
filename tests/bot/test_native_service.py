@@ -156,7 +156,79 @@ class AccessAPI(API):
             return request
         if path.startswith("/context?"):
             return {"can_manage": True, "role": "admin"}
+        if path.startswith("/manage?"):
+            return {"parks": [{"id": 3, "name": "Северный"}], "jobs": []}
+        if path == "/onboarding/parks":
+            return {"parks": [{"id": 3, "name": "Северный"}]}
         return super().call(method, path, payload)
+
+
+class OnboardingAPI(API):
+    def call(self, method, path, payload=None):
+        self.calls.append((method, path, payload))
+        if path.startswith(("/access?", "/context?")):
+            raise ServiceError("permission_denied", status=403)
+        if path == "/onboarding/parks":
+            return {"parks": [{"id": 3, "name": "Северный"}]}
+        if path == "/onboarding/request":
+            return {"state": "pending", "role": payload["role"], "park_id": 3}
+        raise AssertionError(path)
+
+
+def test_unknown_employee_requests_access_entirely_in_telegram():
+    api, tg = OnboardingAPI(), Telegram()
+    service = BotService(api, tg)
+    service.handle_update(message("/start"))
+    buttons = tg.calls[-1][1]["reply_markup"]["inline_keyboard"]
+    assert {b["callback_data"] for row in buttons for b in row} == {
+        "n:join:mechanic:0",
+        "n:join:operator:0",
+    }
+    assert not any(method == "POST" for method, _, _ in api.calls)
+    service.handle_update(callback("n:join:mechanic:0"))
+    assert (
+        tg.calls[-1][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+        == "n:apply:mechanic:3"
+    )
+    service.handle_update(callback("n:apply:mechanic:3", user_id=42))
+    assert (
+        "POST",
+        "/onboarding/request",
+        {"telegram_user_id": 42, "role": "mechanic", "park_id": 3},
+    ) in api.calls
+    assert "Заявка отправлена" in tg.calls[-1][1]["text"]
+    assert "/link" not in tg.calls[-1][1]["text"]
+
+
+@pytest.mark.parametrize(
+    "data",
+    ["n:apply:royal:3", "n:apply:admin:3", "n:join:admin:0", "n:apply:operator:-1"],
+)
+def test_onboarding_rejects_forged_privileged_role_or_park(data):
+    api, tg = OnboardingAPI(), Telegram()
+    BotService(api, tg).handle_update(callback(data))
+    assert not any(method == "POST" for method, _, _ in api.calls)
+
+
+def test_onboarding_never_runs_from_group_callbacks():
+    api, tg = OnboardingAPI(), Telegram()
+    BotService(api, tg).handle_update(
+        callback("n:apply:operator:3", chat_type="supergroup")
+    )
+    assert not api.calls
+
+
+def test_legacy_management_keyboard_still_opens_admin_menu():
+    class AdminAPI(AccessAPI):
+        def call(self, method, path, payload=None):
+            if path.startswith("/manage?"):
+                self.calls.append((method, path, payload))
+                return {"parks": [], "jobs": [], "deliveries": [], "health": {}}
+            return super().call(method, path, payload)
+
+    api, tg = AdminAPI(), Telegram()
+    BotService(api, tg).handle_update(message("⚙️ Управление"))
+    assert any(path.startswith("/manage?") for _, path, _ in api.calls)
 
 
 def test_pending_user_can_request_park_without_task_access():
@@ -197,6 +269,148 @@ def test_mechanic_cannot_use_forged_approval_button_or_group_callback():
     assert not any(method == "POST" for method, _, _ in api.calls)
 
 
+@pytest.mark.parametrize(
+    "role,expected",
+    [
+        (
+            "royal",
+            [
+                ["ℹ️ Помощь", "🔍 Робот"],
+                ["⚙️ Управление", "📊 Статус"],
+                ["⏸ Пауза", "▶️ Старт"],
+            ],
+        ),
+        (
+            "admin",
+            [
+                ["ℹ️ Помощь", "🔍 Робот"],
+                ["⚙️ Управление", "📊 Статус"],
+                ["⏸ Пауза", "▶️ Старт"],
+            ],
+        ),
+        ("operator", [["ℹ️ Помощь", "🔍 Робот"]]),
+        ("mechanic", None),
+    ],
+)
+def test_help_restores_original_role_keyboard(role, expected):
+    api, tg = UsageAPI(role), Telegram()
+    BotService(api, tg).handle_update(message("ℹ️ Помощь"))
+    markup = tg.calls[-1][1]["reply_markup"]
+    if expected is None:
+        assert markup == {"remove_keyboard": True}
+    else:
+        assert [[b["text"] for b in row] for row in markup["keyboard"]] == expected
+    if role in {"mechanic", "operator"}:
+        assert "/admin" not in tg.calls[-1][1]["text"]
+
+
+@pytest.mark.parametrize(
+    "old,view",
+    [
+        ("tasks", "open"),
+        ("hist", "history"),
+        ("move", "moves"),
+        ("mhist", "moves_history"),
+        ("zip", "parts"),
+    ],
+)
+def test_old_robot_buttons_use_fresh_native_permissions(old, view):
+    api, tg = API(), Telegram()
+    BotService(api, tg).handle_update(callback(f"{old}:a1460"))
+    assert any(
+        p == f"/robots/a1460?telegram_user_id=7&view={view}" for _, p, _ in api.calls
+    )
+    assert tg.calls[-1][1]["parse_mode"] == "HTML"
+
+
+def test_robot_details_have_original_back_and_action_labels():
+    api, tg = API(), Telegram()
+    BotService(api, tg).handle_update(message("/history 1460"))
+    rows = tg.calls[-1][1]["reply_markup"]["inline_keyboard"]
+    assert rows[0] == [{"text": "← К задачам", "callback_data": "n:open:a1460"}]
+    assert all(len(row) == 1 for row in rows)
+    assert "📜 История ремонтов" not in [row[0]["text"] for row in rows]
+
+
+def test_approval_waits_for_greeting_choice_and_is_bound_to_admin():
+    api, tg = AccessAPI(), Telegram()
+    service = BotService(api, tg)
+    service.handle_update(callback("n:select:10:1:3"))
+    keyboard = tg.calls[-1][1]["reply_markup"]["inline_keyboard"]
+    accept, custom = keyboard[0]
+    assert accept["text"] == "📝 Приветствие по умолчанию"
+    assert not any(method == "POST" for method, _, _ in api.calls)
+    service.handle_update(callback(accept["callback_data"], user_id=8))
+    assert not any(method == "POST" for method, _, _ in api.calls)
+    service.handle_update(callback(custom["callback_data"]))
+    service.handle_update(message("Добро пожаловать!"))
+    decisions = [payload for method, path, payload in api.calls if "/decision?" in path]
+    assert decisions == [{"approve": True, "revision": 1, "target_park_id": 3}]
+    service.handle_update(callback(accept["callback_data"]))
+    assert len([1 for _, path, _ in api.calls if "/decision?" in path]) == 1
+
+
+def test_custom_greeting_cancel_and_expiry_do_not_approve(monkeypatch):
+    api, tg = AccessAPI(), Telegram()
+    service = BotService(api, tg)
+    service.handle_update(callback("n:select:10:1:3"))
+    nonce = service.approvals[7]["nonce"]
+    service.handle_update(callback(f"n:custom:{nonce}"))
+    service.handle_update(message("/cancel"))
+    service.handle_update(message("Привет"))
+    assert not any(method == "POST" for method, _, _ in api.calls)
+    service.handle_update(callback("n:select:10:1:3"))
+    flow = service.approvals[7]
+    flow["expires"] = -1
+    service.handle_update(callback("n:greet:" + flow["nonce"]))
+    assert not any(method == "POST" for method, _, _ in api.calls)
+
+
+def test_access_card_escapes_identity_and_uses_three_park_columns():
+    class CardAPI(AccessAPI):
+        def call(self, method, path, payload=None):
+            if path.startswith("/access/requests?"):
+                result = super().call(method, path, payload)
+                result[0].update(
+                    display_name="<Denis>",
+                    telegram_username="denis_1",
+                    telegram_user_id=42,
+                    user_access_status="pending",
+                )
+                return result
+            if path.startswith("/manage?") or path == "/onboarding/parks":
+                return {
+                    "parks": [{"id": i, "name": f"Парк {i}"} for i in range(1, 13)],
+                    "jobs": [],
+                }
+            return super().call(method, path, payload)
+
+    tg = Telegram()
+    BotService(CardAPI(), tg).handle_update(message("/requests"))
+    body = tg.calls[-1][1]
+    assert "&lt;Denis&gt;" in body["text"] and "<Denis>" not in body["text"]
+    rows = body["reply_markup"]["inline_keyboard"]
+    assert [len(row) for row in rows] == [3, 3, 3, 3, 1, 1]
+    assert rows[-2][0]["text"] == "🌐 Global"
+    assert rows[-1][0]["text"] == "❌ Отклонить"
+
+
+def test_onboarding_notification_is_scoped_to_api_recipient_and_failure_isolated():
+    class NotifyAPI(AccessAPI):
+        def call(self, method, path, payload=None):
+            if path == "/onboarding/request":
+                self.calls.append((method, path, payload))
+                return {"state": "pending", "request_id": 10, "notify_admin_ids": [8]}
+            return super().call(method, path, payload)
+
+    api, tg = NotifyAPI(), Telegram()
+    BotService(api, tg).handle_update(callback("n:apply:mechanic:3"))
+    assert any(
+        path == "/access/requests?telegram_user_id=8" for _, path, _ in api.calls
+    )
+    assert [p["chat_id"] for m, p, _ in tg.calls if m == "sendMessage"] == [7, 8]
+
+
 def test_second_admin_gets_clear_already_decided_response():
     class ResolvedAPI(AccessAPI):
         def call(self, method, path, payload=None):
@@ -207,6 +421,38 @@ def test_second_admin_gets_clear_already_decided_response():
     tg = Telegram()
     BotService(ResolvedAPI(), tg).handle_update(callback("n:reject:10:1"))
     assert "другой администратор" in tg.calls[-1][1]["text"]
+
+
+def test_member_removal_requires_actor_bound_confirmation_and_snapshot():
+    class UsersAPI(AccessAPI):
+        def call(self, method, path, payload=None):
+            if path.startswith("/manage/users?"):
+                return [
+                    {
+                        "user_id": 22,
+                        "username": "Mechanic",
+                        "role": "mechanic",
+                        "parks": [{"id": 3, "name": "Северный"}],
+                    }
+                ]
+            if path.startswith("/manage/users/22/parks/3?"):
+                self.calls.append((method, path, payload))
+                return {}
+            return super().call(method, path, payload)
+
+    api, tg = UsersAPI(), Telegram()
+    service = BotService(api, tg)
+    service.handle_update(message("/users"))
+    assert "Сотрудники ваших парков: 1" in tg.calls[-1][1]["text"]
+    service.handle_update(callback("n:revoke:22:3"))
+    confirm = tg.calls[-1][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    service.handle_update(callback(confirm, user_id=8))
+    assert not any(m == "DELETE" for m, _, _ in api.calls)
+    service.handle_update(callback(confirm))
+    service.handle_update(callback(confirm))
+    assert [(p, v) for m, p, v in api.calls if m == "DELETE"] == [
+        ("/manage/users/22/parks/3?telegram_user_id=7", {"expected_park_ids": [3]})
+    ]
 
 
 def test_send_now_requires_confirmation_and_reuses_id_on_api_retry():
@@ -363,15 +609,15 @@ def test_issue_response_is_bounded_and_marks_truncation():
             "key": f"SDCFLEETOPS-{n}",
             "summary": "X" * 500,
             "status": {"key": "inProgress"},
-            "description": "secret not requested",
+            "description": "**Comment:** Проверить привод",
         }
         for n in range(80)
     ]
     text = format_issues("a1460", issues, history=False, truncated=True)
     assert len(text) <= 3900
-    assert "secret not requested" not in text
-    assert "В работе" in text
-    assert "ограничен" in text.lower()
+    assert "Проверить привод" in text
+    assert "Робот <b>a1460</b>, открытые задачи: 80" in text
+    assert "обрезан" in text.lower()
 
 
 def test_update_offset_survives_restart_and_imports_previous_runtime(tmp_path):
@@ -548,31 +794,34 @@ class ReportAPI(API):
         super().__init__()
         self.issues = [
             {
-                'key': f'SDCFLEETOPS-{n + 1}',
-                'summary': f'[a{n + 1}] Ремонт',
-                'status': {'key': 'inProgress'},
-                'bot_report': {'repair_hours': 2, 'downtime_hours': 48},
+                "key": f"SDCFLEETOPS-{n + 1}",
+                "summary": f"[a{n + 1}] Ремонт",
+                "status": {"key": "inProgress"},
+                "bot_report": {"repair_hours": 2, "downtime_hours": 48},
             }
             for n in range(count)
         ]
 
     def call(self, method, path, payload=None):
-        if path.endswith('/content'):
+        if path.endswith("/content"):
             self.calls.append((method, path, payload))
-            return {'issues': self.issues, 'truncated': False, 'report_summary': {}}
+            return {"issues": self.issues, "truncated": False, "report_summary": {}}
         return super().call(method, path, payload)
 
 
 def test_large_report_sends_all_pages_and_original_watchdog_in_same_topic():
     api, tg = ReportAPI(), Telegram()
     item = delivery()
-    item['job'].update(kind='report', text=None, url=None)
+    item["job"].update(kind="report", text=None, url=None)
     BotService(api, tg).deliver(item)
-    assert [call[0] for call in tg.calls] == ['sendPhoto', 'sendPhoto', 'sendMessage']
-    assert all(call[1]['message_thread_id'] == 12 for call in tg.calls)
-    assert tg.calls[-1][1]['text'] == 'Задачи с превышением времени в очереди — отсутствуют'
-    assert tg.calls[-1][1]['parse_mode'] == 'HTML'
-    assert api.calls[-1][2]['state'] == 'sent'
+    assert [call[0] for call in tg.calls] == ["sendPhoto", "sendPhoto", "sendMessage"]
+    assert all(call[1]["message_thread_id"] == 12 for call in tg.calls)
+    assert (
+        tg.calls[-1][1]["text"]
+        == "Задачи с превышением времени в очереди — отсутствуют"
+    )
+    assert tg.calls[-1][1]["parse_mode"] == "HTML"
+    assert api.calls[-1][2]["state"] == "sent"
 
 
 def test_partial_report_failure_records_progress_without_resending():
@@ -580,109 +829,134 @@ def test_partial_report_failure_records_progress_without_resending():
         def call(self, method, payload=None, **kwargs):
             result = super().call(method, payload, **kwargs)
             if len(self.calls) == 2:
-                raise ServiceError('telegram_transport_error', uncertain=True)
+                raise ServiceError("telegram_transport_error", uncertain=True)
             return result
 
     api, tg = ReportAPI(), FailingSecondPhoto()
     item = delivery()
-    item['job'].update(kind='report', text=None, url=None)
+    item["job"].update(kind="report", text=None, url=None)
     BotService(api, tg).deliver(item)
     assert len(tg.calls) == 2
-    assert api.calls[-1][2]['state'] == 'unknown'
-    assert api.calls[-1][2]['error_code'].startswith('partial_1_')
+    assert api.calls[-1][2]["state"] == "unknown"
+    assert api.calls[-1][2]["error_code"].startswith("partial_1_")
 
 
 def test_campaign_without_issues_still_sends_campaign_chart():
     api, tg = ReportAPI(count=0), Telegram()
     item = delivery()
-    item['job'].update(kind='campaign', tracker_tag='SK_TEST', text=None, url=None)
+    item["job"].update(kind="campaign", tracker_tag="SK_TEST", text=None, url=None)
     BotService(api, tg).deliver(item)
-    assert [call[0] for call in tg.calls] == ['sendPhoto']
+    assert [call[0] for call in tg.calls] == ["sendPhoto"]
     from io import BytesIO
     from PIL import Image
-    assert Image.open(BytesIO(tg.calls[0][2]['photo'])).size == (1080, 1080)
+
+    assert Image.open(BytesIO(tg.calls[0][2]["photo"])).size == (1080, 1080)
 
 
 class UsageAPI(API):
-    def __init__(self, role='royal'):
+    def __init__(self, role="royal"):
         super().__init__()
         self.role = role
 
     def call(self, method, path, payload=None):
         self.calls.append((method, path, payload))
-        if path.startswith('/context?'):
-            return {'role': self.role, 'can_manage': self.role in {'admin', 'royal'}}
-        if path.startswith('/usage?'):
-            return {'user_id': 1, 'username': 'Тест', 'telegram_user_id': 7, 'stats': {'today': 3, 'month': 12, 'total': 42}}
-        if path.startswith('/control?'):
-            return payload or {'queries_paused': False, 'deliveries_paused': True, 'revision': 4}
-        if path.startswith('/robots/'):
-            return {'issues': [], 'truncated': False, 'greeting': 'Доброе утро, Механик!', 'usage': {'today': 1, 'month': 10, 'total': 40}}
+        if path.startswith("/context?"):
+            return {"role": self.role, "can_manage": self.role in {"admin", "royal"}}
+        if path.startswith("/usage?"):
+            return {
+                "user_id": 1,
+                "username": "Тест",
+                "telegram_user_id": 7,
+                "stats": {"today": 3, "month": 12, "total": 42},
+            }
+        if path.startswith("/control?"):
+            return payload or {
+                "queries_paused": False,
+                "deliveries_paused": True,
+                "revision": 4,
+            }
+        if path.startswith("/robots/"):
+            return {
+                "issues": [],
+                "truncated": False,
+                "greeting": "Доброе утро, Механик!",
+                "usage": {"today": 1, "month": 10, "total": 40},
+            }
         return super().call(method, path, payload)
 
 
 def test_robot_daily_greeting_is_shown_without_extra_round_trip():
     api, tg = UsageAPI(), Telegram()
-    BotService(api, tg).handle_update(message('1460'))
-    assert 'Доброе утро, Механик!' in tg.calls[0][1]['text']
-    assert sum('/robots/' in path for _, path, _ in api.calls) == 1
+    BotService(api, tg).handle_update(message("1460"))
+    assert "Доброе утро, Механик!" in tg.calls[0][1]["text"]
+    assert sum("/robots/" in path for _, path, _ in api.calls) == 1
 
 
 def test_stats_shows_persistent_today_month_and_total():
-    api, tg = UsageAPI('mechanic'), Telegram()
-    BotService(api, tg).handle_update(message('/stats'))
-    assert '3' in tg.calls[-1][1]['text']
-    assert '12' in tg.calls[-1][1]['text']
-    assert '42' in tg.calls[-1][1]['text']
-    assert any(path == '/usage?telegram_user_id=7' for _, path, _ in api.calls)
+    api, tg = UsageAPI("mechanic"), Telegram()
+    BotService(api, tg).handle_update(message("/stats"))
+    assert "3" in tg.calls[-1][1]["text"]
+    assert "12" in tg.calls[-1][1]["text"]
+    assert "42" in tg.calls[-1][1]["text"]
+    assert any(path == "/usage?telegram_user_id=7" for _, path, _ in api.calls)
 
 
 def test_royal_can_pause_queries_without_changing_delivery_pause():
     api, tg = UsageAPI(), Telegram()
-    BotService(api, tg).handle_update(message('/pause queries'))
-    assert ('PUT', '/control?telegram_user_id=7', {
-        'queries_paused': True, 'deliveries_paused': True, 'revision': 4,
-    }) in api.calls
+    BotService(api, tg).handle_update(message("/pause queries"))
+    assert (
+        "PUT",
+        "/control?telegram_user_id=7",
+        {
+            "queries_paused": True,
+            "deliveries_paused": True,
+            "revision": 4,
+        },
+    ) in api.calls
 
 
 def test_admin_cannot_pause_service_globally():
-    api, tg = UsageAPI('admin'), Telegram()
-    BotService(api, tg).handle_update(message('/pause all'))
-    assert not any(method == 'PUT' for method, _, _ in api.calls)
-    assert 'royal' in tg.calls[-1][1]['text'].lower()
+    api, tg = UsageAPI("admin"), Telegram()
+    BotService(api, tg).handle_update(message("/pause all"))
+    assert not any(method == "PUT" for method, _, _ in api.calls)
+    assert "royal" in tg.calls[-1][1]["text"].lower()
 
 
 def test_qr_command_sends_yasadr_image_only_after_server_permission_check():
     api, tg = UsageAPI(), Telegram()
     original = api.call
+
     def with_anchor(method, path, payload=None):
         result = original(method, path, payload)
-        if path.startswith('/robots/'):
-            result['issues'] = [{'key': 'SDCFLEETOPS-1'}]
+        if path.startswith("/robots/"):
+            result["issues"] = [{"key": "SDCFLEETOPS-1"}]
         return result
+
     api.call = with_anchor
-    BotService(api, tg).handle_update(message('/qr 1460'))
-    assert any(path == '/robots/a1460?telegram_user_id=7&view=open' for _, path, _ in api.calls)
-    assert tg.calls[-1][0] == 'sendPhoto'
-    assert tg.calls[-1][1]['caption'] == 'YASADR00000001460'
-    assert tg.calls[-1][2]['photo'].startswith(b'\x89PNG')
+    BotService(api, tg).handle_update(message("/qr 1460"))
+    assert any(
+        path == "/robots/a1460?telegram_user_id=7&view=open" for _, path, _ in api.calls
+    )
+    assert tg.calls[-1][0] == "sendPhoto"
+    assert tg.calls[-1][1]["caption"] == "YASADR00000001460"
+    assert tg.calls[-1][2]["photo"].startswith(b"\x89PNG")
 
 
 def test_paused_report_does_not_send_or_mark_failed_receipt():
     class PausedAPI(API):
         def call(self, method, path, payload=None):
-            if path.endswith('/begin'):
-                raise ServiceError('native_deliveries_paused', status=409)
+            if path.endswith("/begin"):
+                raise ServiceError("native_deliveries_paused", status=409)
             return super().call(method, path, payload)
 
     api, tg = PausedAPI(), Telegram()
     BotService(api, tg).deliver(delivery())
     assert not tg.calls
-    assert not any(path.endswith('/finish') for _, path, _ in api.calls)
+    assert not any(path.endswith("/finish") for _, path, _ in api.calls)
 
 
 def test_qr_without_scoped_robot_anchor_is_denied():
     api, tg = API(), Telegram()
-    BotService(api, tg).handle_update(message('/qr 999999'))
-    assert not any(call[0] == 'sendPhoto' for call in tg.calls)
-    assert 'QR-код недоступен' in tg.calls[-1][1]['text']
+    BotService(api, tg).handle_update(message("/qr 999999"))
+    assert not any(call[0] == "sendPhoto" for call in tg.calls)
+    assert "QR-код недоступен" in tg.calls[-1][1]["text"]

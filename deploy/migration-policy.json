@@ -1,13 +1,14 @@
 {
   "schema": 1,
-  "target_head": "0060_native_telegram",
+  "target_head": "0061_telegram_account_metadata",
   "known_heads": [
     "0055_media_upload_park",
     "0056_host_terminal",
     "0057_local_ai",
     "0058_ai_bundle_receipts",
     "0059_ai_action_receipts",
-    "0060_native_telegram"
+    "0060_native_telegram",
+    "0061_telegram_account_metadata"
   ],
   "bridge_before": "0.2.0-rc.8",
   "bridge_version": "0.2.0-rc.8",

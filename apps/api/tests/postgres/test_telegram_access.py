@@ -6,17 +6,129 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from robopark_api.models import AuditLog, Park, ParkRequest, User, UserPark
-from robopark_api.services import access_requests
+from robopark_api.models import AuditLog, Park, ParkRequest, TelegramAccount, User, UserPark
+from robopark_api.services import access_requests, native_telegram
 from robopark_api.services.rbac import get_role_by_slug
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
 from .test_schema_and_workflows import migrated_engine  # noqa: F401
 
 pytestmark = pytest.mark.postgres
+
+
+def test_managed_telegram_membership_lock_works_on_postgres(migrated_engine):  # noqa: F811
+    unique = uuid4().hex
+    with Session(migrated_engine) as db:
+        ensure_rbac_catalog(db)
+        park = Park(name=unique, tag=unique, timezone="UTC")
+        actor = User(
+            username=f"manager-{unique}",
+            password_hash="unused",
+            role_id=get_role_by_slug(db, "admin").id,
+            access_status="approved",
+        )
+        target = User(
+            username=f"member-{unique}",
+            password_hash="unused",
+            role_id=get_role_by_slug(db, "mechanic").id,
+            access_status="approved",
+        )
+        db.add_all([park, actor, target])
+        db.flush()
+        db.add_all(
+            [
+                UserPark(user_id=actor.id, park_id=park.id),
+                UserPark(user_id=target.id, park_id=park.id),
+                TelegramAccount(
+                    user_id=target.id,
+                    telegram_user_id=8_100_000_000_000_000_000 + int(unique[:8], 16),
+                ),
+            ]
+        )
+        db.commit()
+        _, _, parks = native_telegram.update_managed_user_park(
+            db,
+            actor,
+            user_id=target.id,
+            park_id=park.id,
+            expected_park_ids=[park.id],
+            assigned=False,
+        )
+        assert parks == []
+        assert db.get(UserPark, (target.id, park.id)) is None
+        assert target.role == "mechanic" and target.access_status == "approved"
+        with pytest.raises(HTTPException) as conflict:
+            native_telegram.update_managed_user_park(
+                db,
+                actor,
+                user_id=target.id,
+                park_id=park.id,
+                expected_park_ids=[park.id],
+                assigned=True,
+            )
+        assert conflict.value.status_code == 409
+        db.rollback()
+        db.execute(delete(AuditLog).where(AuditLog.actor_user_id == actor.id))
+        db.execute(delete(User).where(User.id.in_([actor.id, target.id])))
+        db.execute(delete(Park).where(Park.id == park.id))
+        db.commit()
+
+
+def test_concurrent_telegram_onboarding_reuses_one_identity_and_request(
+    migrated_engine,  # noqa: F811
+):
+    unique = uuid4().hex
+    telegram_user_id = 8_000_000_000_000_000_000 + int(unique[:8], 16)
+    with Session(migrated_engine) as db:
+        ensure_rbac_catalog(db)
+        park = Park(name=unique, tag=unique, timezone="UTC")
+        db.add(park)
+        db.commit()
+        park_id = park.id
+
+    ready = Barrier(2)
+
+    def request_access() -> tuple[str, int, int | None]:
+        with Session(migrated_engine) as db:
+            ready.wait(timeout=5)
+            state, user, request, _created = native_telegram.request_onboarding_access(
+                db,
+                telegram_user_id=telegram_user_id,
+                requested_role="mechanic",
+                park_id=park_id,
+                telegram_username="race_mechanic",
+            )
+            return state, user.id, request.id if request is not None else None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: request_access(), range(2)))
+
+    assert results[0] == results[1]
+    assert results[0][0] == "pending"
+    with Session(migrated_engine) as db:
+        account = db.scalar(
+            select(TelegramAccount).where(TelegramAccount.telegram_user_id == telegram_user_id)
+        )
+        assert account is not None
+        assert (
+            db.scalar(select(func.count()).select_from(User).where(User.id == account.user_id)) == 1
+        )
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(ParkRequest)
+                .where(ParkRequest.user_id == account.user_id, ParkRequest.park_id == park_id)
+            )
+            == 1
+        )
+
+        db.execute(delete(AuditLog).where(AuditLog.actor_user_id == account.user_id))
+        db.execute(delete(User).where(User.id == account.user_id))
+        db.execute(delete(Park).where(Park.id == park_id))
+        db.commit()
 
 
 def test_multiple_park_admins_resolve_one_request_once(migrated_engine):  # noqa: F811

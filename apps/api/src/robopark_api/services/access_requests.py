@@ -152,6 +152,8 @@ def decide(
     *,
     approve: bool,
     revision: int | None,
+    target_park_id: int | None = None,
+    global_access: bool = False,
 ) -> tuple[ParkRequest, User]:
     row = db.scalar(
         select(ParkRequest)
@@ -161,7 +163,9 @@ def decide(
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    _assert_request_scope(db, actor, row)
+    manageable_ids = manageable_park_ids(db, actor)
+    if manageable_ids is not None and row.park_id not in manageable_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     if revision is not None and row.revision != revision:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="revision_conflict")
     if row.status != AccessStatus.pending.value:
@@ -180,19 +184,63 @@ def decide(
         or target.access_status == AccessStatus.rejected.value
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="target_not_eligible")
-    park = db.get(Park, row.park_id)
-    if park is None:
+    requested_park = db.get(Park, row.park_id)
+    if requested_park is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="park_missing")
+    if not approve and (target_park_id is not None or global_access):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_rejection_target"
+        )
+    if target_park_id is not None and global_access:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_access_target")
+
+    park = requested_park
+    grant_parks: list[Park] = []
+    if approve and global_access:
+        grant_parks = list(
+            db.scalars(select(Park).where(Park.is_active.is_(True)).order_by(Park.id))
+        )
+        active_ids = {candidate.id for candidate in grant_parks}
+        if manageable_ids is not None and not active_ids.issubset(manageable_ids):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+        if (
+            target.access_status != AccessStatus.pending.value
+            and target.role != rbac.RoleSlug.OPERATOR
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="global_role_change_forbidden"
+            )
+        if target.role == rbac.RoleSlug.MECHANIC:
+            operator_role = rbac.get_role_by_slug(db, rbac.RoleSlug.OPERATOR)
+            if operator_role is None or not operator_role.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="operator_role_unavailable",
+                )
+            target.role_id = operator_role.id
+        elif target.role != rbac.RoleSlug.OPERATOR:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="target_not_eligible")
+    elif approve:
+        selected_park_id = target_park_id or row.park_id
+        if manageable_ids is not None and selected_park_id not in manageable_ids:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+        park = db.get(Park, selected_park_id)
+        if park is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="park_missing")
+        grant_parks = [park]
     now = datetime.now(UTC)
     row.status = AccessStatus.approved.value if approve else AccessStatus.rejected.value
     row.resolved_at = now
     row.resolved_by = actor.id
     row.revision += 1
     if approve:
-        if not park.is_active:
+        if any(not candidate.is_active for candidate in grant_parks):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="park_inactive")
-        if db.get(UserPark, (target.id, park.id)) is None:
-            db.add(UserPark(user_id=target.id, park_id=park.id))
+        if target_park_id is not None:
+            row.park_id = park.id
+        for granted_park in grant_parks:
+            if db.get(UserPark, (target.id, granted_park.id)) is None:
+                db.add(UserPark(user_id=target.id, park_id=granted_park.id))
         target.access_status = AccessStatus.approved.value
     elif target.access_status == AccessStatus.pending.value:
         other_pending = db.scalar(

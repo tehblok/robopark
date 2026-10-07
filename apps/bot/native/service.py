@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from html import unescape
+from html import escape, unescape
 import time
 import uuid
 from collections import OrderedDict
@@ -9,12 +9,12 @@ from urllib.parse import urlencode
 
 from native.campaigns import render_campaign
 from native.qr import render_robot_qr, yasadr_code
-from native.reports import render_report, report_page_count, status_label, watchdog_parts
+from native.reports import render_report, report_page_count, watchdog_parts
 from native.transport import ServiceError
+from native.task_cards import format_issues
 
 ROBOT = re.compile(r"^(?:/robot\s+)?[aа]?(\d{1,6})$", re.IGNORECASE)
 JOB_ID = re.compile(r"^[a-f0-9-]{36}$")
-ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9_]{1,63}-[1-9][0-9]{0,18}$")
 VIEWS = {
     "open": "Открытые задачи",
     "history": "История ремонтов",
@@ -29,30 +29,6 @@ def parse_robot(value):
     return f"a{hit.group(1)}" if hit else None
 
 
-def format_issues(robot, issues, *, history=False, view=None, truncated=False):
-    view = view or ("history" if history else "open")
-    title = f"{robot} · " + VIEWS[view]
-    if not issues:
-        return title + "\nПо вашим паркам задачи не найдены."
-    blocks, size = [title], len(title)
-    for issue in issues[:20]:
-        key = str(issue.get("key") or "")
-        summary = str(issue.get("summary") or "").replace("\n", " ")[:180]
-        block = f"{key} · {status_label(issue)}\n{summary}"
-        if ISSUE_KEY.fullmatch(key):
-            block += f"\nhttps://st.yandex-team.ru/{key}"
-        if view in {"history", "moves_history"} and issue.get("resolvedAt"):
-            block += "\nЗакрыта: " + str(issue["resolvedAt"])[:10]
-        if size + len(block) > 3600:
-            truncated = True
-            break
-        blocks.append(block)
-        size += len(block) + 2
-    if truncated or len(issues) > len(blocks) - 1:
-        blocks.append("Список ограничен. Полная выборка доступна в Robopark.")
-    return "\n\n".join(blocks)
-
-
 def _keyboard(rows):
     return {
         "inline_keyboard": [
@@ -62,24 +38,132 @@ def _keyboard(rows):
     }
 
 
+def _reply_keyboard(context):
+    if context.get("role") == "mechanic":
+        return {"remove_keyboard": True}
+    rows = [["ℹ️ Помощь", "🔍 Робот"]]
+    if context.get("can_manage"):
+        rows += [["⚙️ Управление", "📊 Статус"], ["⏸ Пауза", "▶️ Старт"]]
+    return {
+        "keyboard": [[{"text": text} for text in row] for row in rows],
+        "resize_keyboard": True,
+    }
+
+
+def _grid(buttons, width=3):
+    return [buttons[i : i + width] for i in range(0, len(buttons), width)]
+
+
 class BotService:
     def __init__(self, api, telegram):
         self.api, self.telegram = api, telegram
         self.pending = OrderedDict()
         self.sends = OrderedDict()
+        self.approvals = OrderedDict()
+        self.memberships = OrderedDict()
 
-    def say(self, chat_id, text, *, rows=None):
+    def say(self, chat_id, text, *, rows=None, html=False, reply=None):
         payload = {
             "chat_id": chat_id,
-            "text": text[:3900],
+            "text": text if html else text[:3900],
             "link_preview_options": {"is_disabled": True},
         }
         if rows:
             payload["reply_markup"] = _keyboard(rows)
+        elif reply is not None:
+            payload["reply_markup"] = reply
+        if html:
+            if len(text) > 3900:
+                raise ValueError("HTML card is too long")
+            payload["parse_mode"] = "HTML"
         return self.telegram.call("sendMessage", payload)
+
+    def _help(self, chat_id, context):
+        text = (
+            "ℹ️ Помощь\n\nОтправьте номер робота, например 1460 или a1460.\n"
+            "Под задачами — перемещения, история ремонтов, QR-код и ЗИП.\n\n"
+            "/history НОМЕР — история ремонтов\n/moves НОМЕР — перемещения\n"
+            "/parts НОМЕР — запчасти\n/qr НОМЕР — QR-код YASADR\n"
+            "/stats — мои запросы\n/access — мой доступ и парки\n/cancel — отмена ввода"
+        )
+        if context.get("can_manage"):
+            text += "\n\n⚙️ /admin — управление\n/requests — заявки на доступ\n/status — состояние\n/commands — команды настройки"
+        return self.say(chat_id, text, reply=_reply_keyboard(context))
 
     def _manage(self, user_id):
         return self.api.call("GET", f"/manage?telegram_user_id={user_id}")
+
+    def _join(self, chat_id):
+        return self.say(
+            chat_id,
+            "Запросите доступ здесь, в Telegram. Выберите свою роль, затем парк — "
+            "администратор рассмотрит заявку. Если доступ уже был, /access покажет его статус.",
+            rows=[
+                [("Механик", "n:join:mechanic:0"), ("Оператор", "n:join:operator:0")]
+            ],
+        )
+
+    def _join_parks(self, chat_id, role, page):
+        data = self.api.call("GET", "/onboarding/parks")
+        parks = data["parks"]
+        if not parks:
+            return self.say(
+                chat_id, "Парки ещё не настроены. Обратитесь к администратору."
+            )
+        page = min(page, (len(parks) - 1) // 12)
+        rows = _grid(
+            [
+                (p["name"][:50], f"n:apply:{role}:{p['id']}")
+                for p in parks[page * 12 : (page + 1) * 12]
+            ]
+        )
+        navigation = []
+        if page:
+            navigation.append(("← Назад", f"n:join:{role}:{page - 1}"))
+        if (page + 1) * 12 < len(parks):
+            navigation.append(("Дальше →", f"n:join:{role}:{page + 1}"))
+        if navigation:
+            rows.append(navigation)
+        return self.say(chat_id, "Выберите парк для заявки на доступ.", rows=rows)
+
+    def _join_callback(self, user_id, chat_id, data, sender):
+        match = re.fullmatch(r"n:(join|apply):(mechanic|operator):(\d{1,10})", data)
+        if match is None:
+            raise ValueError("invalid onboarding action")
+        action, role, value = match.groups()
+        number = int(value)
+        if action == "join":
+            return self._join_parks(chat_id, role, number)
+        if number < 1:
+            raise ValueError("invalid onboarding park")
+        payload = {
+            "telegram_user_id": user_id,
+            "role": role,
+            "park_id": number,
+        }
+        if isinstance(sender.get("username"), str):
+            payload["telegram_username"] = sender["username"][:64]
+        display_name = " ".join(
+            sender[field]
+            for field in ("first_name", "last_name")
+            if isinstance(sender.get(field), str) and sender[field].strip()
+        )
+        if display_name:
+            payload["display_name"] = display_name[:128]
+        result = self.api.call("POST", "/onboarding/request", payload)
+        text = {
+            "pending": "Заявка отправлена администратору парка. /access — проверить статус.",
+            "active": "Доступ к парку уже открыт. Отправьте номер робота для поиска задач.",
+            "blocked": "Доступ отключён. Обратитесь к администратору; новая заявка не отменяет блокировку.",
+            "rejected": "Заявка отклонена. Обратитесь к администратору парка.",
+        }.get(result.get("state"), "Проверьте статус доступа: /access.")
+        self.say(chat_id, text)
+        for admin_id in result.get("notify_admin_ids", [])[:100]:
+            try:
+                self._requests(admin_id, admin_id, request_id=result.get("request_id"))
+            except ServiceError:
+                # A blocked Telegram DM must not roll back the employee's request.
+                print("bot access notification unavailable", flush=True)
 
     def _access(self, user_id, chat_id):
         data = self.api.call("GET", f"/access?telegram_user_id={user_id}")
@@ -110,37 +194,149 @@ class BotService:
             lines.append("Выберите парк, чтобы отправить заявку администратору.")
         if data["access_status"] == "approved":
             lines.append("Отправьте номер робота для поиска задач. /help — команды.")
+        if data["access_status"] == "approved":
+            self.say(
+                chat_id,
+                "✅ Доступ открыт. Отправьте номер робота.",
+                reply=_reply_keyboard(data),
+            )
         return self.say(chat_id, "\n".join(lines), rows=rows)
 
-    def _requests(self, user_id, chat_id, page=0):
+    def _request_heading(self, item):
+        name = escape(str(item.get("display_name") or item["username"])[:128])
+        username = item.get("telegram_username")
+        identity = "@" + escape(str(username)) if username else "без username"
+        telegram_id = item.get("telegram_user_id")
+        return f"🆕 <b>Заявка на доступ</b>\nОбращение: {name}\nTG: {identity}" + (
+            f" · id <code>{int(telegram_id)}</code>" if telegram_id else ""
+        )
+
+    def _requests(self, user_id, chat_id, page=0, request_id=None):
         data = self.api.call("GET", f"/access/requests?telegram_user_id={user_id}")
-        page = max(0, min(int(page), max(0, (len(data) - 1) // 8)))
-        rows, lines = [], ["Заявки на доступ к вашим паркам"]
-        for item in data[page * 8 : (page + 1) * 8]:
+        if request_id is not None:
+            data = [item for item in data if item["id"] == request_id]
+            if not data:
+                return
+        if not data:
+            return self.say(
+                chat_id,
+                "👥 Новых заявок нет.",
+                rows=[[("← Управление", "n:menu:home")]],
+            )
+        state = self._manage(user_id)
+        parks = state.get("parks", [])
+        all_parks = self.api.call("GET", "/onboarding/parks").get("parks", [])
+        can_global = bool(all_parks) and {p["id"] for p in all_parks} <= {
+            p["id"] for p in parks
+        }
+        page = max(0, min(int(page), (len(data) - 1) // 5))
+        for item in data[page * 5 : (page + 1) * 5]:
             role = {"mechanic": "Механик", "operator": "Оператор"}.get(
                 item["role"], item["role"]
             )
-            lines.append(
-                f"№{item['id']} · {item['username'][:80]} · {role}\nПарк: {item['park']['name'][:100]}"
-            )
             suffix = f"{item['id']}:{item['revision']}"
-            rows.append(
-                [
-                    (f"Одобрить №{item['id']}", f"n:approve:{suffix}"),
-                    (f"Отклонить №{item['id']}", f"n:reject:{suffix}"),
-                ]
+            choices = parks or [item["park"]]
+            rows = _grid(
+                [(p["name"][:45], f"n:select:{suffix}:{p['id']}") for p in choices[:48]]
             )
-        if not data:
-            lines.append("Новых заявок нет.")
+            if can_global and (
+                item.get("user_access_status") == "pending"
+                or item["role"] == "operator"
+            ):
+                rows.append([("🌐 Global", f"n:select:{suffix}:0")])
+            rows.append([("❌ Отклонить", f"n:reject:{suffix}")])
+            self.say(
+                chat_id,
+                self._request_heading(item)
+                + f"\nЗапрошен парк: <b>{escape(item['park']['name'])}</b>"
+                + f"\nРоль: <b>{escape(role)}</b>\n\nВыберите доступ:",
+                rows=rows,
+                html=True,
+            )
         navigation = []
         if page:
             navigation.append(("← Назад", f"n:requests:{page - 1}"))
-        if (page + 1) * 8 < len(data):
+        if (page + 1) * 5 < len(data):
             navigation.append(("Далее →", f"n:requests:{page + 1}"))
         if navigation:
-            rows.append(navigation)
-        rows.append([("Обновить", "n:requests:0")])
-        return self.say(chat_id, "\n\n".join(lines), rows=rows)
+            self.say(chat_id, "Другие заявки", rows=[navigation])
+
+    def _select_access(self, user_id, chat_id, request_id, revision, park_id):
+        items = self.api.call("GET", f"/access/requests?telegram_user_id={user_id}")
+        item = next(
+            (r for r in items if r["id"] == request_id and r["revision"] == revision),
+            None,
+        )
+        if item is None:
+            raise ServiceError("request_already_resolved", status=409)
+        state = self._manage(user_id)
+        park = next((p for p in state.get("parks", []) if p["id"] == park_id), None)
+        if park_id and park is None:
+            raise ServiceError("park_out_of_scope", status=403)
+        label = park["name"] if park else "🌐 Global"
+        nonce = uuid.uuid4().hex[:16]
+        self.approvals[user_id] = {
+            "expires": time.monotonic() + 600,
+            "nonce": nonce,
+            "item": item,
+            "park_id": park_id,
+            "label": label,
+            "custom": False,
+        }
+        self.approvals.move_to_end(user_id)
+        while len(self.approvals) > 256:
+            self.approvals.popitem(last=False)
+        return self.say(
+            chat_id,
+            self._request_heading(item)
+            + f"\nЛокация: <b>{escape(label)}</b>\nРоль: <b>"
+            + (
+                "Оператор (все парки)"
+                if not park_id
+                else "Механик (локация)"
+                if item["role"] == "mechanic"
+                else "Оператор"
+            )
+            + "</b>\n\nВыберите приветствие:",
+            html=True,
+            rows=[
+                [
+                    ("📝 Приветствие по умолчанию", f"n:greet:{nonce}"),
+                    ("✏️ Своё приветствие", f"n:custom:{nonce}"),
+                ],
+                [("❌ Отклонить", f"n:reject:{request_id}:{revision}")],
+            ],
+        )
+
+    def _approve_access(self, user_id, chat_id, flow, greeting=None):
+        item = flow["item"]
+        payload = {"approve": True, "revision": item["revision"]}
+        if flow["park_id"]:
+            payload["target_park_id"] = flow["park_id"]
+        else:
+            payload["global_access"] = True
+        result = self.api.call(
+            "POST",
+            f"/access/requests/{item['id']}/decision?telegram_user_id={user_id}",
+            payload,
+        )
+        self.approvals.pop(user_id, None)
+        recipient = result["request"].get("telegram_user_id")
+        name = result["request"].get("display_name") or result["request"]["username"]
+        self.say(chat_id, f"✅ Одобрено: {name} · {flow['label']}")
+        if recipient:
+            try:
+                self.say(
+                    recipient,
+                    greeting
+                    or f"✅ Доступ открыт!\n\nЛокация: {flow['label']}\nОтправьте номер робота — покажу задачи и историю ремонта. /help — помощь.",
+                    reply=_reply_keyboard({"role": result["request"]["role"]}),
+                )
+            except ServiceError:
+                self.say(
+                    chat_id,
+                    "Доступ сохранён, но Telegram не доставил приветствие. Сотрудник может отправить /start.",
+                )
 
     def _job(self, user_id, job_id):
         if not JOB_ID.fullmatch(job_id):
@@ -182,39 +378,61 @@ class BotService:
         )
         if data.get("greeting"):
             self.say(chat_id, unescape(data["greeting"]))
+        allowed = data.get("allowed_views", list(VIEWS))
+        rows = []
+        if view != "open":
+            rows.append([("← К задачам", f"n:open:{robot}")])
+        for action, label in [
+            ("moves", "🚚 Перемещение"),
+            ("history", "📜 История ремонтов"),
+            ("qr", "📱 QR-код"),
+            ("parts", "📦 ЗИП"),
+        ]:
+            permitted = (
+                data.get("can_qr", bool(data.get("issues")))
+                if action == "qr"
+                else action in allowed
+            )
+            if action != view and permitted:
+                rows.append([(label, f"n:{action}:{robot}")])
+        if view == "moves" and "moves_history" in allowed:
+            rows.insert(1, [("📜 История перемещений", f"n:moves_history:{robot}")])
         return self.say(
             chat_id,
             format_issues(
                 robot, data["issues"], view=view, truncated=data.get("truncated", False)
             ),
-            rows=[
-                [
-                    ("Открытые задачи", f"n:open:{robot}"),
-                    ("История ремонтов", f"n:history:{robot}"),
-                ],
-                [
-                    ("Перемещения", f"n:moves:{robot}"),
-                    ("История перемещений", f"n:moves_history:{robot}"),
-                ],
-                [("Запчасти", f"n:parts:{robot}"), ("QR-код", f"n:qr:{robot}")],
-            ],
+            rows=rows,
+            html=True,
         )
 
     def _qr(self, user_id, chat_id, robot):
         code = yasadr_code(robot)
         # Same approval, park permissions and pause checks as other robot commands.
-        data = self.api.call("GET", f"/robots/{parse_robot(robot)}?telegram_user_id={user_id}&view=open")
-        if not data.get("issues"):
-            return self.say(chat_id, "Робот не найден в доступных вам задачах. QR-код недоступен.")
-        return self.telegram.call("sendPhoto", {"chat_id": chat_id, "caption": code}, photo=render_robot_qr(robot))
+        data = self.api.call(
+            "GET", f"/robots/{parse_robot(robot)}?telegram_user_id={user_id}&view=open"
+        )
+        if not data.get("can_qr", bool(data.get("issues"))):
+            return self.say(
+                chat_id, "Робот не найден в доступных вам задачах. QR-код недоступен."
+            )
+        return self.telegram.call(
+            "sendPhoto",
+            {"chat_id": chat_id, "caption": code},
+            photo=render_robot_qr(robot),
+        )
 
     def _stats(self, user_id, chat_id, *, all_users=False):
-        data = self.api.call("GET", f"/usage{'/all' if all_users else ''}?telegram_user_id={user_id}")
+        data = self.api.call(
+            "GET", f"/usage{'/all' if all_users else ''}?telegram_user_id={user_id}"
+        )
         records = data if all_users else [data]
         lines = ["Запросы: сегодня / месяц / всего"]
         for row in records:
-            stats = row['stats']
-            lines.append(f"{row['username'][:80]}: {stats['today']} / {stats['month']} / {stats['total']}")
+            stats = row["stats"]
+            lines.append(
+                f"{row['username'][:80]}: {stats['today']} / {stats['month']} / {stats['total']}"
+            )
         # Bounded messages retain every visible user rather than truncating the list.
         block = []
         for line in lines:
@@ -224,11 +442,61 @@ class BotService:
             block.append(line)
         return self.say(chat_id, "\n".join(block))
 
+    def _users(self, user_id, chat_id, page=0, target_id=None):
+        users = self.api.call("GET", f"/manage/users?telegram_user_id={user_id}")
+        if target_id is not None:
+            person = next((u for u in users if u["user_id"] == target_id), None)
+            if person is None:
+                raise ServiceError("user_not_found", status=404)
+            rows = [
+                [
+                    (
+                        "❌ Убрать доступ: " + p["name"][:35],
+                        f"n:revoke:{target_id}:{p['id']}",
+                    )
+                ]
+                for p in person["parks"][:48]
+            ]
+            rows.append([("← Люди", "n:users:0")])
+            role = {
+                "mechanic": "Механик",
+                "operator": "Оператор",
+                "admin": "Администратор",
+                "royal": "Royal",
+            }.get(person["role"], person["role"])
+            return self.say(
+                chat_id,
+                f"👤 {person.get('display_name') or person['username']}\nРоль: {role}\nПарки: "
+                + ", ".join(p["name"] for p in person["parks"]),
+                rows=rows,
+            )
+        page = min(max(0, int(page)), max(0, (len(users) - 1) // 12))
+        rows = [
+            [((u.get("display_name") or u["username"])[:48], f"n:user:{u['user_id']}")]
+            for u in users[page * 12 : (page + 1) * 12]
+        ]
+        navigation = []
+        if page:
+            navigation.append(("← Назад", f"n:users:{page - 1}"))
+        if (page + 1) * 12 < len(users):
+            navigation.append(("Далее →", f"n:users:{page + 1}"))
+        if navigation:
+            rows.append(navigation)
+        rows.append([("← Управление", "n:menu:people")])
+        return self.say(
+            chat_id,
+            f"👥 Сотрудники ваших парков: {len(users)}\nВыберите сотрудника.",
+            rows=rows,
+        )
+
     def _control(self, user_id, chat_id, command, argument, context):
         if command != "/status" and context.get("role") != "royal":
             return self.say(chat_id, "Общую паузу сервиса меняет только royal.")
         if command != "/status" and argument not in {"queries", "deliveries", "all"}:
-            return self.say(chat_id, "Формат: /pause или /resume, затем queries (запросы), deliveries (рассылки) или all.")
+            return self.say(
+                chat_id,
+                "Формат: /pause или /resume, затем queries (запросы), deliveries (рассылки) или all.",
+            )
         path = f"/control?telegram_user_id={user_id}"
         state = self.api.call("GET", path)
         if command != "/status":
@@ -236,17 +504,77 @@ class BotService:
                 if argument in {scope, "all"}:
                     state[scope + "_paused"] = command == "/pause"
             state = self.api.call("PUT", path, state)
-        return self.say(chat_id, "Запросы сотрудников: " + ("пауза" if state['queries_paused'] else "работают") + "\nРассылки: " + ("пауза" if state['deliveries_paused'] else "работают") + "\nАдминистраторы могут проверять запросы и управлять ботом во время паузы.")
-
-    def _admin_menu(self, user_id, chat_id):
-        state = self._manage(user_id)
-        rows = [
-            [(park["name"][:50], f"n:park:{park['id']}")]
-            for park in state["parks"][:40]
-        ]
-        self.say(
+        return self.say(
             chat_id,
-            "Управление Telegram · выберите парк.\n"
+            "Запросы сотрудников: "
+            + ("пауза" if state["queries_paused"] else "работают")
+            + "\nРассылки: "
+            + ("пауза" if state["deliveries_paused"] else "работают")
+            + "\nАдминистраторы могут проверять запросы и управлять ботом во время паузы.",
+        )
+
+    def _admin_menu(self, user_id, chat_id, section="home"):
+        state = self._manage(user_id)
+        if section == "home":
+            context = self.api.call("GET", f"/context?telegram_user_id={user_id}")
+            self.say(chat_id, "⚙️ Управление", reply=_reply_keyboard(context))
+            return self.say(
+                chat_id,
+                "Выберите раздел:",
+                rows=[
+                    [("📍 Локации", "n:menu:parks"), ("👥 Люди", "n:menu:people")],
+                    [("📢 Рассылки и отчёты", "n:menu:sends")],
+                    [("⚙️ Система", "n:menu:system")],
+                    [("🛠 Хост и обновления", "n:menu:host")],
+                ],
+            )
+        back = [("← Управление", "n:menu:home")]
+        if section in {"parks", "sends"}:
+            rows = _grid(
+                [(p["name"][:45], f"n:park:{p['id']}") for p in state["parks"][:48]]
+            )
+            rows.append(back)
+            return self.say(
+                chat_id,
+                "📍 Выберите локацию"
+                if section == "parks"
+                else "📢 Рассылки и отчёты\nВыберите парк: PNG, Zoom, СК, тексты и расписания.",
+                rows=rows,
+            )
+        if section == "people":
+            return self.say(
+                chat_id,
+                "👥 Люди",
+                rows=[
+                    [("🆕 Заявки на доступ", "n:requests:0")],
+                    [("👥 Сотрудники", "n:users:0")],
+                    [("📊 Статистика сотрудников", "n:menu:usage")],
+                    back,
+                ],
+            )
+        if section == "usage":
+            return self._stats(user_id, chat_id, all_users=True)
+        if section == "system":
+            return self.say(
+                chat_id,
+                "⚙️ Система",
+                rows=[
+                    [("📊 Статус", "n:control:status")],
+                    [("⏸ Пауза", "n:control:pause"), ("▶️ Старт", "n:control:resume")],
+                    back,
+                ],
+            )
+        if section == "host":
+            return self.say(
+                chat_id,
+                "🛠 Хост и обновления\nОбновления, диагностика и токены доступны в Robopark → Система. Секреты вводятся в защищённой форме сайта.",
+                rows=[back],
+            )
+
+    def _commands(self, chat_id):
+        return self.say(
+            chat_id,
+            "Команды настройки\n"
             "/chat ПАРК CHAT_ID [THREAD_ID] — чат и тема\n"
             "/new ПАРК text|zoom|report|campaign НАЗВАНИЕ — создать выключенное задание\n"
             "/set ID поле значение — изменить задание\n"
@@ -257,10 +585,29 @@ class BotService:
             "Поля: time, text, url, weekdays (0=Пн), tracker_tag, start_hour, end_hour, alternate, anchor_date, timezone, schedule, run_at.\n"
             "Чередование: even — группа A в опорную дату, odd — группа B на следующий день. run_at: дата и время с часовым поясом, например 2026-12-01T09:00:00+03:00.\n"
             "Секреты и глобальный запуск меняются в Robopark.",
-            rows=rows,
         )
 
     def _callback(self, user_id, chat_id, data, context):
+        legacy = re.fullmatch(
+            r"(tasks|hist|move|mhist|zip|qr):([aа]?\d{1,6})", data, re.IGNORECASE
+        )
+        if legacy:
+            view = {
+                "tasks": "open",
+                "hist": "history",
+                "move": "moves",
+                "mhist": "moves_history",
+                "zip": "parts",
+                "qr": "qr",
+            }[legacy[1].lower()]
+            robot = parse_robot(legacy[2])
+            return (
+                self._qr(user_id, chat_id, robot)
+                if view == "qr"
+                else self._search(user_id, chat_id, robot, view)
+            )
+        if data.startswith("adm:") and context.get("can_manage"):
+            return self._admin_menu(user_id, chat_id)
         parts = data.split(":")
         if len(parts) < 3 or parts[0] != "n":
             return self.say(chat_id, "Это меню устарело. Отправьте /start.")
@@ -273,8 +620,81 @@ class BotService:
             return self.say(
                 chat_id, "Для управления нужен администратор назначенного парка."
             )
+        if action == "menu":
+            return self._admin_menu(user_id, chat_id, item)
+        if action == "users":
+            return self._users(user_id, chat_id, item)
+        if action == "user":
+            self.memberships.pop(user_id, None)
+            return self._users(user_id, chat_id, target_id=int(item))
+        if action == "revoke":
+            if len(parts) != 4:
+                raise ValueError("invalid membership action")
+            users = self.api.call("GET", f"/manage/users?telegram_user_id={user_id}")
+            person = next((u for u in users if u["user_id"] == int(item)), None)
+            park = (
+                next((p for p in person["parks"] if p["id"] == int(parts[3])), None)
+                if person
+                else None
+            )
+            if not park:
+                raise ServiceError("park_out_of_scope", status=403)
+            if person["role"] in {"admin", "royal"} and context.get("role") != "royal":
+                return self.say(chat_id, "Доступ администраторов меняет только royal.")
+            nonce = uuid.uuid4().hex[:16]
+            self.memberships[user_id] = (time.monotonic() + 300, nonce, person, park)
+            self.memberships.move_to_end(user_id)
+            while len(self.memberships) > 256:
+                self.memberships.popitem(last=False)
+            return self.say(
+                chat_id,
+                f"Убрать доступ сотрудника {person.get('display_name') or person['username']} к парку {park['name']}? Остальные назначения сохранятся.",
+                rows=[
+                    [("Да, убрать доступ", f"n:revokeconfirm:{nonce}")],
+                    [("Отмена", f"n:user:{item}")],
+                ],
+            )
+        if action == "revokeconfirm":
+            flow = self.memberships.get(user_id)
+            if not flow or flow[0] < time.monotonic() or flow[1] != item:
+                return self.say(
+                    chat_id, "Подтверждение истекло. Откройте /users заново."
+                )
+            _, _, person, park = flow
+            self.api.call(
+                "DELETE",
+                f"/manage/users/{person['user_id']}/parks/{park['id']}?telegram_user_id={user_id}",
+                {"expected_park_ids": sorted(p["id"] for p in person["parks"])},
+            )
+            self.memberships.pop(user_id, None)
+            return self.say(
+                chat_id,
+                f"Доступ к парку {park['name']} отозван.",
+                rows=[[("← Люди", "n:users:0")]],
+            )
+        if action == "control":
+            if item not in {"status", "pause", "resume"}:
+                raise ValueError("invalid control")
+            return self._control(user_id, chat_id, "/" + item, "all", context)
         if action == "requests":
             return self._requests(user_id, chat_id, item)
+        if action == "select":
+            if len(parts) != 5:
+                raise ValueError("invalid selection")
+            return self._select_access(
+                user_id, chat_id, int(item), int(parts[3]), int(parts[4])
+            )
+        if action in {"greet", "custom"}:
+            flow = self.approvals.get(user_id)
+            if not flow or flow["nonce"] != item or flow["expires"] < time.monotonic():
+                return self.say(chat_id, "Выбор истёк. Откройте /requests заново.")
+            if action == "custom":
+                flow["custom"] = True
+                return self.say(
+                    chat_id,
+                    "✏️ Отправьте приветствие сотруднику (до 2000 символов). /cancel — отменить.",
+                )
+            return self._approve_access(user_id, chat_id, flow)
         if action in {"approve", "reject"}:
             if len(parts) != 4:
                 raise ValueError("invalid access decision")
@@ -283,12 +703,27 @@ class BotService:
                 f"/access/requests/{int(item)}/decision?telegram_user_id={user_id}",
                 {"approve": action == "approve", "revision": int(parts[3])},
             )
+            self.approvals.pop(user_id, None)
             self.say(
                 chat_id,
                 f"Заявка №{result['request']['id']}: "
                 + ("доступ одобрен." if action == "approve" else "отклонена."),
             )
-            return self._requests(user_id, chat_id)
+            recipient = result["request"].get("telegram_user_id")
+            if recipient:
+                try:
+                    self.say(
+                        recipient,
+                        "✅ Доступ открыт. Отправьте номер робота; /help — помощь."
+                        if action == "approve"
+                        else "Заявка отклонена администратором. Уточните доступ у администратора своего парка.",
+                    )
+                except ServiceError:
+                    self.say(
+                        chat_id,
+                        "Решение сохранено, но уведомление сотруднику не доставлено.",
+                    )
+            return
         if action == "sendconfirm":
             confirmation = self.sends.get(user_id)
             if (
@@ -330,10 +765,47 @@ class BotService:
                 ]
                 for j in jobs[:40]
             ]
+            rows += [
+                [("➕ Создать рассылку", f"n:newmenu:{park['id']}")],
+                [("← Локации", "n:menu:parks")],
+            ]
             return self.say(
                 chat_id,
                 f"{park['name']} · {park['tag']}\nID парка: {park['id']}\nЧат: {park.get('chat_id') or 'не задан'}, тема: {park.get('thread_id') or 'общая'}\nЗаданий: {len(jobs)}",
                 rows=rows,
+            )
+        if action == "newmenu":
+            return self.say(
+                chat_id,
+                "Что создать? Задание появится выключенным — сначала заполните настройки.",
+                rows=[
+                    [
+                        ("📤 PNG", f"n:newjob:{item}:report"),
+                        ("📢 Текст", f"n:newjob:{item}:text"),
+                    ],
+                    [
+                        ("🍩 СК", f"n:newjob:{item}:campaign"),
+                        ("📹 Zoom", f"n:newjob:{item}:zoom"),
+                    ],
+                    [("← Назад", f"n:park:{item}")],
+                ],
+            )
+        if action == "newjob":
+            if len(parts) != 4 or parts[3] not in {
+                "report",
+                "text",
+                "campaign",
+                "zoom",
+            }:
+                raise ValueError("invalid job kind")
+            titles = {
+                "report": "PNG отчёт",
+                "text": "Объявление",
+                "campaign": "СК",
+                "zoom": "Созвон",
+            }
+            return self._admin_command(
+                user_id, chat_id, f"/new {int(item)} {parts[3]} {titles[parts[3]]}"
             )
         if action == "job":
             return self._show_job(user_id, chat_id, item)
@@ -535,6 +1007,14 @@ class BotService:
             except ServiceError:
                 pass
         text = str(message.get("text") or "").strip()
+        text = {
+            "⚙️ Управление": "/admin",
+            "📊 Статус": "/status",
+            "ℹ️ Помощь": "/help",
+            "🔍 Робот": "/robot",
+            "⏸ Пауза": "/pause all",
+            "▶️ Старт": "/resume all",
+        }.get(text, text)
         if chat.get("type") != "private":
             # Group replies must not expose another user's scoped task data or link codes.
             if text.split("@")[0] == "/where":
@@ -544,6 +1024,14 @@ class BotService:
                 )
             return
         try:
+            if callback and str(callback.get("data") or "").startswith(
+                ("n:join:", "n:apply:")
+            ):
+                return self._join_callback(
+                    user_id, chat_id, str(callback["data"]), sender
+                )
+            if not callback and text in {"/register", "/join"}:
+                return self._join(chat_id)
             if text.startswith("/link ") and not callback:
                 code = text.split(maxsplit=1)[1]
                 if len(code) > 128:
@@ -574,6 +1062,16 @@ class BotService:
                 return self._callback(
                     user_id, chat_id, str(callback.get("data") or ""), context
                 )
+            if text == "/help":
+                return self._help(chat_id, context)
+            if text == "/robot":
+                return self.say(
+                    chat_id,
+                    "🔍 Отправьте номер робота, например 1460 или a1460.",
+                    reply=_reply_keyboard(context),
+                )
+            if text == "/commands" and context.get("can_manage"):
+                return self._commands(chat_id)
             command, _, argument = text.partition(" ")
             if command == "/qr":
                 robot = parse_robot(argument)
@@ -588,16 +1086,31 @@ class BotService:
                 if not context.get("can_manage"):
                     raise ServiceError("permission_denied", status=403)
                 if command == "/users":
-                    return self.say(chat_id, "Заявки на доступ: /requests. Роли, список пользователей и отключение аккаунтов: Robopark → Администрирование → Пользователи. Изменения сразу действуют в боте.")
+                    return self._users(user_id, chat_id)
                 return self._control(user_id, chat_id, command, argument, context)
             if text == "/cancel":
                 self.pending.pop(user_id, None)
                 self.sends.pop(user_id, None)
+                self.approvals.pop(user_id, None)
+                self.memberships.pop(user_id, None)
                 return self.say(chat_id, "Ввод отменён.")
             if text in {"/requests", "/approvals"}:
                 if not context.get("can_manage"):
                     raise ServiceError("permission_denied", status=403)
                 return self._requests(user_id, chat_id)
+            approval = self.approvals.get(user_id)
+            if approval and approval["custom"] and not text.startswith("/"):
+                if not context.get("can_manage"):
+                    raise ServiceError("permission_denied", status=403)
+                if approval["expires"] < time.monotonic():
+                    self.approvals.pop(user_id, None)
+                    return self.say(chat_id, "Выбор истёк. Откройте /requests заново.")
+                if not text or len(text) > 2000:
+                    return self.say(
+                        chat_id,
+                        "Приветствие должно быть от 1 до 2000 символов. /cancel — отменить.",
+                    )
+                return self._approve_access(user_id, chat_id, approval, text)
             pending = self.pending.pop(user_id, None)
             if pending and not text.startswith("/") and pending[0] >= time.monotonic():
                 if not context.get("can_manage"):
@@ -623,13 +1136,7 @@ class BotService:
             robot = parse_robot(argument if view != "open" else text)
             if robot:
                 return self._search(user_id, chat_id, robot, view)
-            self.say(
-                chat_id,
-                "Robopark · отправьте номер робота — покажу задачи ваших парков.\n"
-                "/history НОМЕР — история ремонтов\n/moves НОМЕР — перемещения\n/parts НОМЕР — запчасти\n/qr НОМЕР — QR-код YASADR\n/stats — мои запросы\n/admin — управление рассылками\n"
-                "/requests — заявки на доступ (для админов)\n/access — мой доступ и парки\n"
-                "/where в группе — узнать чат и тему для настройки.",
-            )
+            self._help(chat_id, context)
         except ValueError:
             self.say(
                 chat_id, "Неверный формат. Проверьте номер, ID или время и повторите."
@@ -650,8 +1157,10 @@ class BotService:
                 text = "Запросы временно на паузе. Администратор может возобновить их в Robopark или Telegram."
             elif error.code == "request_already_resolved":
                 text = "Заявку уже обработал другой администратор. /requests — обновить список."
-            elif error.status in {401, 403}:
-                text = "Доступ не подтверждён. Войдите или зарегистрируйтесь в Robopark, получите код привязки Telegram и отправьте /link КОД. Если уже связали аккаунт — /access для заявки в парк."
+            elif error.status == 403:
+                return self._join(chat_id)
+            elif error.status == 401:
+                text = "Не удалось проверить доступ. Повторите позже или обратитесь к администратору."
             elif error.status in {409, 412}:
                 text = "Настройки изменились или код уже использован. Обновите данные в Robopark или откройте /admin заново."
             elif error.status == 422:
@@ -666,7 +1175,9 @@ class BotService:
         job, park = item["job"], item["park"]
         started, sent_parts = False, 0
         try:
-            text = (job.get("text") or job["title"]).replace("{link}", job.get("url") or "")
+            text = (job.get("text") or job["title"]).replace(
+                "{link}", job.get("url") or ""
+            )
             if job.get("url") and job["url"] not in text:
                 text += "\n" + job["url"]
             parts = []
@@ -675,21 +1186,61 @@ class BotService:
                 issues = content["issues"]
                 if len(issues) > 500:
                     raise ServiceError("report_response_too_large")
-                text = f"{park['name']} · {job['title']}" + ("\n" + text if text != job["title"] else "")
+                text = f"{park['name']} · {job['title']}" + (
+                    "\n" + text if text != job["title"] else ""
+                )
                 if content.get("truncated"):
                     text += "\nВыборка ограничена; полный список — в Robopark."
                 if job["kind"] == "campaign":
-                    parts.append(("sendPhoto", {"caption": text}, render_campaign(job, park, issues, truncated=content.get("truncated", False))))
+                    parts.append(
+                        (
+                            "sendPhoto",
+                            {"caption": text},
+                            render_campaign(
+                                job,
+                                park,
+                                issues,
+                                truncated=content.get("truncated", False),
+                            ),
+                        )
+                    )
                 else:
                     pages = report_page_count(issues)
                     for page in range(pages):
                         caption = text + (f" · {page + 1}/{pages}" if pages > 1 else "")
-                        parts.append(("sendPhoto", {"caption": caption}, render_report(job, park, issues, truncated=content.get("truncated", False), report_summary=content.get("report_summary"), page=page)))
+                        parts.append(
+                            (
+                                "sendPhoto",
+                                {"caption": caption},
+                                render_report(
+                                    job,
+                                    park,
+                                    issues,
+                                    truncated=content.get("truncated", False),
+                                    report_summary=content.get("report_summary"),
+                                    page=page,
+                                ),
+                            )
+                        )
                     for part in watchdog_parts(issues):
-                        parts.append(("sendMessage", {"text": part, "parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}, None))
+                        parts.append(
+                            (
+                                "sendMessage",
+                                {
+                                    "text": part,
+                                    "parse_mode": "HTML",
+                                    "link_preview_options": {"is_disabled": True},
+                                },
+                                None,
+                            )
+                        )
             else:
                 parts.append(("sendMessage", {"text": text}, None))
-            if any(len(body.get("caption", body.get("text", ""))) > (1024 if photo is not None else 4096) for _, body, photo in parts):
+            if any(
+                len(body.get("caption", body.get("text", "")))
+                > (1024 if photo is not None else 4096)
+                for _, body, photo in parts
+            ):
                 raise ServiceError("message_too_long")
             ready = self.api.call("POST", base + "/begin", lease)
             if ready.get("ready") is not True:

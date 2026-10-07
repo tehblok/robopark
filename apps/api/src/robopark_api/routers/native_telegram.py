@@ -36,12 +36,17 @@ from robopark_api.native_telegram_schemas import (
     NativeAccessRequestCreate,
     NativeBotAdminOut,
     NativeBotHealthIn,
+    NativeManagedUserOut,
+    NativeManagedUserParkMutationIn,
     NativeMigrationApplyIn,
     NativeMigrationApplyOut,
     NativeMigrationPreview,
     ParkBotOut,
     ParkBotUpdate,
     TelegramContextOut,
+    TelegramOnboardingParksOut,
+    TelegramOnboardingRequestIn,
+    TelegramOnboardingRequestOut,
 )
 from robopark_api.native_telegram_usage_schemas import (
     NativeBotControlOut,
@@ -62,11 +67,15 @@ def _access_request_out(db: Session, row: ParkRequest) -> AccessRequestOut:
     park = db.get(Park, row.park_id)
     if applicant is None or park is None or applicant.role not in access_requests.APPLICANT_ROLES:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="access_request_invalid")
+    account = db.get(TelegramAccount, applicant.id)
     return AccessRequestOut(
         id=row.id,
         revision=row.revision,
         user_id=applicant.id,
         username=applicant.username,
+        telegram_user_id=account.telegram_user_id if account is not None else None,
+        display_name=account.display_name if account is not None else None,
+        telegram_username=account.telegram_username if account is not None else None,
         role=applicant.role,
         user_access_status=applicant.access_status,
         park=AccessParkOut(id=park.id, name=park.name),
@@ -106,6 +115,20 @@ def _access_snapshot(db: Session, user: User) -> NativeAccessOut:
             if is_applicant
             else []
         ),
+    )
+
+
+def _managed_user_out(
+    user: User, account: TelegramAccount, parks: list[Park]
+) -> NativeManagedUserOut:
+    return NativeManagedUserOut(
+        user_id=user.id,
+        username=user.username,
+        role=user.role,
+        telegram_user_id=account.telegram_user_id,
+        display_name=account.display_name,
+        telegram_username=account.telegram_username,
+        parks=[AccessParkOut(id=park.id, name=park.name) for park in parks],
     )
 
 
@@ -323,6 +346,47 @@ def internal_link(payload: LinkCodeIn, db: Session = Depends(get_db)) -> dict:
 
 
 @router.get(
+    "/internal/bot/native/onboarding/parks",
+    response_model=TelegramOnboardingParksOut,
+    dependencies=[Depends(require_bot_key)],
+)
+def internal_onboarding_parks(db: Session = Depends(get_db)) -> TelegramOnboardingParksOut:
+    return TelegramOnboardingParksOut(
+        parks=[AccessParkOut(id=park.id, name=park.name) for park in service.onboarding_parks(db)]
+    )
+
+
+@router.post(
+    "/internal/bot/native/onboarding/request",
+    response_model=TelegramOnboardingRequestOut,
+    dependencies=[Depends(require_bot_key)],
+)
+def internal_onboarding_request(
+    payload: TelegramOnboardingRequestIn,
+    db: Session = Depends(get_db),
+) -> TelegramOnboardingRequestOut:
+    state, user, request, created = service.request_onboarding_access(
+        db,
+        telegram_user_id=payload.telegram_user_id,
+        requested_role=payload.role,
+        park_id=payload.park_id,
+        display_name=payload.display_name,
+        telegram_username=payload.telegram_username,
+    )
+    return TelegramOnboardingRequestOut(
+        state=state,
+        user_id=user.id,
+        request_id=request.id if request is not None else None,
+        role=user.role,
+        park_id=payload.park_id,
+        display_name=payload.display_name,
+        notify_admin_ids=(
+            service.onboarding_admin_telegram_ids(db, payload.park_id) if created else []
+        ),
+    )
+
+
+@router.get(
     "/internal/bot/native/access",
     response_model=NativeAccessOut,
     dependencies=[Depends(require_bot_key)],
@@ -380,10 +444,82 @@ def internal_access_decision(
         request_id,
         approve=payload.approve,
         revision=payload.revision,
+        target_park_id=payload.target_park_id,
+        global_access=payload.global_access,
     )
     return AccessDecisionOut(
         request=_access_request_out(db, row),
         user_access_status=applicant.access_status,
+    )
+
+
+@router.get(
+    "/internal/bot/native/manage/users",
+    response_model=list[NativeManagedUserOut],
+    dependencies=[Depends(require_bot_key)],
+)
+def internal_managed_users(
+    telegram_user_id: int = Query(ge=1, le=2**63 - 1),
+    db: Session = Depends(get_db),
+) -> list[NativeManagedUserOut]:
+    actor = _telegram_manager(db, telegram_user_id)
+    return [
+        _managed_user_out(user, account, parks)
+        for user, account, parks in service.managed_telegram_users(db, actor)
+    ]
+
+
+def _internal_update_managed_user_park(
+    user_id: int,
+    park_id: int,
+    payload: NativeManagedUserParkMutationIn,
+    telegram_user_id: int,
+    db: Session,
+    *,
+    assigned: bool,
+) -> NativeManagedUserOut:
+    user, account, parks = service.update_managed_user_park(
+        db,
+        _telegram_manager(db, telegram_user_id),
+        user_id=user_id,
+        park_id=park_id,
+        expected_park_ids=payload.expected_park_ids,
+        assigned=assigned,
+    )
+    return _managed_user_out(user, account, parks)
+
+
+@router.put(
+    "/internal/bot/native/manage/users/{user_id}/parks/{park_id}",
+    response_model=NativeManagedUserOut,
+    dependencies=[Depends(require_bot_key)],
+)
+def internal_assign_managed_user_park(
+    user_id: int,
+    park_id: int,
+    payload: NativeManagedUserParkMutationIn,
+    telegram_user_id: int = Query(ge=1, le=2**63 - 1),
+    db: Session = Depends(get_db),
+) -> NativeManagedUserOut:
+    return _internal_update_managed_user_park(
+        user_id, park_id, payload, telegram_user_id, db, assigned=True
+    )
+
+
+@router.delete(
+    "/internal/bot/native/manage/users/{user_id}/parks/{park_id}",
+    response_model=NativeManagedUserOut,
+    dependencies=[Depends(require_bot_key)],
+)
+def internal_remove_managed_user_park(
+    user_id: int,
+    park_id: int,
+    payload: NativeManagedUserParkMutationIn,
+    telegram_user_id: int = Query(ge=1, le=2**63 - 1),
+    db: Session = Depends(get_db),
+) -> NativeManagedUserOut:
+    return _internal_update_managed_user_park(
+        user_id, park_id, payload, telegram_user_id, db, assigned=False
     )
 
 
