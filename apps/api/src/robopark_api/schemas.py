@@ -41,6 +41,8 @@ class ParkOut(BaseModel):
     tracker_type: str | None = None
     group_id: int | None = None
     chat_id: int | None = None
+    thread_id: int | None = None
+    bot_revision: int = 1
     feature_reports: bool = True
     feature_blockers: bool = True
     feature_sla_repair: bool = True
@@ -62,6 +64,14 @@ class ParkCreate(BaseModel):
     tracker_type: str | None = Field(default=None, max_length=64)
     group_id: int | None = None
     chat_id: int | None = None
+
+    @field_validator("chat_id")
+    @classmethod
+    def native_destination_only(cls, value: int | None) -> int | None:
+        if value is not None:
+            raise ValueError("telegram destinations are configured after park creation")
+        return value
+
     feature_reports: bool = True
     feature_blockers: bool = True
     feature_sla_repair: bool = True

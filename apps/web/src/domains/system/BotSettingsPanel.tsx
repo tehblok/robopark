@@ -25,7 +25,7 @@ function runtimeLabel(state: string | undefined): string {
   return 'Не подтверждён'
 }
 
-export function BotSettingsPanel({ client = botClient }: { client?: BotClient }) {
+export function BotSettingsPanel({ client = botClient, showLegacyImport = true }: { client?: BotClient; showLegacyImport?: boolean }) {
   const [status, setStatus] = useState<BotStatus | null>(null)
   const [token, setToken] = useState('')
   const [archive, setArchive] = useState<File | null>(null)
@@ -96,7 +96,7 @@ export function BotSettingsPanel({ client = botClient }: { client?: BotClient })
         <Button busy={busy} disabled={!token.trim()} onClick={() => void saveToken()} type="button" variant="secondary">Сохранить токен</Button>
         <Button busy={busy} disabled={!status || (!status.desired_enabled && !status.token_configured)} onClick={() => void toggle()} type="button" variant={status?.desired_enabled ? 'danger' : 'primary'}>{status?.desired_enabled ? 'Выключить бота' : 'Включить бота'}</Button>
       </div>
-      <div className="rp-bot-settings__import">
+      {showLegacyImport && <div className="rp-bot-settings__import">
         <h3>Данные существующего бота</h3>
         <p>Архив проверяется перед импортом. Существующие данные не перезаписываются; бот должен быть выключен.</p>
         <FileField accept=".zip,application/zip" disabled={busy || status?.desired_enabled} label="Архив данных бота" onChange={event => { setArchive(event.target.files?.[0] ?? null); setPreview(null) }} selectedFileLabel={archive?.name} />
@@ -105,7 +105,7 @@ export function BotSettingsPanel({ client = botClient }: { client?: BotClient })
           {preview && <Button busy={busy} disabled={status?.desired_enabled} onClick={() => void importArchive(true)} type="button">Импортировать данные</Button>}
         </div>
         {preview && <div className="rp-bot-settings__preview"><strong>Проверено: {preview.files.length} файлов, {preview.total_bytes.toLocaleString('ru-RU')} байт</strong><ul>{preview.files.map(file => <li key={file.filename}><span>{file.filename}</span> · {file.byte_count.toLocaleString('ru-RU')} байт</li>)}</ul></div>}
-      </div>
+      </div>}
       <Button disabled={busy} onClick={() => setRevision(value => value + 1)} type="button" variant="ghost">Обновить состояние</Button>
     </div>
   </Panel>

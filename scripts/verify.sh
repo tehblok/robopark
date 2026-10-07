@@ -63,6 +63,19 @@ run_web() {
   )
 }
 
+run_bot() {
+  PYTHONDONTWRITEBYTECODE=1 \
+    uv run --project apps/api --frozen --extra dev \
+      --with-requirements apps/bot/requirements.lock \
+      python -m pytest -p no:cacheprovider -q \
+      tests/bot/test_native_reports.py \
+      tests/bot/test_native_campaigns.py \
+      tests/bot/test_native_qr.py \
+      tests/bot/test_native_service.py \
+      tests/bot/test_native_transport.py \
+      tests/bot/test_bot_runtime_packaging.py
+}
+
 run_docker() {
   command -v docker >/dev/null 2>&1 || {
     echo "docker is required for the docker verification target" >&2
@@ -138,7 +151,7 @@ run_soak() {
 
 usage() {
   printf '%s\n' \
-    "usage: $0 [fast|full|load|soak|api|api-postgres|web|docker|host|ota|terminal-linux]" \
+    "usage: $0 [fast|full|load|soak|api|api-postgres|web|bot|docker|host|ota|terminal-linux]" \
     "" \
     "fast  Short static and focused regression checks (typically under 2 minutes)." \
     "full  Full API, PostgreSQL, web, Docker and host verification; may take many minutes." \
@@ -175,6 +188,9 @@ case "${1:-all}" in
   web)
     run_web
     ;;
+  bot)
+    run_bot
+    ;;
   docker)
     run_docker
     ;;
@@ -187,6 +203,7 @@ case "${1:-all}" in
   full|all)
     run_api
     run_api_postgres
+    run_bot
     run_web
     run_docker
     run_host

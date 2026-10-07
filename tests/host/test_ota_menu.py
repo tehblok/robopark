@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from io import StringIO
+from pathlib import Path
 
 import pytest
 from robopark_ota import cli
@@ -160,8 +161,9 @@ def test_tuna_restored_only_when_enabled_without_reading_credentials():
 
 def test_local_update_restores_tuna_using_previous_updater(monkeypatch, host_paths):
     from types import SimpleNamespace
-    from robopark_ota import local_update
+
     from robopark_host import ota_update, updater
+    from robopark_ota import local_update
 
     release = host_paths.releases / "installed"
     tools = release / "deploy/host"
@@ -192,3 +194,13 @@ def test_local_update_stages_private_hash_checked_copy(tmp_path):
 
     assert target.read_bytes() == source.read_bytes()
     assert target.stat().st_mode & 0o077 == 0
+
+
+def test_online_preset_install_passes_explicit_preset_without_opening_menu(monkeypatch, tmp_path):
+    calls = []
+    bundle = tmp_path / "robopark.ota"
+    monkeypatch.setattr(cli, "_bundle_path", lambda: bundle)
+    monkeypatch.setattr(cli, "_clean_install", lambda path, root, **kwargs: calls.append((path, root, kwargs)))
+    monkeypatch.setattr(cli, "run_interactive", lambda: pytest.fail("unexpected menu"))
+    assert cli.main(["install", "--preset", "robopark"]) == 0
+    assert calls == [(bundle, Path("/"), {"preset": "robopark"})]

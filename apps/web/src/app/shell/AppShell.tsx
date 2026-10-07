@@ -5,6 +5,7 @@ import { useAuth } from '../../auth-context'
 import { Button, IconButton } from '../../design-system/actions/Button'
 import { Icon } from '../../design-system/icons/Icon'
 import { BottomSheet } from '../../design-system/overlays/BottomSheet'
+import { Dialog } from '../../design-system/overlays/Dialog'
 import { useTheme } from '../../design-system/theme/themeContext'
 import { DENSITY_MEDIA_QUERY } from '../../design-system/theme/theme'
 import { ru, roleLabel } from '../../i18n/ru'
@@ -25,6 +26,7 @@ import { clearLegacyShareTargetNotice, useLegacyShareTargetNotice, usePendingSha
 import { SyncCenter } from '../../pwa/SyncCenter'
 import { readReportPhotoDraft, writeReportPhotoDraft } from '../../domains/reports/reportPhotoDrafts'
 import { reportDraftKey } from '../../domains/reports/reports'
+import { TelegramAccountPanel } from '../../domains/telegram/TelegramAccountPanel'
 
 const GROUPS: readonly NavGroup[] = [
   'operations',
@@ -331,6 +333,7 @@ export function AppShell() {
   const navigationTypeRef = useRef(navigationType)
   const previousPathname = useRef(location.pathname)
   const [moreOpen, setMoreOpen] = useState(false)
+  const [telegramOpen, setTelegramOpen] = useState(false)
   const [installPrompt, setInstallPrompt] = useState(currentInstallPrompt)
   const [installHelp, setInstallHelp] = useState('')
   const [railCollapsed, setRailCollapsed] = useState(false)
@@ -679,6 +682,10 @@ export function AppShell() {
             <Icon name="settings" size={20} />
             <span className="rp-shell__nav-label">Сменить пароль</span>
           </Link>
+          <button className="rp-shell__more-link" onClick={() => { setMoreOpen(false); setTelegramOpen(true) }} type="button">
+            <Icon name="send" size={20} />
+            <span className="rp-shell__nav-label">Telegram</span>
+          </button>
           <button className="rp-shell__more-link" onClick={() => void installApp()} type="button">
             <Icon name="download" size={20} />
             <span className="rp-shell__nav-label">Установить приложение</span>
@@ -754,6 +761,14 @@ export function AppShell() {
         <footer className="rp-shell__about">Разработчик: tehblokdan</footer>
         </div>
       </BottomSheet>
+      <Dialog
+        description="Привязка нужна для команд бота в доступных вам парках."
+        onOpenChange={setTelegramOpen}
+        open={telegramOpen}
+        title="Telegram"
+      >
+        <TelegramAccountPanel key={user.id} />
+      </Dialog>
       <ShareTargetInbox
         accountId={user.id}
         shareId={shareTargetId}

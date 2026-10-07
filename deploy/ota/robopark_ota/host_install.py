@@ -30,6 +30,8 @@ from .verify import VerifiedOta, verify_ota
 _DOCKER_KEY_SHA256 = "1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570"
 # Tuna's Debian repository key, checked on 2026-09-27. Review rotations.
 _TUNA_KEY_SHA256 = "c9844bf13fb6fab684ae2eacf9c5c01ce1917eeb52321727759195a6536330c0"
+_SUPPORT_SSH_UNITS = ("ssh.service", "sshd.service", "ssh.socket")
+_SUPPORT_SSH_FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{20,64}={0,2}$")
 
 
 def validate_host_platform(root: Path, requirements: OtaRequirements) -> None:
@@ -328,6 +330,7 @@ class HostInstallRuntime:
         *,
         root: Path = Path("/"),
         tuna: TunaConfiguration | None = None,
+        enable_support_ssh: bool = True,
     ) -> None:
         self.bundle = Path(bundle).resolve(strict=True)
         self.root = Path(root).resolve()
@@ -335,6 +338,7 @@ class HostInstallRuntime:
         self.release = self.root / "opt/robopark/releases" / self.verified.manifest.app_version
         self.etc = self.root / "etc/robopark"
         self.tuna = tuna or TunaConfiguration()
+        self.enable_support_ssh = enable_support_ssh
 
     def _run(
         self, command: list[str], *, check: bool = True, env: dict[str, str] | None = None,
@@ -501,6 +505,122 @@ class HostInstallRuntime:
             "apt-get", "install", "-y", "--no-remove", "--no-install-recommends", "tuna-cli",
         ], env=apt_env)
 
+    def _systemd_unit_state(self, unit: str) -> tuple[str, bool]:
+        enabled = self._run(
+            ["systemctl", "is-enabled", unit], check=False, capture_output=True
+        )
+        active = self._run(
+            ["systemctl", "is-active", unit], check=False, capture_output=True
+        )
+        enabled_state = (enabled.stdout or "").strip()
+        return enabled_state, (active.stdout or "").strip() == "active"
+
+    def _prepare_missing_openssh(self) -> None:
+        if (self.root / "usr/sbin/sshd").is_file():
+            return
+        if self.root == Path("/") and os.geteuid() != 0:
+            raise PermissionError("root_required")
+
+        # A package post-install script must never expose the distribution's
+        # port-22 service. Runtime masks exist only for the apt transaction and
+        # each unit's prior mask/enabled/active state is restored afterwards.
+        prior = {unit: self._systemd_unit_state(unit) for unit in _SUPPORT_SSH_UNITS}
+        newly_masked: list[str] = []
+        try:
+            for unit, (enabled_state, _active) in prior.items():
+                if enabled_state != "masked-runtime":
+                    self._run(["systemctl", "mask", "--runtime", unit])
+                    newly_masked.append(unit)
+            apt_env = {
+                "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                "DEBIAN_FRONTEND": "noninteractive",
+            }
+            self._run(["apt-get", "update"], env=apt_env)
+            self._run(
+                [
+                    "apt-get", "install", "-y", "--no-remove",
+                    "--no-install-recommends", "openssh-server",
+                ],
+                env=apt_env,
+            )
+            if not (self.root / "usr/sbin/sshd").is_file():
+                raise RuntimeError("openssh_server_install_failed")
+        finally:
+            for unit in _SUPPORT_SSH_UNITS:
+                self._run(["systemctl", "stop", unit], check=False)
+            for unit in newly_masked:
+                self._run(["systemctl", "unmask", "--runtime", unit], check=False)
+            for unit, (enabled_state, active) in prior.items():
+                if enabled_state in {"enabled", "enabled-runtime", "linked", "linked-runtime"}:
+                    self._run(["systemctl", "enable", unit], check=False)
+                elif enabled_state not in {"masked", "masked-runtime"}:
+                    self._run(["systemctl", "disable", unit], check=False)
+                if active:
+                    self._run(["systemctl", "start", unit], check=False)
+
+    @staticmethod
+    def _require_release_file(path: Path, error: str) -> None:
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(error)
+        try:
+            if path.stat().st_size <= 0 or path.stat().st_size > 1024 * 1024:
+                raise RuntimeError(error)
+        except OSError as exc:
+            raise RuntimeError(error) from exc
+
+    def configure_support_ssh(self) -> dict[str, object]:
+        if not self.tuna.enabled:
+            raise RuntimeError("support_ssh_requires_tuna")
+        helper = self.release / "deploy/support/ssh_access.py"
+        public_key = self.release / "deploy/support/robopark_support_ed25519.pub"
+        self._require_release_file(helper, "support_ssh_helper_missing")
+        self._require_release_file(public_key, "support_ssh_public_key_missing")
+        self._prepare_missing_openssh()
+
+        installed_helper = self.root / "usr/local/libexec/robopark-ssh-access.py"
+        self._run(
+            [
+                sys.executable, "-I", str(helper), "install",
+                "--public-key-file", str(public_key),
+                "--tuna-env", str(self.etc / "tuna.env"),
+                "--alias", "ssh",
+                "--location", self.tuna.location,
+                "--enable",
+            ],
+            timeout=90,
+        )
+        result = self._run(
+            [sys.executable, "-I", str(installed_helper), "status"],
+            capture_output=True,
+            timeout=15,
+        )
+        raw = result.stdout or ""
+        if len(raw) > 16 * 1024:
+            raise RuntimeError("support_ssh_status_invalid")
+        try:
+            status = json.loads(raw)
+            sshd = status["sshd"]
+            tunnel = status["tuna"]
+            fingerprint = status["host_fingerprint"]
+            ready = (
+                sshd["enabled"] is True
+                and sshd["active"] is True
+                and tunnel["enabled"] is True
+                and tunnel["active"] is True
+                and isinstance(fingerprint, str)
+                and _SUPPORT_SSH_FINGERPRINT.fullmatch(fingerprint) is not None
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("support_ssh_status_invalid") from exc
+        if not ready:
+            raise RuntimeError("support_ssh_not_ready")
+        print(
+            "Резервный SSH включён: alias ssh, "
+            f"регион {self.tuna.location}, пользователь robopark-support, "
+            f"отпечаток хоста {fingerprint}."
+        )
+        return status
+
     def basic_preflight(self) -> None:
         """Reject unsupported hosts and low disk space before asking for secrets."""
         if self.root == Path("/") and os.geteuid() != 0:
@@ -647,6 +767,8 @@ class HostInstallRuntime:
             public_origin=self.tuna.public_origin,
         )
         write_tuna_configuration(self.etc, self.tuna)
+        if getattr(self, "enable_support_ssh", True):
+            self.configure_support_ssh()
         self._run(
             [
                 sys.executable,
@@ -698,6 +820,52 @@ class HostInstallRuntime:
         storage.require_storage(self.root)
         self._run(
             seed_command(credential_path, compose_prefix=self._compose_prefix()),
+        )
+        preset_key_path = getattr(self, "preset_key_path", None)
+        if preset_key_path is None:
+            return
+        key_path = Path(preset_key_path)
+        preset_path = self.release / "deploy/support/robopark-install-preset.enc"
+        try:
+            key_info = key_path.lstat()
+        except OSError as exc:
+            raise RuntimeError("install_preset_key_invalid") from exc
+        if (
+            key_path.is_symlink()
+            or not stat.S_ISREG(key_info.st_mode)
+            or stat.S_IMODE(key_info.st_mode) != 0o600
+            or key_info.st_size <= 0
+            or key_info.st_size > 4096
+        ):
+            raise RuntimeError("install_preset_key_invalid")
+        try:
+            preset_info = preset_path.lstat()
+        except OSError as exc:
+            raise RuntimeError("install_preset_missing") from exc
+        if (
+            preset_path.is_symlink()
+            or not stat.S_ISREG(preset_info.st_mode)
+            or preset_info.st_size <= 0
+            or preset_info.st_size > 1024 * 1024
+        ):
+            raise RuntimeError("install_preset_invalid")
+        self._run(
+            [
+                *self._compose_prefix(),
+                "run",
+                "--rm",
+                "--no-deps",
+                "--user",
+                "0:0",
+                "-v",
+                f"{key_path}:/run/robopark/preset-key:ro",
+                "-v",
+                f"{preset_path}:/run/robopark/preset.enc:ro",
+                "api",
+                "python",
+                "-m",
+                "robopark_api.seed_install_preset",
+            ]
         )
 
     def start_application(self) -> None:

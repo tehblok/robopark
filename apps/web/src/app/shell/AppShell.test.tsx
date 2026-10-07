@@ -219,6 +219,19 @@ describe('AppShell', () => {
     expect(screen.getByText(/tehblokdan/)).toBeVisible()
   })
 
+  it('opens current-user Telegram binding from the profile menu for an operator', async () => {
+    const actor = userEvent.setup()
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      linked: false, telegram_user_id: null,
+    }), { status: 200 }))
+    renderShellPath('/overview')
+    await actor.click(screen.getByRole('button', { name: 'Ещё' }))
+    await actor.click(within(screen.getByRole('dialog', { name: 'Ещё' })).getByRole('button', { name: 'Telegram' }))
+    const telegram = screen.getByRole('dialog', { name: 'Telegram' })
+    expect(await within(telegram).findByText('Telegram не привязан')).toBeVisible()
+    expect(fetchMock).toHaveBeenCalledWith('/api/bot/account', expect.objectContaining({ credentials: 'include' }))
+  })
+
   it('puts Overview, Work, Robots and Campaigns first for operators', () => {
     act(() => media.setWidth(390))
     renderShellPath('/work', testUser({

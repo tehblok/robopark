@@ -8,8 +8,6 @@ import { SystemMetrics } from './SystemMetrics'
 import { SystemOperations } from './SystemOperations'
 import { OtaUpdatePanel } from './ota/OtaUpdatePanel'
 import { PrivilegedSecurityPanel } from './PrivilegedSecurityPanel'
-import { BotSettingsPanel } from './BotSettingsPanel'
-import { BotConfigPanel } from './BotConfigPanel'
 import { clearOperationReservation, readOperationReservation } from './operationReservation'
 import './system.css'
 
@@ -222,13 +220,11 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
       <a href="#system-status">Состояние</a>
       <a href="#system-storage">Занятое место</a>
       {royal && user && <a href="#system-security">Безопасность</a>}
-      {royal && user && <a href="#system-bot">Telegram-бот</a>}
       {royal && user && pageCapabilities && <a href="#system-operations">Обслуживание</a>}
       {royal && <a href="/terminal.html">Терминал хоста</a>}
     </nav>}
     {!pageSummary ? !scopedFailed && <LoadingState label="Загружаем состояние системы" variant="page" /> : <SystemMetrics history={pageHistory} summary={pageSummary} />}
     {royal && user && <div className="rp-system-anchor" id="system-security"><PrivilegedSecurityPanel username={user.username} /></div>}
-    {royal && user && <div className="rp-system-anchor rp-system-bot-panels" id="system-bot"><BotSettingsPanel /><BotConfigPanel /></div>}
     {royal && user && pageCapabilities && <div className="rp-system-operation-group" id="system-operations"><OtaUpdatePanel
       actor={user} capabilities={pageCapabilities} currentBuildId={typeof pageSummary?.release?.build_id === 'string' ? pageSummary.release.build_id : null}
       currentVersion={typeof pageSummary?.release?.version === 'string' ? pageSummary.release.version : null}

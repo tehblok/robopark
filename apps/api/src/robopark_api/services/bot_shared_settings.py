@@ -154,6 +154,27 @@ def _open_data_directory(host_data_path: str, *, create: bool) -> int | None:
         raise UnsafeState from exc
 
 
+def _open_telegram_directory(host_data_path: str) -> int | None:
+    root = Path(host_data_path)
+    if not root.exists():
+        return None
+    root_fd = _open_absolute_directory(root)
+    try:
+        descriptor = os.open(
+            "telegram-bot",
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=root_fd,
+        )
+    except FileNotFoundError:
+        os.close(root_fd)
+        return None
+    except OSError as exc:
+        os.close(root_fd)
+        raise UnsafeState from exc
+    os.close(root_fd)
+    return descriptor
+
+
 def _read_file(directory_fd: int | None, filename: str) -> bytes | None:
     if directory_fd is None:
         return None
@@ -283,9 +304,22 @@ def _validate_chat(value: Any) -> None:
 def _validate_locations(value: Any) -> None:
     if not isinstance(value, dict):
         raise InvalidSchema
-    _known(value, {"version", "updated_at", "locations", "status_tags"})
-    if value.get("version", 1) != 1:
+    _known(value, {"version", "updated_at", "locations", "status_tags", "metadata"})
+    if value.get("version", 1) not in {1, 2}:
         raise InvalidSchema
+    metadata = value.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise InvalidSchema
+    _known(metadata, {"deleted_location_keys", "deleted_location_slugs"})
+    for field in ("deleted_location_keys", "deleted_location_slugs"):
+        items = metadata.get(field, [])
+        if (
+            not isinstance(items, list)
+            or len(items) > 500
+            or any(not isinstance(item, str) or not item.strip() for item in items)
+            or len(set(items)) != len(items)
+        ):
+            raise InvalidSchema
     rows = value.get("locations")
     if not isinstance(rows, list) or len(rows) > 500:
         raise InvalidSchema
@@ -302,7 +336,17 @@ def _validate_locations(value: Any) -> None:
             raise InvalidSchema
         _known(
             row,
-            {"key", "display_name", "tracker_tag", "slug", "chats", "logistics", "participation"},
+            {
+                "key",
+                "display_name",
+                "tracker_tag",
+                "slug",
+                "chats",
+                "chat_overrides",
+                "logistics",
+                "participation",
+                "report_window",
+            },
         )
         key = _text(row.get("key"), limit=120)
         if key in keys:
@@ -316,6 +360,21 @@ def _validate_locations(value: Any) -> None:
         _known(chats, {"prod", "test"})
         _validate_chat(chats.get("prod"))
         _validate_chat(chats.get("test"))
+        overrides = row.get("chat_overrides", {})
+        if (
+            not isinstance(overrides, dict)
+            or set(overrides) - {"prod", "test"}
+            or any(not isinstance(flag, bool) for flag in overrides.values())
+        ):
+            raise InvalidSchema
+        report_window = row.get("report_window")
+        if report_window is not None:
+            if not isinstance(report_window, dict):
+                raise InvalidSchema
+            _known(report_window, {"start_hour", "end_hour"})
+            start, end = report_window.get("start_hour"), report_window.get("end_hour")
+            if type(start) is not int or type(end) is not int or not 0 <= start <= end <= 23:
+                raise InvalidSchema
         logistics = row.get("logistics")
         if logistics is not None:
             if not isinstance(logistics, dict):
@@ -350,7 +409,19 @@ def _validate_time(value: Any) -> None:
 def _validate_schedules(value: Any) -> None:
     if not isinstance(value, dict):
         raise InvalidSchema
-    _known(value, {"timezone", "planner_anchor", "send_window", "jobs"})
+    _known(
+        value, {"version", "deleted_job_ids", "timezone", "planner_anchor", "send_window", "jobs"}
+    )
+    if value.get("version", 1) not in {1, 2}:
+        raise InvalidSchema
+    deleted = value.get("deleted_job_ids", [])
+    if (
+        not isinstance(deleted, list)
+        or len(deleted) > 1_000
+        or any(not isinstance(item, str) or not item.strip() for item in deleted)
+        or len(set(deleted)) != len(deleted)
+    ):
+        raise InvalidSchema
     try:
         ZoneInfo(_text(value.get("timezone"), limit=80))
         date.fromisoformat(_text(value.get("planner_anchor"), limit=10))
@@ -577,6 +648,38 @@ def read_all(host_data_path: str) -> dict[str, Section]:
     finally:
         if directory_fd is not None:
             os.close(directory_fd)
+
+
+def read_legacy_sources(host_data_path: str) -> list[tuple[str, dict[str, Section]]]:
+    """Read legacy JSON from both historically used directories without merging them."""
+    sources: list[tuple[str, dict[str, Section]]] = []
+    for label, directory_fd in (
+        ("flat", _open_telegram_directory(host_data_path)),
+        ("nested", _open_data_directory(host_data_path, create=False)),
+    ):
+        if directory_fd is None:
+            continue
+        try:
+            raw_by_section = {
+                section: _read_file(directory_fd, filename)
+                for section, filename in _JSON_FILES.items()
+            }
+            if not any(raw_by_section[name] is not None for name in _JSON_FILES):
+                continue
+            sections: dict[str, Section] = {}
+            for section, raw in raw_by_section.items():
+                if raw is None:
+                    value = _DEFAULTS[section]
+                    raw = _canonical(value)
+                else:
+                    value = _parse_json(section, raw)
+                sections[section] = Section(revision=_revision(raw), value=value)
+            sources.append((label, sections))
+        except BotConfigError as exc:
+            raise type(exc)(f"{label}:{exc}") from exc
+        finally:
+            os.close(directory_fd)
+    return sources
 
 
 def _write_atomic(directory_fd: int, filename: str, raw: bytes) -> None:

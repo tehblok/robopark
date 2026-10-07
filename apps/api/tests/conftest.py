@@ -159,12 +159,14 @@ def clear_response_caches(disable_live_merge_by_default):
     """Every test starts with cold Tracker/Emergency caches — otherwise the
     monkeypatched upstream calls in the previous test would leak through the
     module-level TTL cache and mask real behaviour."""
-    from robopark_api.services import emergency_cache, tracker_cache
+    from robopark_api.services import emergency_cache, tracker_cache, tracker_client
 
     tracker_cache.clear_all()
+    tracker_client.clear_issue_status_history_cache()
     emergency_cache.clear_cache_for_tests()
     yield
     tracker_cache.clear_all()
+    tracker_client.clear_issue_status_history_cache()
     emergency_cache.clear_cache_for_tests()
 
 

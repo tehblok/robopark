@@ -5,6 +5,8 @@ PARK_DEFAULTS = {
     "tracker_type": None,
     "group_id": None,
     "chat_id": None,
+    "thread_id": None,
+    "bot_revision": 1,
     "feature_reports": True,
     "feature_blockers": True,
     "feature_sla_repair": True,

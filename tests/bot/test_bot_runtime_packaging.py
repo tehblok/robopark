@@ -5,10 +5,7 @@ import io
 import json
 import os
 import stat
-import sys
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pytest
 import yaml
@@ -115,23 +112,12 @@ def test_bot_rejects_malformed_token_payload(tmp_path, monkeypatch):
         )
 
 
-def test_bot_schedule_keeps_minute_reminders_and_hourly_reports():
-    module = _entrypoint_module()
-    app_dir = Path("/opt/robopark-bot/legacy/app")
-
-    assert module.scheduled_commands(
-        datetime(2026, 9, 28, 11, 0, tzinfo=ZoneInfo("Europe/Moscow")),
-        app_dir,
-    ) == [
-        [sys.executable, str(app_dir / "meeting_reminders.py"), "tick"],
-        [sys.executable, str(app_dir / "telegram_sender.py")],
-    ]
-    assert module.scheduled_commands(
-        datetime(2026, 9, 28, 11, 1, tzinfo=ZoneInfo("Europe/Moscow")),
-        app_dir,
-    ) == [
-        [sys.executable, str(app_dir / "meeting_reminders.py"), "tick"],
-    ]
+def test_bot_entrypoint_runs_only_the_native_scheduler():
+    source = Path("apps/bot/entrypoint.py").read_text()
+    assert "from native.runtime import run_service" in source
+    assert "meeting_reminders.py" not in source
+    assert "telegram_sender.py" not in source
+    assert "subprocess.Popen" not in source
 
 
 def test_bot_heartbeat_is_private_and_rejects_symlinks(tmp_path):
@@ -142,6 +128,7 @@ def test_bot_heartbeat_is_private_and_rejects_symlinks(tmp_path):
     try:
         assert heartbeat.read_bytes() == b"1\n"
         assert stat.S_IMODE(os.fstat(descriptor).st_mode) == 0o600
+        assert os.fstat(descriptor).st_mtime == 0
     finally:
         os.close(descriptor)
 
@@ -193,7 +180,8 @@ def test_bot_image_runs_unprivileged_without_embedding_runtime_data():
     dockerfile = Path("apps/bot/Dockerfile").read_text(encoding="utf-8")
     dockerignore = Path("apps/bot/.dockerignore").read_text(encoding="utf-8")
     assert "USER robopark" in dockerfile
-    assert "COPY legacy/app ./legacy/app" in dockerfile
+    assert "COPY native ./native" in dockerfile
+    assert "COPY legacy/app" not in dockerfile
     assert "COPY legacy/data" not in dockerfile
     assert "linux/amd64" not in dockerfile
     assert "linux/arm64" not in dockerfile

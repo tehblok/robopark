@@ -15,6 +15,14 @@
 OTA-обновление в разделе «Система». Совместимые исходные версии перечислены
 в manifest пакета; установщик проверяет их перед изменениями.
 
+Для нового хоста владельца репозитория доступен профиль с прежними парками
+и настройками бота. Нужен отдельный ключ зашифрованных настроек:
+
+    sudo python3 ./robopark.ota install --preset robopark
+
+Состав и ограничения описаны в
+[руководстве профиля](https://github.com/tehblok/robopark/blob/main/docs/runbooks/owner-install-preset.md).
+
 Руководства доступны онлайн:
 
 - [Установка и восстановление](https://github.com/tehblok/robopark/blob/main/docs/runbooks/usb-clean-install.md).

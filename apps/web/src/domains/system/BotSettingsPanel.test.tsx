@@ -23,6 +23,13 @@ function client(): BotClient {
 }
 
 describe('BotSettingsPanel', () => {
+  it('can hide legacy ZIP import in the native settings flow', async () => {
+    render(<BotSettingsPanel client={client()} showLegacyImport={false} />)
+    await screen.findByText('Telegram-бот')
+    expect(screen.queryByLabelText('Архив данных бота')).not.toBeInTheDocument()
+    expect(screen.queryByText('Данные существующего бота')).not.toBeInTheDocument()
+  })
+
   it('does not report a missing token or endless loading when status is unavailable', async () => {
     const api = client()
     api.getStatus = vi.fn().mockRejectedValueOnce(new Error('network unavailable')).mockResolvedValue(status)

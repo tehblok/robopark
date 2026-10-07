@@ -9,6 +9,7 @@ from robopark_api.db import get_db
 from robopark_api.deps import require_approved_operator
 from robopark_api.models import AccessStatus, Park, ParkRequest, User, UserPark
 from robopark_api.routers.parks import ParkOut
+from robopark_api.services import access_requests
 
 router = APIRouter(
     prefix="/operator",
@@ -25,6 +26,7 @@ class ParkRequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    revision: int
     user_id: int
     park_id: int
     status: str
@@ -95,30 +97,9 @@ def create_park_request(
     operator: User = Depends(require_approved_operator),
     db: Session = Depends(get_db),
 ) -> ParkRequest:
-    park = db.get(Park, payload.park_id)
-    if park is None or not park.is_active:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
-
-    membership = db.get(UserPark, (operator.id, payload.park_id))
-    if membership is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
-
-    pending = db.scalar(
-        select(ParkRequest.id).where(
-            ParkRequest.user_id == operator.id,
-            ParkRequest.park_id == payload.park_id,
-            ParkRequest.status == AccessStatus.pending.value,
-        )
-    )
-    if pending is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT)
-
-    park_request = ParkRequest(
-        user_id=operator.id,
-        park_id=payload.park_id,
-        status=AccessStatus.pending.value,
-    )
-    db.add(park_request)
-    db.commit()
-    db.refresh(park_request)
-    return park_request
+    try:
+        return access_requests.create_request(db, operator, payload.park_id)
+    except HTTPException as exc:
+        if exc.detail in {"park_unavailable", "park_already_assigned"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST) from exc
+        raise

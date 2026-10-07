@@ -124,6 +124,16 @@ def test_metadata_has_required_tables():
         "terminal_sessions",
         "terminal_attach_tickets",
         "terminal_session_events",
+        "telegram_accounts",
+        "telegram_link_codes",
+        "telegram_link_attempts",
+        "native_bot_usage_totals",
+        "native_bot_usage_daily",
+        "native_bot_control",
+        "native_bot_jobs",
+        "native_bot_deliveries",
+        "native_bot_migrations",
+        "native_bot_migration_sources",
     }
 
 
@@ -157,7 +167,7 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
 def test_alembic_head_includes_bundle_receipts():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0059_ai_action_receipts"]
+    assert script.get_heads() == ["0060_native_telegram"]
 
 
 def test_host_terminal_migration_builds_bounded_session_schema(sqlite_database_url, monkeypatch):
@@ -429,7 +439,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
     with engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0059_ai_action_receipts"
+            == "0060_native_telegram"
         )
 
 

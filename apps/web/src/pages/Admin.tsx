@@ -26,8 +26,12 @@ import { ManagementNavigation } from '../domains/management/ManagementNavigation
 import { DomainPresentation } from '../app/interface/DomainPresentation'
 import { MetricCard } from '../design-system/data/MetricCard'
 import { StatusBadge } from '../design-system/status/StatusBadge'
+import { TelegramRuntimePanel } from '../domains/telegram/TelegramRuntimePanel'
+import { NativeTelegramPanel } from '../domains/telegram/NativeTelegramPanel'
+import { BotAuxiliaryQueuesPanel } from '../domains/telegram/BotAuxiliaryQueuesPanel'
+import { BotSettingsPanel } from '../domains/system/BotSettingsPanel'
 
-type TabId = 'integrations' | 'parks' | 'ops' | 'health'
+type TabId = 'integrations' | 'telegram' | 'parks' | 'ops' | 'health'
 
 function validParkTimezone(value: string): boolean {
   if (!value || value.trim() !== value || value.length > 64) return false
@@ -90,7 +94,7 @@ async function loadAdminBootstrap(
     screenshotGuardLive: previous?.screenshotGuardLive ?? false,
     failedSections: [],
   }
-  if (tab === 'health' || tab === 'ops') return base
+  if (tab === 'health' || tab === 'ops' || tab === 'telegram') return base
   if (tab === 'parks') {
     const [parksResult, parkRequestsResult] = await Promise.allSettled([
       api.parks(), api.adminParkRequests(),
@@ -197,16 +201,18 @@ export function Admin() {
 function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
   const { user } = useAuth()
   const { hash } = useLocation()
-  const { refreshParks } = useParkScope()
+  const { parkId, refreshParks } = useParkScope()
   const [searchParams, setSearchParams] = useSearchParams()
   const perms = user?.permissions ?? []
   const canParks = perms.includes('parks.manage')
   const canIntegrations = perms.includes('nav.admin')
+  const canTelegram = user?.role === 'admin' || user?.role === 'royal'
   const canOps = user?.role === 'royal'
   const requestedTab = searchParams.get('tab')
-  const firstPermittedTab: TabId = canIntegrations ? 'integrations' : canParks ? 'parks' : 'ops'
+  const firstPermittedTab: TabId = canIntegrations ? 'integrations' : canTelegram ? 'telegram' : canParks ? 'parks' : 'ops'
   const isPermittedTab = (candidate: string | null): candidate is TabId => (
     (candidate === 'integrations' && canIntegrations)
+    || (candidate === 'telegram' && canTelegram)
     || (candidate === 'health' && canIntegrations)
     || (candidate === 'parks' && canParks)
     || (candidate === 'ops' && canOps)
@@ -503,6 +509,7 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
         items={[
           ...(canIntegrations ? [{ id: 'integrations', label: 'Интеграции' }] : []),
           ...(canIntegrations ? [{ id: 'health', label: 'Состояние сервера' }] : []),
+          ...(canTelegram ? [{ id: 'telegram', label: 'Telegram' }] : []),
           ...(user?.role === 'royal' ? [{ id: 'ops', label: ru.ops.tab }] : []),
         ]}
         onChange={(id) => setTab(id as TabId)}
@@ -511,6 +518,12 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
 
       {/* --- Integrations ------------------------------------------------- */}
       {canIntegrations && <TabPanel id="health" active={tab === 'health'}><HostHealthPanel /></TabPanel>}
+      {canTelegram && <TabPanel id="telegram" active={tab === 'telegram'}>
+        {user?.role === 'royal' ? <BotSettingsPanel showLegacyImport={false} /> : null}
+        {user?.role === 'royal' ? <BotAuxiliaryQueuesPanel /> : null}
+        <TelegramRuntimePanel royal={user?.role === 'royal'} />
+        <NativeTelegramPanel initialParkId={parkId} showMigration={user?.role === 'royal'} />
+      </TabPanel>}
       {canIntegrations && <TabPanel id="integrations" active={tab === 'integrations'}>
         {user?.role === 'royal' && (
           <Panel
@@ -916,13 +929,16 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
                   />
                 </label>
                 <label className="field">
-                  <span className="field-label">Chat ID</span>
+                  <span className="field-label">Chat ID Telegram</span>
                   <input
-                    onChange={(event) =>
-                      editPark(park.id, { chat_id: parseOptionalInt(event.target.value) })
-                    }
+                    readOnly
                     value={park.chat_id ?? ''}
                   />
+                  <span className="field-hint">
+                    {canTelegram
+                      ? <>Управляется в разделе <Link to={`/admin/settings?park=${park.id}&tab=telegram`}>Telegram</Link>.</>
+                      : 'Управляется администратором в разделе Telegram.'}
+                  </span>
                 </label>
               </div>
 
@@ -963,7 +979,6 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
                         tracker_priority: park.tracker_priority || null,
                         tracker_type: park.tracker_type || null,
                         group_id: park.group_id ?? null,
-                        chat_id: park.chat_id ?? null,
                         feature_blockers: park.feature_blockers,
                         feature_reports: park.feature_reports,
                         feature_sla_repair: park.feature_sla_repair,

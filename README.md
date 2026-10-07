@@ -26,10 +26,13 @@ ARM64/AMD64, поддерживаемые ОС и требования к пам
 [описании rc.34](docs/releases/0.2.0-rc.34.md) и
 [отчёте о проверке кэшей и PWA](docs/reviews/2026-10-06-cache-pwa-rc34.md).
 
-Независимый SSH-доступ для Khadas и AGX через постоянный TCP-порт Tuna
-настраивается отдельно: [установка, ключ и переезд на AGX](docs/runbooks/support-ssh.md).
-По умолчанию он выключен; в Git хранится публичный ключ владельца и отдельная
-зашифрованная резервная копия закрытого ключа с тем же AGE-ключом, что и у знаний.
+Чистая установка rc.36 автоматически включает SSH для владельца через
+алиас Tuna `ssh` с прежним публичным ключом:
+[установка, ключ и переезд на AGX](docs/runbooks/support-ssh.md).
+Преднастроенный профиль восстанавливает доступную конфигурацию старого бота:
+[состав, запуск и отдельный ключ](docs/runbooks/owner-install-preset.md).
+В Git находятся публичный SSH-ключ и зашифрованные архивы; закрытые значения
+в установочную команду не входят.
 
 > **GEACX1 и NVMe:** rc.25 поддерживает NVMe с ОС и eMMC с ОС + NVMe для данных.
 > Порядок выбора и проверки описан в
@@ -62,8 +65,9 @@ release-evidence не подтверждают готовность изменё
 Web-first fleet operations system (admin / operator / mechanic).
 
 - **Primary:** website on local host (API + app); remote access via **Tuna HTTPS tunnel** (no VPS, mechanics open a link).
-- **Reserve:** optional Telegram bot using the shared API and integration gateway;
-  see [bot architecture](docs/architecture/2026-09-28-telegram-bot-integration.md).
+- **Telegram:** встроенный сервис с парками, правами и расписаниями Robopark;
+  [настройка и эксплуатация](docs/runbooks/telegram.md),
+  [устройство сервиса](docs/architecture/2026-10-07-native-telegram-service.md).
 
 ## Phase 1
 
@@ -468,7 +472,7 @@ dependency on the old bot repository.
 
 Not included:
 
-- Telegram bots or feature parity clients.
+- Standalone copies of the legacy Telegram server or its host updater.
 - VPS / WireGuard remote access (replaced by Tuna HTTPS tunnel).
 - Importing an old production SQLite database; clean hosts start with PostgreSQL 17.
 - Per-user Tracker credentials — the platform uses one service token and

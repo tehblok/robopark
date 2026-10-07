@@ -230,3 +230,12 @@ def test_cleanliness_check_ignores_untracked_but_rejects_modified_tracked(tmp_pa
 @pytest.mark.parametrize("relative", ["apps/api/knowledge/repair-v1/seed.jsonl", "deploy/knowledge/manifest.json", "deploy/knowledge/snapshot/part.age"])
 def test_ota_excludes_retired_knowledge_even_if_left_in_a_checkout(relative):
     assert include_source_path(Path(relative)) is False
+
+
+def test_release_ships_encrypted_owner_preset_but_no_decryption_key(tmp_path):
+    from robopark_ota.presets import PRESET_MEMBER
+
+    artifact = build_ota(ROOT, tmp_path, git_sha="b" * 40)
+    with zipfile.ZipFile(artifact) as archive:
+        assert archive.read(PRESET_MEMBER) == (ROOT / "deploy/support/robopark-install-preset.enc").read_bytes()
+        assert not any("preset.key" in name or name.startswith("output/") for name in archive.namelist())

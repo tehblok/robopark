@@ -147,3 +147,16 @@ def test_tuna_address_rejects_missing_or_unsafe_values(address: str):
             getpass_fn=lambda _prompt: secrets.token_urlsafe(32),
             input_fn=lambda _prompt: address,
         )
+
+
+def test_owner_preset_skips_known_domain_and_username_prompts():
+    credentials = collect_royal_credentials(
+        username="tehblokdan", getpass_fn=lambda _: "StrongOwner-Password42",
+        input_fn=lambda _: pytest.fail("username already preset"),
+    )
+    configuration = collect_tuna_configuration(
+        address="robopark.ru.tuna.am", getpass_fn=lambda _: "test_tuna_token_not_real",
+        input_fn=lambda _: pytest.fail("domain already preset"),
+    )
+    assert credentials.username == "tehblokdan"
+    assert configuration.public_origin == "https://robopark.ru.tuna.am"

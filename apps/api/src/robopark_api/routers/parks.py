@@ -87,6 +87,11 @@ def update_park(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     changes = payload.model_dump(exclude_unset=True)
+    if "chat_id" in changes and changes["chat_id"] != park.chat_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="telegram_destination_use_native_api",
+        )
     if (tag := changes.get("tag")) is not None and _tag_exists(db, tag, exclude_id=park_id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT)
 

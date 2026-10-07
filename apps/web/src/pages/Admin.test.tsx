@@ -28,7 +28,7 @@ function settings(validation: Partial<IntegrationSettings> = {}): IntegrationSet
   }
 }
 
-function setup(validation: Partial<IntegrationSettings> = {}, parks: Park[] = [], permissions = ['nav.admin'], route = '/admin/settings', role: 'admin' | 'royal' = 'admin', configure?: () => void) {
+function setup(validation: Partial<IntegrationSettings> = {}, parks: Park[] = [], permissions = ['nav.admin'], route = '/admin/settings', role: 'admin' | 'royal' | 'operator' = 'admin', configure?: () => void) {
   vi.spyOn(api, 'parks').mockResolvedValue(parks)
   vi.spyOn(api, 'adminParkRequests').mockResolvedValue([])
   vi.spyOn(api, 'integrationSettings').mockResolvedValue(settings(validation))
@@ -55,6 +55,25 @@ describe('Admin Emergency cookie validation', () => {
     cleanup()
     resourceStore.clearAll()
     vi.restoreAllMocks()
+  })
+
+  it('offers native Telegram settings to administrators', async () => {
+    setup()
+    expect(await screen.findByRole('tab', { name: 'Telegram' })).toBeVisible()
+  })
+
+  it('gates the Telegram tab by built-in admin roles rather than custom nav permissions', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      parks: [], jobs: [], deliveries: [],
+      health: { state: 'unknown', telegram_ok: null, scheduler_ok: null, updated_at: null, last_error: null },
+    }), { status: 200 }))
+    const admin = setup({}, [], ['nav.admin'], '/admin/settings?tab=telegram', 'admin')
+    expect(await screen.findByRole('tab', { name: 'Telegram' })).toBeVisible()
+    admin.unmount()
+
+    setup({}, [], ['nav.admin'], '/admin/settings', 'operator')
+    expect(await screen.findByRole('tab', { name: 'Интеграции' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'Telegram' })).not.toBeInTheDocument()
   })
 
   it('describes a configured registration password without showing its masked API value', async () => {
@@ -266,6 +285,21 @@ describe('Admin Emergency cookie validation', () => {
     fireEvent.click(screen.getAllByRole('link', { name: 'Обзор' })[0])
 
     expect(await screen.findByRole('region', { name: 'Южный' })).toBeVisible()
+  })
+
+  it('keeps the Telegram destination read-only and omits it from a park update', async () => {
+    const park: Park = { id: 7, name: 'Северный', tag: 'north', timezone: 'Europe/Moscow', is_active: true, chat_id: -1001234567890 }
+    setup({}, [park], ['nav.admin', 'parks.manage'], '/admin/settings?park=7&tab=parks')
+    const update = vi.spyOn(api, 'updatePark').mockResolvedValue(park)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Открыть парк Северный' }))
+    expect(screen.getByLabelText(/Chat ID Telegram/)).toHaveAttribute('readonly')
+    expect(screen.getByRole('link', { name: 'Telegram' })).toHaveAttribute('href', '/admin/settings?park=7&tab=telegram')
+    fireEvent.change(screen.getByLabelText('Название'), { target: { value: 'Северный обновлённый' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalled())
+    expect(update.mock.calls[0][1]).not.toHaveProperty('chat_id')
   })
 
   it('blocks an invalid park time zone before creating or updating SLA settings', async () => {

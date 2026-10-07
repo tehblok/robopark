@@ -1734,6 +1734,7 @@ def test_runtime_configures_pinned_host_bridge_before_start(tmp_path: Path):
     runtime.release = release
     runtime.etc = root / "etc/robopark"
     runtime.tuna = TunaConfiguration(token="tt_private_value")
+    runtime.enable_support_ssh = False
     calls = []
     runtime._run = lambda command, **kwargs: calls.append((command, kwargs))
 
@@ -1749,6 +1750,239 @@ def test_runtime_configures_pinned_host_bridge_before_start(tmp_path: Path):
     assert runtime._compose_prefix()[-1] == str(
         root / "var/lib/robopark/ops/state/current-compose.json"
     )
+
+
+def _support_ssh_runtime(tmp_path: Path) -> HostInstallRuntime:
+    root = tmp_path / "host"
+    release = root / "opt/robopark/releases/1.0.0"
+    helper = release / "deploy/support/ssh_access.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# verified helper\n")
+    (helper.parent / "robopark_support_ed25519.pub").write_text(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEgRhLOvjyN8MU5hFsDhbbrjF6zX3sQ6+43Ii98A5usH support\n"
+    )
+    (root / "usr/sbin").mkdir(parents=True)
+    (root / "usr/sbin/sshd").write_text("binary")
+    runtime = object.__new__(HostInstallRuntime)
+    runtime.root = root
+    runtime.release = release
+    runtime.etc = root / "etc/robopark"
+    runtime.tuna = TunaConfiguration(token="not-logged", location="fi")
+    return runtime
+
+
+def test_clean_install_enables_support_ssh_from_verified_release(
+    tmp_path: Path, capsys
+):
+    runtime = _support_ssh_runtime(tmp_path)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[-1] == "status":
+            return SimpleNamespace(
+                stdout=json.dumps(
+                    {
+                        "sshd": {"enabled": True, "active": True},
+                        "tuna": {"enabled": True, "active": True},
+                        "host_fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyzABCDE12345",
+                    }
+                )
+            )
+        return SimpleNamespace(stdout="")
+
+    runtime._run = run
+    status = runtime.configure_support_ssh()
+
+    install = calls[0][0]
+    assert install[3:5] == ["install", "--public-key-file"]
+    assert install[-5:] == ["--alias", "ssh", "--location", "fi", "--enable"]
+    assert "not-logged" not in repr(calls)
+    assert status["sshd"]["active"] is True
+    output = capsys.readouterr().out
+    assert "Резервный SSH включён" in output
+    assert "SHA256:abcdefghijklmnopqrstuvwxyzABCDE12345" in output
+
+
+@pytest.mark.parametrize(
+    ("missing", "error"),
+    [
+        ("ssh_access.py", "support_ssh_helper_missing"),
+        ("robopark_support_ed25519.pub", "support_ssh_public_key_missing"),
+    ],
+)
+def test_support_ssh_rejects_missing_release_assets(
+    tmp_path: Path, missing: str, error: str
+):
+    runtime = _support_ssh_runtime(tmp_path)
+    (runtime.release / "deploy/support" / missing).unlink()
+    runtime._run = lambda *_args, **_kwargs: pytest.fail("host mutated before validation")
+
+    with pytest.raises(RuntimeError, match=error):
+        runtime.configure_support_ssh()
+
+
+def test_support_ssh_install_failure_is_fatal(tmp_path: Path):
+    runtime = _support_ssh_runtime(tmp_path)
+
+    def run(command, **_kwargs):
+        if "install" in command:
+            raise subprocess.CalledProcessError(1, command)
+        return SimpleNamespace(stdout="")
+
+    runtime._run = run
+    with pytest.raises(subprocess.CalledProcessError):
+        runtime.configure_support_ssh()
+
+
+def test_missing_openssh_is_installed_without_starting_default_services(
+    tmp_path: Path
+):
+    runtime = _support_ssh_runtime(tmp_path)
+    (runtime.root / "usr/sbin/sshd").unlink()
+    calls = []
+    enabled = {
+        "ssh.service": "not-found",
+        "sshd.service": "masked",
+        "ssh.socket": "masked-runtime",
+    }
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[:2] == ["systemctl", "is-enabled"]:
+            return SimpleNamespace(stdout=enabled[command[-1]] + "\n")
+        if command[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(stdout="inactive\n")
+        if command[:3] == ["apt-get", "install", "-y"]:
+            (runtime.root / "usr/sbin/sshd").write_text("binary")
+        return SimpleNamespace(stdout="")
+
+    runtime._run = run
+    runtime._prepare_missing_openssh()
+    commands = [command for command, _kwargs in calls]
+
+    assert ["systemctl", "mask", "--runtime", "ssh.service"] in commands
+    assert ["systemctl", "mask", "--runtime", "sshd.service"] in commands
+    assert ["systemctl", "mask", "--runtime", "ssh.socket"] not in commands
+    assert [
+        "apt-get", "install", "-y", "--no-remove", "--no-install-recommends",
+        "openssh-server",
+    ] in commands
+    assert ["systemctl", "unmask", "--runtime", "ssh.service"] in commands
+    assert ["systemctl", "unmask", "--runtime", "sshd.service"] in commands
+    assert ["systemctl", "unmask", "--runtime", "ssh.socket"] not in commands
+    assert ["systemctl", "enable", "sshd.service"] not in commands
+    assert ["systemctl", "start", "sshd.service"] not in commands
+
+
+def test_existing_openssh_preserves_default_service_states(tmp_path: Path):
+    runtime = _support_ssh_runtime(tmp_path)
+    runtime._run = lambda *_args, **_kwargs: pytest.fail("existing SSH was touched")
+
+    runtime._prepare_missing_openssh()
+
+
+def _preset_seed_runtime(tmp_path: Path, monkeypatch) -> tuple[HostInstallRuntime, list]:
+    root = tmp_path / "host"
+    release = root / "opt/robopark/releases/1.0.0"
+    preset = release / "deploy/support/robopark-install-preset.enc"
+    preset.parent.mkdir(parents=True)
+    preset.write_bytes(b"encrypted-preset")
+    key = root / "run/robopark/preset-key"
+    key.parent.mkdir(parents=True)
+    key.write_bytes(b"fernet-key-material")
+    key.chmod(0o600)
+    credential = root / "run/robopark/seed.json"
+    credential.write_text("{}")
+    runtime = object.__new__(HostInstallRuntime)
+    runtime.root = root
+    runtime.release = release
+    runtime.preset_key_path = key
+    calls = []
+    runtime._run = lambda command, **kwargs: calls.append((command, kwargs))
+    monkeypatch.setattr(
+        "robopark_ota.host_install.storage.require_storage", lambda _root: {}
+    )
+    runtime._test_credential = credential
+    return runtime, calls
+
+
+def test_seed_royal_imports_verified_encrypted_install_preset(
+    tmp_path: Path, monkeypatch
+):
+    runtime, calls = _preset_seed_runtime(tmp_path, monkeypatch)
+
+    runtime.seed_royal(runtime._test_credential)
+
+    assert len(calls) == 2
+    command = calls[1][0]
+    assert command[-4:] == ["api", "python", "-m", "robopark_api.seed_install_preset"]
+    assert "--user" in command and command[command.index("--user") + 1] == "0:0"
+    assert f"{runtime.preset_key_path}:/run/robopark/preset-key:ro" in command
+    assert (
+        f"{runtime.release}/deploy/support/robopark-install-preset.enc:"
+        "/run/robopark/preset.enc:ro"
+    ) in command
+    assert "fernet-key-material" not in repr(calls)
+    assert calls[1][1] == {}
+
+
+def test_seed_royal_without_preset_key_keeps_existing_install_path(
+    tmp_path: Path, monkeypatch
+):
+    runtime, calls = _preset_seed_runtime(tmp_path, monkeypatch)
+    runtime.preset_key_path = None
+
+    runtime.seed_royal(runtime._test_credential)
+
+    assert len(calls) == 1
+    assert calls[0][0][-1] == "robopark_api.seed_from_file"
+
+
+@pytest.mark.parametrize("mutation", ["missing", "symlink", "permissions", "oversize"])
+def test_install_preset_rejects_unsafe_key_before_container_run(
+    tmp_path: Path, monkeypatch, mutation: str
+):
+    runtime, calls = _preset_seed_runtime(tmp_path, monkeypatch)
+    key = runtime.preset_key_path
+    if mutation == "missing":
+        key.unlink()
+    elif mutation == "symlink":
+        key.unlink()
+        target = key.with_name("actual-key")
+        target.write_bytes(b"fernet-key-material")
+        target.chmod(0o600)
+        key.symlink_to(target)
+    elif mutation == "permissions":
+        key.chmod(0o640)
+    else:
+        key.write_bytes(b"x" * 4097)
+        key.chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="install_preset_key_invalid"):
+        runtime.seed_royal(runtime._test_credential)
+
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("mutation", ["missing", "symlink", "oversize"])
+def test_install_preset_rejects_unsafe_release_payload_before_container_run(
+    tmp_path: Path, monkeypatch, mutation: str
+):
+    runtime, calls = _preset_seed_runtime(tmp_path, monkeypatch)
+    preset = runtime.release / "deploy/support/robopark-install-preset.enc"
+    preset.unlink()
+    if mutation == "symlink":
+        target = preset.with_name("other.enc")
+        target.write_bytes(b"encrypted-preset")
+        preset.symlink_to(target)
+    elif mutation == "oversize":
+        preset.write_bytes(b"x" * (1024 * 1024 + 1))
+
+    with pytest.raises(RuntimeError, match="install_preset_(missing|invalid)"):
+        runtime.seed_royal(runtime._test_credential)
+
+    assert len(calls) == 1
 
 
 def test_publish_enables_host_automation_and_optional_tuna(tmp_path: Path):

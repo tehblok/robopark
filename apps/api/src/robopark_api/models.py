@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Literal
+from uuid import uuid4
 
 from sqlalchemy import (
     BigInteger,
@@ -333,7 +334,9 @@ class Park(Base):
     tracker_priority: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tracker_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     group_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bot_revision: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
     feature_reports: Mapped[bool] = mapped_column(Boolean, default=True)
     feature_blockers: Mapped[bool] = mapped_column(Boolean, default=True)
     feature_sla_repair: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -947,6 +950,168 @@ class UserPark(Base):
     )
 
 
+class TelegramAccount(Base):
+    __tablename__ = "telegram_accounts"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    linked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TelegramLinkCode(Base):
+    __tablename__ = "telegram_link_codes"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TelegramLinkAttempt(Base):
+    __tablename__ = "telegram_link_attempts"
+
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NativeBotUsageTotal(Base):
+    __tablename__ = "native_bot_usage_totals"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    total: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    greeted_on: Mapped[date | None] = mapped_column(nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class NativeBotUsageDaily(Base):
+    __tablename__ = "native_bot_usage_daily"
+    __table_args__ = (Index("ix_native_bot_usage_daily_day", "day"),)
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("native_bot_usage_totals.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    day: Mapped[date] = mapped_column(primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class NativeBotControl(Base):
+    __tablename__ = "native_bot_control"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_native_bot_control_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    queries_paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    deliveries_paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class NativeBotJob(Base):
+    __tablename__ = "native_bot_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('report', 'text', 'zoom', 'campaign')", name="ck_native_bot_job_kind"
+        ),
+        CheckConstraint(
+            "schedule IN ('daily', 'hourly', 'once')", name="ck_native_bot_job_schedule"
+        ),
+        CheckConstraint("alternate IN ('all', 'odd', 'even')", name="ck_native_bot_job_alternate"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    source_ref: Mapped[str | None] = mapped_column(
+        String(255), unique=True, index=True, nullable=True
+    )
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    title: Mapped[str] = mapped_column(String(128))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    schedule: Mapped[str] = mapped_column(String(16))
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    weekdays: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    start_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    end_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    tracker_tag: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    alternate: Mapped[str] = mapped_column(String(8), default="all", server_default="all")
+    anchor_date: Mapped[date | None] = mapped_column(nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class NativeBotDelivery(Base):
+    __tablename__ = "native_bot_deliveries"
+    __table_args__ = (
+        UniqueConstraint("job_id", "scheduled_at", name="uq_native_bot_delivery_slot"),
+        CheckConstraint(
+            "state IN ('preparing', 'sending', 'sent', 'failed', 'unknown')",
+            name="ck_native_bot_delivery_state",
+        ),
+        Index("ix_native_bot_delivery_claim", "state", "lease_until", "scheduled_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(36))
+    park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(String(16), default="preparing")
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    request_id: Mapped[str | None] = mapped_column(String(36), unique=True, nullable=True)
+    job_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    park_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    destination_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    destination_thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    park_tag: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tracker_queue: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NativeBotMigration(Base):
+    __tablename__ = "native_bot_migrations"
+
+    fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    result_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NativeBotMigrationSource(Base):
+    __tablename__ = "native_bot_migration_sources"
+
+    source_ref: Mapped[str] = mapped_column(String(255), primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(
+        ForeignKey("native_bot_migrations.fingerprint", ondelete="CASCADE"), index=True
+    )
+    disposition: Mapped[str] = mapped_column(String(16))
+    native_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ParkRequest(Base):
     __tablename__ = "park_requests"
 
@@ -954,6 +1119,7 @@ class ParkRequest(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     park_id: Mapped[int] = mapped_column(ForeignKey("parks.id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(String(32), default=AccessStatus.pending.value)
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_by: Mapped[int | None] = mapped_column(

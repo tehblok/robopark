@@ -1,4 +1,5 @@
 legacy/data
+legacy
 **/__pycache__
 *.pyc
 .pytest_cache

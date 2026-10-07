@@ -17,12 +17,12 @@ def test_current_release_declares_foundation_and_same_head_upgrade():
     metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
     compatibility = json.loads((ROOT / "docs/releases/compatibility.json").read_text())
 
-    assert policy.target_head == metadata["migration_head"] == "0059_ai_action_receipts"
-    assert policy.known_heads == frozenset({"0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts"})
-    assert metadata["migration_compatibility"]["from_heads"] == ["0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts"]
+    assert policy.target_head == metadata["migration_head"] == "0060_native_telegram"
+    assert policy.known_heads == frozenset({"0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram"})
+    assert metadata["migration_compatibility"]["from_heads"] == ["0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram"]
     assert metadata["compatible_from_versions"]
     assert all(version.startswith("0.2.0-rc.") for version in metadata["compatible_from_versions"])
-    assert compatibility["known_heads"] == ["0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts"]
+    assert compatibility["known_heads"] == ["0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram"]
     for version in metadata["compatible_from_versions"]:
         plan = plan_upgrade(version, "0055_media_upload_park", {
             "app_version": compatibility["target_version"],
@@ -75,12 +75,13 @@ def test_future_release_can_explicitly_accept_this_base(tmp_path):
     ("0.2.0-rc.21.dev13181400260723547202", "0056_host_terminal"),
     ("0.2.0-rc.24", "0057_local_ai"),
     ("0.2.0-rc.25", "0057_local_ai"),
+    ("0.2.0-rc.35", "0059_ai_action_receipts"),
 ])
-def test_existing_hosts_have_an_explicit_local_ai_upgrade_path(version, head):
+def test_existing_hosts_have_an_explicit_native_telegram_upgrade_path(version, head):
     policy = MigrationPolicy.from_file(ROOT / "deploy/migration-policy.json")
     metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
     assert version in metadata["compatible_from_versions"]
     target_version = (ROOT / "VERSION").read_text().strip()
-    plan = plan_upgrade(version, head, {"app_version": target_version, "migration_head": "0059_ai_action_receipts"}, policy)
+    plan = plan_upgrade(version, head, {"app_version": target_version, "migration_head": "0060_native_telegram"}, policy)
     assert plan.releases == (target_version,)
     assert plan.recovery == "snapshot"

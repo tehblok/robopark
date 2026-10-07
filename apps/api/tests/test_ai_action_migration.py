@@ -4,11 +4,12 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from robopark_api.ai_models import AIAction, AIConversation, AIJob, AIMessage
 from robopark_api.db import configure_engine
-from robopark_api.models import Park, User
+from robopark_api.models import User
 from robopark_api.services.rbac import get_role_by_slug
 from robopark_api.services.rbac_seed import ensure_rbac_catalog
 
@@ -29,10 +30,15 @@ def test_upgrade_existing_chat_and_keep_receipt_after_job_deletion(
             is_active=True,
             access_status="approved",
         )
-        park = Park(name="Migration", tag="migration")
-        db.add_all([user, park])
+        db.add(user)
         db.flush()
-        conversation = AIConversation(owner_id=user.id, park_id=park.id)
+        park_id = db.scalar(
+            text(
+                "INSERT INTO parks (name, tag, timezone, is_active) "
+                "VALUES ('Migration', 'migration', 'Europe/Moscow', 1) RETURNING id"
+            )
+        )
+        conversation = AIConversation(owner_id=user.id, park_id=park_id)
         db.add(conversation)
         db.flush()
         message = AIMessage(
@@ -40,7 +46,7 @@ def test_upgrade_existing_chat_and_keep_receipt_after_job_deletion(
         )
         job = AIJob(
             owner_id=user.id,
-            park_id=park.id,
+            park_id=park_id,
             conversation_id=conversation.id,
             kind="chat",
             state="succeeded",
@@ -49,7 +55,7 @@ def test_upgrade_existing_chat_and_keep_receipt_after_job_deletion(
         )
         db.add_all([message, job])
         db.commit()
-        user_id, park_id, message_id, job_id = user.id, park.id, message.id, job.id
+        user_id, message_id, job_id = user.id, message.id, job.id
     command.upgrade(config, "head")
     with Session(engine) as db:
         assert db.get(AIMessage, message_id).content == "Сохранить историю"

@@ -48,6 +48,7 @@ from robopark_api.routers import (
     mechanic_robots,
     mechanic_tasks,
     media_uploads,
+    native_telegram,
     operations,
     operator_blockers,
     operator_parks,
@@ -202,6 +203,7 @@ def create_app() -> FastAPI:
     app.include_router(client_telemetry.router)
     app.include_router(inventory.router)
     app.include_router(internal_bot.router)
+    app.include_router(native_telegram.router)
     app.include_router(health.router)
     app.include_router(parks.router)
     app.include_router(admin_roles.router)

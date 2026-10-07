@@ -43,10 +43,10 @@ jobs:
       - name: Audit locked frontend, API and bot dependencies
         run: sh scripts/audit-dependencies.sh
 
-      - name: Verify the optional bot image and its runtime dependencies
+      - name: Verify the native Telegram service image
         run: |
           docker build -t robopark-bot:verify apps/bot
-          docker run --rm --entrypoint python robopark-bot:verify -c "import pandas, requests, matplotlib, qrcode, PIL"
+          docker run --rm --entrypoint python robopark-bot:verify -c "import requests, PIL, native.runtime, native.reports"
 
   responsive:
     name: Responsive browsers (${{ matrix.shard }}/4)

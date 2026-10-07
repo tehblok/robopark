@@ -54,10 +54,12 @@ def _validate(credentials: RoyalCredentials) -> None:
 
 def collect_royal_credentials(
     *,
+    username: str | None = None,
     input_fn: Callable[[str], str] = input,
     getpass_fn: Callable[[str], str] = getpass.getpass,
 ) -> RoyalCredentials:
-    username = input_fn("Логин первого royal [royal]: ").strip() or "royal"
+    if username is None:
+        username = input_fn("Логин первого royal [royal]: ").strip() or "royal"
     password = getpass_fn("Пароль первого royal: ")
     repeated = getpass_fn("Повторите пароль: ")
     if password != repeated:
@@ -69,13 +71,16 @@ def collect_royal_credentials(
 
 def collect_tuna_configuration(
     *,
+    address: str | None = None,
     getpass_fn: Callable[[str], str] = getpass.getpass,
     input_fn: Callable[[str], str] = input,
 ) -> TunaConfiguration:
     token = getpass_fn("Tuna token: ").strip()
     if re.fullmatch(r"[A-Za-z0-9_.-]{8,2048}", token) is None:
         raise ValueError("invalid_tuna_token")
-    address = input_fn("Домен Tuna или поддомен зоны ru (например robopark.ru.tuna.am или robopark): ").strip().lower()
+    if address is None:
+        address = input_fn("Домен Tuna или поддомен зоны ru (например robopark.ru.tuna.am или robopark): ")
+    address = address.strip().lower()
     labels = address.split(".")
     if len(labels) == 1 and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", address):
         return TunaConfiguration(token=token, subdomain=address, location="ru")

@@ -4,6 +4,7 @@ import argparse
 import json
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 from . import storage
@@ -19,6 +20,7 @@ from .install import CleanInstallCoordinator, clean_install_lock
 from .local_update import apply_local_update
 from .menu import Action, run_menu
 from .model import OtaError
+from .presets import preset_key_file
 from .remove import (
     DockerCli,
     RemovalPlan,
@@ -38,6 +40,8 @@ _INTERACTIVE_ERRORS = {
         "/etc/os-release и /etc/armbian-release; установка остановлена без удаления данных."
     ),
     "confirmation_required": "Операция отменена. Данные не удалялись.",
+    "preset_key_invalid": "Ключ настроек не подошёл. Установка не начата; проверьте ключ и повторите команду.",
+    "preset_unavailable": "В пакете нет корректного набора преднастроек Robopark.",
 
 }
 
@@ -67,6 +71,8 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     commands = parser.add_subparsers(dest="command")
+    install = commands.add_parser("install", help="Чистая установка на новый хост")
+    install.add_argument("--preset", choices=("robopark",))
     verify = commands.add_parser("verify", help="Проверить целостность пакета")
     verify.add_argument("--json", action="store_true", dest="as_json")
     commands.add_parser("update", help="Обновить существующую установку с сохранением данных")
@@ -137,22 +143,32 @@ def _remove(root: Path) -> None:
     print("Robopark полностью удалён.")
 
 
-def _clean_install(bundle: Path, root: Path) -> None:
+def _clean_install(bundle: Path, root: Path, *, preset: str | None = None) -> None:
     with clean_install_lock(root):
         runtime = HostInstallRuntime(bundle, root=root, tuna=TunaConfiguration())
         if root == Path("/"):
             validate_host_platform(root, runtime.verified.manifest.requirements)
-        storage.choose_install_storage(root)
-        runtime.ensure_empty_host()
-        runtime.basic_preflight()
-        runtime.tuna = collect_tuna_configuration()
-        runtime.prepare_missing_tuna()
-        runtime.prepare_missing_docker()
-        runtime.ensure_empty_host()
-        runtime.preflight()
-        credentials = collect_royal_credentials()
-        with credential_file(credentials, root / "run/robopark") as secret:
-            _run_clean_install(runtime, secret)
+        if preset:
+            print(
+                "Профиль Robopark: robopark.ru.tuna.am · владелец tehblokdan · SSH через Tuna/ssh.\n"
+                "Парки и настройки бота восстановятся из зашифрованной конфигурации. "
+                "Рассылки останутся выключенными до проверки получателей на сайте. "
+                "Это не полная резервная копия прежнего хоста."
+            )
+        key_context = preset_key_file(bundle, root / "run/robopark") if preset else nullcontext(None)
+        with key_context as preset_key:
+            runtime.preset_key_path = preset_key
+            storage.choose_install_storage(root)
+            runtime.ensure_empty_host()
+            runtime.basic_preflight()
+            runtime.tuna = collect_tuna_configuration(address="robopark.ru.tuna.am") if preset else collect_tuna_configuration()
+            runtime.prepare_missing_tuna()
+            runtime.prepare_missing_docker()
+            runtime.ensure_empty_host()
+            runtime.preflight()
+            credentials = collect_royal_credentials(username="tehblokdan") if preset else collect_royal_credentials()
+            with credential_file(credentials, root / "run/robopark") as secret:
+                _run_clean_install(runtime, secret)
         print(
             f"Robopark {runtime.verified.manifest.app_version} установлен. "
             "Откройте адрес сервера и войдите под созданным royal."
@@ -211,6 +227,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command is None:
         return run_interactive()
+    if args.command == "install":
+        try:
+            _clean_install(_bundle_path(), Path("/"), preset=args.preset)
+        except (ValueError, RuntimeError) as error:
+            print(_INTERACTIVE_ERRORS.get(str(error), str(error)), file=sys.stderr)
+            return 1
+        return 0
     if args.command == "storage":
         try:
             verify_ota(_bundle_path())

@@ -1,24 +1,17 @@
-"""Run the imported Telegram bot against Robopark's private API bridge."""
+"""Start Robopark's native Telegram service with encrypted API-owned credentials."""
 
 from __future__ import annotations
 
 import json
 import os
-import signal
 import stat
-import subprocess
-import sys
-import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo
 
 MAX_SECRET_BYTES = 4096
-MOSCOW = ZoneInfo("Europe/Moscow")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -95,37 +88,6 @@ def fetch_telegram_token(*, api_base_url: str, bridge_key_file: Path) -> str:
     return token
 
 
-def _run_oneshot(command: list[str], environment: dict[str, str]) -> None:
-    try:
-        subprocess.run(command, env=environment, check=False, timeout=10 * 60)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        print(f"bot scheduled job failed: {type(error).__name__}", flush=True)
-
-
-def scheduled_commands(now: datetime, app_dir: Path) -> list[list[str]]:
-    commands = [
-        [sys.executable, str(app_dir / "meeting_reminders.py"), "tick"],
-    ]
-    if now.minute == 0:
-        commands.append([sys.executable, str(app_dir / "telegram_sender.py")])
-    return commands
-
-
-def _scheduler(
-    stop: threading.Event, *, app_dir: Path, environment: dict[str, str]
-) -> None:
-    last_minute: tuple[int, int, int, int, int] | None = None
-    while not stop.is_set():
-        now = datetime.now(MOSCOW)
-        minute = (now.year, now.month, now.day, now.hour, now.minute)
-        if minute != last_minute:
-            last_minute = minute
-            for command in scheduled_commands(now, app_dir):
-                _run_oneshot(command, environment)
-        next_minute = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
-        stop.wait(max(1.0, (next_minute - now).total_seconds()))
-
-
 def _fetch_with_retry(api_url: str, key_file: Path) -> str:
     for attempt in range(12):
         try:
@@ -155,24 +117,17 @@ def open_runtime_heartbeat(data_dir: Path) -> int:
         os.ftruncate(descriptor, 0)
         os.write(descriptor, b"1\n")
         os.fsync(descriptor)
+        # Startup is not readiness. Only the healthy runtime renews this marker.
+        os.utime(descriptor, (0, 0))
         return descriptor
     except BaseException:
         os.close(descriptor)
         raise
 
 
-def _heartbeat(stop: threading.Event, descriptor: int) -> None:
-    while not stop.wait(5):
-        try:
-            os.utime(descriptor, None)
-        except OSError:
-            return
-
-
 def main() -> int:
-    app_dir = Path(
-        os.environ.get("ROBOPARK_BOT_APP_DIR", "/opt/robopark-bot/legacy/app")
-    )
+    from native.runtime import run_service
+
     data_dir = Path(os.environ.get("ROBOPARK_BOT_DATA_DIR", "/data/telegram-bot"))
     api_url = os.environ.get("ROBOPARK_API_URL", "http://api:8000")
     key_file = Path(
@@ -182,53 +137,19 @@ def main() -> int:
     ready_file.unlink(missing_ok=True)
     data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     token = _fetch_with_retry(api_url, key_file)
-    child_environment = {
-        **os.environ,
-        "PYTHONPATH": str(app_dir),
-        "PYTHONUNBUFFERED": "1",
-        "TELEGRAM_BOT_TOKEN": token,
-    }
-    stop = threading.Event()
-    dispatcher = subprocess.Popen(
-        [sys.executable, str(app_dir / "dispatcher_bot.py")],
-        env=child_environment,
-    )
-    time.sleep(1)
-    if dispatcher.poll() is not None:
-        return dispatcher.returncode
     heartbeat_fd = open_runtime_heartbeat(data_dir)
-    heartbeat = threading.Thread(
-        target=_heartbeat, args=(stop, heartbeat_fd), name="bot-heartbeat", daemon=True
-    )
-    heartbeat.start()
-    ready_file.write_text("ready\n", encoding="ascii")
-    ready_file.chmod(0o600)
-
-    def request_stop(_signum, _frame) -> None:
-        stop.set()
-        if dispatcher.poll() is None:
-            dispatcher.terminate()
-
-    signal.signal(signal.SIGTERM, request_stop)
-    signal.signal(signal.SIGINT, request_stop)
-    scheduler = threading.Thread(
-        target=_scheduler,
-        kwargs={
-            "stop": stop,
-            "app_dir": app_dir,
-            "environment": child_environment,
-        },
-        name="bot-scheduler",
-        daemon=True,
-    )
-    scheduler.start()
-    returncode = dispatcher.wait()
-    stop.set()
-    ready_file.unlink(missing_ok=True)
-    scheduler.join(timeout=10)
-    heartbeat.join(timeout=6)
-    os.close(heartbeat_fd)
-    return returncode
+    try:
+        return run_service(
+            data_dir=data_dir,
+            api_url=api_url,
+            bridge_key=read_bridge_key(key_file),
+            token=token,
+            ready_file=ready_file,
+            heartbeat_fd=heartbeat_fd,
+        )
+    finally:
+        ready_file.unlink(missing_ok=True)
+        os.close(heartbeat_fd)
 
 
 if __name__ == "__main__":

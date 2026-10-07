@@ -7,8 +7,6 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
-from robopark_api.models import Park
-
 
 def test_bundle_receipts_upgrade_from_local_ai_head(sqlite_database_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
@@ -16,15 +14,18 @@ def test_bundle_receipts_upgrade_from_local_ai_head(sqlite_database_url, monkeyp
     command.upgrade(config, "0057_local_ai")
     engine = create_engine(sqlite_database_url, future=True)
     with Session(engine) as db:
-        park = Park(name="Migration", tag="retention-migration")
-        db.add(park)
-        db.flush()
+        park_id = db.scalar(
+            text(
+                "INSERT INTO parks (name, tag, timezone, is_active) "
+                "VALUES ('Migration', 'retention-migration', 'Europe/Moscow', 1) RETURNING id"
+            )
+        )
         db.execute(
             text(
                 "INSERT INTO ai_events (key, park_id, payload, occurred_at, processed, created_at) "
                 "VALUES ('legacy-event', :park, :payload, 1, 1, 1)"
             ),
-            {"park": park.id, "payload": '{"comment":"retained repair"}'},
+            {"park": park_id, "payload": '{"comment":"retained repair"}'},
         )
         db.commit()
     with engine.begin() as connection:

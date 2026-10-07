@@ -1,7 +1,5 @@
-pandas==2.2.3
 requests==2.33.0
-matplotlib==3.10.6
-qrcode==8.2
 pillow==12.3.0
-six==1.17.0
-importlib_metadata==9.0.1
+qrcode==8.2
+matplotlib==3.10.6
+pandas==2.2.3
