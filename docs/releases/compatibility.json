@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "target_version": "0.2.0-rc.40",
-  "migration_head": "0061_telegram_account_metadata",
+  "target_version": "0.2.0-rc.41",
+  "migration_head": "0062_notification_retention_idx",
   "known_heads": [
     "0055_media_upload_park",
     "0056_host_terminal",
@@ -9,7 +9,8 @@
     "0058_ai_bundle_receipts",
     "0059_ai_action_receipts",
     "0060_native_telegram",
-    "0061_telegram_account_metadata"
+    "0061_telegram_account_metadata",
+    "0062_notification_retention_idx"
   ],
   "bridge_before": "0.2.0-rc.8",
   "bridge_version": "0.2.0-rc.8",

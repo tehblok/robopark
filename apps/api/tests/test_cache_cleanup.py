@@ -167,11 +167,11 @@ def test_cleanup_once_prunes_live_merge_and_diagnostic_unknowns(monkeypatch):
         lambda session, **kwargs: calls.append(("observability", session, kwargs)) or (0, 0),
     )
     monkeypatch.setattr(
-        cache_cleanup.push,
-        "prune_notification_data",
+        cache_cleanup,
+        "prune_notification_backlog",
         lambda session, **kwargs: (
             calls.append(("notifications", session, kwargs))
-            or {"subscriptions": 1, "notifications": 2}
+            or {"subscriptions": 1, "notifications": 2, "batches": 1, "pending": False}
         ),
     )
     monkeypatch.setattr(
@@ -381,6 +381,96 @@ def test_cleanup_loop_runs_without_sleeping_and_stops_on_event(monkeypatch):
         await task
 
     asyncio.run(exercise())
+
+
+def test_cleanup_loop_continues_notification_backlog_on_the_next_worker_tick(monkeypatch):
+    calls = 0
+
+    async def no_wait(awaitable, *, timeout):
+        awaitable.close()
+        raise TimeoutError
+
+    async def exercise():
+        nonlocal calls
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def fake_cleanup_once():
+            nonlocal calls
+            calls += 1
+            cache_cleanup._notification_cleanup_pending = calls == 1
+            if calls == 2:
+                loop.call_soon_threadsafe(stop_event.set)
+            return (0, 0)
+
+        monkeypatch.setattr(cache_cleanup, "prune_cache_once", fake_cleanup_once)
+        monkeypatch.setattr(cache_cleanup, "sample_memory_pressure", lambda: None)
+        monkeypatch.setattr(asyncio, "wait_for", no_wait)
+        await cache_cleanup.run_cache_cleanup_loop(
+            stop_event,
+            interval_seconds=3600,
+            pressure_interval_seconds=0,
+        )
+
+    asyncio.run(exercise())
+    assert calls == 2
+
+
+def test_notification_backlog_respects_total_deletion_budget(monkeypatch):
+    limits = []
+    monkeypatch.setattr(
+        cache_cleanup.push, "prune_expired_subscriptions", lambda *_args, **_kwargs: 0
+    )
+    monkeypatch.setattr(
+        cache_cleanup.push,
+        "prune_expired_notifications_batch",
+        lambda _db, *, cutoff, limit: limits.append(limit) or limit,
+    )
+    monkeypatch.setattr(
+        cache_cleanup.push, "has_expired_notifications", lambda *_args, **_kwargs: True
+    )
+
+    result = cache_cleanup.prune_notification_backlog(
+        object(),
+        now=datetime(2026, 10, 8, tzinfo=UTC),
+        batch_size=500,
+        max_notifications=750,
+        time_budget_seconds=1,
+        clock=lambda: 0,
+    )
+
+    assert limits == [500, 250]
+    assert result["notifications"] == 750
+    assert result["pending"] is True
+
+
+def test_notification_backlog_respects_time_budget_between_batches(monkeypatch):
+    limits = []
+    clock = iter((0.0, 0.0, 1.0)).__next__
+    monkeypatch.setattr(
+        cache_cleanup.push, "prune_expired_subscriptions", lambda *_args, **_kwargs: 0
+    )
+    monkeypatch.setattr(
+        cache_cleanup.push,
+        "prune_expired_notifications_batch",
+        lambda _db, *, cutoff, limit: limits.append(limit) or limit,
+    )
+    monkeypatch.setattr(
+        cache_cleanup.push, "has_expired_notifications", lambda *_args, **_kwargs: True
+    )
+
+    result = cache_cleanup.prune_notification_backlog(
+        object(),
+        now=datetime(2026, 10, 8, tzinfo=UTC),
+        batch_size=500,
+        max_notifications=5_000,
+        time_budget_seconds=0.5,
+        clock=clock,
+    )
+
+    assert limits == [500]
+    assert result["notifications"] == 500
+    assert result["pending"] is True
 
 
 def test_cleanup_loop_cancellation_joins_real_worker_thread(monkeypatch):

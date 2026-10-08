@@ -1406,8 +1406,9 @@ def test_native_schema_rejects_unsafe_destination_and_telegram_body(
     )
 
 
-def test_delivery_content_uses_canonical_park_scope_and_reports_cap(
-    client, db_session, seed_royal, seed_park_with_tracker, monkeypatch
+@pytest.mark.parametrize("issue_count", [7, 500])
+def test_delivery_content_includes_donors_and_preserves_park_scope_and_cap(
+    client, db_session, seed_royal, seed_park_with_tracker, monkeypatch, issue_count
 ):
     _allow_bot(monkeypatch)
     seed_park_with_tracker.timezone = "UTC"
@@ -1439,7 +1440,17 @@ def test_delivery_content_uses_canonical_park_scope_and_reports_cap(
 
     def search(**kwargs):
         captured.update(kwargs)
-        return [{"key": f"ROBOPARK-{index}"} for index in range(500)]
+        rows = [
+            {
+                "key": f"ROBOPARK-{index}",
+                "summary": f"[a{1000 + index}] repair",
+                "tags": [seed_park_with_tracker.tag, *(["donor"] if index < 3 else [])],
+            }
+            for index in range(issue_count)
+        ]
+        if 'Tags: !"donor"' in kwargs["query"]:
+            return [row for row in rows if "donor" not in row["tags"]]
+        return rows
 
     monkeypatch.setattr(
         "robopark_api.services.native_telegram.bot_tracker_gateway.tracker_token",
@@ -1453,10 +1464,15 @@ def test_delivery_content_uses_canonical_park_scope_and_reports_cap(
     )
 
     assert response.status_code == 200
-    assert response.json()["truncated"] is True
-    assert len(response.json()["issues"]) == 500
+    assert response.json()["truncated"] is (issue_count == 500)
+    assert len(response.json()["issues"]) == issue_count
+    assert sum("donor" in row["tags"] for row in response.json()["issues"]) == 3
     assert f"Tags: {seed_park_with_tracker.tag}" in captured["query"]
-    assert 'Tags: !"donor"' in captured["query"]
+    assert 'Tags: !"donor"' not in captured["query"]
+    assert "Type: repair, service, calibration" in captured["query"]
+    assert "Priority: blocker" in captured["query"]
+    assert "Resolution: empty()" in captured["query"]
+    assert "Status: !closed" in captured["query"]
     assert captured["allowed_queues"] == (seed_park_with_tracker.tracker_queue,)
 
 

@@ -54,8 +54,8 @@ def test_latest_queue_interval_uses_legacy_thresholds_and_freezes_at_exit(db_ses
     _history(
         db_session,
         "ROBOPARK-4",
-        NOW - timedelta(hours=6),
-        ended_at=NOW - timedelta(hours=2),
+        NOW - timedelta(hours=12),
+        ended_at=NOW - timedelta(hours=8),
     )
 
     result = native_telegram_reports.enrich(
@@ -96,6 +96,44 @@ def test_latest_queue_interval_uses_legacy_thresholds_and_freezes_at_exit(db_ses
         "sla_overdue": 1,
         "log_dump": 0,
     }
+
+
+@pytest.mark.parametrize("timezone", ["Asia/Yekaterinburg", "Asia/Almaty"])
+def test_open_report_starts_at_nine_in_the_destination_parks_timezone(db_session, timezone):
+    report = native_telegram_reports.enrich(
+        db_session,
+        [
+            {
+                "key": "ROBOPARK-LOCAL-OPEN",
+                "status": {"key": "open"},
+                "createdAt": "2026-10-07T04:00:00Z",
+            }
+        ],
+        timezone=timezone,
+        now=datetime(2026, 10, 7, 6, tzinfo=UTC),
+    )["issues"][0]["bot_report"]
+
+    assert report["repair_hours"] == 2
+    assert report["downtime_hours"] == 2
+
+
+def test_current_queue_report_excludes_time_after_local_twenty_one(db_session):
+    report = native_telegram_reports.enrich(
+        db_session,
+        [
+            {
+                "key": "ROBOPARK-LOCAL-NIGHT",
+                "status": {"key": "queued"},
+                "createdAt": "2026-10-07T13:00:00Z",
+                "statusStartTime": "2026-10-07T15:00:00Z",
+            }
+        ],
+        timezone="Asia/Almaty",
+        now=datetime(2026, 10, 7, 18, tzinfo=UTC),
+    )["issues"][0]["bot_report"]
+
+    assert report["repair_hours"] == 1
+    assert report["downtime_hours"] == 5
 
 
 def test_missing_history_stays_unknown_but_exact_open_uses_created_timer(db_session):

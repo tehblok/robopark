@@ -16,7 +16,6 @@ from robopark_api.services import sla_clock, tracker_client, tracker_history
 from robopark_api.services.tracker_policy import issue_tags
 
 MAX_REPORT_ISSUES = 500
-LEGACY_WORK_TIMEZONE = "Europe/Moscow"
 SLA_AT_RISK_HOURS = 3.0
 
 _LOG_DUMP_EXACT_MARKERS = frozenset({"log_dump", "log-dump", "log dump", "слив логов"})
@@ -129,11 +128,9 @@ def _latest_queue_period(
     return periods[-1] if periods else None
 
 
-def _working_hours(start: datetime, end: datetime) -> float | None:
+def _working_hours(start: datetime, end: datetime, *, timezone: str) -> float | None:
     try:
-        return sla_clock.elapsed_working_hours(
-            _utc(start), _utc(end), timezone=LEGACY_WORK_TIMEZONE
-        )
+        return sla_clock.elapsed_working_hours(_utc(start), _utc(end), timezone=timezone)
     except (ValueError, TypeError):
         return None
 
@@ -207,10 +204,8 @@ def enrich(
 ) -> EnrichedReport:
     """Attach original PNG timers with one bounded persisted-event read.
 
-    ``timezone`` remains in the call contract because the destination owns it,
-    but legacy PNG repair time deliberately uses 09:00–21:00 Europe/Moscow.
+    Repair time uses the destination park's local 09:00–21:00 window.
     """
-    del timezone
     observed_at = _utc(now or datetime.now(UTC))
     scoped = [dict(issue) for issue in issues[:MAX_REPORT_ISSUES]]
     keys = sorted({_text(issue.get("key")) for issue in scoped if _text(issue.get("key"))})
@@ -253,18 +248,20 @@ def enrich(
             None
         )
         if _status_key(issue) == "open" and created is not None:
-            repair_hours = _working_hours(created, observed_at)
+            repair_hours = _working_hours(created, observed_at, timezone=timezone)
             repair_source = "created_open" if repair_hours is not None else None
         elif (
             _status_key(issue) == "queued" and _timestamp(issue.get("statusStartTime")) is not None
         ):
-            repair_hours = _working_hours(_timestamp(issue["statusStartTime"]), observed_at)
+            repair_hours = _working_hours(
+                _timestamp(issue["statusStartTime"]), observed_at, timezone=timezone
+            )
             repair_source = "current_queue_start" if repair_hours is not None else None
         else:
             period = _latest_queue_period(events_by_key.get(_text(issue.get("key")), []))
             if period is not None:
                 start, ended_at = period
-                repair_hours = _working_hours(start, ended_at or observed_at)
+                repair_hours = _working_hours(start, ended_at or observed_at, timezone=timezone)
                 repair_source = "queued_history" if repair_hours is not None else None
 
         source = log_dump_source(issue)

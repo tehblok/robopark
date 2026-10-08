@@ -1,7 +1,7 @@
 import time
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import sessionmaker
 from starlette.background import BackgroundTasks
 
@@ -9,9 +9,15 @@ from conftest import login_as, role_id_for
 from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.models import AccessStatus, User, UserPark
 from robopark_api.notification_delivery_models import NotificationDelivery
-from robopark_api.schedule_models import NotificationEvent, PushSubscription, ScheduleEntry
+from robopark_api.routers import push
+from robopark_api.schedule_models import (
+    NotificationEvent,
+    PushSubscription,
+    ScheduleEntry,
+    SystemIncidentOccurrence,
+)
 from robopark_api.security import hash_password
-from robopark_api.services import notification_delivery, platform_settings
+from robopark_api.services import cache_cleanup, notification_delivery, platform_settings
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.task_workflow_models import TaskReview
 
@@ -196,6 +202,174 @@ def test_inbox_hides_park_notification_after_access_is_revoked(client, db_sessio
 
     assert client.get("/push/inbox").json() == []
     assert client.post(f"/push/inbox/{notification_id}/read").status_code == 404
+
+
+def test_inbox_hides_notifications_one_day_after_creation_regardless_of_read_state(
+    client, db_session, seed_mechanic
+):
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            NotificationEvent(
+                id="expired-unread",
+                user_id=seed_mechanic.id,
+                event_type="return",
+                park_id=seed_mechanic.parks[0].id,
+                protected_text="old unread",
+                created_at=now - timedelta(hours=25),
+            ),
+            NotificationEvent(
+                id="expired-read",
+                user_id=seed_mechanic.id,
+                event_type="return",
+                park_id=seed_mechanic.parks[0].id,
+                protected_text="old read",
+                read_at=now - timedelta(minutes=1),
+                created_at=now - timedelta(hours=25),
+            ),
+            NotificationEvent(
+                id="fresh",
+                user_id=seed_mechanic.id,
+                event_type="return",
+                park_id=seed_mechanic.parks[0].id,
+                protected_text="fresh",
+                created_at=now - timedelta(hours=23),
+            ),
+        ]
+    )
+    db_session.commit()
+    login_as(client, seed_mechanic.username, "secret")
+
+    assert [item["id"] for item in client.get("/push/inbox").json()] == ["fresh"]
+    assert client.post("/push/inbox/expired-unread/read").status_code == 404
+    assert client.post("/push/inbox/expired-read/read").status_code == 404
+
+
+def test_notification_cleanup_uses_creation_time_and_a_bounded_batch(db_session, seed_mechanic):
+    now = datetime(2026, 10, 8, 12, tzinfo=UTC)
+    db_session.add_all(
+        [
+            NotificationEvent(
+                id="old-read",
+                user_id=seed_mechanic.id,
+                event_type="return",
+                park_id=seed_mechanic.parks[0].id,
+                protected_text="old read",
+                read_at=now - timedelta(minutes=1),
+                created_at=now - timedelta(hours=25),
+            ),
+            NotificationEvent(
+                id="old-unread",
+                user_id=seed_mechanic.id,
+                event_type="return",
+                park_id=seed_mechanic.parks[0].id,
+                protected_text="old unread",
+                created_at=now - timedelta(hours=25),
+            ),
+            NotificationEvent(
+                id="fresh",
+                user_id=seed_mechanic.id,
+                event_type="return",
+                park_id=seed_mechanic.parks[0].id,
+                protected_text="fresh",
+                created_at=now - timedelta(hours=23),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    assert push.prune_notification_data(db_session, now=now, notification_limit=1) == {
+        "subscriptions": 0,
+        "notifications": 1,
+    }
+    assert push.prune_notification_data(db_session, now=now, notification_limit=1) == {
+        "subscriptions": 0,
+        "notifications": 1,
+    }
+    assert set(db_session.scalars(select(NotificationEvent.id))) == {"fresh"}
+
+
+def test_notification_backlog_cleanup_drains_multiple_batches_and_cascades_deliveries(
+    db_session, seed_mechanic
+):
+    now = datetime(2026, 10, 8, 12, tzinfo=UTC)
+    park_id = seed_mechanic.parks[0].id
+    db_session.commit()
+    db_session.execute(text("PRAGMA foreign_keys=ON"))
+    events = [
+        NotificationEvent(
+            id=f"expired-{index}",
+            user_id=seed_mechanic.id,
+            event_type="return",
+            park_id=park_id,
+            protected_text="expired",
+            created_at=now - timedelta(hours=25),
+        )
+        for index in range(501)
+    ]
+    db_session.add_all(events)
+    db_session.flush()
+    db_session.add_all(
+        [
+            NotificationDelivery(
+                event_id=event.id,
+                channel="in_app",
+                state="delivered",
+                next_attempt_at=now,
+                expires_at=now,
+                idempotency_key=f"{event.id}:in_app",
+            )
+            for event in events
+        ]
+    )
+    db_session.commit()
+
+    result = cache_cleanup.prune_notification_backlog(
+        db_session,
+        now=now,
+        max_notifications=1_000,
+        time_budget_seconds=1,
+        clock=lambda: 0,
+    )
+
+    assert result == {
+        "subscriptions": 0,
+        "notifications": 501,
+        "batches": 2,
+        "pending": False,
+    }
+    assert db_session.scalar(select(func.count(NotificationEvent.id))) == 0
+    assert db_session.scalar(select(func.count(NotificationDelivery.id))) == 0
+
+
+def test_expired_active_system_incident_is_not_recreated_after_cleanup(
+    client, db_session, seed_royal
+):
+    first = client.app.state.push_service.emit_for_tests(
+        event_type="server_problem",
+        park_id=None,
+        protected_text="still degraded",
+        event_key="system:degraded",
+    )
+    db_session.execute(
+        NotificationEvent.__table__.update()
+        .where(NotificationEvent.id == f"{first['event_id']}-{seed_royal.id}")
+        .values(created_at=datetime.now(UTC) - timedelta(hours=25))
+    )
+    occurrence = db_session.scalar(select(SystemIncidentOccurrence))
+    occurrence.started_at = datetime.now(UTC) - timedelta(hours=25)
+    db_session.commit()
+    push.prune_notification_data(db_session)
+
+    repeated = client.app.state.push_service.emit_for_tests(
+        event_type="server_problem",
+        park_id=None,
+        protected_text="still degraded",
+        event_key="system:degraded",
+    )
+
+    assert repeated["internal_recipient_ids"] == []
+    assert db_session.scalars(select(NotificationEvent)).all() == []
 
 
 def test_push_routes_reject_session_after_user_approval_is_revoked(

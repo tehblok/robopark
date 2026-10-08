@@ -11,6 +11,7 @@ import stat
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -67,6 +68,8 @@ _SUCCESS_RETENTION_SECONDS = 30 * 86400
 _SYNC_RECEIPT_RETENTION_SECONDS = 30 * 86400
 _UPLOADED_BLOB_RETENTION_SECONDS = 7 * 86400
 _SYSTEM_INCIDENT_RETENTION_SECONDS = 90 * 86400
+_NOTIFICATION_CLEANUP_MAX_DELETIONS = 5_000
+_NOTIFICATION_CLEANUP_TIME_BUDGET_SECONDS = 0.25
 _STORAGE_BATCH_SIZE = 128
 _STORAGE_MAX_DELETIONS = 512
 _STORAGE_MAX_ITERATIONS = 16
@@ -75,6 +78,7 @@ _STORAGE_TIME_BUDGET_SECONDS = 0.5
 _ATTACHMENT_SCAN_LIMIT = 4096
 _attachment_scan_cursors: dict[str, tuple[float, str]] = {}
 _attachment_scan_lock = threading.Lock()
+_notification_cleanup_pending = False
 
 
 def prune_expired_ota_uploads(db: Session | None = None) -> int:
@@ -340,6 +344,39 @@ def prune_system_incident_occurrences(
     return int(result.rowcount or 0)
 
 
+def prune_notification_backlog(
+    db: Session,
+    *,
+    now: datetime,
+    batch_size: int = push.NOTIFICATION_CLEANUP_BATCH_SIZE,
+    max_notifications: int = _NOTIFICATION_CLEANUP_MAX_DELETIONS,
+    time_budget_seconds: float = _NOTIFICATION_CLEANUP_TIME_BUDGET_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, int | bool]:
+    """Drain several small inbox batches while bounding one worker cycle."""
+    deadline = clock() + max(0.0, time_budget_seconds)
+    subscriptions = push.prune_expired_subscriptions(db, now=now)
+    cutoff = now - push.INBOX_RETENTION
+    deleted = 0
+    batches = 0
+    batch_size = max(1, batch_size)
+    max_notifications = max(0, max_notifications)
+    while deleted < max_notifications and clock() < deadline:
+        limit = min(batch_size, max_notifications - deleted)
+        removed = push.prune_expired_notifications_batch(db, cutoff=cutoff, limit=limit)
+        if removed:
+            batches += 1
+            deleted += removed
+        if removed < limit:
+            break
+    return {
+        "subscriptions": subscriptions,
+        "notifications": deleted,
+        "batches": batches,
+        "pending": push.has_expired_notifications(db, cutoff=cutoff),
+    }
+
+
 def _delete_expired_auth_throttle_keys(
     db: Session, *, key_hashes: list[str], cutoff: datetime
 ) -> int:
@@ -530,7 +567,9 @@ def cleanup_storage_pressure(*, now: float | None = None) -> dict:
 
 
 def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
+    global _notification_cleanup_pending
     if host_maintenance_active():
+        _notification_cleanup_pending = False
         return 0, 0
     current = now or datetime.now(UTC)
     ota_uploads_removed = 0
@@ -545,7 +584,8 @@ def prune_cache_once(*, now: datetime | None = None) -> tuple[int, int]:
         incident_occurrences_removed = prune_system_incident_occurrences(db, now=current)
         operation_receipts_removed = prune_operation_registry(db, now=current)
         prune_observability(db, now=current)
-        notification_cleanup = push.prune_notification_data(db, now=current)
+        notification_cleanup = prune_notification_backlog(db, now=current)
+        _notification_cleanup_pending = bool(notification_cleanup["pending"])
         schedules_removed = schedules.prune_old_entries(db, now=current)
         actions_removed, attachments_removed = prune_tracker_outbox(db, now=current.timestamp())
         pending_reports_removed = reconcile_pending_report_deletions(db)
@@ -615,7 +655,7 @@ async def run_cache_cleanup_loop(
                         logger.exception("Cache cleanup cycle failed; retry is bounded")
                 else:
                     retry.succeeded()
-                    next_cleanup = now + interval_seconds
+                    next_cleanup = 0.0 if _notification_cleanup_pending else now + interval_seconds
             try:
                 await loop.run_in_executor(executor, sample_memory_pressure)
             except asyncio.CancelledError:

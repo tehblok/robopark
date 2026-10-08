@@ -1190,7 +1190,6 @@ def delivery_content(db: Session, delivery_id: int, token: str) -> dict:
             "Priority: blocker",
             tracker_client.open_issues_clause(),
             f"Tags: {tracker_client.ql_token(park.tag)}",
-            tracker_client.exclude_tag("donor"),
         )
     else:
         query = tracker_client.join_query(

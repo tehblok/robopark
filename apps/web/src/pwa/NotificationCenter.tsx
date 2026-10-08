@@ -25,6 +25,27 @@ const eventLabel: Record<string, string> = {
   update_failure: 'Сбой обновления',
   server_problem: 'Проблема системы',
 }
+
+const NOTIFICATION_RETENTION_MS = 24 * 60 * 60 * 1_000
+
+function currentTime() {
+  return Date.now()
+}
+
+function notificationExpiresAt(item: NotificationEvent) {
+  const createdAt = Date.parse(item.created_at)
+  return Number.isFinite(createdAt) ? createdAt + NOTIFICATION_RETENTION_MS : null
+}
+
+function removeExpired(items: NotificationEvent[] | null, now = Date.now()) {
+  if (!items) return items
+  const fresh = items.filter((item) => {
+    const expiresAt = notificationExpiresAt(item)
+    return expiresAt === null || expiresAt > now
+  })
+  return fresh.length === items.length ? items : fresh
+}
+
 export function NotificationCenter({ apiClient = api }: { apiClient?: NotificationApiClient }) {
   const [items, setItems] = useState<NotificationEvent[] | null>(null)
   const [error, setError] = useState(false)
@@ -34,7 +55,33 @@ export function NotificationCenter({ apiClient = api }: { apiClient?: Notificati
   const reading = useRef<string | null>(null)
   const [systemStatus, setSystemStatus] = useState<'idle' | 'busy' | 'enabled' | 'denied' | 'unsupported' | 'error'>('idle')
   useEffect(() => { let active = true; setError(false); void apiClient.notificationInbox().then(value => { if (active) { setItems(value); setError(false) } }).catch(() => { if (active) setError(true) }); return () => { active = false } }, [apiClient, reload])
-  const markRead = async (id: string) => {
+  useEffect(() => {
+    if (!items) return
+    const now = Date.now()
+    const fresh = removeExpired(items, now)
+    if (fresh !== items) {
+      setItems(fresh)
+      return
+    }
+    const nearestExpiry = Math.min(...items.flatMap((item) => {
+      const expiresAt = notificationExpiresAt(item)
+      return expiresAt === null ? [] : [expiresAt]
+    }))
+    const expire = () => setItems(current => removeExpired(current))
+    const timer = Number.isFinite(nearestExpiry)
+      ? window.setTimeout(expire, Math.max(0, nearestExpiry - now))
+      : undefined
+    const resume = () => {
+      if (document.visibilityState === 'visible') expire()
+    }
+    document.addEventListener('visibilitychange', resume)
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', resume)
+    }
+  }, [items])
+  const markRead = async (notification: NotificationEvent) => {
+    const { id } = notification
     if (reading.current) return
     reading.current = id
     setReadingId(id)
@@ -44,7 +91,12 @@ export function NotificationCenter({ apiClient = api }: { apiClient?: Notificati
       if (!result.ok) throw new Error('notification_read_failed')
       setItems(current => current?.map(item => item.id === id ? { ...item, read_at: new Date().toISOString() } : item) ?? null)
     } catch {
-      setReadError('Не удалось отметить уведомление прочитанным.')
+      const expiresAt = notificationExpiresAt(notification)
+      if (expiresAt !== null && expiresAt <= currentTime()) {
+        setItems(current => removeExpired(current))
+      } else {
+        setReadError('Не удалось отметить уведомление прочитанным.')
+      }
     } finally {
       reading.current = null
       setReadingId(null)
@@ -83,6 +135,6 @@ export function NotificationCenter({ apiClient = api }: { apiClient?: Notificati
       {systemStatus === 'unsupported' ? <p>Это устройство не поддерживает системные уведомления.</p> : null}
       {systemStatus === 'error' ? <p>Не удалось включить. Внутренние уведомления продолжат работать.</p> : null}
     </div> : <p>Уведомления на устройстве включены.</p>}
-    {items.length === 0 ? <EmptyState title="Новых уведомлений нет" /> : <ul className="rp-notification-list">{items.map(item => <li key={item.id}><div><strong>{eventLabel[item.event_type] ?? 'Событие'}</strong><p>{item.protected_text}</p></div>{!item.read_at ? <Button busy={readingId === item.id} disabled={readingId !== null} onClick={() => void markRead(item.id)} size="compact" variant="secondary">Прочитано</Button> : null}</li>)}</ul>}
+    {items.length === 0 ? <EmptyState title="Новых уведомлений нет" /> : <ul className="rp-notification-list">{items.map(item => <li key={item.id}><div><strong>{eventLabel[item.event_type] ?? 'Событие'}</strong><p>{item.protected_text}</p></div>{!item.read_at ? <Button busy={readingId === item.id} disabled={readingId !== null} onClick={() => void markRead(item)} size="compact" variant="secondary">Прочитано</Button> : null}</li>)}</ul>}
   </Panel>
 }

@@ -52,6 +52,7 @@ export function NativeTelegramMigrationPanel({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [showArchive, setShowArchive] = useState(false)
 
   const load = useCallback(async () => {
     const generation = ++generationRef.current
@@ -107,7 +108,7 @@ export function NativeTelegramMigrationPanel({
 
   return <Panel
     density="dense"
-    hint="Исходные файлы сохраняются. Старые списки пользователей не переносятся: сотрудники привязывают Telegram в своём профиле."
+    hint="Здесь переносится конфигурация старого бота. Текущие рассылки и их состояние находятся в разделе «Задания»."
     title="Перенос старых конфигураций"
   >
     {loading ? <LoadingState label="Проверяем старые конфигурации" variant="inline" /> : null}
@@ -115,11 +116,15 @@ export function NativeTelegramMigrationPanel({
     {notice ? <Alert tone="success">{notice}</Alert> : null}
     {!preview && !loading ? <Button disabled={busy} onClick={() => void load()} variant="secondary">Обновить предпросмотр</Button> : null}
     {preview && !loading ? <div className="rp-telegram-migration">
-      {preview.already_applied ? <Alert tone="info">Этот набор конфигураций уже перенесён.</Alert> : null}
+      {preview.already_applied ? <>
+        <Alert tone="info">Перенос завершён: {preview.counts.jobs} заданий. Управляйте ими ниже в разделе «Задания». Архив переноса не отражает их текущее состояние.</Alert>
+        <Button variant="secondary" onClick={() => setShowArchive(value => !value)}>{showArchive ? 'Скрыть архив переноса' : 'Показать архив переноса'}</Button>
+      </> : null}
+      {!preview.already_applied || showArchive ? <>
       <p className="rp-telegram-muted">
         Найдено: чатов — {preview.counts.park_updates}, заданий — {preview.counts.jobs}, конфликтов — {preview.counts.conflicts}, пропущено — {preview.counts.skipped}.
       </p>
-      <p>Будут добавлены только записи с точным совпадением тега парка. Существующие чаты не перезаписываются, задания создаются выключенными.</p>
+      <p>{preview.already_applied ? 'Снимок на момент переноса. Задания первоначально создавались выключенными; их актуальное состояние смотрите в разделе «Задания».' : 'Будут добавлены только записи с точным совпадением тега парка. Существующие чаты не перезаписываются, задания создаются выключенными.'}</p>
 
       {preview.park_updates.length > 0 ? <section>
         <h3>Совпавшие чаты парков</h3>
@@ -129,9 +134,9 @@ export function NativeTelegramMigrationPanel({
       </section> : null}
 
       {preview.jobs.length > 0 ? <section>
-        <h3>Задания для переноса</h3>
+        <h3>{preview.already_applied ? 'Архив перенесённых заданий' : 'Задания для переноса'}</h3>
         <ul>{preview.jobs.map(item => <li key={item.source_ref}>
-          <strong>{item.title}</strong> — парк {item.park_tag}, {jobSchedule(item)}, выключено
+          <strong>{item.title}</strong> — парк {item.park_tag}, {jobSchedule(item)}{preview.already_applied ? '' : ', выключено'}
         </li>)}</ul>
       </section> : null}
 
@@ -152,6 +157,7 @@ export function NativeTelegramMigrationPanel({
         </Button>
         <Button disabled={busy} onClick={() => void load()} variant="secondary">Обновить предпросмотр</Button>
       </div>
+      </> : null}
     </div> : null}
   </Panel>
 }

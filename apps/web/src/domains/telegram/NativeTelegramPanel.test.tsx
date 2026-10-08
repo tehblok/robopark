@@ -47,6 +47,86 @@ afterEach(() => {
 })
 
 describe('NativeTelegramPanel', () => {
+  it('shows all accessible parks and filters Zoom without hiding disabled jobs', async () => {
+    const api = client()
+    const snapshot = structuredClone(state)
+    snapshot.jobs.push({ ...snapshot.jobs[0], id: 'zoom-south', park_id: 9, kind: 'zoom', title: 'Вечерний созвон', enabled: false })
+    vi.mocked(api.getAdmin).mockResolvedValue(snapshot)
+    render(<NativeTelegramPanel client={api} />)
+    await screen.findByText(/Всего доступно: 2. Показано: 1/)
+    expect(screen.queryByText('Вечерний созвон')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Все доступные парки'))
+    expect(screen.getByText('Вечерний созвон')).toBeVisible()
+    fireEvent.change(screen.getByLabelText('Вид рассылки'), { target: { value: 'zoom' } })
+    expect(screen.queryByRole('button', { name: 'Отключить Утренний отчёт' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Изменить' }))
+    fireEvent.change(screen.getByLabelText('Название'), { target: { value: 'Обновлённый созвон' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить задание' }))
+    await waitFor(() => expect(api.updateJob).toHaveBeenCalledWith('zoom-south', expect.objectContaining({ park_id: 9, title: 'Обновлённый созвон' })))
+  })
+
+  it('refreshes jobs changed in Telegram automatically when no local edit is pending', async () => {
+    vi.useFakeTimers()
+    const api = client()
+    const updated = structuredClone(state)
+    updated.jobs.push({ ...state.jobs[0], id: 'new-zoom', kind: 'zoom', title: 'Новый Zoom из Telegram' })
+    api.getAdmin = vi.fn().mockResolvedValueOnce(structuredClone(state)).mockResolvedValue(updated)
+    render(<NativeTelegramPanel client={api} />)
+    await act(async () => {})
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(screen.getByText('Новый Zoom из Telegram')).toBeVisible()
+    expect(screen.getByText(/Всего доступно: 2. Показано: 2/)).toBeVisible()
+  })
+
+  it('does not roll back a saved job when an earlier poll completes late', async () => {
+    vi.useFakeTimers()
+    const api = client()
+    const oldPoll = deferred<NativeTelegramState>()
+    api.getAdmin = vi.fn().mockResolvedValueOnce(structuredClone(state)).mockReturnValueOnce(oldPoll.promise)
+    render(<NativeTelegramPanel client={api} />)
+    await act(async () => {})
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    fireEvent.click(screen.getByRole('button', { name: 'Отключить Утренний отчёт' }))
+    await act(async () => {})
+    await act(async () => { oldPoll.resolve(structuredClone(state)) })
+    expect(screen.getByRole('button', { name: 'Включить Утренний отчёт' })).toBeVisible()
+  })
+
+  it('selects an accessible park when the polled scope no longer includes the selection', async () => {
+    vi.useFakeTimers()
+    const api = client()
+    const narrowed = structuredClone(state)
+    narrowed.parks = [narrowed.parks[1]]
+    narrowed.jobs = []; narrowed.deliveries = []
+    api.getAdmin = vi.fn().mockResolvedValueOnce(structuredClone(state)).mockResolvedValue(narrowed)
+    render(<NativeTelegramPanel client={api} />)
+    await act(async () => {})
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(screen.getByLabelText('Парк Telegram')).toHaveValue('9')
+    expect(screen.getByLabelText('ID чата')).toHaveValue('-1001234567890')
+    expect(screen.queryByText('Нет доступных парков.')).not.toBeInTheDocument()
+  })
+
+  it('ignores an older runtime snapshot after migration refreshes configuration', async () => {
+    vi.useFakeTimers()
+    const api = client()
+    const oldPoll = deferred<NativeTelegramState>()
+    const migrated = structuredClone(state)
+    migrated.jobs.push({ ...state.jobs[0], id: 'imported-zoom', title: 'Перенесённый Zoom', kind: 'zoom' })
+    const migration = { fingerprint: 'a'.repeat(64), already_applied: false, park_updates: [], jobs: [], conflicts: [], counts: { park_updates: 0, jobs: 1, conflicts: 0, skipped: 0 } }
+    api.getAdmin = vi.fn().mockResolvedValueOnce(structuredClone(state)).mockReturnValueOnce(oldPoll.promise).mockResolvedValue(migrated)
+    api.getMigrationPreview = vi.fn().mockResolvedValue(migration)
+    api.applyMigration = vi.fn().mockResolvedValue({ ...migration, applied: true, applied_at: '2026-10-08T12:00:00Z' })
+    render(<NativeTelegramPanel client={api} showMigration />)
+    await act(async () => {})
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    fireEvent.click(screen.getByRole('button', { name: 'Перенести 1 выключенных заданий' }))
+    await act(async () => {})
+    expect(screen.getByText('Перенесённый Zoom')).toBeVisible()
+    await act(async () => { oldPoll.resolve(structuredClone(state)) })
+    expect(screen.getByText('Перенесённый Zoom')).toBeVisible()
+  })
+
   it('creates alternating Zoom in an explicit timezone and keeps the anchor visible', async () => {
     const api = client()
     render(<NativeTelegramPanel client={api} />)
@@ -244,7 +324,7 @@ describe('NativeTelegramPanel', () => {
     fireEvent.change(screen.getByLabelText('Название'), { target: { value: 'Несохранённый черновик' } })
     fireEvent.click(screen.getByRole('button', { name: 'Перенести 1 выключенных заданий' }))
 
-    expect(await screen.findByText('Старое объявление')).toBeVisible()
+    expect(await within(screen.getByRole('region', { name: 'Задания' })).findByText('Старое объявление')).toBeVisible()
     expect(screen.getByLabelText('ID чата')).toHaveValue('-1009999999999')
     expect(screen.getByLabelText('Название')).toHaveValue('Несохранённый черновик')
   })

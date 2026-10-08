@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { ApiError } from '../../api'
 import { Alert, Panel } from '../../components/PageShell'
 import { Button } from '../../design-system/actions/Button'
@@ -130,6 +130,13 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [conflict, setConflict] = useState(false)
+  const [allParks, setAllParks] = useState(false)
+  const [kindFilter, setKindFilter] = useState<BotJobKind | ''>('')
+  const [search, setSearch] = useState('')
+  const [configurationChanged, setConfigurationChanged] = useState(false)
+  const configurationLocked = useRef(false)
+  const configurationSnapshot = useRef(data)
+  useLayoutEffect(() => { configurationSnapshot.current = data }, [data])
 
   const load = useCallback(async (preferredParkId: number | null, preferPreferred = false) => {
     const generation = ++loadGeneration.current
@@ -147,6 +154,7 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
       const selected = value.parks.find(park => park.id === target) ?? null
       contextGeneration.current += 1
       setData(value)
+      setConfigurationChanged(false)
       selectedParkRef.current = target
       setSelectedParkId(target)
       setChatId(selected?.chat_id == null ? '' : String(selected.chat_id))
@@ -172,9 +180,26 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
   const refreshRuntime = useCallback(() => {
     if (runtimePending.current) return runtimePending.current
     const generation = ++runtimeGeneration.current
+    const context = contextGeneration.current
+    const startedLocked = configurationLocked.current
     const work = client.getAdmin().then(value => {
-      if (runtimeGeneration.current !== generation) return
-      setData(current => current ? ({ ...current, health: value.health, deliveries: value.deliveries }) : current)
+      if (runtimeGeneration.current !== generation || contextGeneration.current !== context) return
+      if (startedLocked || configurationLocked.current) {
+        const previous = configurationSnapshot.current
+        if (previous && JSON.stringify([previous.parks, previous.jobs]) !== JSON.stringify([value.parks, value.jobs])) setConfigurationChanged(true)
+        setData(current => current ? { ...current, health: value.health, deliveries: value.deliveries } : current)
+      } else {
+        setData(value)
+        const selected = value.parks.find(item => item.id === selectedParkRef.current) ?? value.parks[0]
+        if ((selected?.id ?? null) !== selectedParkRef.current) {
+          contextGeneration.current += 1
+          selectedParkRef.current = selected?.id ?? null
+          setSelectedParkId(selected?.id ?? null)
+        }
+        setChatId(selected?.chat_id == null ? '' : String(selected.chat_id))
+        setThreadId(selected?.thread_id == null ? '' : String(selected.thread_id))
+        setConfigurationChanged(false)
+      }
     }).catch(() => {
       // Keep the last bounded runtime snapshot; the next visible poll retries.
     }).finally(() => {
@@ -185,9 +210,13 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
   }, [client])
 
   const refreshConfiguration = useCallback(async () => {
+    runtimeGeneration.current += 1
     const generation = contextGeneration.current
     const value = await client.getAdmin()
-    if (contextGeneration.current === generation) setData(value)
+    if (contextGeneration.current === generation) {
+      runtimeGeneration.current += 1
+      setData(value)
+    }
   }, [client])
 
   useEffect(() => {
@@ -215,6 +244,10 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
     }
   }, [refreshRuntime])
   const park = data?.parks.find(item => item.id === selectedParkId) ?? null
+  const chatDirty = chatId !== (park?.chat_id == null ? '' : String(park.chat_id))
+    || threadId !== (park?.thread_id == null ? '' : String(park.thread_id))
+  const isConfigurationLocked = busy || Boolean(draft || deleting || sending) || chatDirty
+  useLayoutEffect(() => { configurationLocked.current = isConfigurationLocked }, [isConfigurationLocked])
 
   const selectPark = (id: number) => {
     const selected = data?.parks.find(item => item.id === id) ?? null
@@ -228,7 +261,12 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
     setSending(null)
   }
 
-  const jobs = useMemo(() => data?.jobs.filter(job => job.park_id === selectedParkId) ?? [], [data?.jobs, selectedParkId])
+  const jobs = useMemo(() => data?.jobs.filter(job => {
+    if (!allParks && job.park_id !== selectedParkId) return false
+    if (kindFilter && job.kind !== kindFilter) return false
+    const parkName = data.parks.find(item => item.id === job.park_id)?.name ?? ''
+    return `${job.title} ${parkName} ${job.text ?? ''}`.toLocaleLowerCase('ru-RU').includes(search.trim().toLocaleLowerCase('ru-RU'))
+  }) ?? [], [data, selectedParkId, allParks, kindFilter, search])
   const deliveries = useMemo(() => data?.deliveries.filter(item => item.park_id === selectedParkId) ?? [], [data?.deliveries, selectedParkId])
   const serviceOffline = data?.health.state === 'offline'
 
@@ -252,6 +290,7 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
       setError('ID чата должен быть безопасным целым числом не длиннее 52 бит, а ID темы — ещё и положительным.'); return
     }
     const generation = contextGeneration.current
+    runtimeGeneration.current += 1
     setBusy(true); setError(''); setNotice(''); setConflict(false)
     try {
       const updated = await client.updatePark(park.id, { chat_id: parsedChat, thread_id: parsedThread, revision: park.revision })
@@ -271,6 +310,7 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
     if (validation) { setError(validation); return }
     const body = normalizedDraft(draft)
     const generation = contextGeneration.current
+    runtimeGeneration.current += 1
     setBusy(true); setError(''); setNotice(''); setConflict(false)
     try {
       const updated = editing
@@ -285,6 +325,7 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
 
   const toggleJob = async (job: BotJob) => {
     const generation = contextGeneration.current
+    runtimeGeneration.current += 1
     setBusy(true); setError(''); setNotice(''); setConflict(false)
     try {
       const updated = await client.updateJob(job.id, { ...normalizedDraft(job), enabled: !job.enabled, revision: job.revision })
@@ -297,6 +338,7 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
   const deleteJob = async () => {
     if (!deleting) return
     const generation = contextGeneration.current
+    runtimeGeneration.current += 1
     const target = deleting
     setBusy(true); setError(''); setConflict(false)
     try {
@@ -346,6 +388,7 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
           {data.parks.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select>
       </label>
+      {configurationChanged ? <Alert tone="info">Задания или настройки изменились в Telegram либо другой вкладке. Ваш ввод сохранён. Завершите редактирование и обновите список.</Alert> : null}
       {!park ? <p>Нет доступных парков.</p> : <>
         <Panel density="dense" hint={`Часовой пояс: ${park.timezone}. Пустой ID чата отключает доставку.`} title="Чат парка">
           <div className="rp-telegram-form-row">
@@ -355,10 +398,16 @@ export function NativeTelegramPanel({ client = nativeTelegramClient, initialPark
           <Button busy={busy} onClick={() => void savePark()}>Сохранить чат</Button>
         </Panel>
 
-        <Panel actions={<Button disabled={busy} onClick={openCreate} size="compact">Новое задание</Button>} density="dense" title="Задания">
-          {jobs.length === 0 ? <p className="rp-telegram-muted">Заданий для парка пока нет.</p> : <div className="rp-telegram-jobs">
+        <Panel actions={<div className="rp-telegram-actions"><Button disabled={isConfigurationLocked} onClick={() => void refreshRuntime()} size="compact" variant="secondary">Обновить задания</Button><Button disabled={busy} onClick={openCreate} size="compact">Новое задание</Button></div>} density="dense" title="Задания">
+          <p className="rp-telegram-muted">Всего доступно: {data.jobs.length}. Показано: {jobs.length}. Новые задания создаются для парка «{park.name}».</p>
+          <label className="toggle"><input checked={allParks} onChange={event => setAllParks(event.target.checked)} type="checkbox" />Все доступные парки</label>
+          <div className="rp-telegram-form-row">
+            <label className="field"><span className="field-label">Вид рассылки</span><select value={kindFilter} onChange={event => setKindFilter(event.target.value as BotJobKind | '')}><option value="">Все виды</option><option value="zoom">Zoom</option><option value="text">Уведомления и объявления</option><option value="report">PNG и отчёты</option><option value="campaign">Кампании</option></select></label>
+            <label className="field"><span className="field-label">Поиск рассылки</span><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Название, парк или текст" /></label>
+          </div>
+          {jobs.length === 0 ? <p className="rp-telegram-muted">По выбранным условиям заданий нет.</p> : <div className="rp-telegram-jobs">
             {jobs.map(job => <article className="rp-telegram-job" key={job.id}>
-              <div><strong>{job.title}</strong><small>{scheduleSummary(job)}</small></div>
+              <div><strong>{job.title}</strong>{allParks ? <small>{data.parks.find(item => item.id === job.park_id)?.name}</small> : null}<small>{scheduleSummary(job)}</small></div>
               <div className="rp-telegram-actions">
                 <Button disabled={busy} onClick={() => openEdit(job)} size="compact" variant="secondary">Изменить</Button>
                 <Button aria-label={`${job.enabled ? 'Отключить' : 'Включить'} ${job.title}`} disabled={busy} onClick={() => void toggleJob(job)} size="compact" variant="secondary">{job.enabled ? 'Отключить' : 'Включить'}</Button>
@@ -393,7 +442,7 @@ function JobForm({ draft, editing, busy, onChange, onCancel, onSubmit }: {
   return <form className="rp-telegram-job-form" onSubmit={onSubmit}>
     <h3>{editing ? 'Изменить задание' : 'Новое задание'}</h3>
     <div className="rp-telegram-form-row">
-      <label className="field"><span className="field-label">Тип задания</span><select onChange={event => patch('kind', event.target.value as BotJobKind)} value={draft.kind}>
+      <label className="field"><span className="field-label">Тип задания</span><select onChange={event => onChange({ ...draft, kind: event.target.value as BotJobKind, timezone: event.target.value === 'zoom' ? draft.timezone || 'Europe/Moscow' : draft.timezone })} value={draft.kind}>
         <option value="report">Отчёт</option><option value="text">Текст</option><option value="zoom">Zoom</option><option value="campaign">Кампания</option>
       </select></label>
       <label className="field"><span className="field-label">Название</span><input maxLength={128} onChange={event => patch('title', event.target.value)} value={draft.title} /></label>

@@ -164,10 +164,25 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_includes_telegram_account_metadata():
+def test_alembic_head_includes_notification_retention_index():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0061_telegram_account_metadata"]
+    assert script.get_heads() == ["0062_notification_retention_idx"]
+
+
+def test_notification_retention_index_migrates_from_previous_head(sqlite_database_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0061_telegram_account_metadata")
+    command.upgrade(config, "head")
+    indexes = {
+        index["name"]: index["column_names"]
+        for index in inspect(create_engine(sqlite_database_url, future=True)).get_indexes(
+            "notification_events"
+        )
+    }
+
+    assert indexes["ix_notification_events_created_id"] == ["created_at", "id"]
 
 
 def test_host_terminal_migration_builds_bounded_session_schema(sqlite_database_url, monkeypatch):
@@ -439,7 +454,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
     with engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0061_telegram_account_metadata"
+            == "0062_notification_retention_idx"
         )
 
 

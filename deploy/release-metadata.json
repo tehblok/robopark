@@ -1,5 +1,5 @@
 {
-  "migration_head": "0061_telegram_account_metadata",
+  "migration_head": "0062_notification_retention_idx",
   "migration_compatibility": {
     "from_heads": [
       "0055_media_upload_park",
@@ -8,7 +8,8 @@
       "0058_ai_bundle_receipts",
       "0059_ai_action_receipts",
       "0060_native_telegram",
-      "0061_telegram_account_metadata"
+      "0061_telegram_account_metadata",
+      "0062_notification_retention_idx"
     ],
     "reversible": false
   },
@@ -32,7 +33,8 @@
     "0.2.0-rc.36",
     "0.2.0-rc.37",
     "0.2.0-rc.38",
-    "0.2.0-rc.39"
+    "0.2.0-rc.39",
+    "0.2.0-rc.40"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -50,5 +52,5 @@
       65536
     ]
   },
-  "update_notes": "Ускорен поиск робота в Telegram: используются свежие полные задачи из кэша сайта, запросы к Tracker объединены по очередям, повторные и одновременные запросы используют общий ограниченный кэш на 20 секунд. После изменения задач кэш сбрасывается. Сохранены права парков, точный номер робота, карточки и все виды поиска. Формат OTA v1 и миграция 0061 сохранены."
+  "update_notes": "В PNG возвращены задачи donor. Ремонтные часы учитывают часовой пояс парка. Уведомления сайта исчезают через 24 часа и удаляются фоновыми порциями. Улучшено управление Telegram-рассылками и Zoom. OTA v1 сохранён; миграция 0062 добавляет индекс очистки уведомлений."
 }

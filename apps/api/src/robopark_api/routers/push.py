@@ -31,6 +31,8 @@ router = APIRouter(prefix="/push", tags=["push"])
 logger = logging.getLogger(__name__)
 
 _P256_ORDER = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+INBOX_RETENTION = timedelta(days=1)
+NOTIFICATION_CLEANUP_BATCH_SIZE = 500
 
 
 def _visible_inbox_scope(user: User):
@@ -55,6 +57,11 @@ def _visible_inbox_scope(user: User):
     )
 
 
+def _unexpired_inbox_scope(*, now: datetime | None = None):
+    current = now or datetime.now(UTC)
+    return NotificationEvent.created_at > current - INBOX_RETENTION
+
+
 def prune_expired_subscriptions(db: Session, *, now: datetime | None = None) -> int:
     result = db.execute(
         delete(PushSubscription).where(
@@ -71,22 +78,59 @@ def remove_rejected_subscription(db: Session, endpoint_hash: str) -> None:
     db.commit()
 
 
-def prune_notification_data(
-    db: Session, *, now: datetime | None = None, read_days: int = 30, unread_days: int = 90
-) -> dict[str, int]:
-    current = now or datetime.now(UTC)
-    subscriptions = prune_expired_subscriptions(db, now=current)
+def prune_expired_notifications_batch(
+    db: Session,
+    *,
+    cutoff: datetime,
+    limit: int = NOTIFICATION_CLEANUP_BATCH_SIZE,
+) -> int:
+    notification_ids = list(
+        db.scalars(
+            select(NotificationEvent.id)
+            .where(NotificationEvent.created_at <= cutoff)
+            .order_by(NotificationEvent.created_at, NotificationEvent.id)
+            .limit(max(0, limit))
+        )
+    )
+    if not notification_ids:
+        return 0
     result = db.execute(
         delete(NotificationEvent).where(
-            or_(
-                NotificationEvent.read_at <= current - timedelta(days=read_days),
-                (NotificationEvent.read_at.is_(None))
-                & (NotificationEvent.created_at <= current - timedelta(days=unread_days)),
-            )
+            NotificationEvent.id.in_(notification_ids),
+            NotificationEvent.created_at <= cutoff,
         )
     )
     db.commit()
-    return {"subscriptions": subscriptions, "notifications": int(result.rowcount or 0)}
+    return int(result.rowcount or 0)
+
+
+def has_expired_notifications(db: Session, *, cutoff: datetime) -> bool:
+    return (
+        db.scalar(
+            select(NotificationEvent.id)
+            .where(NotificationEvent.created_at <= cutoff)
+            .order_by(NotificationEvent.created_at, NotificationEvent.id)
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def prune_notification_data(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    notification_limit: int = NOTIFICATION_CLEANUP_BATCH_SIZE,
+) -> dict[str, int]:
+    current = now or datetime.now(UTC)
+    subscriptions = prune_expired_subscriptions(db, now=current)
+    cutoff = current - INBOX_RETENTION
+    notifications = prune_expired_notifications_batch(
+        db,
+        cutoff=cutoff,
+        limit=notification_limit,
+    )
+    return {"subscriptions": subscriptions, "notifications": notifications}
 
 
 class PushService:
@@ -173,6 +217,7 @@ class PushService:
         recipients: list[int] = []
         internal_recipients: list[int] = []
         stable_event_key = event_key
+        expired_system_occurrence = False
         if event_key is not None and event_key.startswith("system:"):
             occurrence = db.scalar(
                 select(SystemIncidentOccurrence).where(
@@ -201,9 +246,25 @@ class PushService:
             if occurrence is not None:
                 occurrence.last_seen_at = now
                 stable_event_key = f"{event_key}:{occurrence.id}"
+                expired_system_occurrence = (
+                    db.scalar(
+                        select(SystemIncidentOccurrence.id).where(
+                            SystemIncidentOccurrence.id == occurrence.id,
+                            SystemIncidentOccurrence.started_at <= now - INBOX_RETENTION,
+                        )
+                    )
+                    is not None
+                )
         event_id = hashlib.sha256(
             (stable_event_key or f"{event_type}:{now.timestamp()}:{protected_text}").encode()
         ).hexdigest()[:24]
+        if expired_system_occurrence:
+            return {
+                "event_id": event_id,
+                "recipient_ids": recipients,
+                "internal_recipient_ids": internal_recipients,
+                "push_payload": {"event_id": event_id},
+            }
         subscriptions = {}
         if deliver and user_ids:
             for row in db.scalars(
@@ -224,6 +285,7 @@ class PushService:
                     event_type=event_type,
                     park_id=park_id,
                     protected_text=protected_text,
+                    created_at=now,
                 )
             )
             fresh_users.append(user)
@@ -372,9 +434,14 @@ def preferences(
 
 @router.get("/inbox")
 def inbox(user: User = Depends(require_approved), db: Session = Depends(get_db)):
+    now = datetime.now(UTC)
     rows = db.scalars(
         select(NotificationEvent)
-        .where(NotificationEvent.user_id == user.id, _visible_inbox_scope(user))
+        .where(
+            NotificationEvent.user_id == user.id,
+            _visible_inbox_scope(user),
+            _unexpired_inbox_scope(now=now),
+        )
         .order_by(NotificationEvent.created_at.desc(), NotificationEvent.id.desc())
         .limit(200)
     )
@@ -393,15 +460,17 @@ def inbox(user: User = Depends(require_approved), db: Session = Depends(get_db))
 
 @router.post("/inbox/{event_id}/read")
 def mark_read(event_id: str, user: User = Depends(require_approved), db: Session = Depends(get_db)):
+    now = datetime.now(UTC)
     row = db.scalar(
         select(NotificationEvent).where(
             NotificationEvent.id == event_id,
             NotificationEvent.user_id == user.id,
             _visible_inbox_scope(user),
+            _unexpired_inbox_scope(now=now),
         )
     )
     if row is None:
         raise HTTPException(404, "notification_not_found")
-    row.read_at = datetime.now(UTC)
+    row.read_at = now
     db.commit()
     return {"ok": True}

@@ -28,6 +28,18 @@ function client(): NativeTelegramClient {
 }
 
 describe('NativeTelegramMigrationPanel', () => {
+  it('keeps completed import separate from current delivery state', async () => {
+    const api = client()
+    vi.mocked(api.getMigrationPreview).mockResolvedValue({ ...structuredClone(preview), already_applied: true })
+    render(<NativeTelegramMigrationPanel client={api} onApplied={vi.fn()} />)
+    expect(await screen.findByText(/Перенос завершён: 1 заданий/)).toBeVisible()
+    expect(screen.queryByText('Часовой отчёт')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Показать архив переноса' }))
+    expect(screen.getByText('Часовой отчёт')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Архив перенесённых заданий' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Перенести 1 выключенных заданий' })).toBeDisabled()
+    expect(api.applyMigration).not.toHaveBeenCalled()
+  })
   it('explains conflicting legacy folders and allows a fresh preview after the source is fixed', async () => {
     const api = client()
     vi.mocked(api.getMigrationPreview)
@@ -58,7 +70,7 @@ describe('NativeTelegramMigrationPanel', () => {
     await waitFor(() => expect(api.applyMigration).toHaveBeenCalledWith(preview.fingerprint))
     expect(onApplied).toHaveBeenCalledOnce()
     expect(await screen.findByText('Перенос выполнен: создано 1 выключенных заданий.')).toBeVisible()
-    expect(apply).toBeDisabled()
+    expect(apply).not.toBeInTheDocument()
   })
 
   it('reloads the preview once after a fingerprint conflict and requires another explicit apply', async () => {

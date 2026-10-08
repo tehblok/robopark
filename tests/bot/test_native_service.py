@@ -496,6 +496,274 @@ def test_send_now_requires_confirmation_and_reuses_id_on_api_retry():
     assert sends[0]["allow_disabled"] is True
 
 
+JOB_ID = "17fe4e2a-93e9-4a62-8d6a-806b9fcb0914"
+
+
+class JobAPI(API):
+    def __init__(self, job=None):
+        super().__init__()
+        self.job = {
+            "id": JOB_ID,
+            "revision": 3,
+            "park_id": 3,
+            "kind": "zoom",
+            "title": "Утренний Zoom",
+            "enabled": False,
+            "schedule": "daily",
+            "timezone": None,
+            "time": "09:00",
+            "run_at": None,
+            "weekdays": [0, 2, 4],
+            "start_hour": None,
+            "end_hour": None,
+            "text": "Подключайтесь",
+            "url": "https://zoom.example/room",
+            "tracker_tag": None,
+            "alternate": "even",
+            "anchor_date": "2026-10-05",
+            **(job or {}),
+        }
+        self.reject_next_update = False
+
+    def call(self, method, path, payload=None):
+        self.calls.append((method, path, payload))
+        if path.startswith("/context?"):
+            return {"role": "admin", "can_manage": True}
+        if path.startswith("/manage?"):
+            return {
+                "parks": [
+                    {
+                        "id": 3,
+                        "name": "Северный",
+                        "tag": "north",
+                        "chat_id": -100,
+                        "thread_id": None,
+                        "revision": 1,
+                    }
+                ],
+                "jobs": [self.job],
+            }
+        if method == "PUT" and path.startswith(f"/manage/jobs/{JOB_ID}?"):
+            if self.reject_next_update:
+                self.reject_next_update = False
+                raise ServiceError("invalid_job", status=422)
+            if payload["revision"] != self.job["revision"]:
+                raise ServiceError("revision_conflict", status=409)
+            self.job = {**payload, "revision": payload["revision"] + 1}
+            return self.job
+        if method == "POST" and path.startswith("/manage/jobs?"):
+            self.job = {"id": JOB_ID, "revision": 1, **payload}
+            return self.job
+        return super().call(method, path, payload)
+
+
+def _button(payload, label):
+    return next(
+        button
+        for row in payload["reply_markup"]["inline_keyboard"]
+        for button in row
+        if button["text"] == label
+    )
+
+
+def test_job_card_uses_friendly_schedule_timezone_and_alternation_summary():
+    tg = Telegram()
+    BotService(JobAPI(), tg).handle_update(callback(f"n:job:{JOB_ID}"))
+
+    payload = tg.calls[-1][1]
+    assert "Ежедневно в 09:00" in payload["text"]
+    assert "Пн, Ср, Пт" in payload["text"]
+    assert "Часовой пояс: как у парка" in payload["text"]
+    assert "Группа A · опорная дата 05.10.2026" in payload["text"]
+    assert len(_button(payload, "Настройки")["callback_data"].encode()) <= 64
+
+
+def test_job_settings_offer_all_guided_fields_with_bounded_callbacks():
+    api, tg = JobAPI(), Telegram()
+    service = BotService(api, tg)
+    service.handle_update(callback(f"n:cfg:{JOB_ID}:3"))
+
+    payload = tg.calls[-1][1]
+    labels = {
+        button["text"]
+        for row in payload["reply_markup"]["inline_keyboard"]
+        for button in row
+    }
+    assert {
+        "Название",
+        "Ссылка",
+        "Дни недели",
+        "Часовой пояс",
+        "A/B и дата",
+        "Расписание",
+    } <= labels
+    assert all(
+        len(button["callback_data"].encode()) <= 64
+        for row in payload["reply_markup"]["inline_keyboard"]
+        for button in row
+    )
+
+    service.handle_update(callback(_button(payload, "A/B и дата")["callback_data"]))
+    assert "even 2026-10-05" in tg.calls[-1][1]["text"]
+
+
+def test_report_settings_edit_tracker_tag_through_guided_input():
+    api, tg = JobAPI({"kind": "report", "tracker_tag": "old"}), Telegram()
+    service = BotService(api, tg)
+    service.handle_update(callback(f"n:cfg:{JOB_ID}:3"))
+
+    payload = tg.calls[-1][1]
+    tag_button = _button(payload, "Tracker-тег")
+    assert len(tag_button["callback_data"].encode()) <= 64
+    service.handle_update(callback(tag_button["callback_data"]))
+    service.handle_update(message("zoom"))
+
+    update = next(payload for method, _, payload in api.calls if method == "PUT")
+    assert update["tracker_tag"] == "zoom"
+
+
+def test_guided_input_accepts_russian_weekdays_and_ab_aliases():
+    api, tg = (
+        JobAPI({"weekdays": list(range(7)), "alternate": "all", "anchor_date": None}),
+        Telegram(),
+    )
+    service = BotService(api, tg)
+    service.handle_update(callback(f"n:days:{JOB_ID}:3"))
+    service.handle_update(message("Пн, Ср, Пт"))
+    assert api.job["weekdays"] == [0, 2, 4]
+
+    service.handle_update(callback(f"n:alt:{JOB_ID}:4"))
+    service.handle_update(message("B 2026-10-05"))
+    assert api.job["alternate"] == "odd"
+    assert api.job["anchor_date"] == "2026-10-05"
+
+
+def test_hourly_time_edit_retries_invalid_and_422_then_saves_both_hours_atomically():
+    api = JobAPI(
+        {
+            "schedule": "hourly",
+            "time": None,
+            "weekdays": list(range(7)),
+            "start_hour": 9,
+            "end_hour": 18,
+            "alternate": "all",
+            "anchor_date": None,
+        }
+    )
+    tg = Telegram()
+    service = BotService(api, tg)
+    service.handle_update(callback(f"n:time:{JOB_ID}:3"))
+    service.handle_update(message("22-24"))
+    assert 7 in service.pending
+    assert not any(method == "PUT" for method, _, _ in api.calls)
+
+    api.reject_next_update = True
+    service.handle_update(message("0-23"))
+    assert 7 in service.pending
+    service.handle_update(message("0-23"))
+
+    updates = [payload for method, path, payload in api.calls if method == "PUT"]
+    assert len(updates) == 2
+    assert updates[-1]["start_hour"] == 0
+    assert updates[-1]["end_hour"] == 23
+    assert updates[-1]["revision"] == 3
+    assert 7 not in service.pending
+
+
+def test_once_time_edit_updates_aware_run_at_without_writing_daily_time():
+    api = JobAPI(
+        {
+            "schedule": "once",
+            "timezone": "Europe/Moscow",
+            "time": None,
+            "run_at": "2026-12-01T09:00:00+03:00",
+            "weekdays": [],
+            "start_hour": None,
+            "end_hour": None,
+            "alternate": "all",
+            "anchor_date": None,
+        }
+    )
+    service = BotService(api, Telegram())
+    service.handle_update(callback(f"n:time:{JOB_ID}:3"))
+    service.handle_update(message("2026-12-02T10:30:00+03:00"))
+
+    update = next(payload for method, _, payload in api.calls if method == "PUT")
+    assert update["run_at"] == "2026-12-02T10:30:00+03:00"
+    assert update["time"] is None
+    assert update["schedule"] == "once"
+
+
+def test_pending_job_edit_rejects_changed_revision_snapshot():
+    api, tg = JobAPI(), Telegram()
+    service = BotService(api, tg)
+    service.handle_update(callback(f"n:title:{JOB_ID}:3"))
+    api.job["revision"] = 4
+    service.handle_update(message("Новое название"))
+
+    assert not any(method == "PUT" for method, _, _ in api.calls)
+    assert 7 not in service.pending
+    assert "изменились" in tg.calls[-1][1]["text"].lower()
+
+
+@pytest.mark.parametrize(
+    "navigation", [message("🔍 Робот"), message("/help"), callback(f"n:job:{JOB_ID}")]
+)
+def test_leaving_editor_does_not_save_a_robot_number_as_a_job_title(navigation):
+    api = JobAPI()
+    service = BotService(api, Telegram())
+    service.handle_update(callback(f"n:title:{JOB_ID}:3"))
+    service.handle_update(navigation)
+    service.handle_update(message("1460"))
+
+    assert 7 not in service.pending
+    assert not any(method == "PUT" for method, _, _ in api.calls)
+    assert any(path.startswith("/robots/a1460?") for _, path, _ in api.calls)
+
+
+def test_park_jobs_are_paginated_twenty_per_page():
+    class ManyJobsAPI(JobAPI):
+        def call(self, method, path, payload=None):
+            if path.startswith("/manage?"):
+                state = super().call(method, path, payload)
+                state["jobs"] = [
+                    {
+                        **self.job,
+                        "id": f"00000000-0000-0000-0000-{index:012d}",
+                        "title": f"Job {index}",
+                    }
+                    for index in range(45)
+                ]
+                return state
+            return super().call(method, path, payload)
+
+    tg = Telegram()
+    service = BotService(ManyJobsAPI(), tg)
+    service.handle_update(callback("n:park:3"))
+    first = tg.calls[-1][1]
+    assert (
+        len(
+            [
+                row
+                for row in first["reply_markup"]["inline_keyboard"]
+                if row[0]["text"].startswith("○")
+            ]
+        )
+        == 20
+    )
+    service.handle_update(callback(_button(first, "Далее →")["callback_data"]))
+    second = tg.calls[-1][1]
+    assert "Job 20" in str(second)
+    assert "Job 40" not in str(second)
+
+
+def test_new_zoom_defaults_to_explicit_moscow_timezone():
+    api, tg = JobAPI(), Telegram()
+    BotService(api, tg).handle_update(callback("n:newjob:3:zoom"))
+    created = next(payload for method, path, payload in api.calls if method == "POST")
+    assert created["timezone"] == "Europe/Moscow"
+
+
 @pytest.mark.parametrize("view", ["moves", "moves_history", "parts"])
 def test_related_robot_views_keep_authenticated_scope(view):
     api, tg = API(), Telegram()
@@ -848,6 +1116,7 @@ def test_campaign_without_issues_still_sends_campaign_chart():
     BotService(api, tg).deliver(item)
     assert [call[0] for call in tg.calls] == ["sendPhoto"]
     from io import BytesIO
+
     from PIL import Image
 
     assert Image.open(BytesIO(tg.calls[0][2]["photo"])).size == (1080, 1080)

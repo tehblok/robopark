@@ -290,7 +290,7 @@ def test_verification_script_default_runs_all_targets_in_order(tmp_path: Path):
             "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q\t-m\tnot load",
             "uv\tsync\t--frozen\t--extra\tdev",
             "uv\trun\t--frozen\t--extra\tdev\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q\ttests/postgres",
-            "uv\trun\t--project\tapps/api\t--frozen\t--extra\tdev\t--with-requirements\tapps/bot/requirements.lock\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q\ttests/bot/test_native_reports.py\ttests/bot/test_native_campaigns.py\ttests/bot/test_native_qr.py\ttests/bot/test_native_service.py\ttests/bot/test_native_transport.py\ttests/bot/test_bot_runtime_packaging.py",
+            "uv\trun\t--project\tapps/api\t--frozen\t--extra\tdev\t--with-requirements\tapps/bot/requirements.lock\tpython\t-m\tpytest\t-p\tno:cacheprovider\t-q\ttests/bot/test_native_reports.py\ttests/bot/test_native_campaigns.py\ttests/bot/test_native_qr.py\ttests/bot/test_native_service.py\ttests/bot/test_native_task_cards.py\ttests/bot/test_native_transport.py\ttests/bot/test_bot_runtime_packaging.py",
             "npm\tci",
             "npm\trun\tlint",
             "npm\trun\tbuild",

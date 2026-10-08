@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import re
-from html import escape, unescape
 import time
 import uuid
 from collections import OrderedDict
+from datetime import date, datetime
+from html import escape, unescape
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from native.campaigns import render_campaign
 from native.qr import render_robot_qr, yasadr_code
 from native.reports import render_report, report_page_count, watchdog_parts
-from native.transport import ServiceError
 from native.task_cards import format_issues
+from native.transport import ServiceError
 
 ROBOT = re.compile(r"^(?:/robot\s+)?[aа]?(\d{1,6})$", re.IGNORECASE)
 JOB_ID = re.compile(r"^[a-f0-9-]{36}$")
@@ -22,6 +24,144 @@ VIEWS = {
     "moves_history": "История перемещений",
     "parts": "Поставка запчастей",
 }
+WEEKDAY_NAMES = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+
+
+def _aware_datetime(value):
+    parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("timezone required")
+    return value.strip()
+
+
+def _apply_job_edit(job, field, raw_value):
+    """Parse both /set and guided edits into one atomic job snapshot."""
+    candidate = dict(job)
+    value = raw_value.strip()
+    if field in {"text", "url", "tracker_tag"}:
+        candidate[field] = None if value.lower() == "none" else value
+    elif field == "title":
+        if not value or len(value) > 128:
+            raise ValueError("invalid title")
+        candidate[field] = value
+    elif field == "weekdays":
+        weekday_values = {
+            name.lower(): index for index, name in enumerate(WEEKDAY_NAMES)
+        }
+        tokens = [item.strip().lower() for item in value.split(",") if item.strip()]
+        try:
+            days = [
+                int(item) if item.isdigit() else weekday_values[item] for item in tokens
+            ]
+        except KeyError as error:
+            raise ValueError("invalid weekdays") from error
+        if (
+            not days
+            or len(days) != len(set(days))
+            or any(day not in range(7) for day in days)
+        ):
+            raise ValueError("invalid weekdays")
+        candidate[field] = sorted(days)
+    elif field in {"start_hour", "end_hour"}:
+        hour = int(value)
+        if hour not in range(24):
+            raise ValueError("invalid hour")
+        candidate[field] = hour
+    elif field == "time":
+        if candidate["schedule"] == "hourly":
+            match = re.fullmatch(r"(\d{1,2})\s*[-–]\s*(\d{1,2})", value)
+            if match is None:
+                raise ValueError("invalid hour range")
+            start_hour, end_hour = map(int, match.groups())
+            if not 0 <= start_hour <= end_hour <= 23:
+                raise ValueError("invalid hour range")
+            candidate.update(start_hour=start_hour, end_hour=end_hour, time=None)
+        elif candidate["schedule"] == "once":
+            candidate.update(run_at=_aware_datetime(value), time=None)
+        else:
+            if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value) is None:
+                raise ValueError("invalid time")
+            candidate["time"] = value
+    elif field == "timezone":
+        if value.lower() in {"none", "inherit"}:
+            candidate[field] = None
+        else:
+            try:
+                ZoneInfo(value)
+            except ZoneInfoNotFoundError as error:
+                raise ValueError("invalid timezone") from error
+            candidate[field] = value
+    elif field == "alternate":
+        parts = value.split()
+        alternate = parts[0].lower() if parts else ""
+        alternate = {
+            "a": "even",
+            "а": "even",
+            "b": "odd",
+            "б": "odd",
+        }.get(alternate, alternate)
+        if alternate == "all" and len(parts) == 1:
+            candidate.update(alternate="all", anchor_date=None)
+        elif alternate in {"even", "odd"} and len(parts) in {1, 2}:
+            anchor = parts[1] if len(parts) == 2 else candidate.get("anchor_date")
+            if anchor is None:
+                raise ValueError("anchor required")
+            date.fromisoformat(str(anchor))
+            candidate.update(alternate=alternate, anchor_date=str(anchor))
+        else:
+            raise ValueError("invalid alternation")
+    elif field == "anchor_date":
+        if value.lower() == "none":
+            candidate[field] = None
+        else:
+            date.fromisoformat(value)
+            candidate[field] = value
+    elif field == "run_at":
+        candidate.update(
+            schedule="once",
+            run_at=_aware_datetime(value),
+            time=None,
+            start_hour=None,
+            end_hour=None,
+            weekdays=[],
+            alternate="all",
+            anchor_date=None,
+        )
+    elif field == "schedule":
+        parts = value.split(maxsplit=1)
+        schedule = parts[0].lower()
+        if schedule == "once":
+            run_at = parts[1] if len(parts) == 2 else candidate.get("run_at")
+            if not run_at:
+                raise ValueError("run_at required")
+            candidate = _apply_job_edit(candidate, "run_at", str(run_at))
+        elif schedule == "daily":
+            candidate.update(
+                schedule="daily",
+                time=candidate.get("time") or "09:00",
+                run_at=None,
+                start_hour=None,
+                end_hour=None,
+                weekdays=candidate.get("weekdays") or list(range(7)),
+            )
+        elif schedule == "hourly":
+            candidate.update(
+                schedule="hourly",
+                time=None,
+                run_at=None,
+                start_hour=candidate.get("start_hour")
+                if candidate.get("start_hour") is not None
+                else 9,
+                end_hour=candidate.get("end_hour")
+                if candidate.get("end_hour") is not None
+                else 21,
+                weekdays=candidate.get("weekdays") or list(range(7)),
+            )
+        else:
+            raise ValueError("invalid schedule")
+    else:
+        raise ValueError("invalid job field")
+    return candidate
 
 
 def parse_robot(value):
@@ -352,12 +492,42 @@ class BotService:
             "PUT", f"/manage/jobs/{job['id']}?telegram_user_id={user_id}", job
         )
 
+    def _job_summary(self, job):
+        schedule = job["schedule"]
+        if schedule == "daily":
+            timing = f"Ежедневно в {job.get('time') or '—'}"
+        elif schedule == "hourly":
+            timing = f"Каждый час с {job.get('start_hour')} до {job.get('end_hour')}"
+        else:
+            timing = f"Один раз: {job.get('run_at') or '—'}"
+        weekdays = ", ".join(
+            WEEKDAY_NAMES[day] for day in job.get("weekdays", []) if day in range(7)
+        )
+        timezone = job.get("timezone") or "как у парка"
+        alternate = job.get("alternate", "all")
+        if alternate == "all":
+            alternation = "Без чередования"
+        else:
+            anchor = str(job.get("anchor_date") or "—")
+            try:
+                anchor = date.fromisoformat(anchor).strftime("%d.%m.%Y")
+            except ValueError:
+                pass
+            alternation = (
+                f"Группа {'A' if alternate == 'even' else 'B'} · опорная дата {anchor}"
+            )
+        return (
+            f"{timing}\n"
+            + (f"Дни: {weekdays or 'не используются'}\n" if schedule != "once" else "")
+            + f"Часовой пояс: {timezone}\n{alternation}"
+        )
+
     def _show_job(self, user_id, chat_id, job_id):
         job = self._job(user_id, job_id)
         prefix = f"{job['id']}:{job['revision']}"
         self.say(
             chat_id,
-            f"{job['title']}\n{'Включено' if job['enabled'] else 'Выключено'} · {job['schedule']} · {job.get('time') or str(job.get('start_hour')) + '–' + str(job.get('end_hour'))}\n"
+            f"{job['title']}\n{'Включено' if job['enabled'] else 'Выключено'}\n{self._job_summary(job)}\n"
             f"{job.get('text') or ''}\n{job.get('url') or ''}\nID: {job['id']}",
             rows=[
                 [("Выключить" if job["enabled"] else "Включить", f"n:toggle:{prefix}")],
@@ -365,10 +535,58 @@ class BotService:
                     ("Изменить время", f"n:time:{prefix}"),
                     ("Изменить текст", f"n:text:{prefix}"),
                 ],
+                [("Настройки", f"n:cfg:{prefix}")],
                 [("Удалить", f"n:delete:{prefix}")],
                 [("Отправить сейчас", f"n:send:{prefix}")],
             ],
         )
+
+    def _show_job_settings(self, chat_id, job):
+        prefix = f"{job['id']}:{job['revision']}"
+        rows = [
+            [("Название", f"n:title:{prefix}"), ("Ссылка", f"n:url:{prefix}")],
+            [("Дни недели", f"n:days:{prefix}")],
+            [("Часовой пояс", f"n:zone:{prefix}")],
+            [("A/B и дата", f"n:alt:{prefix}")],
+            [("Расписание", f"n:sched:{prefix}")],
+        ]
+        if job["kind"] in {"report", "campaign"}:
+            rows.append([("Tracker-тег", f"n:tag:{prefix}")])
+        rows.append([("← К заданию", f"n:job:{job['id']}")])
+        return self.say(
+            chat_id,
+            f"Настройки «{job['title']}»\n{self._job_summary(job)}",
+            rows=rows,
+        )
+
+    def _begin_job_edit(self, user_id, chat_id, job, field):
+        self.pending[user_id] = {
+            "expires": time.monotonic() + 300,
+            "job_id": job["id"],
+            "revision": job["revision"],
+            "field": field,
+        }
+        self.pending.move_to_end(user_id)
+        while len(self.pending) > 500:
+            self.pending.popitem(last=False)
+        prompts = {
+            "title": "Отправьте новое название (1–128 символов).",
+            "url": "Отправьте http(s)-ссылку или none, чтобы убрать её.",
+            "weekdays": "Дни через запятую: Пн,Ср,Пт или 0,2,4 (0=Пн … 6=Вс).",
+            "timezone": "Часовой пояс IANA, например Europe/Moscow; inherit — как у парка.",
+            "alternate": "Формат: all, A 2026-10-05 (или even 2026-10-05), B 2026-10-05 (или odd 2026-10-05).",
+            "schedule": "Формат: daily, hourly или once 2026-12-01T09:00:00+03:00.",
+            "text": "Отправьте новый текст. Для отмены — /cancel.",
+            "tracker_tag": "Отправьте Tracker-тег или none, чтобы убрать его.",
+        }
+        if field == "time":
+            prompt = {
+                "hourly": "Отправьте диапазон часов от 0 до 23, например 7-21.",
+                "once": "Отправьте дату и время с поясом: 2026-12-01T09:00:00+03:00.",
+            }.get(job["schedule"], "Отправьте новое время ЧЧ:ММ.")
+        else:
+            prompt = prompts[field]
+        return self.say(chat_id, prompt + " /cancel — отмена.")
 
     def _search(self, user_id, chat_id, robot, view):
         if parse_robot(robot) is None or view not in VIEWS:
@@ -751,11 +969,15 @@ class BotService:
                 "Отправка поставлена в очередь. Результат — в журнале Telegram на сайте.",
             )
         if action == "park":
+            if len(parts) not in {3, 4}:
+                raise ValueError("invalid park page")
             state = self._manage(user_id)
             park = next((p for p in state["parks"] if str(p["id"]) == item), None)
             if park is None:
                 raise ServiceError("park_out_of_scope", status=403)
             jobs = [j for j in state["jobs"] if j["park_id"] == park["id"]]
+            page = int(parts[3]) if len(parts) == 4 else 0
+            page = min(max(0, page), max(0, (len(jobs) - 1) // 20))
             rows = [
                 [
                     (
@@ -763,8 +985,15 @@ class BotService:
                         f"n:job:{j['id']}",
                     )
                 ]
-                for j in jobs[:40]
+                for j in jobs[page * 20 : (page + 1) * 20]
             ]
+            navigation = []
+            if page:
+                navigation.append(("← Назад", f"n:park:{park['id']}:{page - 1}"))
+            if (page + 1) * 20 < len(jobs):
+                navigation.append(("Далее →", f"n:park:{park['id']}:{page + 1}"))
+            if navigation:
+                rows.append(navigation)
             rows += [
                 [("➕ Создать рассылку", f"n:newmenu:{park['id']}")],
                 [("← Локации", "n:menu:parks")],
@@ -812,6 +1041,21 @@ class BotService:
         job = self._job(user_id, item)
         if len(parts) != 4 or str(job["revision"]) != parts[3]:
             return self.say(chat_id, "Настройки изменились. Откройте /admin заново.")
+        if action == "cfg":
+            return self._show_job_settings(chat_id, job)
+        edit_fields = {
+            "title": "title",
+            "url": "url",
+            "days": "weekdays",
+            "zone": "timezone",
+            "alt": "alternate",
+            "sched": "schedule",
+            "tag": "tracker_tag",
+            "time": "time",
+            "text": "text",
+        }
+        if action in edit_fields:
+            return self._begin_job_edit(user_id, chat_id, job, edit_fields[action])
         if action == "toggle":
             job["enabled"] = not job["enabled"]
             self._save_job(user_id, job)
@@ -827,22 +1071,6 @@ class BotService:
                 chat_id,
                 f"Отправить «{job['title']}» в настроенный чат парка сейчас? Расписание не изменится.",
                 rows=[[("Подтвердить отправку", f"n:sendconfirm:{nonce}")]],
-            )
-        if action in {"time", "text"}:
-            if action == "time" and job["schedule"] == "hourly":
-                return self.say(
-                    chat_id,
-                    f"Почасовое расписание: /set {item} start_hour ЧАС и /set {item} end_hour ЧАС. Или измените расписание в Robopark.",
-                )
-            self.pending[user_id] = (time.monotonic() + 300, job, action)
-            self.pending.move_to_end(user_id)
-            while len(self.pending) > 500:
-                self.pending.popitem(last=False)
-            return self.say(
-                chat_id,
-                "Отправьте новое время ЧЧ:ММ."
-                if action == "time"
-                else "Отправьте новый текст. Для отмены — /cancel.",
             )
         if action == "delete":
             return self.say(
@@ -897,7 +1125,9 @@ class BotService:
                     "title": args[2],
                     "enabled": False,
                     "schedule": "daily",
+                    "timezone": "Europe/Moscow" if args[1] == "zoom" else None,
                     "time": "09:00",
+                    "run_at": None,
                     "weekdays": list(range(7)),
                     "start_hour": None,
                     "end_hour": None,
@@ -932,58 +1162,7 @@ class BotService:
                 )
             job = self._job(user_id, args[0])
             field, value = args[1:]
-            if field == "weekdays":
-                value = [int(x.strip()) for x in value.split(",")]
-            elif field in {"start_hour", "end_hour"}:
-                value = int(value)
-            elif value == "none":
-                value = None
-            job[field] = value
-            if field == "run_at" and value:
-                job.update(
-                    schedule="once",
-                    time=None,
-                    start_hour=None,
-                    end_hour=None,
-                    weekdays=[],
-                    alternate="all",
-                    anchor_date=None,
-                )
-            if field == "schedule":
-                if value == "once":
-                    job.update(
-                        time=None,
-                        start_hour=None,
-                        end_hour=None,
-                        weekdays=[],
-                        alternate="all",
-                        anchor_date=None,
-                    )
-                    if not job.get("run_at"):
-                        return self.say(
-                            chat_id,
-                            "Для разового задания сначала задайте дату на сайте. Затем время можно менять через /set ID run_at ДАТА_С_ПОЯСОМ.",
-                        )
-                elif value in {"daily", "hourly"}:
-                    job["run_at"] = None
-                    if not job["weekdays"]:
-                        job["weekdays"] = list(range(7))
-                    if value == "daily":
-                        job.update(
-                            time=job.get("time") or "09:00",
-                            start_hour=None,
-                            end_hour=None,
-                        )
-                    else:
-                        job.update(
-                            time=None,
-                            start_hour=job.get("start_hour")
-                            if job.get("start_hour") is not None
-                            else 9,
-                            end_hour=job.get("end_hour")
-                            if job.get("end_hour") is not None
-                            else 21,
-                        )
+            job = _apply_job_edit(job, field, value)
             self._save_job(user_id, job)
             return self._show_job(user_id, chat_id, job["id"])
 
@@ -1023,6 +1202,9 @@ class BotService:
                     f"Chat ID: {chat_id}\nThread ID: {message.get('message_thread_id') or 'нет'}",
                 )
             return
+        if callback or text.startswith("/"):
+            # Leaving the input flow must not treat a later robot number as a job edit.
+            self.pending.pop(user_id, None)
         try:
             if callback and str(callback.get("data") or "").startswith(
                 ("n:join:", "n:apply:")
@@ -1111,13 +1293,39 @@ class BotService:
                         "Приветствие должно быть от 1 до 2000 символов. /cancel — отменить.",
                     )
                 return self._approve_access(user_id, chat_id, approval, text)
-            pending = self.pending.pop(user_id, None)
-            if pending and not text.startswith("/") and pending[0] >= time.monotonic():
+            pending = self.pending.get(user_id)
+            if pending and not text.startswith("/"):
                 if not context.get("can_manage"):
                     raise ServiceError("permission_denied", status=403)
-                _, job, field = pending
-                job[field] = text
-                self._save_job(user_id, job)
+                if pending["expires"] < time.monotonic():
+                    self.pending.pop(user_id, None)
+                    return self.say(
+                        chat_id, "Время ввода истекло. Откройте задание заново."
+                    )
+                job = self._job(user_id, pending["job_id"])
+                if job["revision"] != pending["revision"]:
+                    self.pending.pop(user_id, None)
+                    return self.say(
+                        chat_id,
+                        "Настройки изменились. Откройте задание заново.",
+                    )
+                try:
+                    candidate = _apply_job_edit(job, pending["field"], text)
+                except (TypeError, ValueError):
+                    return self.say(
+                        chat_id,
+                        "Неверный формат. Исправьте значение или /cancel.",
+                    )
+                try:
+                    self._save_job(user_id, candidate)
+                except ServiceError as error:
+                    if error.status == 422:
+                        return self.say(
+                            chat_id,
+                            "Сервер не принял значение. Исправьте его или /cancel.",
+                        )
+                    raise
+                self.pending.pop(user_id, None)
                 return self._show_job(user_id, chat_id, job["id"])
             if text.split(" ", 1)[0] in {"/admin", "/jobs", "/chat", "/set", "/new"}:
                 if not context.get("can_manage"):

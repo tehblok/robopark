@@ -95,7 +95,10 @@ class NotificationPreference(Base):
 
 class NotificationEvent(Base):
     __tablename__ = "notification_events"
-    __table_args__ = (Index("ix_notifications_user_created", "user_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_notifications_user_created", "user_id", "created_at"),
+        Index("ix_notification_events_created_id", "created_at", "id"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
