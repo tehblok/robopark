@@ -15,12 +15,13 @@ def _history(
     queued_at: datetime,
     *,
     ended_at: datetime | None = None,
+    timezone: str | None = "Europe/Moscow",
 ) -> None:
     db_session.add(
         TrackerIssueHistoryState(
             issue_key=key,
             first_queued_at=queued_at,
-            anchor_timezone="Europe/Moscow",
+            anchor_timezone=timezone,
             history_state="complete",
         )
     )
@@ -49,7 +50,7 @@ def _history(
     db_session.commit()
 
 
-def test_latest_queue_interval_uses_legacy_thresholds_and_freezes_at_exit(db_session):
+def test_first_queue_anchor_uses_legacy_thresholds_and_does_not_freeze_at_exit(db_session):
     _history(db_session, "ROBOPARK-1", NOW - timedelta(hours=6))
     _history(
         db_session,
@@ -84,59 +85,80 @@ def test_latest_queue_interval_uses_legacy_thresholds_and_freezes_at_exit(db_ses
     assert overdue["repair_source"] == "queued_history"
     assert overdue["sla_overdue"] is True
     frozen = result["issues"][1]["bot_report"]
-    assert frozen["repair_hours"] == 4.0
-    assert frozen["sla_at_risk"] is True
-    assert frozen["sla_overdue"] is False
+    assert frozen["repair_hours"] == 10.0
+    assert frozen["sla_at_risk"] is False
+    assert frozen["sla_overdue"] is True
     assert result["summary"] == {
         "sla_target_hours": 5,
         "sla_at_risk_hours": 3.0,
         "sla_evaluated": 2,
         "sla_unknown": 0,
-        "sla_at_risk": 1,
-        "sla_overdue": 1,
+        "sla_at_risk": 0,
+        "sla_overdue": 2,
         "log_dump": 0,
     }
 
 
 @pytest.mark.parametrize("timezone", ["Asia/Yekaterinburg", "Asia/Almaty"])
-def test_open_report_starts_at_nine_in_the_destination_parks_timezone(db_session, timezone):
+def test_first_queue_uses_anchor_timezone_and_pauses_during_local_night(db_session, timezone):
+    queued_at = datetime(2026, 10, 6, 15, tzinfo=UTC)
+    _history(db_session, "ROBOPARK-LOCAL", queued_at, timezone=timezone)
     report = native_telegram_reports.enrich(
         db_session,
         [
             {
-                "key": "ROBOPARK-LOCAL-OPEN",
-                "status": {"key": "open"},
-                "createdAt": "2026-10-07T04:00:00Z",
+                "key": "ROBOPARK-LOCAL",
+                "status": {"key": "queued"},
+                "createdAt": queued_at.isoformat(),
             }
         ],
-        timezone=timezone,
+        timezone="Europe/Moscow",
         now=datetime(2026, 10, 7, 6, tzinfo=UTC),
     )["issues"][0]["bot_report"]
 
-    assert report["repair_hours"] == 2
-    assert report["downtime_hours"] == 2
+    assert report["repair_hours"] == 3
+    assert report["downtime_hours"] == 15
 
 
-def test_current_queue_report_excludes_time_after_local_twenty_one(db_session):
+def test_repeat_queue_does_not_reset_first_confirmed_anchor(db_session):
+    first = datetime(2026, 10, 7, 9, tzinfo=UTC)
+    _history(db_session, "ROBOPARK-REQUEUE", first, timezone="UTC")
+    db_session.add(
+        TrackerIssueStatusEvent(
+            issue_key="ROBOPARK-REQUEUE",
+            event_key="ROBOPARK-REQUEUE-again",
+            occurred_at=datetime(2026, 10, 7, 14, tzinfo=UTC),
+            from_status_key="inProgress",
+            to_status_key="queued",
+            to_status_display="В очереди",
+        )
+    )
+    db_session.commit()
     report = native_telegram_reports.enrich(
         db_session,
         [
             {
-                "key": "ROBOPARK-LOCAL-NIGHT",
+                "key": "ROBOPARK-REQUEUE",
                 "status": {"key": "queued"},
-                "createdAt": "2026-10-07T13:00:00Z",
-                "statusStartTime": "2026-10-07T15:00:00Z",
+                "createdAt": "2026-10-07T08:00:00Z",
+                "statusStartTime": "2026-10-07T14:00:00Z",
             }
         ],
         timezone="Asia/Almaty",
-        now=datetime(2026, 10, 7, 18, tzinfo=UTC),
+        now=NOW,
     )["issues"][0]["bot_report"]
 
-    assert report["repair_hours"] == 1
-    assert report["downtime_hours"] == 5
+    assert report["repair_hours"] == 7
+    assert report["downtime_hours"] == 8
 
 
-def test_missing_history_stays_unknown_but_exact_open_uses_created_timer(db_session):
+def test_missing_history_or_anchor_timezone_stays_unknown(db_session):
+    _history(
+        db_session,
+        "ROBOPARK-NO-ZONE",
+        datetime(2026, 10, 7, 10, tzinfo=UTC),
+        timezone=None,
+    )
     result = native_telegram_reports.enrich(
         db_session,
         [
@@ -153,6 +175,12 @@ def test_missing_history_stays_unknown_but_exact_open_uses_created_timer(db_sess
                 "status": {"key": "open"},
                 "createdAt": "2026-10-07T10:00:00Z",
             },
+            {
+                "key": "ROBOPARK-NO-ZONE",
+                "summary": "Repair rover",
+                "status": {"key": "queued"},
+                "createdAt": "2026-10-07T10:00:00Z",
+            },
             {"key": "ROBOPARK-LOG", "summary": "Run log_dump for rover"},
         ],
         timezone="UTC",
@@ -164,15 +192,44 @@ def test_missing_history_stays_unknown_but_exact_open_uses_created_timer(db_sess
     assert missing["downtime_hours"] == 6.0
     assert missing["sla_overdue"] is None
     opened = result["issues"][1]["bot_report"]
-    assert opened["repair_hours"] == 6.0
-    assert opened["repair_source"] == "created_open"
-    assert opened["sla_overdue"] is True
-    log_dump = result["issues"][2]["bot_report"]
+    assert opened["repair_hours"] is None
+    assert opened["repair_source"] is None
+    assert opened["sla_overdue"] is None
+    no_zone = result["issues"][2]["bot_report"]
+    assert no_zone["repair_hours"] is None
+    assert no_zone["sla_overdue"] is None
+    log_dump = result["issues"][3]["bot_report"]
     assert log_dump["log_dump"] is True
     assert log_dump["log_dump_source"] == "summary"
     assert log_dump["sla_overdue"] is None
-    assert result["summary"]["sla_unknown"] == 1
+    assert result["summary"]["sla_unknown"] == 3
     assert result["summary"]["log_dump"] == 1
+
+
+def test_invalid_persisted_timezone_is_unknown_without_breaking_other_tasks(db_session):
+    queued = datetime(2026, 10, 7, 10, tzinfo=UTC)
+    _history(db_session, "ROBOPARK-BAD-ZONE", queued, timezone="Invalid/Timezone")
+    _history(db_session, "ROBOPARK-GOOD-ZONE", queued, timezone="UTC")
+
+    result = native_telegram_reports.enrich(
+        db_session,
+        [
+            {"key": "ROBOPARK-BAD-ZONE", "status": {"key": "queued"}},
+            {"key": "ROBOPARK-GOOD-ZONE", "status": {"key": "queued"}},
+        ],
+        timezone="Europe/Moscow",
+        now=NOW,
+    )
+
+    invalid = result["issues"][0]["bot_report"]
+    valid = result["issues"][1]["bot_report"]
+    assert invalid["repair_hours"] is None
+    assert invalid["sla_hours"] is None
+    assert invalid["sla_overdue"] is None
+    assert valid["repair_hours"] == 6
+    assert valid["sla_overdue"] is True
+    assert result["summary"]["sla_unknown"] == 1
+    assert result["summary"]["sla_evaluated"] == 1
 
 
 def test_future_persisted_queue_event_is_treated_as_unknown(db_session):
@@ -195,6 +252,22 @@ def test_future_persisted_queue_event_is_treated_as_unknown(db_session):
     assert report["sla_overdue"] is None
 
 
+def test_sla_is_overdue_after_deadline_during_night_even_at_exactly_five_hours(db_session):
+    queued = datetime(2026, 10, 7, 16, tzinfo=UTC)
+    _history(db_session, "ROBOPARK-NIGHT-DEADLINE", queued, timezone="UTC")
+
+    report = native_telegram_reports.enrich(
+        db_session,
+        [{"key": "ROBOPARK-NIGHT-DEADLINE", "status": {"key": "queued"}}],
+        timezone="Asia/Almaty",
+        now=datetime(2026, 10, 7, 22, tzinfo=UTC),
+    )["issues"][0]["bot_report"]
+
+    assert report["repair_hours"] == 5
+    assert report["sla_overdue"] is True
+    assert report["sla_at_risk"] is False
+
+
 @pytest.mark.parametrize(
     ("issue", "source"),
     [
@@ -212,11 +285,11 @@ def test_log_dump_uses_exact_markers_and_bounded_legacy_phrases(issue, source):
     assert native_telegram_reports.log_dump_source(issue) == source
 
 
-def test_enrichment_caps_at_500_and_reads_events_once(db_session):
+def test_enrichment_caps_at_500_and_reads_history_anchors_once(db_session):
     statements: list[str] = []
 
     def capture(_connection, _cursor, statement, _parameters, _context, _many):
-        if "tracker_issue_status_events" in statement.lower():
+        if "tracker_issue_history_state" in statement.lower():
             statements.append(statement)
 
     event.listen(db_session.get_bind(), "before_cursor_execute", capture)
@@ -235,7 +308,7 @@ def test_enrichment_caps_at_500_and_reads_events_once(db_session):
     assert result["summary"]["sla_unknown"] == 500
 
 
-def test_current_queued_uses_tracker_status_start_even_without_stored_history(db_session):
+def test_current_queued_status_start_is_not_used_without_verified_history(db_session):
     report = native_telegram_reports.enrich(
         db_session,
         [
@@ -249,8 +322,8 @@ def test_current_queued_uses_tracker_status_start_even_without_stored_history(db
         timezone="Europe/Moscow",
         now=NOW,
     )
-    assert report["issues"][0]["bot_report"]["repair_hours"] == 6
-    assert report["issues"][0]["bot_report"]["repair_source"] == "current_queue_start"
+    assert report["issues"][0]["bot_report"]["repair_hours"] is None
+    assert report["issues"][0]["bot_report"]["repair_source"] is None
 
 
 def test_report_preparation_loads_latest_changelog_and_persists_verified_interval(
@@ -293,8 +366,9 @@ def test_report_preparation_loads_latest_changelog_and_persists_verified_interva
     issues = [
         {
             "key": "ROBOPARK-22",
-            "status": {"key": "waitingForAnotherTeam"},
+            "status": {"key": "queued"},
             "tags": [seed_park_with_tracker.tag],
+            "statusStartTime": "2026-10-07T12:00:00Z",
             "updatedAt": "2026-10-07T13:00:00Z",
         }
     ]
@@ -302,7 +376,7 @@ def test_report_preparation_loads_latest_changelog_and_persists_verified_interva
         db_session, token="test", park=seed_park_with_tracker, issues=issues
     )
     report = native_telegram_reports.enrich(db_session, issues, timezone="Europe/Moscow", now=NOW)
-    assert report["issues"][0]["bot_report"]["repair_hours"] == 4
+    assert report["issues"][0]["bot_report"]["repair_hours"] == 7
     assert len(calls) == 1
 
 
@@ -335,3 +409,89 @@ def test_report_history_preparation_bounds_admissions_and_does_not_wait_for_stuc
     )
     assert monotonic() - start < 0.5
     assert sum(row["allow_start"] for row in calls) == 2
+
+
+def test_report_preparation_skips_confirmed_anchor_but_not_queued_status_start(
+    db_session, seed_park_with_tracker, monkeypatch
+):
+    from concurrent.futures import Future
+
+    from robopark_api.services import tracker_client
+
+    _history(db_session, "ROBOPARK-CONFIRMED", NOW - timedelta(hours=2))
+    calls = []
+
+    def schedule(**kwargs):
+        calls.append(kwargs)
+        future = Future()
+        future.set_result([])
+        return future, True
+
+    monkeypatch.setattr(tracker_client, "schedule_issue_status_history", schedule)
+    native_telegram_reports.prepare_history(
+        db_session,
+        token="test",
+        park=seed_park_with_tracker,
+        issues=[
+            {"key": "ROBOPARK-CONFIRMED", "status": {"key": "queued"}},
+            {
+                "key": "ROBOPARK-NEEDS-HISTORY",
+                "status": {"key": "queued"},
+                "statusStartTime": "2026-10-07T14:00:00Z",
+            },
+        ],
+    )
+
+    assert [call["key"] for call in calls] == ["ROBOPARK-NEEDS-HISTORY"]
+
+
+def test_report_preparation_fetches_open_history_and_keeps_no_queue_unknown(
+    db_session, seed_park_with_tracker, monkeypatch
+):
+    from concurrent.futures import Future
+
+    from robopark_api.services import tracker_client
+
+    future = Future()
+    future.set_result(
+        [
+            {
+                "id": "opened",
+                "updatedAt": "2026-10-07T09:00:00Z",
+                "fields": [
+                    {
+                        "field": {"id": "status"},
+                        "from": {"key": "draft"},
+                        "to": {"key": "open"},
+                    }
+                ],
+            }
+        ]
+    )
+    calls = []
+
+    def schedule(**kwargs):
+        calls.append(kwargs)
+        return future, True
+
+    monkeypatch.setattr(tracker_client, "schedule_issue_status_history", schedule)
+    issue = {
+        "key": "ROBOPARK-OPEN-NO-QUEUE",
+        "status": {"key": "open"},
+        "tags": [seed_park_with_tracker.tag],
+        "createdAt": "2026-10-07T08:00:00Z",
+    }
+
+    native_telegram_reports.prepare_history(
+        db_session, token="test", park=seed_park_with_tracker, issues=[issue]
+    )
+    report = native_telegram_reports.enrich(
+        db_session, [issue], timezone=seed_park_with_tracker.timezone, now=NOW
+    )["issues"][0]["bot_report"]
+
+    assert [call["key"] for call in calls] == ["ROBOPARK-OPEN-NO-QUEUE"]
+    assert db_session.get(TrackerIssueHistoryState, "ROBOPARK-OPEN-NO-QUEUE").history_state == (
+        "no_queue"
+    )
+    assert report["repair_hours"] is None
+    assert report["sla_overdue"] is None

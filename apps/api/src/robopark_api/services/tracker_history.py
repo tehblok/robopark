@@ -125,12 +125,16 @@ def _history_evidence(
     tag_change_times = set(tag_change_counts)
     assignments: list[tuple[datetime, frozenset[str] | None]] = []
     for at, _, index, _, change in reversed(records):
-        tags_at_record[index] = None if at in tag_change_times else tags
-        if change is not None:
-            before, after = change
-            verified = tag_change_counts[at] == 1 and after is not None and after == tags
-            assignments.append((at, after if verified and before is not None else None))
-            tags = before if verified else None
+        if change is None:
+            tags_at_record[index] = None if at in tag_change_times else tags
+            continue
+        before, after = change
+        verified = tag_change_counts[at] == 1 and after is not None and after == tags
+        tags_at_record[index] = (
+            before & after if verified and before is not None else None
+        )
+        assignments.append((at, after if verified and before is not None else None))
+        tags = before if verified else None
 
     candidates: list[
         tuple[datetime, str, str, str | None, str | None, int, frozenset[str] | None, int]

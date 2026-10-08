@@ -7,11 +7,11 @@ import time
 from concurrent.futures import FIRST_COMPLETED, wait
 from datetime import UTC, datetime
 from typing import Literal, TypedDict
+from zoneinfo import ZoneInfoNotFoundError
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from robopark_api.models import Park, TrackerIssueStatusEvent
+from robopark_api.models import Park
 from robopark_api.services import sla_clock, tracker_client, tracker_history
 from robopark_api.services.tracker_policy import issue_tags
 
@@ -28,7 +28,7 @@ _LOG_DUMP_SUMMARY = re.compile(
 class BotReportFields(TypedDict):
     repair_hours: float | None
     downtime_hours: float | None
-    repair_source: Literal["queued_history", "created_open", "current_queue_start"] | None
+    repair_source: Literal["queued_history"] | None
     sla_hours: float | None
     sla_overdue: bool | None
     sla_at_risk: bool | None
@@ -110,28 +110,10 @@ def _status_key(issue: dict) -> str:
     return _text(value).casefold()
 
 
-def _latest_queue_period(
-    events: list[tuple[datetime, str | None, str]],
-) -> tuple[datetime, datetime | None] | None:
-    periods: list[tuple[datetime, datetime]] = []
-    start: datetime | None = None
-    for occurred_at, from_key, to_key in events:
-        at = _utc(occurred_at)
-        if _text(to_key).casefold() == "queued":
-            start = at
-        elif _text(from_key).casefold() == "queued" and start is not None:
-            if at >= start:
-                periods.append((start, at))
-            start = None
-    if start is not None:
-        return start, None
-    return periods[-1] if periods else None
-
-
 def _working_hours(start: datetime, end: datetime, *, timezone: str) -> float | None:
     try:
         return sla_clock.elapsed_working_hours(_utc(start), _utc(end), timezone=timezone)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, ZoneInfoNotFoundError):
         return None
 
 
@@ -149,12 +131,18 @@ def prepare_history(
     Timed-out reads keep filling the shared versioned cache. Unknown evidence
     remains explicit in this report and can be used on the next report.
     """
+    attached = tracker_history.attach_verified_history(
+        db, [dict(issue) for issue in issues[:MAX_REPORT_ISSUES]]
+    )
     remaining = [
         issue
-        for issue in issues[:MAX_REPORT_ISSUES]
+        for issue in attached
         if _status_key(issue)
-        and _status_key(issue) != "open"
-        and not (_status_key(issue) == "queued" and _timestamp(issue.get("statusStartTime")))
+        and not (
+            issue.get("sla_source") == "status_history"
+            and _timestamp(issue.get("queued_at")) is not None
+            and _text(issue.get("sla_anchor_timezone"))
+        )
         and str(issue.get("key") or "").partition("-")[0] == park.tracker_queue
     ]
     deadline = time.monotonic() + min(max(budget_seconds, 0), 8.0)
@@ -202,31 +190,11 @@ def enrich(
     timezone: str,
     now: datetime | None = None,
 ) -> EnrichedReport:
-    """Attach original PNG timers with one bounded persisted-event read.
-
-    Repair time uses the destination park's local 09:00–21:00 window.
-    """
+    """Attach original PNG timers from the shared first-queue SLA ledger."""
     observed_at = _utc(now or datetime.now(UTC))
-    scoped = [dict(issue) for issue in issues[:MAX_REPORT_ISSUES]]
-    keys = sorted({_text(issue.get("key")) for issue in scoped if _text(issue.get("key"))})
-    events_by_key: dict[str, list[tuple[datetime, str | None, str]]] = {}
-    if keys:
-        rows = db.execute(
-            select(
-                TrackerIssueStatusEvent.issue_key,
-                TrackerIssueStatusEvent.occurred_at,
-                TrackerIssueStatusEvent.from_status_key,
-                TrackerIssueStatusEvent.to_status_key,
-            )
-            .where(TrackerIssueStatusEvent.issue_key.in_(keys))
-            .order_by(
-                TrackerIssueStatusEvent.issue_key,
-                TrackerIssueStatusEvent.occurred_at,
-                TrackerIssueStatusEvent.id,
-            )
-        )
-        for issue_key, occurred_at, from_key, to_key in rows:
-            events_by_key.setdefault(issue_key, []).append((occurred_at, from_key, to_key))
+    scoped = tracker_history.attach_verified_history(
+        db, [dict(issue) for issue in issues[:MAX_REPORT_ISSUES]]
+    )
 
     counters = {
         "sla_evaluated": 0,
@@ -244,25 +212,14 @@ def enrich(
             else None
         )
         repair_hours = None
-        repair_source: Literal["queued_history", "created_open", "current_queue_start"] | None = (
-            None
-        )
-        if _status_key(issue) == "open" and created is not None:
-            repair_hours = _working_hours(created, observed_at, timezone=timezone)
-            repair_source = "created_open" if repair_hours is not None else None
-        elif (
-            _status_key(issue) == "queued" and _timestamp(issue.get("statusStartTime")) is not None
-        ):
-            repair_hours = _working_hours(
-                _timestamp(issue["statusStartTime"]), observed_at, timezone=timezone
-            )
-            repair_source = "current_queue_start" if repair_hours is not None else None
-        else:
-            period = _latest_queue_period(events_by_key.get(_text(issue.get("key")), []))
-            if period is not None:
-                start, ended_at = period
-                repair_hours = _working_hours(start, ended_at or observed_at, timezone=timezone)
-                repair_source = "queued_history" if repair_hours is not None else None
+        repair_source: Literal["queued_history"] | None = None
+        anchor_timezone = _text(issue.get("sla_anchor_timezone"))
+        sla = tracker_client.repair_sla_fields(issue, timezone=anchor_timezone or None)
+        queued_at = _timestamp(sla.get("queued_at"))
+        deadline = _timestamp(sla.get("sla_deadline"))
+        if queued_at is not None and queued_at <= observed_at and anchor_timezone:
+            repair_hours = _working_hours(queued_at, observed_at, timezone=anchor_timezone)
+            repair_source = "queued_history" if repair_hours is not None else None
 
         source = log_dump_source(issue)
         if source is not None:
@@ -272,7 +229,7 @@ def enrich(
             counters["sla_unknown"] += 1
             overdue = at_risk = None
         else:
-            overdue = repair_hours > sla_clock.SLA_TARGET_HOURS
+            overdue = deadline is not None and observed_at > deadline
             at_risk = not overdue and repair_hours >= SLA_AT_RISK_HOURS
             counters["sla_evaluated"] += 1
             counters["sla_overdue"] += int(overdue)

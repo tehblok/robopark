@@ -188,6 +188,97 @@ def test_tag_and_status_changed_together_keep_queue_park_unknown(
     assert projected_issue["sla_anchor_timezone"] is None
 
 
+@pytest.mark.parametrize(
+    ("before_tags", "after_tags"),
+    [
+        (
+            ["SUF", "order_no", "Moscow", "taxipark"],
+            ["SUF", "order_no", "Moscow", "taxipark", "waiting_complete"],
+        ),
+        (["Moscow", "waiting_complete"], ["Moscow"]),
+    ],
+)
+def test_atomic_status_and_unrelated_tag_change_keeps_unchanged_park_evidence(
+    db_session,
+    seed_park_with_tracker,
+    before_tags,
+    after_tags,
+):
+    park = seed_park_with_tracker
+    park.tag = "Moscow"
+    db_session.commit()
+    queued = datetime(2026, 9, 25, 9, 54, tzinfo=UTC)
+    projected = tracker_client._project_issue_status_history(
+        [
+            {
+                "id": "queue-and-service-tag",
+                "updatedAt": queued.isoformat(),
+                "fields": [
+                    {
+                        "field": {"id": "tags"},
+                        "from": before_tags,
+                        "to": after_tags,
+                    },
+                    {
+                        "field": {"id": "status"},
+                        "to": {"key": "queued", "display": "В очереди"},
+                    },
+                ],
+            }
+        ]
+    )
+
+    state = tracker_history.ingest_status_history(
+        db_session,
+        issue_key="RP-ATOMIC-SERVICE-TAG",
+        park=park,
+        history=projected,
+        current_tags=set(after_tags),
+    )
+
+    assert state.first_queued_at.replace(tzinfo=UTC) == queued
+    assert state.anchor_park_id == park.id
+    assert state.anchor_timezone == "Europe/Moscow"
+    assert db_session.scalar(select(TrackerIssueStatusEvent.park_id)) == park.id
+
+
+def test_separate_same_time_status_and_tag_records_keep_queue_park_unknown(
+    db_session,
+    seed_park_with_tracker,
+):
+    park = seed_park_with_tracker
+    queued = datetime(2026, 9, 25, 7, tzinfo=UTC)
+    projected = tracker_client._project_issue_status_history(
+        [
+            {
+                "id": "tag-change",
+                "updatedAt": queued.isoformat(),
+                "fields": [
+                    {
+                        "field": {"id": "tags"},
+                        "from": [park.tag, "waiting_complete"],
+                        "to": [park.tag],
+                    }
+                ],
+            },
+            {**change(queued, "queued", "В очереди"), "id": "status-change"},
+        ]
+    )
+
+    state = tracker_history.ingest_status_history(
+        db_session,
+        issue_key="RP-SEPARATE-SAME-TIME",
+        park=park,
+        history=projected,
+        current_tags={park.tag},
+    )
+
+    assert state.first_queued_at.replace(tzinfo=UTC) == queued
+    assert state.anchor_park_id is None
+    assert state.anchor_timezone is None
+    assert db_session.scalar(select(TrackerIssueStatusEvent.park_id)) is None
+
+
 def test_same_timestamp_tag_transfers_do_not_invent_historical_park(
     db_session,
     seed_park_with_tracker,

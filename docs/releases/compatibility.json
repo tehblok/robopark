@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "target_version": "0.2.0-rc.42",
+  "target_version": "0.2.0-rc.43",
   "migration_head": "0062_notification_retention_idx",
   "known_heads": [
     "0055_media_upload_park",

@@ -274,7 +274,9 @@ def test_robot_route_counts_only_success_and_returns_daily_greeting(
             }
         ]
 
-    monkeypatch.setattr("robopark_api.services.native_telegram.bot_tracker_gateway.search", search)
+    monkeypatch.setattr(
+        "robopark_api.services.tracker_robot_search.tracker_cache.search_issues", search
+    )
     first = client.get(
         "/internal/bot/native/robots/447",
         headers=BOT_HEADERS,
