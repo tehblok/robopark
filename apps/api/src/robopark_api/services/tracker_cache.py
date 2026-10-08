@@ -315,7 +315,7 @@ def search_native_robot_issues(
     return deepcopy(value)
 
 
-def peek_native_robot_source(queues: tuple[str, ...]) -> list[dict[str, Any]] | None:
+def peek_robot_source(queues: tuple[str, ...]) -> list[dict[str, Any]] | None:
     """Reuse a fresh complete registry batch without loading Tracker."""
     normalized = tuple(sorted({str(queue).strip() for queue in queues if str(queue).strip()}))
     if not normalized:
@@ -334,6 +334,16 @@ def peek_native_robot_source(queues: tuple[str, ...]) -> list[dict[str, Any]] | 
     }
     if any(not isinstance(issue, dict) or not required <= issue.keys() for issue in issues):
         return None
+    return deepcopy(_shared_issue_payload(issues))
+
+
+def peek_native_robot_source(queues: tuple[str, ...]) -> list[dict[str, Any]] | None:
+    issues = peek_robot_source(queues)
+    return native_robot_payload(issues) if issues is not None else None
+
+
+def native_robot_payload(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Telegram presentation adapter over the site's canonical issue DTOs."""
     return [
         {
             "key": str(issue.get("key") or ""),
@@ -356,7 +366,7 @@ def peek_native_robot_source(queues: tuple[str, ...]) -> list[dict[str, Any]] | 
                 "key": str(issue.get("priority_key") or ""),
                 "display": str(issue.get("priority") or ""),
             },
-            "rover": str(issue.get("rover") or ""),
+            "rover": deepcopy(issue.get("rover") or []),
             "statusStartTime": str(issue.get("status_start_time") or ""),
             "homePort": issue.get("home_port"),
             "createdAt": str(issue.get("created") or ""),

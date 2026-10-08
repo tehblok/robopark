@@ -456,7 +456,7 @@ function RelatedTaskGroup({
       title={failure.title}
     /> : resource.isLoading && !data ? <LoadingState label={`Загружаем: ${title.toLocaleLowerCase('ru')}`} />
       : otherTasks?.length ? <WorkIssueRows items={otherTasks} now={now} timezone={timezone} onOpen={onOpen} selectedProblem={selectedProblem} />
-        : <p>{data?.has_more ? 'На этой странице других ремонтов нет. Откройте следующую страницу.' : empty}</p>}
+        : <p>{data?.has_more ? 'На этой странице других задач робота нет. Откройте следующую страницу.' : empty}</p>}
   </section>
 }
 
@@ -477,13 +477,13 @@ function RelatedTasksPanel({ apiClient, issueKey, selectedProblem, onOpen, park,
     }),
   )
   return <>
-    <p className="rp-work-list-count">Ремонты любого приоритета · от старых к новым{kind === 'closed' ? ' · закрыты за последние 14 дней' : ''}</p>
+    <p className="rp-work-list-count">Ремонт, сервис и калибровка любого приоритета · от старых к новым{kind === 'closed' ? ' · закрыты за последние 14 дней' : ''}</p>
     <RelatedTaskGroup
-      empty={kind === 'open' ? 'Открытых ремонтов по этому роботу нет.' : 'За последние 14 дней закрытых ремонтов по этому роботу нет.'}
+      empty={kind === 'open' ? 'Открытых задач ремонта, сервиса или калибровки по этому роботу нет.' : 'За последние 14 дней закрытых задач ремонта, сервиса или калибровки по этому роботу нет.'}
       now={now} timezone={timezone} onOpen={onOpen} resource={related} selectedProblem={selectedProblem} issueKey={issueKey}
       title={`${kind === 'open' ? 'Открытые' : 'Закрытые'} задачи робота ${robotNumber}`}
     />
-    {related.data ? <nav className="rp-work-pagination" aria-label="Страницы ремонтов">
+    {related.data ? <nav className="rp-work-pagination" aria-label="Страницы задач робота">
       <Button variant="secondary" disabled={page === 0 || related.isRevalidating} onClick={() => setPage(value => value - 1)}>Назад</Button>
       <span>Страница {page + 1}</span>
       <Button variant="secondary" disabled={!related.data.has_more || related.isRevalidating} onClick={() => setPage(value => value + 1)}>Вперёд</Button>

@@ -19,7 +19,12 @@ from robopark_api.models import (
     UserPark,
 )
 from robopark_api.security import hash_password
-from robopark_api.services import bot_shared_settings, native_telegram_migration, rbac
+from robopark_api.services import (
+    bot_shared_settings,
+    native_telegram_migration,
+    rbac,
+    tracker_client,
+)
 
 BOT_HEADERS = {"X-Robopark-Bot-Key": "test-bridge"}
 
@@ -1497,28 +1502,31 @@ def test_robot_read_filters_foreign_tag_and_partial_number(
     def search(**kwargs):
         queries.append(kwargs["query"])
         return [
-            {
-                "key": "ROBOPARK-1",
-                "summary": "[447] repair",
-                "tags": [seed_park_with_tracker.tag],
-                "type": {"key": "repair"},
-                "resolution": {"key": "fixed"} if view == "history" else None,
-            },
-            {"key": "ROBOPARK-2", "summary": "[447] repair", "tags": ["Foreign"]},
-            {
-                "key": "ROBOPARK-3",
-                "summary": "[1447] repair",
-                "tags": [seed_park_with_tracker.tag],
-            },
-            {
-                "key": "ROBOPARK-4",
-                "summary": "[447] bug",
-                "tags": [seed_park_with_tracker.tag],
-                "type": {"key": "bug"},
-            },
+            tracker_client.issue_to_dict(row)
+            for row in [
+                {
+                    "key": "ROBOPARK-1",
+                    "summary": "[447] repair",
+                    "tags": [seed_park_with_tracker.tag],
+                    "type": {"key": "repair"},
+                    "resolution": {"key": "fixed"} if view == "history" else None,
+                },
+                {"key": "ROBOPARK-2", "summary": "[447] repair", "tags": ["Foreign"]},
+                {
+                    "key": "ROBOPARK-3",
+                    "summary": "[1447] repair",
+                    "tags": [seed_park_with_tracker.tag],
+                },
+                {
+                    "key": "ROBOPARK-4",
+                    "summary": "[447] bug",
+                    "tags": [seed_park_with_tracker.tag],
+                    "type": {"key": "bug"},
+                },
+            ]
         ]
 
-    monkeypatch.setattr("robopark_api.services.native_telegram.bot_tracker_gateway.search", search)
+    monkeypatch.setattr("robopark_api.services.tracker_client.search_issues", search)
     response = client.get(
         "/internal/bot/native/robots/A0447",
         headers=BOT_HEADERS,
@@ -1531,7 +1539,7 @@ def test_robot_read_filters_foreign_tag_and_partial_number(
     if view == "history":
         assert "Resolution: fixed" in queries[0]
     assert "Type: repair, service, calibration" in queries[0]
-    assert f"Tags: {seed_park_with_tracker.tag}" in queries[0]
+    assert "Tags:" not in queries[0]
 
 
 def test_robot_read_honors_tracker_permission_override(

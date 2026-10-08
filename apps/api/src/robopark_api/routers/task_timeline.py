@@ -36,6 +36,7 @@ from robopark_api.services import (
     task_lifecycle,
     tracker_cache,
     tracker_client,
+    tracker_robot_search,
     tracker_signatures,
 )
 from robopark_api.services.defect_codes import DEFECT_CODES
@@ -46,7 +47,6 @@ from robopark_api.services.task_timeline import (
     stage_attachment,
 )
 from robopark_api.services.tracker_claims import mechanic_can_access_issue
-from robopark_api.services.tracker_policy import enforce_issue_scope
 from robopark_api.services.tracker_signatures import filter_mechanic_visible_comments
 from robopark_api.task_workflow_models import TaskMessage
 
@@ -73,7 +73,10 @@ def _issue(db: Session, user: User, key: str, action: str | None, request: Reque
     else:
         if not rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_READ):
             raise HTTPException(status_code=403)
-        enforce_issue_scope(db, user, issue)
+        try:
+            tracker_robot_search.enforce_read_scope(db, user, issue, token=token)
+        except tracker_client.TrackerError as exc:
+            raise HTTPException(status_code=502, detail="tracker_upstream_error") from exc
         if rbac.role_slug(user) == rbac.RoleSlug.MECHANIC and not mechanic_can_access_issue(
             db, user, issue
         ):

@@ -1259,7 +1259,7 @@ def test_issue_capabilities_only_advertise_available_workflow_actions(
 
 @pytest.mark.parametrize("queue", ["ROBOPARK", "SDCFLEETOPS"])
 @pytest.mark.parametrize("closed", [False, True])
-def test_related_repairs_preserve_scope_and_page_only_exact_robot_repairs_of_any_priority(
+def test_related_repairs_preserve_scope_and_page_exact_robot_maintenance_of_any_priority(
     client, db_session, seed_park_with_tracker, monkeypatch, queue, closed
 ):
     seed_park_with_tracker.tracker_queue = queue
@@ -1287,16 +1287,27 @@ def test_related_repairs_preserve_scope_and_page_only_exact_robot_repairs_of_any
 
     def search(**kwargs):
         captured.append(kwargs)
+        if closed and kwargs["filter_open"]:
+            return [
+                repair(
+                    99,
+                    status="Открыт",
+                    status_key="open",
+                    resolved=None,
+                    tags=["Alpha"],
+                )
+            ]
         return [
             repair(0),  # Selected parent task is excluded.
             repair(1, robot="1447"),
-            repair(2, type="Ремонт", type_key="service"),
+            repair(2, type="Сервис", type_key="service", tags=["SC"]),
             repair(3, tags=["Foreign"]),
             repair(4, queue="FORBIDDEN"),
             repair(5, priority="Низкий"),
             repair(6, priority="Критический", robot="YASADR00000000447"),
             repair(6),  # Duplicates cannot alter pagination.
             repair(7, priority="Блокер"),
+            repair(8, type="Калибровка", type_key="calibration", tags=["SC"]),
         ]
 
     monkeypatch.setattr(tracker_client, "search_issues", search)
@@ -1315,29 +1326,87 @@ def test_related_repairs_preserve_scope_and_page_only_exact_robot_repairs_of_any
     response = client.get("/tracker/issues", params=params)
     assert response.status_code == 200
     body = response.json()
-    assert [item["key"] for item in body["items"]] == [f"{queue}-6"]
-    assert body["items"][0]["priority"] == "Критический"
-    assert body["total"] == 3
+    assert [item["key"] for item in body["items"]] == [f"{queue}-5"]
+    assert body["items"][0]["priority"] == "Низкий"
+    assert body["total"] == 5
     assert body["limit"] == 1
     assert body["offset"] == 1
     assert body["has_more"] is True
 
     newest = client.get("/tracker/issues", params={**params, "sort": "newest", "offset": 0})
-    assert [item["key"] for item in newest.json()["items"]] == [f"{queue}-7"]
-    last = client.get("/tracker/issues", params={**params, "offset": 2})
-    assert [item["key"] for item in last.json()["items"]] == [f"{queue}-7"]
+    assert [item["key"] for item in newest.json()["items"]] == [f"{queue}-8"]
+    last = client.get("/tracker/issues", params={**params, "offset": 4})
+    assert [item["key"] for item in last.json()["items"]] == [f"{queue}-8"]
     assert last.json()["has_more"] is False
-    assert len(captured) == 1  # Identical scoped searches reuse the cache across pages.
+    assert len(captured) == (2 if closed else 1)
     query = captured[0]["query"]
     assert "Priority:" not in query
-    assert "Type: repair" in query
-    assert "Type: service" not in query
+    assert "Type: repair, service, calibration" in query
     assert f"Queue: {queue}" in query
-    assert "Tags: Alpha" in query
+    assert "Tags: Alpha" not in query
     assert 'Summary: "447"' in query
     assert captured[0]["filter_open"] is (not closed)
     if closed:
-        assert "Status: closed" in query
+        assert "Resolution: !empty()" in query
+
+
+def test_related_robot_untagged_tasks_require_same_queue_selected_park_anchor(
+    client, db_session, seed_park_with_tracker, monkeypatch
+):
+    _seed_operator(db_session, seed_park_with_tracker)
+    db_session.add(Park(name="Foreign", tag="Foreign", tracker_queue="ROBOPARK"))
+    db_session.commit()
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_client
+
+    def item(key, robot, *, queue="ROBOPARK", tags=None, type_key="service"):
+        return {
+            **_scoped_issue(key, "2026-01-01T00:00:00Z"),
+            "queue": queue,
+            "robot": robot,
+            "tags": ["SC"] if tags is None else tags,
+            "type": type_key,
+            "type_key": type_key,
+            "priority": "Обычный",
+        }
+
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: [
+            item("ROBOPARK-1", "447", tags=["Alpha"], type_key="repair"),
+            item("ROBOPARK-2", "447"),
+            item("ROBOPARK-3", "447", tags=["Foreign"]),
+            item("FORBIDDEN-4", "447", queue="FORBIDDEN"),
+            item("ROBOPARK-5", "448"),
+        ],
+    )
+    login_as(client, "op2", "secret")
+
+    anchored = client.get(
+        "/tracker/issues",
+        params={
+            "related_repairs": "true",
+            "robot_exact": "447",
+            "queue": "ROBOPARK",
+            "park": "Alpha",
+            "exclude_key": "ROBOPARK-1",
+        },
+    )
+    unanchored = client.get(
+        "/tracker/issues",
+        params={
+            "related_repairs": "true",
+            "robot_exact": "448",
+            "queue": "ROBOPARK",
+            "park": "Alpha",
+        },
+    )
+
+    assert anchored.status_code == 200
+    assert [row["key"] for row in anchored.json()["items"]] == ["ROBOPARK-2"]
+    assert unanchored.status_code == 200
+    assert unanchored.json()["items"] == []
 
 
 @pytest.mark.parametrize("robot", [None, "", "other447", "447/448"])
@@ -1584,19 +1653,40 @@ def test_tracker_robot_search_royal(
 
     monkeypatch.setattr(
         tracker_cache,
-        "search_robot_tickets",
-        lambda **kwargs: [
+        "search_issues",
+        lambda **_kwargs: [
             {
                 "key": "ROBOPARK-9",
                 "summary": "blocker [447]",
                 "status": "Open",
                 "status_key": "open",
-                "queue": kwargs["queue"],
+                "queue": "ROBOPARK",
                 "created": "2026-01-01T00:00:00Z",
                 "hours_created": "1.0",
                 "robot": "447",
-            }
+                "type_key": "repair",
+                "tags": ["Alpha"],
+                "resolution": "",
+            },
+            {
+                "key": "ROBOPARK-10",
+                "summary": "[a447] service",
+                "status": "Open",
+                "status_key": "open",
+                "queue": "ROBOPARK",
+                "created": "2026-01-02T00:00:00Z",
+                "hours_created": "1.0",
+                "robot": "447",
+                "type_key": "service",
+                "tags": ["SC"],
+                "resolution": "",
+            },
         ],
+    )
+    monkeypatch.setattr(
+        tracker_cache,
+        "search_robot_tickets",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("legacy robot search used")),
     )
 
     login_as(client, "royal", "secret")
@@ -1604,7 +1694,50 @@ def test_tracker_robot_search_royal(
     assert response.status_code == 200
     body = response.json()
     assert body["query"] == "447"
-    assert body["items"][0]["key"] == "ROBOPARK-9"
+    assert [item["key"] for item in body["items"]] == ["ROBOPARK-9", "ROBOPARK-10"]
+
+
+@pytest.mark.parametrize("query", ["ROBOPARK-9", "wheel"])
+def test_tracker_robot_search_keeps_key_and_text_on_legacy_path(
+    client, db_session, seed_royal, seed_park_with_tracker, monkeypatch, query
+):
+    platform_settings.set_setting(db_session, platform_settings.TRACKER_TOKEN_KEY, "token")
+    from robopark_api.services import tracker_cache, tracker_robot_search
+
+    shared_calls = []
+    legacy_calls = []
+    monkeypatch.setattr(
+        tracker_robot_search,
+        "search",
+        lambda *args, **kwargs: shared_calls.append((args, kwargs)) or [],
+    )
+    monkeypatch.setattr(
+        tracker_cache,
+        "search_robot_tickets",
+        lambda **kwargs: (
+            legacy_calls.append(kwargs)
+            or [
+                {
+                    "key": "ROBOPARK-9",
+                    "summary": "blocker [447]",
+                    "status": "Open",
+                    "status_key": "open",
+                    "queue": kwargs["queue"],
+                    "created": "2026-01-01T00:00:00Z",
+                    "hours_created": "1.0",
+                    "robot": "447",
+                }
+            ]
+        ),
+    )
+    login_as(client, "royal", "secret")
+
+    response = client.get(f"/tracker/robots/{query}/tickets")
+
+    assert response.status_code == 200
+    assert [item["key"] for item in response.json()["items"]] == ["ROBOPARK-9"]
+    assert shared_calls == []
+    assert legacy_calls[0]["query"] == query
 
 
 def test_selected_status_can_be_restricted_to_open_blockers(
@@ -1727,15 +1860,17 @@ def test_closed_related_repairs_use_resolution_date_and_filter_before_pagination
     last = client.get("/tracker/issues", params={**params, "offset": 1}).json()
     assert [item["key"] for item in last["items"]] == ["ROBOPARK-2"]
     assert last["has_more"] is False
-    assert len(queries) == 1
+    assert len(queries) == 2  # Closed rows plus the cached open park anchor.
+    assert "Resolution: !empty()" in queries[0]
     assert 'Resolved: >= "2026-08-23 12:00:00"' in queries[0]
+    assert "Tags: Alpha" not in queries[0]
 
     Clock.elapsed_seconds = 1
     aged = client.get("/tracker/issues", params=params).json()
     assert [item["key"] for item in aged["items"]] == ["ROBOPARK-2"]
     assert aged["total"] == 1
     assert aged["has_more"] is False
-    assert len(queries) == 1  # Reapply the cutoff even when upstream results are cached.
+    assert len(queries) == 2  # Reapply the cutoff even when upstream results are cached.
 
     # Other Tracker history callers retain their existing unrestricted behavior.
     ordinary = client.get("/tracker/issues", params={**params, "related_repairs": "false"}).json()

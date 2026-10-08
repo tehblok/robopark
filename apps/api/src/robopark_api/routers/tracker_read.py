@@ -44,6 +44,7 @@ from robopark_api.services import (
     tracker_client,
     tracker_filters,
     tracker_history,
+    tracker_robot_search,
 )
 from robopark_api.services import tracker_signatures as sig_svc
 from robopark_api.services.rbac import RoleSlug
@@ -283,7 +284,7 @@ def _detail_out(
     task_lifecycle.reconcile_external_closure(db, issue)
     attachments = [TrackerAttachmentOut(**item) for item in (issue.get("attachments") or [])]
     claim = get_claim(db, str(issue.get("key") or ""))
-    writable = can_write_tracker(db, user)
+    writable = can_write_tracker(db, user) and is_issue_in_scope(db, user, issue)
     workflow = task_lifecycle.workflow(
         db,
         issue_key=str(issue.get("key") or ""),
@@ -309,7 +310,8 @@ def _detail_out(
             close=writable
             and rbac.role_slug(user) in {RoleSlug.OPERATOR, RoleSlug.ADMIN, RoleSlug.ROYAL}
             and workflow["review_state"] == "pending",
-            attach=rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_ATTACH),
+            attach=is_issue_in_scope(db, user, issue)
+            and rbac.has_permission(db, user, rbac.PERMISSION_TRACKER_ATTACH),
         ),
         workflow=workflow,
     )
@@ -398,9 +400,10 @@ def _build_query(
         selected_queue = tracker_client.DEFAULT_QUEUE
         parts.append(f"Queue: {tracker_client.ql_token(selected_queue)}")
 
-    # Related repairs override fleet defaults, which can include non-repair types.
+    # Related robot work overrides fleet defaults and includes every maintenance
+    # task type, regardless of priority.
     if related_repairs:
-        parts.append("Type: repair")
+        parts.append("(Type: repair OR Type: service OR Type: calibration)")
     elif selected_queue:
         type_part = tracker_client.type_clause(selected_queue)
         if type_part:
@@ -422,7 +425,11 @@ def _build_query(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="tracker_park_forbidden",
             )
-        parts.append(f"Tags: {tracker_client.ql_token(park)}")
+        # A related-task query must also find untagged maintenance tasks. The
+        # selected park is enforced after the response through a same-robot,
+        # same-queue park anchor.
+        if not related_repairs:
+            parts.append(f"Tags: {tracker_client.ql_token(park)}")
     elif untagged:
         if not can_view_untagged(db, user):
             raise HTTPException(
@@ -504,7 +511,7 @@ def list_issues(
                 TrackerIssuesOut(items=[], total=0, limit=limit, offset=offset, has_more=False),
             )
         query_text = tracker_client.join_query(
-            query_text, tracker_client.robot_summary_clause(exact_robot)
+            query_text, tracker_client.robot_identity_clause(exact_robot)
         )
     resolved_until = datetime.now(UTC)
     resolved_since = (
@@ -559,22 +566,35 @@ def list_issues(
             if owned_by_me
             else set()
         )
-        items: list[dict] = []
-        key_batches = _issue_key_batches(candidate_owned_keys) if owned_by_me else [None]
-        base_query = query_text
-        for keys in key_batches:
-            scoped_query = base_query
-            if keys is not None:
-                scoped_query = tracker_client.join_query(base_query, _issue_key_clause(keys))
-            query_text = scoped_query
-            items.extend(
-                tracker_cache.search_issues(
-                    token=token,
-                    query=scoped_query,
-                    filter_open=owned_by_me or open_only or not bool(status_filter),
-                    order=["createdAt"],
-                )
+        if related_repairs:
+            items = tracker_robot_search.search(
+                db=db,
+                user=user,
+                token=token,
+                robot=exact_robot or "",
+                queue=queue,
+                park=park,
+                view=("closed" if (status_filter or "").strip().casefold() == "closed" else "open"),
+                include_hidden=include_hidden,
+                resolved_since=resolved_since,
             )
+        else:
+            items = []
+            key_batches = _issue_key_batches(candidate_owned_keys) if owned_by_me else [None]
+            base_query = query_text
+            for keys in key_batches:
+                scoped_query = base_query
+                if keys is not None:
+                    scoped_query = tracker_client.join_query(base_query, _issue_key_clause(keys))
+                query_text = scoped_query
+                items.extend(
+                    tracker_cache.search_issues(
+                        token=token,
+                        query=scoped_query,
+                        filter_open=owned_by_me or open_only or not bool(status_filter),
+                        order=["createdAt"],
+                    )
+                )
     except tracker_client.TrackerError as exc:
         logger.exception("tracker search failed query=%r", query_text)
         raise HTTPException(
@@ -609,13 +629,11 @@ def list_issues(
         owned_keys = owned_issue_keys(db, user, park_ids=owned_parks) if owned_by_me else set()
     # Raw upstream data is shared; authorization is loaded afresh for this
     # response after the upstream wait and reused only across its rows.
-    scope = load_issue_scope(db, user)
+    scope = load_issue_scope(db, user) if not related_repairs else None
     for issue in ordered:
         # Out-of-scope issues are filtered out, not fatal: a single foreign issue
         # in the upstream response must not fail the whole listing.
-        if not is_issue_in_scope(db, user, issue, scope=scope):
-            continue
-        if related_repairs and str(issue.get("type_key") or "").strip() != "repair":
+        if not related_repairs and not is_issue_in_scope(db, user, issue, scope=scope):
             continue
         if resolved_since is not None:
             try:
@@ -626,10 +644,14 @@ def list_issues(
                 resolved = resolved.replace(tzinfo=UTC)
             if not resolved_since <= resolved <= resolved_until:
                 continue
-        if robot_exact is not None and (
-            exact_robot is None or _normalized_robot_number(issue.get("robot")) != exact_robot
-        ):
-            continue
+        if robot_exact is not None:
+            matches_robot = (
+                exact_robot in tracker_client.issue_robot_numbers(issue)
+                if related_repairs and exact_robot is not None
+                else _normalized_robot_number(issue.get("robot")) == exact_robot
+            )
+            if exact_robot is None or not matches_robot:
+                continue
         key = str(issue.get("key") or "").strip()
         if key in hidden_keys and not include_hidden:
             continue
@@ -754,7 +776,10 @@ def get_issue(
         ) from exc
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    enforce_issue_scope(db, user, issue)
+    try:
+        tracker_robot_search.enforce_read_scope(db, user, issue, token=token)
+    except tracker_client.TrackerError as exc:
+        raise HTTPException(status_code=502, detail="tracker_upstream_error") from exc
     _enforce_mechanic_claim(db, user, issue)
     parks_for_sla = list(db.scalars(select(Park).where(Park.is_active.is_(True))).all())
     issue = _work_issue_sla(token=token, issue=issue, db=db, park=_issue_park(issue, parks_for_sla))
@@ -786,7 +811,10 @@ def get_comments(
     issue = tracker_cache.get_issue(token=token, key=key)
     if issue is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    enforce_issue_scope(db, user, issue)
+    try:
+        tracker_robot_search.enforce_read_scope(db, user, issue, token=token)
+    except tracker_client.TrackerError as exc:
+        raise HTTPException(status_code=502, detail="tracker_upstream_error") from exc
     _enforce_mechanic_claim(db, user, issue)
 
     try:
@@ -891,16 +919,24 @@ def robot_tickets(
     allowed = set(queues)
     merged: list[dict] = []
     keys: set[str] = set()
+    exact_robot = tracker_client.normalize_robot_reference(query)
     try:
-        for queue in queues:
-            for item in tracker_cache.search_robot_tickets(token=token, queue=queue, query=query):
-                item_queue = (item.get("queue") or "").strip()
-                if item_queue and item_queue not in allowed:
-                    continue
-                if item["key"] in keys:
-                    continue
-                keys.add(item["key"])
-                merged.append(item)
+        if exact_robot is not None:
+            merged = tracker_robot_search.search(
+                db, user, token=token, robot=exact_robot, view="open"
+            )
+        else:
+            for queue in queues:
+                for item in tracker_cache.search_robot_tickets(
+                    token=token, queue=queue, query=query
+                ):
+                    item_queue = (item.get("queue") or "").strip()
+                    if item_queue and item_queue not in allowed:
+                        continue
+                    if item["key"] in keys:
+                        continue
+                    keys.add(item["key"])
+                    merged.append(item)
     except tracker_client.TrackerError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -912,7 +948,7 @@ def robot_tickets(
         [
             item
             for item in merged
-            if is_issue_in_scope(db, user, item, scope=scope)
+            if (exact_robot is not None or is_issue_in_scope(db, user, item, scope=scope))
             and not task_lifecycle.is_hidden(db, str(item.get("key") or ""))
         ]
     )

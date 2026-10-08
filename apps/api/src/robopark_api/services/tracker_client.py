@@ -447,8 +447,26 @@ def _is_relocation_status(status: str) -> bool:
 
 
 def parse_robot_from_summary(summary: str) -> str | None:
-    match = re.search(r"\[([a-zA-Z]?\d+)\]", summary or "")
+    match = re.search(r"\[((?:YASADR|[a-zA-ZаА])?\d+)\]", summary or "", re.I)
     return match.group(1) if match else None
+
+
+def normalize_robot_reference(raw: object) -> str | None:
+    text = str(raw or "").strip().upper().removeprefix("[").removesuffix("]")
+    text = text.removeprefix("YASADR").removeprefix("A").removeprefix("А")
+    return (text.lstrip("0") or "0") if text and text.isascii() and text.isdecimal() else None
+
+
+def robot_field_values(raw: object) -> list[str]:
+    if isinstance(raw, (list, tuple)):
+        return [str(value) for value in raw if isinstance(value, (str, int))]
+    return [str(raw)] if isinstance(raw, (str, int)) else []
+
+
+def issue_robot_numbers(issue: dict) -> set[str]:
+    values = [issue.get("robot"), parse_robot_from_summary(str(issue.get("summary") or ""))]
+    values.extend(robot_field_values(issue.get("rover")))
+    return {number for value in values if (number := normalize_robot_reference(value)) is not None}
 
 
 def _loaded_value(raw: Any) -> Any:
@@ -715,7 +733,7 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
         "status_key": status_key,
         "resolution": resolution,
         "resolution_key": resolution_key,
-        "rover": _plain(_field(issue, "rover")),
+        "rover": robot_field_values(_field(issue, "rover")),
         "description": description,
         "assignee": assignee,
         "reporter": reporter,
@@ -1556,6 +1574,24 @@ def robot_summary_clause(number: str) -> str:
         padded = number.zfill(width)
         variants.extend((padded, f"a{padded}", f"YASADR{padded}"))
     return "(" + " OR ".join(f"Summary: {_ql_quote(v)}" for v in dict.fromkeys(variants)) + ")"
+
+
+def robot_rover_variants(number: str) -> list[str]:
+    # The VIN serial is 11 digits. Rover aliases also occur with leading zeroes.
+    variants = {f"YASADR{number.zfill(11)}"}
+    for width in range(len(number), max(11, len(number)) + 1):
+        variants.update(prefix + number.zfill(width) for prefix in ("", "a", "A", "а", "А"))
+    return sorted(variants)
+
+
+def robot_identity_clause(number: str) -> str:
+    # Rover is a multivalued identity field, not the display number. Query its
+    # canonical serial spelling as well; a service campaign need not name the
+    # robot in its summary. Keep legacy padded summary matching unchanged.
+    variants = robot_rover_variants(number)
+    clauses = [robot_summary_clause(number), f"Summary: {_ql_quote(f'а{number}')}"]
+    clauses.extend(f"rover: {_ql_quote(value)}" for value in variants)
+    return "(" + " OR ".join(clauses) + ")"
 
 
 def _summary_matches_robot(summary: str, robot_number: str) -> bool:

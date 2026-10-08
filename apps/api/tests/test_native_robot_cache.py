@@ -221,6 +221,16 @@ def test_issue_dto_retains_native_robot_classification_fields():
 
     assert issue["resolution_key"] == ""
     assert issue["priority_key"] == "blocker"
-    assert issue["rover"] == "a447"
+    assert issue["rover"] == ["a447"]
     assert issue["status_start_time"] == "2026-10-01T11:00:00Z"
     assert issue["home_port"] == "Alpha garage"
+
+
+def test_registry_snapshot_strips_sdk_resources_before_copying(monkeypatch):
+    issue = _registry_issue(_tracker_resource=threading.Lock())
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **kwargs: [issue])
+    tracker_cache.search_issues(token="token", query='(Queue: "ROBOPARK")', filter_open=False)
+    source = tracker_cache.peek_robot_source(("ROBOPARK",))
+    assert source and "_tracker_resource" not in source[0]
+    source[0]["tags"].append("changed")
+    assert tracker_cache.peek_robot_source(("ROBOPARK",))[0]["tags"] == ["Alpha"]

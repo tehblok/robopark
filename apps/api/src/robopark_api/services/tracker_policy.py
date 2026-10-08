@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from robopark_api.deps import get_user_parks
 from robopark_api.models import Park, User
 from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import rbac
+from robopark_api.services import rbac, tracker_client
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_filters import status_bucket
 
@@ -116,6 +116,70 @@ class IssueScope:
     allowed_tags: frozenset[str]
     park_tags: frozenset[str]
     view_untagged: bool
+
+
+@dataclass(frozen=True)
+class RelatedRobotScope:
+    park_queues: frozenset[tuple[str, str]]
+    park_tags: frozenset[str]
+
+    @property
+    def queues(self) -> frozenset[str]:
+        return frozenset(queue for queue, _tag in self.park_queues)
+
+
+def load_related_robot_scope(db: Session, user: User, selected_park=None) -> RelatedRobotScope:
+    parks = (
+        db.scalars(select(Park).where(Park.is_active.is_(True))).all()
+        if rbac.role_slug(user) == RoleSlug.ROYAL
+        else get_user_parks(db, user)
+    )
+    return RelatedRobotScope(
+        frozenset(
+            ((park.tracker_queue or "").strip().upper(), park_tag_identity(park.tag))
+            for park in parks
+            if park.is_active
+            and park.tracker_queue
+            and park.tag
+            and (not selected_park or park_tag_matches(selected_park, {park.tag}))
+        ),
+        frozenset(_scope_tags(all_park_tags(db))),
+    )
+
+
+def _related_queue(issue: dict) -> str:
+    return str(issue.get("queue") or str(issue.get("key") or "").rsplit("-", 1)[0]).strip().upper()
+
+
+def related_robot_anchors(db, user, issues, robot, selected_park=None, scope=None) -> set[str]:
+    scope = scope or load_related_robot_scope(db, user, selected_park)
+    return {
+        _related_queue(issue)
+        for issue in issues
+        if robot in tracker_client.issue_robot_numbers(issue)
+        and tracker_client.is_issue_open_item(issue)
+        and is_issue_status_visible(user, issue)
+        and any(
+            (_related_queue(issue), tag) in scope.park_queues
+            for tag in _scope_tags(issue_tags(issue))
+        )
+    }
+
+
+def is_related_robot_issue_in_scope(
+    db, user, issue, robot, anchor_queues, selected_park=None, scope=None
+) -> bool:
+    scope = scope or load_related_robot_scope(db, user, selected_park)
+    queue = _related_queue(issue)
+    if queue not in scope.queues or robot not in tracker_client.issue_robot_numbers(issue):
+        return False
+    if not is_issue_status_visible(user, issue):
+        return False
+    tags = _scope_tags(issue_tags(issue))
+    if any((queue, tag) in scope.park_queues for tag in tags):
+        return True
+    # A known different park is never overridden by a robot-number match.
+    return not (tags & scope.park_tags) and queue in anchor_queues
 
 
 def load_issue_scope(db: Session, user: User) -> IssueScope:

@@ -47,6 +47,7 @@ from robopark_api.services import (
     rbac,
     tracker_cache,
     tracker_client,
+    tracker_robot_search,
 )
 
 LINK_TTL = timedelta(minutes=10)
@@ -1225,13 +1226,7 @@ def delivery_content(db: Session, delivery_id: int, token: str) -> dict:
 
 
 def normalize_robot(raw: str) -> str | None:
-    text = raw.strip().upper()
-    if text.startswith("[") and text.endswith("]"):
-        text = text[1:-1]
-    text = text[6:] if text.startswith("YASADR") else text.removeprefix("A")
-    if not text or not text.isdecimal():
-        return None
-    return text.lstrip("0") or "0"
+    return tracker_client.normalize_robot_reference(raw)
 
 
 def _exact_park_issue(issue: dict, park: Park, normalized: str) -> bool:
@@ -1239,15 +1234,11 @@ def _exact_park_issue(issue: dict, park: Park, normalized: str) -> bool:
     if queue.upper() != (park.tracker_queue or "").strip().upper():
         return False
     tags = {str(tag) for tag in issue.get("tags") or []}
-    summary_robot = normalize_robot(
-        tracker_client.parse_robot_from_summary(str(issue.get("summary") or "")) or ""
-    )
-    rover_robot = normalize_robot(str(issue.get("rover") or ""))
-    return park.tag in tags and normalized in {summary_robot, rover_robot}
+    return park.tag in tags and normalized in tracker_client.issue_robot_numbers(issue)
 
 
 def _robot_issue_batches(
-    token: str, parks: list[Park], queues: tuple[str, ...], normalized: str, view: str
+    token: str, parks: list[Park], queues: tuple[str, ...], normalized: str
 ) -> Iterator[tuple[list[Park], list[dict]]]:
     """Reuse complete fresh tasks, otherwise search all authorized tags per queue."""
     if not parks:
@@ -1269,21 +1260,10 @@ def _robot_issue_batches(
         tags = " OR ".join(
             f"Tags: {tracker_client.ql_token(tag)}" for tag in sorted({p.tag for p in scoped_parks})
         )
-        clauses = []
-        if view in {"open", "history"}:
-            clauses = [
-                tracker_client.open_issues_clause() if view == "open" else "Resolution: fixed",
-                "Type: repair, service, calibration",
-            ]
         query = tracker_client.join_query(
             f"Queue: {tracker_client.ql_token(queue)}",
             f"({tags})",
-            (
-                f"({tracker_client.robot_summary_clause(normalized)} "
-                f"OR rover: {tracker_client.ql_quote(normalized)} "
-                f"OR rover: {tracker_client.ql_quote(f'a{normalized}')})"
-            ),
-            *clauses,
+            tracker_client.robot_identity_clause(normalized),
         )
         try:
             return tracker_cache.search_native_robot_issues(
@@ -1372,52 +1352,33 @@ def robot_issues(
         token = bot_tracker_gateway.tracker_token(db)
     except bot_tracker_gateway.TrackerNotConfigured as exc:
         raise HTTPException(status_code=503, detail="tracker_not_configured") from exc
+    if view in {"open", "history"}:
+        try:
+            rows = tracker_robot_search.search(db, user, token=token, robot=normalized, view=view)
+        except tracker_client.TrackerError as exc:
+            raise HTTPException(status_code=502, detail="tracker_upstream_error") from exc
+        return _robot_result(
+            normalized,
+            tracker_cache.native_robot_payload(rows[:CONTENT_LIMIT]),
+            truncated=len(rows) > CONTENT_LIMIT,
+            broad_access=broad_access,
+            anchored=bool(rows),
+        )
     collected: list[dict] = []
     seen: set[str] = set()
     anchored = broad_access
     search_parks = [] if auxiliary_view and broad_access else parks
-    for scoped_parks, issues in _robot_issue_batches(token, search_parks, queues, normalized, view):
+    for scoped_parks, issues in _robot_issue_batches(token, search_parks, queues, normalized):
         for issue in issues:
             key = str(issue.get("key") or "")
             if not key or not any(
                 _exact_park_issue(issue, park, normalized) for park in scoped_parks
             ):
                 continue
-            if not auxiliary_view:
-                issue_type = (issue.get("type") or {}).get("key")
-                resolution = (issue.get("resolution") or {}).get("key")
-                issue_status = (issue.get("status") or {}).get("key")
-                if issue_type not in {"repair", "service", "calibration"}:
-                    continue
-                if view == "open" and (resolution or issue_status == "closed"):
-                    continue
-                if view == "history" and resolution != "fixed":
-                    continue
             anchored = True
-            if auxiliary_view:
-                break
-            if key in seen:
-                continue
-            seen.add(key)
-            collected.append(issue)
-            if len(collected) >= CONTENT_LIMIT:
-                return _robot_result(
-                    normalized,
-                    collected,
-                    truncated=True,
-                    broad_access=broad_access,
-                    anchored=anchored,
-                )
-        if auxiliary_view and anchored:
             break
-    if not auxiliary_view:
-        return _robot_result(
-            normalized,
-            collected,
-            truncated=False,
-            broad_access=broad_access,
-            anchored=anchored,
-        )
+        if anchored:
+            break
     if not anchored:
         return _robot_result(
             normalized, [], truncated=False, broad_access=broad_access, anchored=False
@@ -1454,7 +1415,7 @@ def robot_issues(
     except (tracker_client.TrackerError, bot_tracker_gateway.TrackerResponseTooLarge) as exc:
         raise HTTPException(status_code=502, detail="tracker_upstream_error") from exc
     for issue in issues:
-        if normalize_robot(str(issue.get("rover") or "")) != normalized:
+        if normalized not in tracker_client.issue_robot_numbers(issue):
             continue
         key = str(issue.get("key") or "")
         if not key or key.rsplit("-", 1)[0] != queue or key in seen:

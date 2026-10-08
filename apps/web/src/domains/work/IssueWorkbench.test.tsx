@@ -1748,6 +1748,7 @@ describe('IssueWorkbench', () => {
       sort: 'oldest', page: 3,
     } })
     fireEvent.click(await screen.findByRole('tab', { name: 'Открытые задачи' }))
+    expect(await screen.findByText('Ремонт, сервис и калибровка любого приоритета · от старых к новым')).toBeVisible()
     await waitFor(() => expect(client.trackerIssues).toHaveBeenLastCalledWith({
       queue: 'ROBOPARK', park: 'Alpha', robot_exact: '447', exclude_key: issue.key,
       related_repairs: true, open_only: true, sort: 'oldest', limit: 10, offset: 0,
