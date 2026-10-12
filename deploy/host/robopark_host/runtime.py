@@ -7,6 +7,7 @@ OTA owns subsequent replacement/rollback of current-compose.json.
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import re
 import stat
 import subprocess
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from contextlib import suppress
@@ -24,6 +26,84 @@ from .capabilities import HostCapabilities, probe_host_capabilities
 from .paths import HostPaths
 from .rollback import atomic_symlink
 from .state import atomic_write_json
+
+_MAX_BUILD_LOG_BYTES = 2 * 1024 * 1024
+_BUILD_LOG_FSYNC_BYTES = 256 * 1024
+_BUILD_LOG_FSYNC_SECONDS = 30
+
+
+def bootstrap_log_path(paths: HostPaths) -> Path:
+    """Return the durable host-state path for bootstrap build diagnostics."""
+
+    return paths.state / "runtime-bootstrap.log"
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(descriptor, view)
+        view = view[written:]
+
+
+class _BoundedBuildLog:
+    """Persist a bounded build tail without trusting an existing path type."""
+
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(
+            path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_NOFOLLOW
+            | os.O_NONBLOCK,
+            0o600,
+        )
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise OSError(errno.EPERM, "unsafe bootstrap log path", path)
+            os.fchmod(descriptor, 0o600)
+            os.ftruncate(descriptor, 0)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        self._descriptor = descriptor
+        self._tail = bytearray()
+        self._dirty_bytes = 0
+        self._needs_rewrite = False
+        self._last_sync = time.monotonic()
+
+    def write(self, text: str) -> None:
+        data = text.encode("utf-8", "replace")
+        self._tail.extend(data)
+        if len(self._tail) > _MAX_BUILD_LOG_BYTES:
+            del self._tail[: len(self._tail) - _MAX_BUILD_LOG_BYTES]
+            self._needs_rewrite = True
+        if not self._needs_rewrite:
+            _write_all(self._descriptor, data)
+        self._dirty_bytes += len(data)
+        if (
+            self._dirty_bytes >= _BUILD_LOG_FSYNC_BYTES
+            or time.monotonic() - self._last_sync >= _BUILD_LOG_FSYNC_SECONDS
+        ):
+            self._checkpoint()
+
+    def _checkpoint(self) -> None:
+        if self._needs_rewrite:
+            os.lseek(self._descriptor, 0, os.SEEK_SET)
+            _write_all(self._descriptor, bytes(self._tail))
+            os.ftruncate(self._descriptor, len(self._tail))
+            self._needs_rewrite = False
+        os.fsync(self._descriptor)
+        self._dirty_bytes = 0
+        self._last_sync = time.monotonic()
+
+    def close(self) -> None:
+        try:
+            if self._dirty_bytes or self._needs_rewrite:
+                self._checkpoint()
+        finally:
+            os.close(self._descriptor)
 
 
 def source_compose_environment(paths: HostPaths) -> dict[str, str]:
@@ -133,11 +213,9 @@ def _stream_build(
     """Stream a long build while retaining its output for diagnosis."""
 
     output_tail: deque[str] = deque(maxlen=500)
-    log = None
+    log: _BoundedBuildLog | None = None
     if log_path is not None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log = log_path.open("w", encoding="utf-8")
-        os.chmod(log_path, 0o600)
+        log = _BoundedBuildLog(log_path)
     process = subprocess.Popen(
         command,
         env=env,
@@ -150,13 +228,18 @@ def _stream_build(
     )
 
     def copy_output() -> None:
+        nonlocal log
         assert process.stdout is not None
         for line in process.stdout:
             print(line, end="", flush=True)
             output_tail.append(line)
             if log is not None:
-                log.write(line)
-                log.flush()
+                try:
+                    log.write(line)
+                except OSError:
+                    with suppress(OSError):
+                        log.close()
+                    log = None
 
     reader = threading.Thread(target=copy_output, name="robopark-build-output", daemon=True)
     reader.start()
@@ -169,7 +252,8 @@ def _stream_build(
     finally:
         reader.join(timeout=10)
         if log is not None:
-            log.close()
+            with suppress(OSError):
+                log.close()
     detail = "".join(output_tail)
     if returncode:
         raise subprocess.CalledProcessError(
@@ -616,7 +700,7 @@ def bootstrap_compose(paths: HostPaths, run: Callable = _run) -> None:
     require_storage_operations(paths)
     system_runner = run is _run
     if system_runner:
-        runtime_log = paths.root / "var/log/robopark/runtime-bootstrap.log"
+        runtime_log = bootstrap_log_path(paths)
 
         def logged_run(command):
             return _run(command, build_log=runtime_log)

@@ -226,7 +226,7 @@ def _backup_handler(paths: HostPaths) -> int:
 
 
 def _bootstrap_handler(paths: HostPaths) -> int:
-    from .runtime import bootstrap_compose, explain_process_failure
+    from .runtime import bootstrap_compose, bootstrap_log_path, explain_process_failure
 
     try:
         bootstrap_compose(paths)
@@ -236,7 +236,7 @@ def _bootstrap_handler(paths: HostPaths) -> int:
             file=sys.stderr,
         )
         print(
-            f"Полный лог сборки: {paths.root / 'var/log/robopark/runtime-bootstrap.log'}",
+            f"Полный лог сборки: {bootstrap_log_path(paths)}",
             file=sys.stderr,
         )
         return 1
