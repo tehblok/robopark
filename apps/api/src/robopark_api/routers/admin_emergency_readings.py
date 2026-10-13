@@ -203,16 +203,22 @@ def discover_readings(
     response: Response,
     vin: Annotated[str, Query(min_length=1, max_length=64)],
     db: Session = Depends(get_db),
+    actor: User = Depends(require_readings_admin),
 ) -> list[EmergencyDiscoveredField]:
     try:
         normalized_vin = emergency_vin.normalize_robot_id(vin)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="invalid_robot_number") from exc
     probe = platform_settings.get_emergency_cookie_probe(db)
-    if not probe[0]:
+    if not probe[0] and not emergency_cache.settings_for_session(db).emergency_bridge_enabled:
         raise HTTPException(status_code=503, detail="emergency_cookie_not_configured")
     try:
-        payload = emergency_cache.get_robot_payload(db=db, vin=normalized_vin, probe=probe)
+        payload = emergency_cache.get_robot_payload(
+            db=db,
+            vin=normalized_vin,
+            probe=probe,
+            requester_user=actor,
+        )
     except emergency_client.EmergencyAuthError as exc:
         raise HTTPException(status_code=403, detail="emergency_cookie_invalid") from exc
     except emergency_client.EmergencyError as exc:

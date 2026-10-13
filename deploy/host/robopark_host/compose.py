@@ -57,7 +57,14 @@ def safe_compose_services(services: Iterable[Mapping[str, Any]]) -> list[dict[st
 
     output = []
     for service in services:
-        if service.get("Service") not in ("db", "api", "worker", "web", "ops-agent"):
+        if service.get("Service") not in (
+            "db",
+            "api",
+            "worker",
+            "web",
+            "emergency-bridge",
+            "ops-agent",
+        ):
             continue
         item = {"Service": service["Service"]}
         if service.get("State") in (

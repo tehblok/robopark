@@ -17,12 +17,12 @@ def test_current_release_declares_foundation_and_same_head_upgrade():
     metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
     compatibility = json.loads((ROOT / "docs/releases/compatibility.json").read_text())
 
-    assert policy.target_head == metadata["migration_head"] == "0062_notification_retention_idx"
-    assert policy.known_heads == frozenset({"0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram", "0061_telegram_account_metadata", "0062_notification_retention_idx"})
-    assert metadata["migration_compatibility"]["from_heads"] == ["0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram", "0061_telegram_account_metadata", "0062_notification_retention_idx"]
+    assert policy.target_head == metadata["migration_head"] == "0063_agent_devices"
+    assert policy.known_heads == frozenset({"0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram", "0061_telegram_account_metadata", "0062_notification_retention_idx", "0063_agent_devices"})
+    assert metadata["migration_compatibility"]["from_heads"] == ["0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram", "0061_telegram_account_metadata", "0062_notification_retention_idx", "0063_agent_devices"]
     assert metadata["compatible_from_versions"]
     assert all(version.startswith("0.2.0-rc.") for version in metadata["compatible_from_versions"])
-    assert compatibility["known_heads"] == ["0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram", "0061_telegram_account_metadata", "0062_notification_retention_idx"]
+    assert compatibility["known_heads"] == ["0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram", "0061_telegram_account_metadata", "0062_notification_retention_idx", "0063_agent_devices"]
     for version in metadata["compatible_from_versions"]:
         plan = plan_upgrade(version, "0055_media_upload_park", {
             "app_version": compatibility["target_version"],

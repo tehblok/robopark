@@ -24,8 +24,11 @@ def test_runtime_trust_boundaries_have_no_import_violations():
 def test_retired_release_delivery_is_absent_from_production_code():
     forbidden = re.compile(
         r"ROBOPARK_SIGNING_KEY|release-public-key|github-update|release_signing|"
-        r"install-trust|Ed25519|\\.sig\\b"
+        r"install-trust|\\.sig\\b"
     )
+    # Mac catalogs and deployment profiles are a separate, requested trust
+    # boundary. This does not restore retired Linux OTA signing machinery.
+    mac_signing_files = {"scripts/build_macos_pkg.py", "scripts/build_test_release.py", "scripts/sign_macos_deployment.py"}
     roots = [ROOT / name for name in ("apps", "deploy", "scripts", ".github")]
     violations = []
     for root in roots:
@@ -51,6 +54,8 @@ def test_retired_release_delivery_is_absent_from_production_code():
                 text = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 continue
-            if forbidden.search(text):
+            relative = str(path.relative_to(ROOT))
+            retired_crypto = "Ed25519" in text and relative not in mac_signing_files and not relative.startswith("apps/macos/")
+            if forbidden.search(text) or retired_crypto:
                 violations.append(str(path.relative_to(ROOT)))
     assert violations == []

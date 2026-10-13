@@ -307,7 +307,7 @@ def _container_check(paths: HostPaths, runner: Runner) -> CheckResult:
         for item in containers
         if str(item.get("State", "")).casefold() != "running"
         or (
-            str(item.get("Service", "")) in {"api", "web"}
+            str(item.get("Service", "")) in {"api", "web", "emergency-bridge"}
             and str(item.get("Health", "")).casefold() in {"unhealthy", ""}
         )
         or number(item, "ExitCode") != 0

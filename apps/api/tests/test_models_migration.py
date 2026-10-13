@@ -48,6 +48,8 @@ def test_metadata_has_required_tables():
         "ai_automations",
         "ai_events",
         "ai_runs",
+        "agent_devices",
+        "agent_enrollments",
         "users",
         "sessions",
         "parks",
@@ -164,10 +166,10 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
     assert InventoryCatalogPart.normalized_article.type.length >= 384
 
 
-def test_alembic_head_includes_notification_retention_index():
+def test_alembic_head_includes_agent_device_registry():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0062_notification_retention_idx"]
+    assert script.get_heads() == ["0063_agent_devices"]
 
 
 def test_notification_retention_index_migrates_from_previous_head(sqlite_database_url, monkeypatch):
@@ -454,7 +456,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
     with engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0062_notification_retention_idx"
+            == "0063_agent_devices"
         )
 
 

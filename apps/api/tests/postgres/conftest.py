@@ -31,6 +31,11 @@ def postgres_container_name() -> Iterator[str]:
             "POSTGRES_PASSWORD=robopark-test",
             "--publish",
             "127.0.0.1::5432",
+            *(
+                ["--tmpfs", "/var/lib/postgresql/data:rw,size=512m"]
+                if os.environ.get("ROBOPARK_POSTGRES_TMPFS") == "1"
+                else []
+            ),
             "postgres:17-alpine",
         ],
         check=True,

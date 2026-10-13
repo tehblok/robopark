@@ -73,6 +73,17 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command")
     install = commands.add_parser("install", help="Чистая установка на новый хост")
     install.add_argument("--preset", choices=("robopark",))
+    install.add_argument(
+        "--environment",
+        choices=("test", "production"),
+        default=None,
+        help="роль этого сервера; сохраняется в root-private host.env",
+    )
+    install.add_argument(
+        "--production-origin",
+        default=None,
+        help="production HTTPS origin, который test-серверу запрещено переиспользовать",
+    )
     verify = commands.add_parser("verify", help="Проверить целостность пакета")
     verify.add_argument("--json", action="store_true", dest="as_json")
     commands.add_parser("update", help="Обновить существующую установку с сохранением данных")
@@ -143,9 +154,22 @@ def _remove(root: Path) -> None:
     print("Robopark полностью удалён.")
 
 
-def _clean_install(bundle: Path, root: Path, *, preset: str | None = None) -> None:
+def _clean_install(
+    bundle: Path,
+    root: Path,
+    *,
+    preset: str | None = None,
+    environment: str = "production",
+    production_origin: str | None = None,
+) -> None:
+    if environment == "test" and preset is not None:
+        raise ValueError("test_environment_forbids_production_preset")
+    if environment == "test" and production_origin is None:
+        production_origin = "https://robopark.ru.tuna.am"
     with clean_install_lock(root):
         runtime = HostInstallRuntime(bundle, root=root, tuna=TunaConfiguration())
+        runtime.environment = environment
+        runtime.production_origin = production_origin
         if root == Path("/"):
             validate_host_platform(root, runtime.verified.manifest.requirements)
         if preset:
@@ -229,7 +253,12 @@ def main(argv: list[str] | None = None) -> int:
         return run_interactive()
     if args.command == "install":
         try:
-            _clean_install(_bundle_path(), Path("/"), preset=args.preset)
+            install_options = {"preset": args.preset}
+            if args.environment is not None:
+                install_options["environment"] = args.environment
+            if args.production_origin is not None:
+                install_options["production_origin"] = args.production_origin
+            _clean_install(_bundle_path(), Path("/"), **install_options)
         except (ValueError, RuntimeError) as error:
             print(_INTERACTIVE_ERRORS.get(str(error), str(error)), file=sys.stderr)
             return 1

@@ -240,3 +240,21 @@ def test_legacy_host_and_backup_compose_path_renders_with_sanitized_config(
 
     assert "/run/robopark/snapshot.env" in result.stdout
     assert (secret_dir / "snapshot.env").read_text() == "UVICORN_WORKERS=2\n"
+
+
+def test_copy_example_assigns_unique_persistent_instance_ids(tmp_path):
+    from uuid import UUID
+    module = _module()
+    identities = []
+    for name in ("test", "production"):
+        path = tmp_path / name
+        path.write_text("ROBOPARK_INSTANCE_ID=\nSECRET_KEY=do-not-log\n")
+        path.chmod(0o600)
+        module._provision_blank_instance(path, owner_uid=os.getuid())
+        first = path.read_text()
+        module._provision_blank_instance(path, owner_uid=os.getuid())
+        assert path.read_text() == first
+        identity = first.splitlines()[0].partition("=")[2]
+        assert UUID(identity).int != 0
+        identities.append(identity)
+    assert identities[0] != identities[1]

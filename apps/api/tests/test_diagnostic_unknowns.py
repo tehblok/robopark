@@ -33,7 +33,7 @@ def snapshot(monkeypatch):
     monkeypatch.setattr(
         emergency,
         "_get_robot_payload_result",
-        lambda db, vin: EmergencyPayloadResult(payload, False, 0),
+        lambda db, vin, requester_user=None: EmergencyPayloadResult(payload, False, 0),
     )
     return payload
 

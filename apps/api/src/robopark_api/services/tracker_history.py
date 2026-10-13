@@ -130,9 +130,7 @@ def _history_evidence(
             continue
         before, after = change
         verified = tag_change_counts[at] == 1 and after is not None and after == tags
-        tags_at_record[index] = (
-            before & after if verified and before is not None else None
-        )
+        tags_at_record[index] = before & after if verified and before is not None else None
         assignments.append((at, after if verified and before is not None else None))
         tags = before if verified else None
 

@@ -55,6 +55,9 @@ def keepalive_once(
 
 
 def _keepalive_once_with_db(db: Session, stop_event: threading.Event | None) -> None:
+    settings = emergency_cache.settings_for_session(db)
+    if settings.emergency_bridge_enabled and not settings.emergency_direct_fallback_enabled:
+        return
     probe = settings_svc.get_emergency_cookie_probe(db)
     cookie, identity = probe
     if not cookie:

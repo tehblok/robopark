@@ -1,5 +1,5 @@
 {
-  "migration_head": "0062_notification_retention_idx",
+  "migration_head": "0063_agent_devices",
   "migration_compatibility": {
     "from_heads": [
       "0055_media_upload_park",
@@ -9,7 +9,8 @@
       "0059_ai_action_receipts",
       "0060_native_telegram",
       "0061_telegram_account_metadata",
-      "0062_notification_retention_idx"
+      "0062_notification_retention_idx",
+      "0063_agent_devices"
     ],
     "reversible": false
   },
@@ -37,7 +38,8 @@
     "0.2.0-rc.40",
     "0.2.0-rc.41",
     "0.2.0-rc.42",
-    "0.2.0-rc.43"
+    "0.2.0-rc.43",
+    "0.2.0-rc.44.dev7114536505405942332"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -55,5 +57,5 @@
       65536
     ]
   },
-  "update_notes": "Тестовая сборка для GEACX1 AGX Orin: проверка vendor BSP и NVMe, подготовка зависимостей с защитой системных пакетов, модуль TensorRT/DLA/JPEG и регистрация сменных моделей. Модели не включены; ускорение требует проверки на устройстве. Схема БД RC43 сохранена для переноса данных. Сохранены единый SLA сайта и Telegram, поиск задач и OTA v1."
+  "update_notes": "Тестовый выпуск Khadas/AGX: исходящий Mac Emergency bridge, регистрация устройств, раздельные test/production и установщик macOS."
 }

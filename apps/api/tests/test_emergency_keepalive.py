@@ -91,6 +91,30 @@ def test_missing_cookie_skips_ring(db_session, monkeypatch):
     assert calls == []
 
 
+def test_bridge_only_mode_skips_cookie_keepalive_without_requester(
+    db_session, test_settings, monkeypatch
+):
+    test_settings.emergency_bridge_enabled = True
+    test_settings.emergency_direct_fallback_enabled = False
+    monkeypatch.setattr(
+        emergency_keepalive.emergency_cache,
+        "settings_for_session",
+        lambda _db: test_settings,
+    )
+    settings_svc.set_setting(db_session, settings_svc.EMERGENCY_COOKIE_KEY, "cookie")
+    settings_svc.touch_keepalive_ring(db_session, "YASADR00000000450")
+    calls = []
+    monkeypatch.setattr(
+        emergency_keepalive.emergency_cache,
+        "get_robot_payload",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    emergency_keepalive.keepalive_once(db_session)
+
+    assert calls == []
+
+
 def test_unauthorized_fetch_marks_cookie_invalid(db_session, monkeypatch):
     vin = "YASADR00000000449"
     settings_svc.activate_emergency_cookie(

@@ -32,6 +32,8 @@ from robopark_api.routers import (
     admin_system,
     admin_terminal,
     admin_users,
+    agent_devices,
+    agent_distribution,
     ai,
     ai_admin,
     analytics,
@@ -196,6 +198,8 @@ def create_app() -> FastAPI:
         expose_headers=["ETag", "Upload-Offset", "Upload-Length", "Upload-Expires"],
     )
     app.include_router(auth.router)
+    app.include_router(agent_distribution.router)
+    app.include_router(agent_devices.router)
     app.include_router(ai.router)
     app.include_router(ai_admin.router)
     app.include_router(campaigns.router)

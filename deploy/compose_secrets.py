@@ -9,12 +9,15 @@ import secrets
 import stat
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 SNAPSHOT_CONFIG_KEYS = frozenset(
     {
         "ROBOPARK_ROLE",
         "ROBOPARK_DATABASE_PROFILE",
         "ROBOPARK_HOST_PROFILE",
+        "ROBOPARK_ENVIRONMENT",
+        "ROBOPARK_INSTANCE_ID",
         "CORS_ORIGINS",
         "SESSION_COOKIE_NAME",
         "SESSION_IDLE_SECONDS",
@@ -31,6 +34,9 @@ SNAPSHOT_CONFIG_KEYS = frozenset(
         "SEED_ROLE",
         "DEV_SEED",
         "UVICORN_WORKERS",
+        "EMERGENCY_BRIDGE_ENABLED",
+        "EMERGENCY_BRIDGE_URL",
+        "EMERGENCY_DIRECT_FALLBACK_ENABLED",
     }
 )
 
@@ -100,6 +106,23 @@ def validate_host_env(path: Path, *, owner_uid: int = 0) -> None:
     _read_host_env(path, owner_uid=owner_uid)
 
 
+def _provision_blank_instance(path: Path, *, owner_uid: int) -> None:
+    """The example's blank identity becomes unique once, before Compose reads it."""
+    raw = _read_host_env(path, owner_uid=owner_uid)
+    lines = raw.splitlines()
+    indexes = [i for i, line in enumerate(lines) if line.partition("=")[0].strip() == "ROBOPARK_INSTANCE_ID"]
+    if len(indexes) > 1:
+        raise ValueError("unsafe_host_env")
+    if not indexes:
+        return  # Keep legacy bridge-disabled configurations unchanged.
+    index = indexes[0]
+    value = lines[index].partition("=")[2].strip().strip("\"'")
+    if value not in {"", "00000000-0000-0000-0000-000000000000", "00000000-0000-4000-8000-000000000000"}:
+        return
+    lines[index] = "ROBOPARK_INSTANCE_ID=" + str(uuid4())
+    _atomic_private(path, "\n".join(lines) + "\n", uid=owner_uid, gid=path.stat().st_gid)
+
+
 def _snapshot_projection(path: Path, *, owner_uid: int = 0) -> str:
     values: dict[str, str] = {}
     for raw_line in _read_host_env(path, owner_uid=owner_uid).splitlines():
@@ -152,6 +175,8 @@ def bootstrap_compose_secrets(
     if testing:
         host_env_owner_uid = effective_uid
         api_uid = effective_uid
+    if host_env is not None:
+        _provision_blank_instance(Path(host_env), owner_uid=host_env_owner_uid)
     projection = (
         _snapshot_projection(host_env, owner_uid=host_env_owner_uid)
         if host_env is not None

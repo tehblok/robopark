@@ -1222,6 +1222,40 @@ class EmergencyReading(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
+class AgentEnrollment(Base):
+    __tablename__ = "agent_enrollments"
+    __table_args__ = (Index("ix_agent_enrollments_owner_created", "owner_user_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    label: Mapped[str] = mapped_column(String(96))
+    environment: Mapped[str] = mapped_column(String(16))
+    instance_id: Mapped[str] = mapped_column(String(36))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentDevice(Base):
+    __tablename__ = "agent_devices"
+    __table_args__ = (Index("ix_agent_devices_owner_active", "owner_user_id", "revoked_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    label: Mapped[str] = mapped_column(String(96))
+    public_key_x963: Mapped[bytes] = mapped_column(LargeBinary(65))
+    environment: Mapped[str] = mapped_column(String(16))
+    instance_id: Mapped[str] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AuditLog(Base):
     """Append-only record of security- and Tracker-relevant actions.
 

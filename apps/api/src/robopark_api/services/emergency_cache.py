@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import get_settings
 from robopark_api.db import release_request_session
-from robopark_api.services import emergency_client, emergency_vin, reports
+from robopark_api.models import User
+from robopark_api.services import emergency_bridge_client, emergency_client, emergency_vin, reports
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.cache_metrics import family
 from robopark_api.services.live_merge import (
@@ -67,6 +68,12 @@ _metrics = family(_MERGE_NS)
 _http_slots_lock = threading.Lock()
 _http_slots: threading.BoundedSemaphore | None = None
 _http_slots_limit: int | None = None
+
+
+def settings_for_session(db: Session):
+    get_bind = getattr(db, "get_bind", None)
+    bind = get_bind() if callable(get_bind) else None
+    return getattr(bind, "_robopark_ops_settings", None) or get_settings()
 
 
 def _shared_key(identity: str | None, vin: str) -> str:
@@ -241,11 +248,33 @@ def get_robot_payload(
     db: Session,
     vin: str,
     probe: tuple[str | None, str | None] | None = None,
+    requester_user: User | None = None,
     _metadata: dict[str, float | bool] | None = None,
 ) -> dict[str, Any]:
     """Fetch using one cookie/identity capture when a caller already has it."""
     global _cache_bytes
+    settings = settings_for_session(db)
     cookie, identity = probe or settings_svc.get_emergency_cookie_probe(db)
+    if settings.emergency_bridge_enabled:
+        if requester_user is not None:
+            try:
+                release_request_session()
+                payload = emergency_bridge_client.fetch_robot_payload(
+                    vin=vin,
+                    requester_user_id=requester_user.id,
+                    attempt_budget=1 if settings.emergency_direct_fallback_enabled else 2,
+                    settings=settings,
+                )
+                if _metadata is not None:
+                    _metadata.update(stale=False, age_seconds=0.0)
+                return payload
+            except emergency_bridge_client.BridgeError as exc:
+                if not settings.emergency_direct_fallback_enabled:
+                    raise emergency_client.EmergencyError("emergency bridge unavailable") from exc
+        elif not settings.emergency_direct_fallback_enabled:
+            raise emergency_client.EmergencyError("emergency bridge requires requester authority")
+        if not cookie:
+            raise emergency_client.EmergencyError("emergency direct fallback is not configured")
     now = time.monotonic()
     merge = get_live_merge_store()
     stale: _CacheEntry | None = None
@@ -474,10 +503,17 @@ def get_robot_payload_result(
     db: Session,
     vin: str,
     probe: tuple[str | None, str | None] | None = None,
+    requester_user: User | None = None,
 ) -> EmergencyPayloadResult:
     """Return payload plus additive freshness metadata for snapshot delivery."""
     metadata: dict[str, float | bool] = {}
-    payload = get_robot_payload(db=db, vin=vin, probe=probe, _metadata=metadata)
+    payload = get_robot_payload(
+        db=db,
+        vin=vin,
+        probe=probe,
+        requester_user=requester_user,
+        _metadata=metadata,
+    )
     stale = bool(metadata.get("stale", False))
     return EmergencyPayloadResult(
         payload=payload,

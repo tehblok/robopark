@@ -248,8 +248,8 @@ def test_discovery_normalizes_vin_uses_cache_and_returns_only_bounded_safe_scala
     for depth in range(12, 0, -1):
         nested = {f"level{depth}": nested}
 
-    def get_payload(*, db, vin, probe):
-        calls.append((db, vin, probe))
+    def get_payload(*, db, vin, probe, requester_user):
+        calls.append((db, vin, probe, requester_user.username))
         return {
             "speed": 0,
             "online": False,
@@ -268,7 +268,14 @@ def test_discovery_normalizes_vin_uses_cache_and_returns_only_bounded_safe_scala
     response = admin_client.get(BASE + "/discovered", params={"vin": " 42 "})
 
     assert response.status_code == 200
-    assert calls == [(db_session, "YASADR00000000042", ("configured-cookie", "cookie-identity"))]
+    assert calls == [
+        (
+            db_session,
+            "YASADR00000000042",
+            ("configured-cookie", "cookie-identity"),
+            "admin-approved",
+        )
+    ]
     records = {item["path"]: item for item in response.json()}
     assert records["speed"] == {"path": "speed", "value_type": "number", "example": "0"}
     assert records["online"]["value_type"] == "boolean"
@@ -301,6 +308,30 @@ def test_discovery_requires_valid_explicit_vin_and_caps_candidates(admin_client,
     response = admin_client.get(BASE + "/discovered", params={"vin": "1"})
     assert response.status_code == 200
     assert len(response.json()) == 1000
+
+
+def test_discovery_uses_authenticated_actor_in_bridge_mode_without_server_cookie(
+    admin_client, test_settings, monkeypatch
+):
+    from robopark_api.services import emergency_cache, platform_settings
+
+    test_settings.emergency_bridge_enabled = True
+    monkeypatch.setattr(
+        platform_settings,
+        "get_emergency_cookie_probe",
+        lambda _db: (None, None),
+    )
+    seen = []
+    monkeypatch.setattr(
+        emergency_cache,
+        "get_robot_payload",
+        lambda **kwargs: seen.append(kwargs["requester_user"].username) or {"speed": 1},
+    )
+
+    response = admin_client.get(BASE + "/discovered", params={"vin": "42"})
+
+    assert response.status_code == 200
+    assert seen == ["admin-approved"]
 
 
 def test_discovery_does_not_sort_or_materialize_large_dict(monkeypatch):

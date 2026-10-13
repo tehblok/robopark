@@ -37,11 +37,12 @@ def _require_emergency_cookie(probe: tuple[str | None, str | None]) -> None:
         )
 
 
-def _get_robot_payload(db: Session, vin: str) -> dict:
+def _get_robot_payload(db: Session, vin: str, user: User | None = None) -> dict:
     probe = settings_svc.get_emergency_cookie_probe(db)
-    _require_emergency_cookie(probe)
+    if not emergency_cache.settings_for_session(db).emergency_bridge_enabled:
+        _require_emergency_cookie(probe)
     try:
-        return emergency_cache.get_robot_payload(db=db, vin=vin, probe=probe)
+        return emergency_cache.get_robot_payload(db=db, vin=vin, probe=probe, requester_user=user)
     except emergency_client.EmergencyAuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -54,11 +55,16 @@ def _get_robot_payload(db: Session, vin: str) -> dict:
         ) from exc
 
 
-def _get_robot_payload_result(db: Session, vin: str) -> emergency_cache.EmergencyPayloadResult:
+def _get_robot_payload_result(
+    db: Session, vin: str, user: User | None = None
+) -> emergency_cache.EmergencyPayloadResult:
     probe = settings_svc.get_emergency_cookie_probe(db)
-    _require_emergency_cookie(probe)
+    if not emergency_cache.settings_for_session(db).emergency_bridge_enabled:
+        _require_emergency_cookie(probe)
     try:
-        return emergency_cache.get_robot_payload_result(db=db, vin=vin, probe=probe)
+        return emergency_cache.get_robot_payload_result(
+            db=db, vin=vin, probe=probe, requester_user=user
+        )
     except emergency_client.EmergencyAuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -122,7 +128,7 @@ def resolve_robot_for_user(
 ) -> EmergencyResolveOut:
     vin = authorize_emergency_vin(db, user, payload.robot_number)
 
-    _get_robot_payload(db, vin)
+    _get_robot_payload(db, vin, user)
     sections = [
         EmergencySectionItem(id=section_id, title=title)
         for section_id, title in emergency_sections.list_sections(db, user.role)
@@ -134,7 +140,7 @@ def emergency_section_for_user(
     vin: str, section_id: str, user: User, db: Session
 ) -> EmergencySectionOut:
     vin = authorize_emergency_vin(db, user, vin)
-    payload = _get_robot_payload(db, vin)
+    payload = _get_robot_payload(db, vin, user)
     try:
         rendered = emergency_sections.render_section(db, payload, section_id, role=user.role)
     except KeyError as exc:
@@ -173,7 +179,7 @@ def _snapshot_from_result(
 
 def emergency_snapshot_for_user(vin: str, user: User, db: Session) -> EmergencySnapshotOut:
     vin = authorize_emergency_vin(db, user, vin)
-    result = _get_robot_payload_result(db, vin)
+    result = _get_robot_payload_result(db, vin, user)
     return _snapshot_from_result(db, vin, user, result)
 
 
@@ -184,7 +190,7 @@ def emergency_view_for_user(
     db: Session,
 ) -> EmergencyViewOut:
     vin = authorize_emergency_vin(db, user, vin)
-    result = _get_robot_payload_result(db, vin)
+    result = _get_robot_payload_result(db, vin, user)
     snapshot = _snapshot_from_result(db, vin, user, result)
     section = None
     if section_id:

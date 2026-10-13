@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -65,6 +66,12 @@ class Settings(BaseSettings):
     # --- Emergency cache --------------------------------------------------
     #: Maximum simultaneous Emergency HTTP requests in one API worker.
     emergency_max_concurrency: int = 8
+    emergency_bridge_enabled: bool = False
+    emergency_bridge_url: str = "http://emergency-bridge:8091"
+    emergency_direct_fallback_enabled: bool = False
+    robopark_environment: Literal["test", "production"] = "production"
+    robopark_instance_id: UUID = UUID(int=0)
+    agent_device_max_per_user: int = Field(default=3, ge=1, le=20)
 
     # --- Approximate IP geolocation --------------------------------------
     #: Disabled unless the operator explicitly opts into the external service.
@@ -147,6 +154,16 @@ class Settings(BaseSettings):
         required_lease = self.tracker_notification_poll_deadline_seconds + max_operation + 5.0
         if self.tracker_notification_lease_seconds < required_lease:
             raise ValueError("tracker_notification_lease_too_short")
+        return self
+
+    @model_validator(mode="after")
+    def validate_emergency_bridge_identity(self) -> "Settings":
+        if not self.emergency_bridge_enabled:
+            return self
+        if self.robopark_instance_id.int == 0:
+            raise ValueError("emergency_bridge_identity_required")
+        if not self.secret_key:
+            raise ValueError("secret_key_required")
         return self
 
 

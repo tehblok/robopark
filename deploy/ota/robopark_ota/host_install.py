@@ -17,6 +17,8 @@ import urllib.request
 import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
+from uuid import UUID, uuid4
 
 from . import storage
 from .credentials import TunaConfiguration, seed_command, write_tuna_configuration
@@ -185,7 +187,40 @@ def write_host_configuration(
     memory_mb: int,
     cpu_count: int,
     public_origin: str | None = None,
+    environment: str = "production",
+    instance_id: str | None = None,
+    production_origin: str | None = None,
 ) -> Path:
+    if environment not in {"test", "production"}:
+        raise ValueError("invalid_robopark_environment")
+    instance_id = str(uuid4()) if instance_id is None else instance_id
+    try:
+        if str(UUID(instance_id)) != instance_id or UUID(instance_id).int == 0:
+            raise ValueError
+    except (ValueError, AttributeError, TypeError) as error:
+        raise ValueError("invalid_robopark_instance_id") from error
+
+    def normalized_origin(value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("invalid_public_origin")
+        port = f":{parsed.port}" if parsed.port not in {None, 443} else ""
+        return f"https://{parsed.hostname.lower()}{port}"
+
+    public_origin = normalized_origin(public_origin)
+    production_origin = normalized_origin(production_origin)
+    if environment == "test" and production_origin and public_origin == production_origin:
+        raise ValueError("test_origin_must_be_isolated")
     profile = "orin" if memory_mb >= 24 * 1024 and cpu_count >= 8 else "vim4-safe"
     workers = "4" if profile == "orin" else "2"
     secret_key = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")
@@ -193,8 +228,13 @@ def write_host_configuration(
         "ROBOPARK_ROLE": "host",
         "ROBOPARK_DATABASE_PROFILE": "postgresql-17",
         "ROBOPARK_HOST_PROFILE": profile,
+        "ROBOPARK_ENVIRONMENT": environment,
+        "ROBOPARK_INSTANCE_ID": instance_id,
         "ROBOPARK_UPDATE_CHANNEL": "manual",
         "CORS_ORIGINS": public_origin or "",
+        "EMERGENCY_BRIDGE_ENABLED": "true" if environment == "test" else "false",
+        "EMERGENCY_BRIDGE_URL": "http://emergency-bridge:8091",
+        "EMERGENCY_DIRECT_FALLBACK_ENABLED": "false",
         "SESSION_COOKIE_NAME": "robopark_session",
         "COOKIE_SECURE": "true",
         "COOKIE_SAMESITE": "lax",
@@ -331,6 +371,8 @@ class HostInstallRuntime:
         root: Path = Path("/"),
         tuna: TunaConfiguration | None = None,
         enable_support_ssh: bool = True,
+        environment: str = "production",
+        production_origin: str | None = None,
     ) -> None:
         self.bundle = Path(bundle).resolve(strict=True)
         self.root = Path(root).resolve()
@@ -339,6 +381,8 @@ class HostInstallRuntime:
         self.etc = self.root / "etc/robopark"
         self.tuna = tuna or TunaConfiguration()
         self.enable_support_ssh = enable_support_ssh
+        self.environment = environment
+        self.production_origin = production_origin
 
     def _run(
         self, command: list[str], *, check: bool = True, env: dict[str, str] | None = None,
@@ -765,6 +809,8 @@ class HostInstallRuntime:
             memory_mb=memory_kib // 1024,
             cpu_count=os.cpu_count() or 1,
             public_origin=self.tuna.public_origin,
+            environment=getattr(self, "environment", "production"),
+            production_origin=getattr(self, "production_origin", None),
         )
         write_tuna_configuration(self.etc, self.tuna)
         if getattr(self, "enable_support_ssh", True):

@@ -49,6 +49,7 @@ services:
       HOST_HEALTH_PATH: /data/ops/host-health.json
       OPS_HOST_ENV_PATH: /run/robopark/snapshot.env
       ROBOPARK_BOT_BRIDGE_KEY_FILE: /run/secrets/bot-bridge-key
+      EMERGENCY_BRIDGE_URL: http://emergency-bridge:8091
       # UVICORN_WORKERS comes from host.env; entrypoint defaults to 2.
     volumes:
       - ${ROBOPARK_DATA_SOURCE:-robopark_data}:/data
@@ -132,6 +133,47 @@ services:
       interval: 15s
       timeout: 15s
       start_period: 45s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  emergency-bridge:
+    image: robopark-api:local
+    command: ["python", "-m", "robopark_api.emergency_bridge"]
+    env_file:
+      - ${HOST_ENV_FILE:-./host.env}
+    environment:
+      DATABASE_URL: postgresql+psycopg://robopark@db:5432/robopark
+      PGPASSFILE: /run/secrets/pgpass
+    volumes:
+      - ${ROBOPARK_PGPASS_FILE:?run sudo python3 compose_secrets.py first}:/run/secrets/pgpass:ro
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    mem_limit: 512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    stop_grace_period: 30s
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
       retries: 3
     logging:
       driver: json-file

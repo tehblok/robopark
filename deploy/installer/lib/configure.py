@@ -12,7 +12,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 HOST_DEFAULTS = {
     'ROBOPARK_ROLE': 'host', 'COOKIE_SECURE': 'true', 'COOKIE_SAMESITE': 'lax',
@@ -23,6 +23,10 @@ HOST_DEFAULTS = {
     'DEV_SEED': 'false', 'UVICORN_WORKERS': '', 'OPERATOR_SHARED_PASSWORD': '',
     'IP_GEO_PROVIDER': 'off',
     'ROBOPARK_DATABASE_PROFILE': 'postgresql-17', 'ROBOPARK_HOST_PROFILE': '',
+    'ROBOPARK_ENVIRONMENT': 'production', 'ROBOPARK_INSTANCE_ID': '',
+    'EMERGENCY_BRIDGE_ENABLED': 'false',
+    'EMERGENCY_BRIDGE_URL': 'http://emergency-bridge:8091',
+    'EMERGENCY_DIRECT_FALLBACK_ENABLED': 'false',
     'SECRET_KEY': '', 'SEED_PASSWORD': '', 'CORS_ORIGINS': '',
 }
 TUNA_DEFAULTS = {'TUNA_TOKEN': '', 'TUNA_LOCATION': 'ru', 'TUNA_SUBDOMAIN': '', 'TUNA_DOMAIN': '', 'TUNA_BIND': '127.0.0.1:8080'}
@@ -361,6 +365,21 @@ def validate(values):
         raise ValueError('invalid_host_profile')
     if values['ROBOPARK_DATABASE_PROFILE'] != 'postgresql-17':
         raise ValueError('invalid_database_profile')
+    if values['ROBOPARK_ENVIRONMENT'] not in ('test', 'production'):
+        raise ValueError('invalid_robopark_environment')
+    try:
+        if (str(UUID(values['ROBOPARK_INSTANCE_ID'])) != values['ROBOPARK_INSTANCE_ID']
+                or UUID(values['ROBOPARK_INSTANCE_ID']).int == 0):
+            raise ValueError
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError('invalid_robopark_instance_id') from exc
+    if (
+        values['EMERGENCY_BRIDGE_ENABLED']
+        != ('true' if values['ROBOPARK_ENVIRONMENT'] == 'test' else 'false')
+        or values['EMERGENCY_BRIDGE_URL'] != 'http://emergency-bridge:8091'
+        or values['EMERGENCY_DIRECT_FALLBACK_ENABLED'] != 'false'
+    ):
+        raise ValueError('unsafe_emergency_bridge_setting')
     if values['IP_GEO_PROVIDER'] not in ('off', 'ipwhois'):
         raise ValueError('invalid_ip_geo_provider')
     for key in ('ROBOPARK_ROLE', 'COOKIE_SECURE', 'PASSWORD_REQUIRE_COMPLEXITY', 'SEED_ROLE', 'DEV_SEED'):
@@ -425,6 +444,8 @@ def configure(root, mode, filename, resume):
         values['ROBOPARK_HOST_PROFILE'] = (
             'orin' if values['UVICORN_WORKERS'] == '4' else 'vim4-safe'
         )
+    if values['ROBOPARK_INSTANCE_ID'] in {'', '00000000-0000-0000-0000-000000000000'}:
+        values['ROBOPARK_INSTANCE_ID'] = str(uuid4())
     validate(values)
     if values['UVICORN_WORKERS'] == '4':
         memory = (Path(root) / 'proc/meminfo').read_text()

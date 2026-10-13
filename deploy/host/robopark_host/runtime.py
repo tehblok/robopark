@@ -486,7 +486,7 @@ def production_config(document, paths, release, image_tag, *, source_release=Non
     services = document["services"]
     document["services"] = {
         name: services[name]
-        for name in ("db", "api", "web", "worker", "bot")
+        for name in ("db", "api", "web", "worker", "emergency-bridge", "bot")
         if name in services
     }
     document["volumes"] = {"robopark_postgres": {}}
@@ -508,6 +508,7 @@ def production_config(document, paths, release, image_tag, *, source_release=Non
         OPS_HOST_ROOT="/host-ops",
         HOST_DATA_PATH="/data",
         HOST_HEALTH_PATH="/ops/host-health.json",
+        EMERGENCY_BRIDGE_URL="http://emergency-bridge:8091",
     )
     api["volumes"] = [
         {
@@ -553,6 +554,43 @@ def production_config(document, paths, release, image_tag, *, source_release=Non
             "api": {"condition": "service_healthy"},
         }
         worker["healthcheck"] = worker_healthcheck_config()
+    if "emergency-bridge" in document["services"]:
+        bridge = document["services"]["emergency-bridge"]
+        bridge.pop("build", None)
+        bridge["image"] = f"robopark-api:{image_tag}"
+        bridge["command"] = ["python", "-m", "robopark_api.emergency_bridge"]
+        bridge["env_file"] = list(api["env_file"])
+        bridge["environment"] = {
+            "DATABASE_URL": "postgresql+psycopg://robopark@db:5432/robopark",
+            "PGPASSFILE": "/run/secrets/pgpass",
+        }
+        bridge["volumes"] = [
+            {
+                "type": "bind",
+                "source": str(paths.etc / "pgpass"),
+                "target": "/run/secrets/pgpass",
+                "read_only": True,
+            }
+        ]
+        bridge["depends_on"] = {"db": {"condition": "service_healthy"}}
+        bridge.pop("ports", None)
+        bridge["read_only"] = True
+        bridge["tmpfs"] = ["/tmp:size=32m,mode=1777"]
+        bridge["mem_limit"] = "512m"
+        bridge["pids_limit"] = 128
+        bridge.setdefault("ulimits", {})["nofile"] = {"soft": 8192, "hard": 8192}
+        if "web" in document["services"]:
+            dependencies = document["services"]["web"].setdefault("depends_on", {})
+            dependencies.pop("emergency-bridge", None)
+            host_env_path = paths.etc / "host.env"
+            bridge_enabled = False
+            if host_env_path.is_file():
+                for line in host_env_path.read_text().splitlines():
+                    key, separator, value = line.partition("=")
+                    if separator and key.strip() == "EMERGENCY_BRIDGE_ENABLED":
+                        bridge_enabled = value.strip().lower() in {"true", "1", "yes", "on"}
+            if bridge_enabled:
+                dependencies["emergency-bridge"] = {"condition": "service_healthy"}
     from .terminal_install import terminal_payload_present
 
     # OTA renders before the staging tree is moved to its final release path.

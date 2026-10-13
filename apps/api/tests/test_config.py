@@ -4,6 +4,18 @@ from pydantic import ValidationError
 from robopark_api.config import Settings
 
 
+def test_bridge_requires_server_identity_and_hmac_secret():
+    with pytest.raises(ValueError, match="emergency_bridge_identity_required"):
+        Settings(_env_file=None, emergency_bridge_enabled=True, secret_key="secret")
+    with pytest.raises(ValueError, match="secret_key_required"):
+        Settings(
+            _env_file=None,
+            emergency_bridge_enabled=True,
+            robopark_instance_id="11111111-1111-1111-1111-111111111111",
+            secret_key=None,
+        )
+
+
 def test_ip_geo_provider_is_disabled_by_default():
     assert Settings(_env_file=None).ip_geo_provider == "off"
 

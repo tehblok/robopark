@@ -20,6 +20,7 @@ ExecStartPost=-/usr/bin/python3 -I /opt/robopark/host-tools/robopark-bot-runtime
 ExecStartPost=-/usr/bin/python3 -I /opt/robopark/host-tools/robopark tuna-start
 ExecStartPost=-/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json up -d --no-build worker
 ExecStop=/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json stop --timeout 30 worker web api
+ExecStopPost=-/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json stop --timeout 30 emergency-bridge
 ExecStopPost=-/usr/bin/python3 -I /opt/robopark/host-tools/robopark-bot-runtime stop
 TimeoutStartSec=3600
 TimeoutStopSec=90
