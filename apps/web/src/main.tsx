@@ -14,26 +14,32 @@ import { ThemeProvider } from './design-system/theme/ThemeProvider'
 import { applyInitialTheme } from './design-system/theme/theme'
 import { registerServiceWorker } from './pwa/registerServiceWorker'
 import { captureShareTargetId } from './pwa/shareTargetIntent'
+import { desktopRuntime } from './pwa/desktopRuntime'
+import { hydrateDesktopOfflineIdentity } from './shared/auth/offlineIdentity'
 
 captureShareTargetId()
 applyInitialTheme()
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ThemeProvider>
-      <BrowserRouter>
-        <AuthProvider>
-          <GlobalProgress />
-          <MaintenanceGate />
-          <ScreenshotGuardGate />
-          <App />
-        </AuthProvider>
-      </BrowserRouter>
-    </ThemeProvider>
-  </StrictMode>,
-)
+async function bootstrap() {
+  await hydrateDesktopOfflineIdentity()
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <ThemeProvider>
+        <BrowserRouter>
+          <AuthProvider>
+            <GlobalProgress />
+            <MaintenanceGate />
+            <ScreenshotGuardGate />
+            <App />
+          </AuthProvider>
+        </BrowserRouter>
+      </ThemeProvider>
+    </StrictMode>,
+  )
+}
+void bootstrap()
 
-if (import.meta.env.PROD) {
+if (import.meta.env.PROD && !desktopRuntime()) {
   window.addEventListener('load', () => {
     void registerServiceWorker({
       production: true,

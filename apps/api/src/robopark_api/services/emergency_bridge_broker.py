@@ -16,9 +16,38 @@ class Channel:
     generation: str = field(default_factory=lambda: str(uuid4()))
     latency_ms: float = 10_000.0
     inflight: int = 0
+    queued: int = 0
     ready: bool = False
     failure_penalty: float = 0.0
     last_heartbeat: float = field(default_factory=time.monotonic)
+    capacity: int = 2
+    reported_active_jobs: int = 0
+    reported_load: float = 0.0
+    paused: bool = False
+    power: str = "unknown"
+    supports: set[str] = field(default_factory=set)
+    probe_available: bool = False
+    probe_inflight: bool = False
+    probe_id: str | None = None
+    probe_deadline: float = 0.0
+    last_probe_at: float = 0.0
+    last_upstream_success: float = 0.0
+    last_selected: float = 0.0
+    virtual_finish: float = 0.0
+    requests: int = 0
+    completed: int = 0
+    failed: int = 0
+    encoded_bytes: int = 0
+    decoded_bytes: int = 0
+    probes_sent: int = 0
+    probes_failed: int = 0
+    upstream_dispatches: int = 0
+    upstream_backpressure: int = 0
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+    async def send_json(self, value: dict) -> None:
+        async with self.send_lock:
+            await self.websocket.send_json(value)
 
 
 @dataclass
@@ -44,6 +73,7 @@ class BrokerRegistry:
         max_cache_entries: int = 512,
         max_cache_bytes: int = 16 * 1024 * 1024,
         max_pending_jobs: int = 200,
+        upstream_reads_per_second: float = 8.0,
     ) -> None:
         self.max_connections = max_connections
         self.max_inflight_per_device = max_inflight_per_device
@@ -52,12 +82,107 @@ class BrokerRegistry:
         self.max_cache_entries = max_cache_entries
         self.max_cache_bytes = max_cache_bytes
         self.max_pending_jobs = max_pending_jobs
+        self.upstream_reads_per_second = upstream_reads_per_second
         self.channels: dict[str, Channel] = {}
         self.pending: dict[tuple[str, str, str, str], PendingJob] = {}
         self.cache: dict[tuple[str, str, str], tuple[float, dict, int]] = {}
         self.cache_bytes = 0
+        self.shared_cache: dict[str, tuple[float, dict, str, int]] = {}
+        self.shared_cache_bytes = 0
         self.loads: dict[tuple[str, str, str], asyncio.Future] = {}
-        self.request_loads: dict[tuple[int, str], asyncio.Future] = {}
+        self.request_loads: dict[str, asyncio.Future] = {}
+        self.metrics = {
+            "requests": 0,
+            "attempts": 0,
+            "completed": 0,
+            "failed": 0,
+            "rejected": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0,
+            "probes_sent": 0,
+            "probes_failed": 0,
+            "upstream_dispatches": 0,
+            "upstream_backpressure": 0,
+        }
+        self._probe_tokens = 2.0
+        self._probe_refilled_at = time.monotonic()
+        self._request_tokens = 128.0
+        self._request_refilled_at = time.monotonic()
+        self._upstream_tokens = upstream_reads_per_second
+        self._upstream_refilled_at = time.monotonic()
+        self._active_requests: dict[int, int] = {}
+        self.max_active_requests = 256
+        self.max_active_per_requester = 16
+
+    def admit_request(self, requester_user_id: int, *, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        elapsed = max(0.0, now - self._request_refilled_at)
+        self._request_tokens = min(128.0, self._request_tokens + elapsed * 64.0)
+        self._request_refilled_at = now
+        active_global = sum(self._active_requests.values())
+        active_owner = self._active_requests.get(requester_user_id, 0)
+        if (
+            self._request_tokens < 1.0
+            or active_global >= self.max_active_requests
+            or active_owner >= self.max_active_per_requester
+        ):
+            self.metrics["rejected"] += 1
+            return False
+        self._request_tokens -= 1.0
+        self._active_requests[requester_user_id] = active_owner + 1
+        self.metrics["requests"] += 1
+        return True
+
+    def release_request(self, requester_user_id: int) -> None:
+        active = self._active_requests.get(requester_user_id, 0)
+        if active <= 1:
+            self._active_requests.pop(requester_user_id, None)
+        else:
+            self._active_requests[requester_user_id] = active - 1
+
+    def try_reserve_upstream(
+        self,
+        channel: Channel,
+        *,
+        kind: str,
+        now: float | None = None,
+        count_backpressure: bool = True,
+    ) -> bool:
+        if kind not in {"job", "probe"}:
+            raise ValueError("invalid_upstream_kind")
+        now = time.monotonic() if now is None else now
+        elapsed = max(0.0, now - self._upstream_refilled_at)
+        self._upstream_tokens = min(
+            self.upstream_reads_per_second,
+            self._upstream_tokens + elapsed * self.upstream_reads_per_second,
+        )
+        self._upstream_refilled_at = now
+        if self._upstream_tokens < 1.0:
+            if count_backpressure:
+                channel.upstream_backpressure += 1
+                self.metrics["upstream_backpressure"] += 1
+            return False
+        self._upstream_tokens -= 1.0
+        channel.upstream_dispatches += 1
+        self.metrics["upstream_dispatches"] += 1
+        return True
+
+    async def wait_for_upstream(self, channel: Channel, *, deadline: float) -> bool:
+        count_backpressure = True
+        while True:
+            now = time.monotonic()
+            if self.try_reserve_upstream(
+                channel,
+                kind="job",
+                now=now,
+                count_backpressure=count_backpressure,
+            ):
+                return True
+            count_backpressure = False
+            remaining = deadline - now
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(remaining, 1.0 / self.upstream_reads_per_second))
 
     def replace(self, channel: Channel) -> Channel | None:
         old = self.channels.get(channel.device_id)
@@ -90,14 +215,51 @@ class BrokerRegistry:
             if device_id in eligible_device_ids
             and device_id not in excluded
             and channel.ready
-            and channel.inflight < self.max_inflight_per_device
+            and not channel.paused
+            and channel.inflight + channel.queued
+            < min(self.max_inflight_per_device, channel.capacity)
             and now - channel.last_heartbeat <= self.readiness_timeout_seconds
         ]
         if not candidates:
             return None
-        return min(
-            candidates,
-            key=lambda item: item.latency_ms + item.inflight * 250 + item.failure_penalty * 1000,
+
+        def score(item: Channel) -> tuple[float, str]:
+            capacity = max(1, item.capacity)
+            observed_load = max(item.reported_load, (item.inflight + item.queued) / capacity)
+            waiting = 120.0 if item.last_selected <= 0 else max(0.0, now - item.last_selected)
+            aging_credit = min(waiting, 120.0) * 20.0
+            latency_cost = min(item.latency_ms, 2_000.0) * 0.1
+            power_cost = 200.0 if item.power in {"battery", "low_power"} else 0.0
+            total = (
+                item.virtual_finish
+                + observed_load * 750.0
+                + latency_cost
+                + item.failure_penalty * 1_000.0
+                + power_cost
+                - aging_credit
+            )
+            return total, item.device_id
+
+        return min(candidates, key=score)
+
+    def reserve_queue_slot(self, channel: Channel) -> bool:
+        if self.channels.get(channel.device_id) is not channel:
+            return False
+        if channel.inflight + channel.queued >= min(self.max_inflight_per_device, channel.capacity):
+            return False
+        channel.queued += 1
+        return True
+
+    def release_queue_slot(self, channel: Channel) -> None:
+        channel.queued = max(0, channel.queued - 1)
+
+    def channel_available(self, channel: Channel) -> bool:
+        now = time.monotonic()
+        return (
+            self.channels.get(channel.device_id) is channel
+            and channel.ready
+            and not channel.paused
+            and now - channel.last_heartbeat <= self.readiness_timeout_seconds
         )
 
     def new_pending(
@@ -123,11 +285,160 @@ class BrokerRegistry:
         )
         self.pending[(job.device_id, job.generation, job.job_id, job.attempt_id)] = job
         channel.inflight += 1
+        channel.requests += 1
+        channel.last_selected = time.monotonic()
+        channel.virtual_finish += 1_000.0 / max(1, channel.capacity)
+        self.metrics["attempts"] += 1
         return job
 
     def finish(self, channel: Channel, job: PendingJob) -> None:
         self.pending.pop((job.device_id, job.generation, job.job_id, job.attempt_id), None)
         channel.inflight = max(0, channel.inflight - 1)
+
+    def record_success(
+        self,
+        channel: Channel,
+        *,
+        encoded_bytes: int,
+        decoded_bytes: int,
+        now: float | None = None,
+    ) -> None:
+        now = time.monotonic() if now is None else now
+        channel.completed += 1
+        channel.encoded_bytes += encoded_bytes
+        channel.decoded_bytes += decoded_bytes
+        channel.last_upstream_success = now
+        channel.last_probe_at = now
+        channel.probe_inflight = False
+        self.metrics["completed"] += 1
+        self.metrics["encoded_bytes"] += encoded_bytes
+        self.metrics["decoded_bytes"] += decoded_bytes
+
+    def record_failure(self, channel: Channel) -> None:
+        channel.failed += 1
+        self.metrics["failed"] += 1
+
+    def probe_due(self, channel: Channel, *, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        if channel.probe_inflight and now > channel.probe_deadline:
+            channel.probe_inflight = False
+            channel.probe_id = None
+            channel.probes_failed += 1
+            self.metrics["probes_failed"] += 1
+        return (
+            "managed_probes" in channel.supports
+            and channel.probe_available
+            and not channel.paused
+            and not channel.probe_inflight
+            and now - max(channel.last_probe_at, channel.last_upstream_success) >= 60.0
+        )
+
+    def reserve_probe(self, channel: Channel, *, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        if not self.probe_due(channel, now=now):
+            return False
+        elapsed = max(0.0, now - self._probe_refilled_at)
+        self._probe_tokens = min(2.0, self._probe_tokens + elapsed * 2.0)
+        self._probe_refilled_at = now
+        if self._probe_tokens < 1.0:
+            return False
+        if not self.try_reserve_upstream(channel, kind="probe", now=now):
+            return False
+        self._probe_tokens -= 1.0
+        channel.probe_inflight = True
+        channel.probe_id = str(uuid4())
+        channel.probe_deadline = now + 10.0
+        channel.last_probe_at = now
+        channel.probes_sent += 1
+        self.metrics["probes_sent"] += 1
+        return True
+
+    def due_probe_channels(self, *, now: float | None = None) -> list[Channel]:
+        now = time.monotonic() if now is None else now
+        due = [channel for channel in self.channels.values() if self.probe_due(channel, now=now)]
+        return sorted(
+            due,
+            key=lambda channel: (
+                max(channel.last_probe_at, channel.last_upstream_success),
+                channel.device_id,
+            ),
+        )
+
+    def finish_probe(
+        self,
+        channel: Channel,
+        *,
+        probe_id: str,
+        ready: bool,
+        latency_ms: float | None,
+        now: float | None = None,
+    ) -> bool:
+        now = time.monotonic() if now is None else now
+        if (
+            not channel.probe_inflight
+            or channel.probe_id != probe_id
+            or now > channel.probe_deadline
+        ):
+            return False
+        channel.probe_inflight = False
+        channel.probe_id = None
+        channel.ready = ready
+        channel.last_heartbeat = now
+        if latency_ms is not None and 0 <= latency_ms <= 120_000:
+            channel.latency_ms = latency_ms
+        if ready:
+            channel.last_upstream_success = now
+        else:
+            channel.probes_failed += 1
+            self.metrics["probes_failed"] += 1
+        return True
+
+    def status(self, *, owner_user_id: int | None = None) -> dict:
+        now = time.monotonic()
+        channels = [
+            item
+            for item in self.channels.values()
+            if owner_user_id is None or item.owner_user_id == owner_user_id
+        ]
+        devices = []
+        for item in sorted(channels, key=lambda value: value.device_id):
+            stale = now - item.last_heartbeat > self.readiness_timeout_seconds
+            busy = item.inflight + item.queued >= min(self.max_inflight_per_device, item.capacity)
+            status = (
+                "stale"
+                if stale
+                else "paused"
+                if item.paused
+                else "busy"
+                if busy
+                else "ready"
+                if item.ready
+                else "offline"
+            )
+            devices.append(
+                {
+                    "id": item.device_id,
+                    "status": status,
+                    "connected": True,
+                    "ready": bool(item.ready and not stale and not item.paused),
+                    "capacity": item.capacity,
+                    "inflight": item.inflight,
+                    "queued": item.queued,
+                    "load": item.reported_load,
+                    "latency_ms": item.latency_ms,
+                    "power": item.power,
+                    "requests": item.requests,
+                    "completed": item.completed,
+                    "failed": item.failed,
+                    "encoded_bytes": item.encoded_bytes,
+                    "decoded_bytes": item.decoded_bytes,
+                    "probes_sent": item.probes_sent,
+                    "probes_failed": item.probes_failed,
+                    "upstream_dispatches": item.upstream_dispatches,
+                    "upstream_backpressure": item.upstream_backpressure,
+                }
+            )
+        return {"devices": devices}
 
     def resolve_result(
         self,
@@ -181,6 +492,43 @@ class BrokerRegistry:
             self.cache[key] = (time.monotonic(), payload, size_bytes)
             self.cache_bytes += size_bytes
 
+    def shared_cache_get(self, vin: str) -> tuple[dict, str] | None:
+        cached = self.shared_cache.get(vin)
+        if cached is None:
+            return None
+        loaded_at, payload, source_device_id, size_bytes = cached
+        if time.monotonic() - loaded_at > self.cache_ttl_seconds:
+            self.shared_cache.pop(vin, None)
+            self.shared_cache_bytes = max(0, self.shared_cache_bytes - size_bytes)
+            return None
+        return payload, source_device_id
+
+    def shared_cache_put(self, vin: str, payload: dict, *, source_device_id: str) -> None:
+        previous = self.shared_cache.pop(vin, None)
+        if previous is not None:
+            self.shared_cache_bytes = max(0, self.shared_cache_bytes - previous[3])
+        size_bytes = len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
+        while self.shared_cache and (
+            len(self.shared_cache) >= self.max_cache_entries
+            or self.shared_cache_bytes + size_bytes > self.max_cache_bytes
+        ):
+            oldest = min(self.shared_cache, key=lambda key: self.shared_cache[key][0])
+            removed = self.shared_cache.pop(oldest)
+            self.shared_cache_bytes = max(0, self.shared_cache_bytes - removed[3])
+        if size_bytes <= self.max_cache_bytes:
+            self.shared_cache[vin] = (
+                time.monotonic(),
+                payload,
+                source_device_id,
+                size_bytes,
+            )
+            self.shared_cache_bytes += size_bytes
+
+    def shared_cache_remove(self, vin: str) -> None:
+        cached = self.shared_cache.pop(vin, None)
+        if cached is not None:
+            self.shared_cache_bytes = max(0, self.shared_cache_bytes - cached[3])
+
     def begin_load(self, channel: Channel, vin: str) -> tuple[asyncio.Future, bool]:
         key = (channel.device_id, channel.generation, vin)
         existing = self.loads.get(key)
@@ -210,27 +558,25 @@ class BrokerRegistry:
         else:
             future.set_result(payload)
 
-    def begin_request(self, requester_user_id: int, vin: str) -> tuple[asyncio.Future, bool]:
-        key = (requester_user_id, vin)
-        existing = self.request_loads.get(key)
+    def begin_request(self, vin: str) -> tuple[asyncio.Future, bool]:
+        existing = self.request_loads.get(vin)
         if existing is not None:
             return existing, False
         future = asyncio.get_running_loop().create_future()
         future.add_done_callback(
             lambda completed: completed.exception() if not completed.cancelled() else None
         )
-        self.request_loads[key] = future
+        self.request_loads[vin] = future
         return future, True
 
     def finish_request(
         self,
-        requester_user_id: int,
         vin: str,
         *,
         result: tuple[dict, str] | None = None,
         error: BaseException | None = None,
     ) -> None:
-        future = self.request_loads.pop((requester_user_id, vin), None)
+        future = self.request_loads.pop(vin, None)
         if future is None or future.done():
             return
         if error is not None:

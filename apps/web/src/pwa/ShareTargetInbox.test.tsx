@@ -3,8 +3,138 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ShareTargetInbox } from './ShareTargetInbox'
 import { clearShareTargetInbox, openShareTargetInbox } from './shareTargetStore'
+import { resetDesktopStorageKeyForTests, setDesktopRuntimeForTests } from './desktopRuntime'
+
+async function rawShareDraft(id: string): Promise<Record<string, unknown>> {
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open('robopark-share-inbox-v2', 1)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  try {
+    return await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const request = database.transaction('drafts').objectStore('drafts').get(id)
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+  } finally { database.close() }
+}
+
+async function replaceRawShareDraft(record: Record<string, unknown>): Promise<void> {
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open('robopark-share-inbox-v2', 1)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  try {
+    const transaction = database.transaction('drafts', 'readwrite')
+    transaction.objectStore('drafts').put(record)
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve()
+      transaction.onabort = transaction.onerror = () => reject(transaction.error)
+    })
+  } finally { database.close() }
+}
 
 describe('ShareTargetInbox', () => {
+  it('encrypts shared photo metadata and bytes in the desktop database', async () => {
+    setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+    const key = crypto.getRandomValues(new Uint8Array(32))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ key: btoa(String.fromCharCode(...key)) }), { status: 200 })))
+    const inbox = await openShareTargetInbox()
+    try {
+      await inbox.clear()
+      await inbox.save({ id: 'desktop-encrypted', ownerAccountId: 11, createdAt: Date.now(), name: 'private-robot.jpg',
+        type: 'image/jpeg', blob: new Blob(['photo']), assignment: null })
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open('robopark-share-inbox-v2', 1)
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      const record = await new Promise<unknown>((resolve, reject) => {
+        const request = database.transaction('drafts').objectStore('drafts').get('desktop-encrypted')
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      database.close()
+      expect(record).not.toHaveProperty('name')
+      expect(record).not.toHaveProperty('type')
+      expect(record).not.toHaveProperty('blob')
+      expect(record).not.toHaveProperty('assignment')
+      expect(JSON.stringify(record)).not.toContain('private-robot.jpg')
+      expect(JSON.stringify(record)).not.toContain('cGhvdG8=')
+      expect(await inbox.list(11)).toMatchObject([{ name: 'private-robot.jpg' }])
+    } finally {
+      await inbox.clear(); inbox.close?.(); setDesktopRuntimeForTests(undefined); resetDesktopStorageKeyForTests(); vi.unstubAllGlobals()
+    }
+  })
+  it('rejects tampered desktop routing fields and retains ciphertext while its key is unavailable', async () => {
+    setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+    const key = crypto.getRandomValues(new Uint8Array(32))
+    let keyAvailable = true
+    vi.stubGlobal('fetch', vi.fn(async () => keyAvailable
+      ? new Response(JSON.stringify({ key: btoa(String.fromCharCode(...key)) }), { status: 200 })
+      : new Response(null, { status: 503 })))
+    const inbox = await openShareTargetInbox()
+    const id = 'desktop-tamper'
+    try {
+      await inbox.clear()
+      await inbox.save({ id, ownerAccountId: 11, createdAt: Date.now(), receivedOrder: 7,
+        name: 'protected.jpg', type: 'image/jpeg', blob: new Blob(['protected-photo']),
+        assignment: { kind: 'task', target: 'SDCFLEETOPS-7' } })
+      const original = await rawShareDraft(id)
+
+      for (const { mutation, accountId = 11 } of [
+        { mutation: { assignment: { kind: 'task', target: 'SDCFLEETOPS-999' } } },
+        { mutation: { name: 'forged.jpg' } },
+        { mutation: { ownerAccountId: 12 }, accountId: 12 },
+        { mutation: { createdAt: Number(original.createdAt) + 1 } },
+        { mutation: { receivedOrder: 99 } },
+        { mutation: { blobBytes: Number(original.blobBytes) + 1 } },
+      ]) {
+        await replaceRawShareDraft({ ...original, ...mutation })
+        expect(await inbox.list(accountId)).toEqual([])
+        await replaceRawShareDraft(original)
+        expect(await inbox.list(11)).toMatchObject([{ id, ownerAccountId: 11,
+          assignment: { kind: 'task', target: 'SDCFLEETOPS-7' } }])
+      }
+
+      await replaceRawShareDraft({ ...original, id: 'desktop-relocated' })
+      expect((await inbox.list(11)).map(item => item.id)).toEqual([id])
+
+      resetDesktopStorageKeyForTests()
+      keyAvailable = false
+      expect(await inbox.list(11)).toEqual([])
+      expect(await rawShareDraft(id)).toEqual(original)
+      resetDesktopStorageKeyForTests()
+      keyAvailable = true
+      const restored = (await inbox.list(11))[0]
+      expect(restored).toMatchObject({ id, ownerAccountId: 11, assignment: { kind: 'task', target: 'SDCFLEETOPS-7' } })
+      expect(await restored?.blob.text()).toBe('protected-photo')
+    } finally {
+      await inbox.clear(); inbox.close?.(); setDesktopRuntimeForTests(undefined); resetDesktopStorageKeyForTests(); vi.unstubAllGlobals()
+    }
+  })
+  it('updates a desktop draft only through authenticated claim, assignment and discard transitions', async () => {
+    setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+    const key = crypto.getRandomValues(new Uint8Array(32))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ key: btoa(String.fromCharCode(...key)) }), { status: 200 })))
+    const inbox = await openShareTargetInbox()
+    try {
+      await inbox.clear()
+      await inbox.save({ id: 'desktop-transitions', ownerAccountId: null, createdAt: Date.now(), name: 'robot.jpg',
+        type: 'image/jpeg', blob: new Blob(['photo']), assignment: null })
+      expect(await inbox.claim('desktop-transitions', 11)).toMatchObject({ ownerAccountId: 11, assignment: null })
+      await inbox.assign(11, 'desktop-transitions', { kind: 'task', target: 'SDCFLEETOPS-11' })
+      expect(await inbox.list(11)).toMatchObject([{ assignment: { kind: 'task', target: 'SDCFLEETOPS-11' } }])
+      await inbox.discard(12, 'desktop-transitions')
+      expect(await inbox.list(11)).toHaveLength(1)
+      await inbox.discard(11, 'desktop-transitions')
+      expect(await inbox.list(11)).toEqual([])
+    } finally {
+      await inbox.clear(); inbox.close?.(); setDesktopRuntimeForTests(undefined); resetDesktopStorageKeyForTests(); vi.unstubAllGlobals()
+    }
+  })
   it('keeps a shared photo as an unassigned draft until the user attaches it', async () => {
     const inbox = await openShareTargetInbox()
     await inbox.save({ id: 'shared-1', createdAt: Date.now() - 4, name: 'robot.jpg', type: 'image/jpeg',

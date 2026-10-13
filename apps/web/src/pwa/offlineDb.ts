@@ -4,6 +4,7 @@ import type {
   OfflineMedia,
   OfflineScope,
 } from './offlineTypes'
+import { desktopRuntime, sealDesktopJson, unsealDesktopJson } from './desktopRuntime'
 
 export const OFFLINE_DATABASE_NAME = 'robopark-offline'
 const DEFAULT_OFFLINE_BUDGET = 64 * 1024 * 1024
@@ -20,10 +21,38 @@ type EntityRecord = ScopedRecord & {
   updatedAt: number
   accessedAt: number
 }
-type ActionRecord = ScopedRecord & OfflineAction & { resource: string }
-type MediaRecord = ScopedRecord & OfflineMedia
+type ActionRecord = ScopedRecord & Partial<OfflineAction> & {
+  resource: string
+  id: string
+  state: OfflineAction['state']
+  createdAt: number
+  updatedAt: number
+  baseRevision?: string | null
+  dependencyIds?: string[]
+  protectedData?: unknown
+}
+type MediaRecord = ScopedRecord & Partial<OfflineMedia> & {
+  id: string
+  actionId: string
+  state: OfflineMedia['state']
+  createdAt: number
+  updatedAt: number
+  sizeBytes: number
+  blob?: Blob
+  originalBlob?: Blob
+  protectedData?: unknown
+}
 type RevisionRecord = ScopedRecord & { section: string, revision: string, updatedAt: number }
 type MetaRecord = ScopedRecord & { key: string, value: unknown, updatedAt: number }
+type PendingWrite =
+  | { kind: 'entity'; key: string; data: unknown; options: { updatedAt?: number; accessedAt?: number } }
+  | { kind: 'action'; action: OfflineAction }
+  | { kind: 'media'; media: OfflineMedia }
+  | { kind: 'deleteMedia'; id: string }
+  | { kind: 'revision'; section: string; revision: string }
+type PreparedWrite =
+  | { kind: 'put'; store: 'entities' | 'actions' | 'media' | 'revisions'; value: EntityRecord | ActionRecord | MediaRecord | RevisionRecord }
+  | { kind: 'delete'; store: 'media'; id: string }
 
 let activeScope = ''
 let activeScopeValue: OfflineScope | null = null
@@ -73,6 +102,24 @@ function valueBytes(value: unknown): number {
   try { return new TextEncoder().encode(JSON.stringify(value)).byteLength } catch { return 0 }
 }
 
+async function blobBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  let binary = ''
+  const chunk = 0x8000
+  for (let index = 0; index < bytes.length; index += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(index, Math.min(bytes.length, index + chunk)))
+  }
+  return btoa(binary)
+}
+
+function base64Blob(value: string, type: string): Blob {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value)) throw new Error('desktop_media_invalid')
+  const binary = atob(value)
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length))
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return new Blob([bytes], { type })
+}
+
 function queuedActionMatches(left: OfflineAction, right: OfflineAction): boolean {
   const canonical = (value: unknown): string => {
     const normalize = (entry: unknown): unknown => {
@@ -91,6 +138,36 @@ function queuedActionMatches(left: OfflineAction, right: OfflineAction): boolean
     && left.baseRevision === right.baseRevision
     && canonical(left.dependencies) === canonical(right.dependencies)
     && canonical(left.payload) === canonical(right.payload)
+}
+
+const actionStates = new Set<OfflineAction['state']>(['local', 'ready', 'sending', 'confirmed', 'conflict', 'attention', 'cancelled'])
+const mediaStates = new Set<OfflineMedia['state']>(['local', 'ready', 'uploading', 'confirmed', 'attention'])
+const injectedActionFields = ['deviceId', 'resourceType', 'resourceId', 'action', 'idempotencyKey', 'dependencies', 'payload', 'result', 'attempts'] as const
+const injectedMediaFields = ['issueKey', 'name', 'blob', 'originalBlob', 'mimeType', 'sha256', 'attempts'] as const
+
+function validAction(value: unknown): value is OfflineAction {
+  const item = value as Partial<OfflineAction> | null
+  return Boolean(item && typeof item.id === 'string' && item.id.length > 0
+    && typeof item.deviceId === 'string' && typeof item.resourceType === 'string' && typeof item.resourceId === 'string'
+    && typeof item.action === 'string' && typeof item.idempotencyKey === 'string'
+    && (item.baseRevision === null || typeof item.baseRevision === 'string')
+    && Array.isArray(item.dependencies) && item.dependencies.every(dependency => typeof dependency === 'string')
+    && Object.prototype.hasOwnProperty.call(item, 'payload') && actionStates.has(item.state as OfflineAction['state'])
+    && Number.isFinite(item.createdAt) && Number.isFinite(item.updatedAt)
+    && (item.attempts === undefined || Number.isSafeInteger(item.attempts)))
+}
+
+type ProtectedMedia = Omit<OfflineMedia, 'blob' | 'originalBlob'> & { blob: string; originalBlob: string | null }
+
+function validProtectedMedia(value: unknown): value is ProtectedMedia {
+  const item = value as Partial<ProtectedMedia> | null
+  return Boolean(item && typeof item.id === 'string' && item.id.length > 0 && typeof item.actionId === 'string'
+    && typeof item.issueKey === 'string' && typeof item.name === 'string' && typeof item.mimeType === 'string'
+    && typeof item.sha256 === 'string' && typeof item.blob === 'string'
+    && (item.originalBlob === null || typeof item.originalBlob === 'string')
+    && Number.isFinite(item.sizeBytes) && mediaStates.has(item.state as OfflineMedia['state'])
+    && Number.isFinite(item.createdAt) && Number.isFinite(item.updatedAt)
+    && (item.attempts === undefined || Number.isSafeInteger(item.attempts)))
 }
 
 function createIndex(store: IDBObjectStore, name: string, keyPath: string): void {
@@ -168,49 +245,56 @@ export class OfflineDb {
     return Array.from(transaction.objectStore(store).indexNames).sort()
   }
 
-  private transactionWriter(transaction: IDBTransaction): OfflineTransactionWriter {
-    return {
-      putEntity: (key, data, options = {}) => {
-        const now = options.updatedAt ?? Date.now()
-        const entry: EntityRecord = {
-          dbId: recordId(this.scope, key), scope: this.scope, key, data,
-          bytes: valueBytes(data), updatedAt: now, accessedAt: options.accessedAt ?? now,
-        }
-        transaction.objectStore('entities').put(entry)
-      },
-      putAction: action => transaction.objectStore('actions').put(this.actionRecord(action)),
-      putMedia: media => transaction.objectStore('media').put(this.mediaRecord(media)),
-      deleteMedia: id => transaction.objectStore('media').delete(recordId(this.scope, id)),
-      putRevision: (section, revision) => {
-        const entry: RevisionRecord = {
-          dbId: recordId(this.scope, section), scope: this.scope, section, revision,
-          bytes: valueBytes(revision), updatedAt: Date.now(),
-        }
-        transaction.objectStore('revisions').put(entry)
-      },
+  private collectWrites(mutator: (writer: OfflineTransactionWriter) => unknown): PendingWrite[] {
+    const writes: PendingWrite[] = []
+    const result = mutator({
+      putEntity: (key, data, options = {}) => { writes.push({ kind: 'entity', key, data, options }) },
+      putAction: action => { writes.push({ kind: 'action', action }) },
+      putMedia: media => { writes.push({ kind: 'media', media }) },
+      deleteMedia: id => { writes.push({ kind: 'deleteMedia', id }) },
+      putRevision: (section, revision) => { writes.push({ kind: 'revision', section, revision }) },
+    })
+    if (result && typeof (result as unknown as Promise<unknown>).then === 'function') {
+      throw new TypeError('Offline transaction mutator must be synchronous')
     }
+    return writes
   }
 
-  private async finishTransaction(transaction: IDBTransaction, mutator: (writer: OfflineTransactionWriter) => unknown): Promise<void> {
-    try {
-      const result = mutator(this.transactionWriter(transaction))
-      if (result && typeof (result as unknown as Promise<unknown>).then === 'function') {
-        throw new TypeError('Offline transaction mutator must be synchronous')
+  private async prepareWrites(writes: PendingWrite[]): Promise<PreparedWrite[]> {
+    return Promise.all(writes.map(async write => {
+      if (write.kind === 'deleteMedia') return { kind: 'delete', store: 'media', id: write.id } as const
+      if (write.kind === 'action') return { kind: 'put', store: 'actions', value: await this.actionRecord(write.action) } as const
+      if (write.kind === 'media') return { kind: 'put', store: 'media', value: await this.mediaRecord(write.media) } as const
+      if (write.kind === 'revision') {
+        const value: RevisionRecord = { dbId: recordId(this.scope, write.section), scope: this.scope, section: write.section, revision: write.revision, bytes: valueBytes(write.revision), updatedAt: Date.now() }
+        return { kind: 'put', store: 'revisions', value } as const
       }
-    } catch (error) {
-      transaction.abort()
-      await transactionDone(transaction).catch(() => undefined)
-      throw error
+      const now = write.options.updatedAt ?? Date.now()
+      const data = await sealDesktopJson(write.data, { purpose: `offline-entity:${this.scope}:${write.key}` })
+      const value: EntityRecord = { dbId: recordId(this.scope, write.key), scope: this.scope, key: write.key, data, bytes: valueBytes(data), updatedAt: now, accessedAt: write.options.accessedAt ?? now }
+      return { kind: 'put', store: 'entities', value } as const
+    }))
+  }
+
+  private applyWrites(transaction: IDBTransaction, writes: PreparedWrite[]): void {
+    for (const write of writes) {
+      if (write.kind === 'delete') transaction.objectStore(write.store).delete(recordId(this.scope, write.id))
+      else transaction.objectStore(write.store).put(write.value)
     }
-    await transactionDone(transaction)
   }
 
   async transaction(mutator: (writer: OfflineTransactionWriter) => unknown): Promise<void> {
     if (!this.isGenerationCurrent()) throw new Error('Offline scope is no longer active')
-    await this.finishTransaction(this.db.transaction(['entities', 'actions', 'media', 'revisions'], 'readwrite'), mutator)
+    const writes = await this.prepareWrites(this.collectWrites(mutator))
+    if (!this.isGenerationCurrent()) throw new Error('Offline scope is no longer active')
+    const transaction = this.db.transaction(['entities', 'actions', 'media', 'revisions'], 'readwrite')
+    this.applyWrites(transaction, writes)
+    await transactionDone(transaction)
   }
 
   async transactionIfLease(owner: string, now: () => number, mutator: (writer: SyncTransactionWriter) => unknown): Promise<boolean> {
+    if (!this.isGenerationCurrent()) return false
+    const writes = await this.prepareWrites(this.collectWrites(mutator))
     if (!this.isGenerationCurrent()) return false
     const transaction = this.db.transaction(['meta', 'actions', 'media', 'revisions'], 'readwrite')
     const leaseRecord = await requestResult(transaction.objectStore('meta').get(recordId(this.scope, 'sync-lease'))) as MetaRecord | undefined
@@ -219,7 +303,8 @@ export class OfflineDb {
       await transactionDone(transaction)
       return false
     }
-    await this.finishTransaction(transaction, mutator)
+    this.applyWrites(transaction, writes)
+    await transactionDone(transaction)
     return true
   }
 
@@ -246,7 +331,12 @@ export class OfflineDb {
       transaction.objectStore('entities').put(record)
       await transactionDone(transaction)
     }
-    return record.data as T
+    try { return await unsealDesktopJson(record.data, { purpose: `offline-entity:${this.scope}:${key}` }) as T }
+    catch (error) {
+      if (error instanceof Error && error.message === 'desktop_storage_key_unavailable') return undefined
+      await this.deleteRecord('entities', key).catch(() => undefined)
+      return undefined
+    }
   }
 
   async putAction(action: OfflineAction): Promise<boolean> {
@@ -256,12 +346,14 @@ export class OfflineDb {
   }
   async putQueuedAction(action: OfflineAction, media?: OfflineMedia): Promise<OfflineAction | false> {
     if (!this.isGenerationCurrent()) return false
+    if (desktopRuntime()) return this.putDesktopQueuedAction(action, media)
     const transaction = this.db.transaction(media ? ['actions', 'meta', 'media'] : ['actions', 'meta'], 'readwrite')
     const actions = transaction.objectStore('actions')
     const meta = transaction.objectStore('meta')
     const existing = await requestResult(actions.get(recordId(this.scope, action.id))) as ActionRecord | undefined
     if (existing) {
-      const { dbId: _dbId, scope: _scope, bytes: _bytes, resource: _resource, ...stored } = existing
+      const { dbId: _dbId, scope: _scope, bytes: _bytes, resource: _resource, ...storedRecord } = existing
+      const stored = storedRecord as OfflineAction
       if (!queuedActionMatches(stored, action)) {
         await transactionDone(transaction)
         throw new Error('sync_payload_conflict')
@@ -277,7 +369,7 @@ export class OfflineDb {
             throw new Error('sync_payload_conflict')
           }
         } else if (!['confirmed', 'cancelled'].includes(stored.state)) {
-          mediaStore.put(this.mediaRecord(media))
+          mediaStore.put(this.plainMediaRecord(media))
         }
       }
       await transactionDone(transaction)
@@ -295,20 +387,75 @@ export class OfflineDb {
       action = { ...action, createdAt }
       meta.put({ dbId: id, scope: this.scope, key, value: createdAt, bytes: valueBytes(createdAt), updatedAt: Date.now() } satisfies MetaRecord)
     }
-    actions.put(this.actionRecord(action))
-    if (media) transaction.objectStore('media').put(this.mediaRecord(media))
+    actions.put(this.plainActionRecord(action))
+    if (media) transaction.objectStore('media').put(this.plainMediaRecord(media))
     await transactionDone(transaction)
     return this.isGenerationCurrent() ? action : false
+  }
+
+  private async putDesktopQueuedAction(action: OfflineAction, media?: OfflineMedia): Promise<OfflineAction | false> {
+    const prior = await this.getRecord<ActionRecord>('actions', action.id)
+    if (prior) return this.handleExistingDesktopAction(prior, action, media)
+    const reservation = await this.reserveDesktopActionOrder(action.id, action.createdAt)
+    if (reservation.existing) return this.handleExistingDesktopAction(reservation.existing, action, media)
+    action = { ...action, createdAt: reservation.createdAt }
+    const [actionRecord, mediaRecord] = await Promise.all([this.actionRecord(action), media ? this.mediaRecord(media) : Promise.resolve(undefined)])
+    if (!this.isGenerationCurrent()) return false
+    const transaction = this.db.transaction(mediaRecord ? ['actions', 'media'] : ['actions'], 'readwrite')
+    const actions = transaction.objectStore('actions')
+    const raced = await requestResult(actions.get(recordId(this.scope, action.id))) as ActionRecord | undefined
+    if (raced) {
+      await transactionDone(transaction)
+      return this.handleExistingDesktopAction(raced, action, media)
+    }
+    actions.put(actionRecord)
+    if (mediaRecord) transaction.objectStore('media').put(mediaRecord)
+    await transactionDone(transaction)
+    return this.isGenerationCurrent() ? action : false
+  }
+
+  private async reserveDesktopActionOrder(id: string, requested: number): Promise<{ createdAt: number; existing?: ActionRecord }> {
+    const transaction = this.db.transaction(['actions', 'meta'], 'readwrite')
+    const actions = transaction.objectStore('actions')
+    const existing = await requestResult(actions.get(recordId(this.scope, id))) as ActionRecord | undefined
+    if (existing) { await transactionDone(transaction); return { createdAt: existing.createdAt, existing } }
+    const meta = transaction.objectStore('meta')
+    const key = 'action-order'
+    const orderId = recordId(this.scope, key)
+    const saved = await requestResult(meta.get(orderId)) as MetaRecord | undefined
+    let latest = Number(saved?.value)
+    if (!Number.isFinite(latest)) {
+      const records = await requestResult(actions.index('scope').getAll(this.scope)) as ActionRecord[]
+      latest = records.reduce((max, item) => Math.max(max, item.createdAt), Number.NEGATIVE_INFINITY)
+    }
+    const createdAt = Math.max(requested, latest + 1)
+    meta.put({ dbId: orderId, scope: this.scope, key, value: createdAt, bytes: valueBytes(createdAt), updatedAt: Date.now() } satisfies MetaRecord)
+    await transactionDone(transaction)
+    return { createdAt }
+  }
+
+  private async handleExistingDesktopAction(record: ActionRecord, requested: OfflineAction, media?: OfflineMedia): Promise<OfflineAction | false> {
+    const stored = await this.decodeAction(record)
+    if (!queuedActionMatches(stored, requested)) throw new Error('sync_payload_conflict')
+    if (media) {
+      const priorMedia = await this.getRecord<MediaRecord>('media', media.id)
+      if (priorMedia) {
+        const storedMedia = await this.decodeMedia(priorMedia)
+        if (storedMedia.actionId !== media.actionId || storedMedia.issueKey !== media.issueKey || storedMedia.name !== media.name
+          || storedMedia.mimeType !== media.mimeType || storedMedia.sha256 !== media.sha256 || storedMedia.sizeBytes !== media.sizeBytes) throw new Error('sync_payload_conflict')
+      } else if (!['confirmed', 'cancelled'].includes(stored.state)) await this.putMedia(media)
+    }
+    return this.isGenerationCurrent() ? stored : false
   }
   async getAction(id: string): Promise<OfflineAction | undefined> {
     const record = await this.getRecord<ActionRecord>('actions', id)
     if (!record) return undefined
-    const { dbId: _dbId, scope: _scope, bytes: _bytes, resource: _resource, ...action } = record
-    return action
+    try { return await this.decodeAction(record) } catch { return undefined }
   }
   async listActions(): Promise<OfflineAction[]> {
     const records = await this.scopedRecords<ActionRecord>('actions')
-    return records.map(({ dbId: _dbId, scope: _scope, bytes: _bytes, resource: _resource, ...item }) => item)
+    const decoded = await Promise.all(records.map(record => this.decodeAction(record).catch(() => undefined)))
+    return decoded.filter((item): item is OfflineAction => item !== undefined)
   }
 
   async putMedia(media: OfflineMedia): Promise<boolean> {
@@ -319,12 +466,12 @@ export class OfflineDb {
   async getMedia(id: string): Promise<OfflineMedia | undefined> {
     const record = await this.getRecord<MediaRecord>('media', id)
     if (!record) return undefined
-    const { dbId: _dbId, scope: _scope, bytes: _bytes, ...media } = record
-    return media
+    try { return await this.decodeMedia(record) } catch { return undefined }
   }
   async listMedia(): Promise<OfflineMedia[]> {
     const records = await this.scopedRecords<MediaRecord>('media')
-    return records.map(({ dbId: _dbId, scope: _scope, bytes: _bytes, ...media }) => media)
+    const decoded = await Promise.all(records.map(record => this.decodeMedia(record).catch(() => undefined)))
+    return decoded.filter((item): item is OfflineMedia => item !== undefined)
   }
 
   async setRevision(section: string, revision: string): Promise<void> {
@@ -407,7 +554,7 @@ export class OfflineDb {
       ])
       const dependenciesOfPendingActions = new Set(actions
         .filter(item => item.state !== 'confirmed' && item.state !== 'cancelled')
-        .flatMap(item => item.dependencies))
+        .flatMap(item => item.dependencyIds ?? item.dependencies ?? []))
       const expiredEntities = entities.filter(item => now - item.updatedAt >= entityTtl)
       const expiredActions = actions.filter(item => item.state === 'confirmed'
         && !dependenciesOfPendingActions.has(item.id) && now - item.updatedAt >= confirmedTtl)
@@ -459,16 +606,70 @@ export class OfflineDb {
     this.db.close()
   }
 
-  private actionRecord(action: OfflineAction): ActionRecord {
-    return {
-      ...action,
-      dbId: recordId(this.scope, action.id), scope: this.scope,
-      resource: `${action.resourceType}:${action.resourceId}`,
-      bytes: valueBytes(action),
-    }
+  private plainActionRecord(action: OfflineAction): ActionRecord {
+    const common = { dbId: recordId(this.scope, action.id), scope: this.scope, resource: `${action.resourceType}:${action.resourceId}`, bytes: valueBytes(action) }
+    return { ...action, ...common }
   }
-  private mediaRecord(media: OfflineMedia): MediaRecord {
-    return { ...media, dbId: recordId(this.scope, media.id), scope: this.scope, bytes: media.blob.size + (media.originalBlob?.size ?? 0) + valueBytes({ ...media, blob: null, originalBlob: null }) }
+
+  private async actionRecord(action: OfflineAction): Promise<ActionRecord> {
+    if (!desktopRuntime()) return this.plainActionRecord(action)
+    const index = {
+      id: action.id, state: action.state, createdAt: action.createdAt, updatedAt: action.updatedAt,
+      baseRevision: action.baseRevision, dependencyIds: [...action.dependencies],
+    }
+    const protectedData = await sealDesktopJson(action, { purpose: `offline-action:${this.scope}:${action.id}` })
+    const common = { dbId: recordId(this.scope, action.id), scope: this.scope, resource: `${action.resourceType}:${action.resourceId}` }
+    return { ...index, ...common, protectedData, bytes: valueBytes(protectedData) + valueBytes(index) }
+  }
+
+  private async decodeAction(record: ActionRecord): Promise<OfflineAction> {
+    const { dbId: _dbId, scope: _scope, bytes: _bytes, resource: _resource, protectedData, dependencyIds: _dependencyIds, ...plain } = record
+    if (!desktopRuntime()) return plain as OfflineAction
+    if (injectedActionFields.some(field => Object.prototype.hasOwnProperty.call(record, field))) throw new Error('desktop_action_invalid')
+    const protectedAction = await unsealDesktopJson(protectedData, { purpose: `offline-action:${this.scope}:${record.id}` })
+    if (!validAction(protectedAction)) throw new Error('desktop_action_invalid')
+    if (record.id !== protectedAction.id || record.state !== protectedAction.state
+      || record.createdAt !== protectedAction.createdAt || record.updatedAt !== protectedAction.updatedAt
+      || record.baseRevision !== protectedAction.baseRevision
+      || JSON.stringify(record.dependencyIds) !== JSON.stringify(protectedAction.dependencies)
+      || record.resource !== `${protectedAction.resourceType}:${protectedAction.resourceId}`) throw new Error('desktop_action_invalid')
+    return protectedAction
+  }
+
+  private plainMediaRecord(media: OfflineMedia): MediaRecord {
+    const bytes = media.blob.size + (media.originalBlob?.size ?? 0) + valueBytes({ ...media, blob: null, originalBlob: null })
+    return { ...media, dbId: recordId(this.scope, media.id), scope: this.scope, bytes }
+  }
+
+  private async mediaRecord(media: OfflineMedia): Promise<MediaRecord> {
+    if (!desktopRuntime()) return this.plainMediaRecord(media)
+    const protectedData = await sealDesktopJson({ ...media,
+      blob: await blobBase64(media.blob),
+      originalBlob: media.originalBlob ? await blobBase64(media.originalBlob) : null,
+    }, { purpose: `offline-media:${this.scope}:${media.id}` })
+    const index = {
+      id: media.id, actionId: media.actionId, state: media.state, sizeBytes: media.sizeBytes,
+      createdAt: media.createdAt, updatedAt: media.updatedAt,
+    }
+    return { ...index, dbId: recordId(this.scope, media.id), scope: this.scope, bytes: valueBytes(protectedData) + valueBytes(index), protectedData }
+  }
+
+  private async decodeMedia(record: MediaRecord): Promise<OfflineMedia> {
+    const { dbId: _dbId, scope: _scope, bytes: _bytes, protectedData, ...plain } = record
+    if (!desktopRuntime()) return plain as OfflineMedia
+    if (injectedMediaFields.some(field => Object.prototype.hasOwnProperty.call(record, field))) throw new Error('desktop_media_invalid')
+    const protectedMedia = await unsealDesktopJson(protectedData, { purpose: `offline-media:${this.scope}:${record.id}` })
+    if (!validProtectedMedia(protectedMedia)) throw new Error('desktop_media_invalid')
+    if (record.id !== protectedMedia.id || record.actionId !== protectedMedia.actionId || record.state !== protectedMedia.state
+      || record.sizeBytes !== protectedMedia.sizeBytes || record.createdAt !== protectedMedia.createdAt
+      || record.updatedAt !== protectedMedia.updatedAt) throw new Error('desktop_media_invalid')
+    const blob = base64Blob(protectedMedia.blob, protectedMedia.mimeType)
+    if (blob.size !== protectedMedia.sizeBytes) throw new Error('desktop_media_invalid')
+    const { originalBlob, ...metadata } = protectedMedia
+    return {
+      ...metadata, blob,
+      ...(typeof originalBlob === 'string' ? { originalBlob: base64Blob(originalBlob, protectedMedia.mimeType) } : {}),
+    }
   }
   private async getRecord<T>(store: StoreName, id: string): Promise<T | undefined> {
     if (!this.isGenerationCurrent()) return undefined

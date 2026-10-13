@@ -58,11 +58,16 @@ it('keeps the login active after invalid TOTP and clears both secret fields', as
 
 it('clears terminal output when online identity changes or is revoked', async () => {
   const api = client({ list: vi.fn().mockResolvedValue([maintenance]) })
-  const loadCurrentUser = vi.fn()
-    .mockResolvedValueOnce({ id: 7, username: 'owner', role: 'royal', access_status: 'approved' })
-    .mockRejectedValueOnce(new ApiError(401, null))
+  // Revoke after observing the mounted output. A 25 ms wall-clock race made
+  // this assertion examine an already-detached element under parallel load.
+  let revoked = false
+  const loadCurrentUser = vi.fn(async () => {
+    if (revoked) throw new ApiError(401, null)
+    return { id: 7, username: 'owner', role: 'royal', access_status: 'approved' }
+  })
   render(<TerminalPage apiClient={api} connectionFactory={connectionFactory} loadCurrentUser={loadCurrentUser} identityPollMs={25} />)
   expect(await screen.findByTestId('viewport-maintenance')).toBeVisible()
+  revoked = true
   await waitFor(() => expect(screen.queryByTestId('viewport-maintenance')).toBeNull())
   expect(screen.getByText('Сессия входа завершена. Вернитесь на сайт и войдите снова.')).toBeVisible()
 })

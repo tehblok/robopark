@@ -71,8 +71,8 @@ const user = (role: 'admin' | 'royal'): User => ({
 const reservationActor = user('royal')
 const readOperationReservation = () => readScopedOperationReservation(reservationActor)
 const writeOperationReservation = (value: Parameters<typeof writeScopedOperationReservation>[1]) => writeScopedOperationReservation(reservationActor, value)
-function tree(role: 'admin' | 'royal', api = client()) {
-  return <MemoryRouter><AuthContext.Provider value={{ user: user(role), loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><SystemPage client={api} /></AuthContext.Provider></MemoryRouter>
+function tree(role: 'admin' | 'royal', api = client(), desktop = false) {
+  return <MemoryRouter><AuthContext.Provider value={{ user: user(role), loading: false, login: vi.fn(), logout: vi.fn(), refreshUser: vi.fn() }}><SystemPage client={api} desktop={desktop} /></AuthContext.Provider></MemoryRouter>
 }
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); localStorage.clear() })
@@ -84,6 +84,12 @@ describe('SystemPage', () => {
     expect(link).toHaveAttribute('href', '/terminal.html')
     view.rerender(tree('admin'))
     await waitFor(() => expect(screen.queryByRole('link', { name: 'Терминал хоста' })).not.toBeInTheDocument())
+  })
+
+  it('clearly disables the WebSocket terminal in the desktop loopback workspace', async () => {
+    render(tree('royal', client(), true))
+    expect(await screen.findByText('Терминал доступен только на серверном сайте при подключённой сети.')).toBeVisible()
+    expect(screen.queryByRole('link', { name: 'Терминал хоста' })).not.toBeInTheDocument()
   })
 
   it('names host source failures instead of presenting missing disk and agent readings as empty data', async () => {

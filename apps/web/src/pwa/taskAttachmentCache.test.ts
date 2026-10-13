@@ -7,6 +7,7 @@ import {
   loadTaskAttachment,
   releaseTaskAttachment,
 } from './taskAttachmentCache'
+import { resetDesktopStorageKeyForTests, setDesktopRuntimeForTests } from './desktopRuntime'
 
 const attachment = (id: number): TrackerAttachment => ({
   id: String(id),
@@ -28,7 +29,31 @@ beforeEach(() => {
 
 afterEach(async () => {
   await clearTaskAttachmentCache()
+  setDesktopRuntimeForTests(undefined)
+  resetDesktopStorageKeyForTests()
   vi.unstubAllGlobals()
+})
+
+it('encrypts cached attachment bytes in the desktop database', async () => {
+  setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+  const key = crypto.getRandomValues(new Uint8Array(32))
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ key: btoa(String.fromCharCode(...key)) }), { status: 200 })))
+  await activateTaskAttachmentCache(7)
+  releaseTaskAttachment(await loadTaskAttachment(attachment(1), async () => new Blob(['photo'], { type: 'image/jpeg' }), authorize))
+
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open('robopark-task-attachment-cache', 1)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  const records = await new Promise<unknown[]>((resolve, reject) => {
+    const request = database.transaction('attachments').objectStore('attachments').getAll()
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  database.close()
+  expect(JSON.stringify(records)).not.toContain('cGhvdG8=')
+  expect(records).toHaveLength(1)
 })
 
 it('evicts the least recently used attachment when a 65th entry is cached', async () => {

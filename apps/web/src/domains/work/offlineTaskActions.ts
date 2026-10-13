@@ -1,5 +1,6 @@
 import { repairFieldsPayload, type TaskRepairFields, type TaskTimelineItem } from '../../api'
 import type { OfflineActionInput } from '../../pwa/syncEngine'
+import type { OfflineAction } from '../../pwa/offlineTypes'
 
 type ActionBase = {
   issueKey: string
@@ -74,6 +75,31 @@ export function buildHandoffAction(base: ActionBase & {
       attachments: [],
     },
   }
+}
+
+// The durable command is the source of truth after a cold start; the cached
+// timeline may predate an optimistic update or have been evicted independently.
+export function mergeQueuedTaskTimeline(items: TaskTimelineItem[], actions: OfflineAction[],
+  issueKey: string, parkId: number, author: string): TaskTimelineItem[] {
+  const relevant = actions.filter(item => item.resourceType === 'tracker_issue' && item.resourceId === issueKey
+    && item.payload && typeof item.payload === 'object'
+    && (item.payload as Record<string, unknown>).park_id === parkId
+    && ['comment', 'handoff'].includes(item.action))
+    .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+  const ids = new Set(relevant.map(item => `local:${item.id}`))
+  const result = items.filter(item => !ids.has(item.id))
+  for (const item of relevant) {
+    if (!['local', 'ready', 'sending'].includes(item.state)) continue
+    const payload = item.payload as Record<string, unknown>
+    const base = { issueKey, parkId, id: item.id, now: item.createdAt }
+    if (item.action === 'comment' && typeof payload.text === 'string' && payload.text.trim()) {
+      result.push(buildCommentAction({ ...base, author, text: payload.text }).timelineItem)
+    } else if (item.action === 'handoff' && typeof payload.assignee === 'string' && payload.assignee.trim()
+      && typeof payload.reason === 'string' && payload.reason.trim()) {
+      result.push(buildHandoffAction({ ...base, assignee: payload.assignee, reason: payload.reason }).timelineItem)
+    }
+  }
+  return result
 }
 
 export function buildInventoryWriteoffAction(base: ActionBase & { partId: number, quantity: string }): OfflineActionInput {

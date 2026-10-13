@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { IDBFactory } from 'fake-indexeddb'
 import type { User } from '../../api'
 import { clearProtectedBrowserStorage } from './protectedBrowserStorage'
-import { OFFLINE_IDENTITY_KEY, OFFLINE_IDENTITY_MAX_AGE_MS, readOfflineIdentity, writeOfflineIdentity } from './offlineIdentity'
+import { flushDesktopOfflineIdentityForTests, hydrateDesktopOfflineIdentity, OFFLINE_IDENTITY_KEY, OFFLINE_IDENTITY_MAX_AGE_MS, readOfflineIdentity, writeOfflineIdentity } from './offlineIdentity'
+import { resetDesktopStorageKeyForTests, setDesktopRuntimeForTests } from '../../pwa/desktopRuntime'
 
 const identity: User = { id: 7, username: 'offline-test', role: 'mechanic', access_status: 'approved',
   permissions: ['tracker.read'], parks: [{ id: 2, name: 'Test park', tag: 'test', timezone: 'Europe/Moscow', is_active: true }] }
 
-afterEach(() => { localStorage.clear(); vi.restoreAllMocks(); vi.useRealTimers() })
+afterEach(() => { localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); setDesktopRuntimeForTests(undefined); resetDesktopStorageKeyForTests() })
 
 describe('previously verified offline identity', () => {
   it.each([{ timezone: 'Invalid/Timezone' }, { tracker_queue: {} }, { is_active: 'yes' }])('rejects invalid cached park metadata', patch => {
@@ -18,6 +20,17 @@ describe('previously verified offline identity', () => {
   it('whitelists identity metadata without credentials or unrelated fields', () => {
     writeOfflineIdentity({ ...identity, token: 'must-not-persist', password: 'must-not-persist' } as User)
     expect(localStorage.getItem(OFFLINE_IDENTITY_KEY)).not.toContain('must-not-persist')
+    expect(readOfflineIdentity()).toMatchObject(identity)
+  })
+  it('stores the desktop offline identity encrypted and restores it before a cold start', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+    const key = crypto.getRandomValues(new Uint8Array(32))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ key: btoa(String.fromCharCode(...key)) }), { status: 200 })))
+    writeOfflineIdentity({ ...identity, token: 'never-persist' } as User)
+    await flushDesktopOfflineIdentityForTests()
+    expect(localStorage.getItem(OFFLINE_IDENTITY_KEY)).toBeNull()
+    await hydrateDesktopOfflineIdentity()
     expect(readOfflineIdentity()).toMatchObject(identity)
   })
   it('expires after 72 hours, and offline reads never renew verification', () => {

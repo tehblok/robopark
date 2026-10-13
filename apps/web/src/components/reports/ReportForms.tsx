@@ -7,6 +7,7 @@ import { ru } from '../../i18n/ru'
 import { Alert } from '../PageShell'
 import { Spinner } from '../ui/Feedback'
 import { FileField } from '../../design-system/inputs/FileField'
+import { desktopRuntime } from '../../pwa/desktopRuntime'
 
 type ReportFormsProps = {
   apiClient?: ReportsApiClient
@@ -38,6 +39,8 @@ const EMPTY_DRAFT: ReportDraft = {
 
 function loadDraft(principalId: number, parkId: number, ownerKey: string): ReportDraft {
   try {
+    // Desktop restores its complete encrypted draft from IndexedDB below.
+    if (desktopRuntime()) return EMPTY_DRAFT
     const stored = localStorage.getItem(reportDraftKey(principalId, parkId))
     if (!stored) return EMPTY_DRAFT
     const parsed = JSON.parse(stored) as Partial<ReportDraft>
@@ -58,6 +61,7 @@ function loadDraft(principalId: number, parkId: number, ownerKey: string): Repor
 function saveDraft(principalId: number, parkId: number, draft: ReportDraft) {
   try {
     const key = reportDraftKey(principalId, parkId)
+    if (desktopRuntime()) { localStorage.removeItem(key); return }
     const hasContent = draft.activeForm !== 'question'
       || Boolean(draft.trackerKey || draft.title || draft.body || draft.createdReportId)
     if (hasContent) localStorage.setItem(key, JSON.stringify(draft))

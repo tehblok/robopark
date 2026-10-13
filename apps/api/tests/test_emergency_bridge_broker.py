@@ -5,6 +5,7 @@ import json
 import math
 import threading
 import time
+import zlib
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -12,16 +13,20 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from starlette.websockets import WebSocketDisconnect
 
+from conftest import role_id_for
 from robopark_api.config import Settings
 from robopark_api.emergency_bridge import (
+    _candidate_device_ids,
+    _decode_result_payload,
     _job_authority_valid,
     _validated_robot_payload_size,
     create_broker_app,
 )
-from robopark_api.models import AgentDevice
+from robopark_api.models import AccessStatus, AgentDevice, AuditLog, User
+from robopark_api.security import hash_password
 from robopark_api.services import emergency_scope
 from robopark_api.services.emergency_bridge_auth import body_signature
 from robopark_api.services.emergency_bridge_broker import BrokerRegistry, Channel
@@ -125,6 +130,170 @@ def test_selector_reports_zero_or_all_busy():
     assert registry.choose({"busy"}) is None
 
 
+def test_selector_distributes_equal_work_across_twelve_and_one_hundred_agents():
+    async def scenario(size: int):
+        registry = BrokerRegistry(max_connections=100)
+        devices = [_channel(f"mac-{index:03d}", 20) for index in range(size)]
+        for channel in devices:
+            registry.replace(channel)
+        selected = []
+        for _ in range(size * 2):
+            channel = registry.choose({item.device_id for item in devices})
+            assert channel is not None
+            job = registry.new_pending(channel, "VIN")
+            selected.append(channel.device_id)
+            registry.finish(channel, job)
+            job.future.cancel()
+        assert set(selected) == {item.device_id for item in devices}
+        assert max(selected.count(item.device_id) for item in devices) <= 3
+
+    asyncio.run(scenario(12))
+    asyncio.run(scenario(100))
+
+
+def test_selector_respects_pause_capacity_load_and_aging():
+    async def scenario():
+        registry = BrokerRegistry(max_connections=100)
+        paused = _channel("paused", 1)
+        paused.paused = True
+        saturated = _channel("saturated", 1, inflight=1)
+        saturated.capacity = 1
+        queued = _channel("queued", 1)
+        queued.capacity = 1
+        queued.queued = 1
+        loaded = _channel("loaded", 5)
+        loaded.reported_load = 1.0
+        available = _channel("available", 20)
+        for channel in (paused, saturated, queued, loaded, available):
+            registry.replace(channel)
+        assert (
+            registry.choose({"paused", "saturated", "queued", "loaded", "available"}) is available
+        )
+
+        # An agent that has waited is eventually selected despite moderate latency.
+        available.virtual_finish = 10_000
+        loaded.reported_load = 0.5
+        loaded.last_selected = time.monotonic() - 120
+        assert registry.choose({"loaded", "available"}) is loaded
+
+    asyncio.run(scenario())
+
+
+def test_candidate_filter_keeps_later_device_after_multiple_vin_denials(
+    db_engine, db_session, seed_admin, monkeypatch
+):
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="bridge-secret",
+        emergency_bridge_enabled=True,
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    owners = []
+    devices = []
+    for index in range(5):
+        owner = User(
+            username=f"vin-scope-owner-{index}",
+            password_hash=hash_password("secret"),
+            role_id=role_id_for(db_session, "operator"),
+            access_status=AccessStatus.approved.value,
+            is_active=True,
+        )
+        db_session.add(owner)
+        db_session.flush()
+        device = AgentDevice(
+            id=str(uuid4()),
+            owner_user_id=owner.id,
+            label=f"Mac {index}",
+            public_key_x963=b"\x04" + bytes([index]) * 64,
+            environment="production",
+            instance_id=str(settings.robopark_instance_id),
+            approved_at=datetime.now(UTC),
+            approved_by_user_id=owner.id,
+        )
+        db_session.add(device)
+        owners.append(owner)
+        devices.append(device)
+    db_session.commit()
+    allowed_owner_id = owners[-1].id
+    monkeypatch.setattr(
+        emergency_scope,
+        "vin_allowed_for_user",
+        lambda _db, user, _vin: user.id in {seed_admin.id, allowed_owner_id},
+    )
+
+    eligible = _candidate_device_ids(
+        sessionmaker(bind=db_engine, future=True),
+        settings,
+        seed_admin.id,
+        "YASADR00000000447",
+        {device.id for device in devices},
+    )
+
+    assert eligible == {devices[-1].id}
+
+
+def test_managed_probe_budget_is_global_bounded_and_success_postpones_probe(monkeypatch):
+    now = 1_000.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    registry = BrokerRegistry(max_connections=100)
+    channels = [_channel(f"mac-{index}", 10) for index in range(4)]
+    for channel in channels:
+        channel.supports = {"managed_probes"}
+        channel.probe_available = True
+        channel.last_upstream_success = now - 121
+        registry.replace(channel)
+
+    assert registry.reserve_probe(channels[0], now=now) is True
+    assert registry.reserve_probe(channels[1], now=now) is True
+    assert registry.reserve_probe(channels[2], now=now) is False
+    registry.record_success(channels[0], encoded_bytes=100, decoded_bytes=250, now=now)
+    assert registry.probe_due(channels[0], now=now + 59) is False
+    assert registry.probe_due(channels[0], now=now + 60) is True
+
+
+def test_raw_deflate_result_decodes_with_exact_bounds_and_schema():
+    vin = "YASADR00000000447"
+    payload = {"vin": vin, "timestamp": 1_700_000_000_000, "isOnline": True}
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    compressor = zlib.compressobj(wbits=-15)
+    encoded = compressor.compress(raw) + compressor.flush()
+    message = {
+        "ok": True,
+        "encoding": "deflate-raw",
+        "payload_base64": base64.b64encode(encoded).decode(),
+        "payload_bytes": len(raw),
+        "encoded_bytes": len(encoded),
+    }
+
+    decoded = _decode_result_payload(message, vin, now_ms=2_000_000_000_000)
+    assert decoded == (payload, len(encoded), len(raw))
+
+
+def test_raw_deflate_rejects_corruption_bombs_and_size_lies():
+    vin = "YASADR00000000447"
+    raw = json.dumps({"vin": vin, "timestamp": 1_700_000_000_000}).encode()
+    compressor = zlib.compressobj(wbits=-15)
+    encoded = compressor.compress(raw) + compressor.flush()
+
+    def envelope(data: bytes, decoded_size: int):
+        return {
+            "ok": True,
+            "encoding": "deflate-raw",
+            "payload_base64": base64.b64encode(data).decode(),
+            "payload_bytes": decoded_size,
+            "encoded_bytes": len(data),
+        }
+
+    assert _decode_result_payload(envelope(encoded[:-1], len(raw)), vin) is None
+    assert _decode_result_payload(envelope(encoded, len(raw) + 1), vin) is None
+
+    bomb_raw = b"{" + b'"x":"' + b"a" * (2 * 1024 * 1024) + b'"}'
+    compressor = zlib.compressobj(wbits=-15)
+    bomb = compressor.compress(bomb_raw) + compressor.flush()
+    assert _decode_result_payload(envelope(bomb, len(bomb_raw)), vin) is None
+
+
 def test_robot_payload_validation_accepts_real_shape_and_rejects_untrusted_structures():
     vin = "YASADR00000000447"
     valid = {
@@ -212,21 +381,29 @@ def test_same_device_generation_and_vin_share_one_inflight_load():
     asyncio.run(scenario())
 
 
-def test_global_singleflight_is_keyed_by_requester_and_vin():
+def test_global_singleflight_shares_same_vin_across_requesters():
     async def scenario():
         registry = BrokerRegistry(max_connections=100)
-        leader, is_leader = registry.begin_request(7, "VIN1")
-        follower, is_follower_leader = registry.begin_request(7, "VIN1")
-        other, is_other_leader = registry.begin_request(8, "VIN1")
+        leader, is_leader = registry.begin_request("VIN1")
+        follower, is_follower_leader = registry.begin_request("VIN1")
+        other, is_other_leader = registry.begin_request("VIN1")
         assert is_leader is True
         assert is_follower_leader is False
         assert follower is leader
-        assert is_other_leader is True
-        registry.finish_request(7, "VIN1", result=({"value": 1}, "mac"))
+        assert is_other_leader is False
+        assert other is leader
+        registry.finish_request("VIN1", result=({"value": 1}, "mac"))
         assert await follower == ({"value": 1}, "mac")
-        other.cancel()
 
     asyncio.run(scenario())
+
+
+def test_shared_vin_cache_keeps_source_for_authority_recheck():
+    registry = BrokerRegistry(max_connections=100, cache_ttl_seconds=3)
+    registry.shared_cache_put("VIN1", {"value": 1}, source_device_id="source-mac")
+
+    assert registry.shared_cache_get("VIN1") == ({"value": 1}, "source-mac")
+    assert registry.shared_cache_get("VIN2") is None
 
 
 def test_cache_evicts_by_serialized_byte_budget():
@@ -254,6 +431,38 @@ def test_pending_jobs_have_a_global_bound():
         job.future.cancel()
 
     asyncio.run(scenario())
+
+
+def test_request_admission_bounds_global_rate_and_per_requester_concurrency(monkeypatch):
+    now = 500.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    registry = BrokerRegistry(max_connections=100)
+
+    assert all(registry.admit_request(7, now=now) for _ in range(16))
+    assert registry.admit_request(7, now=now) is False
+    assert registry.admit_request(8, now=now) is True
+    for _ in range(16):
+        registry.release_request(7)
+    assert registry.admit_request(7, now=now) is True
+    assert registry.metrics["rejected"] == 1
+
+
+def test_corporate_upstream_budget_caps_hundred_unique_dispatches_at_eight(monkeypatch):
+    now = 700.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    registry = BrokerRegistry(max_connections=100, upstream_reads_per_second=8)
+    channels = [_channel(f"mac-{index:03d}", 10) for index in range(100)]
+
+    granted = [
+        channel.device_id
+        for channel in channels
+        if registry.try_reserve_upstream(channel, kind="job", now=now)
+    ]
+
+    assert len(granted) == 8
+    assert registry.metrics["upstream_dispatches"] == 8
+    assert registry.metrics["upstream_backpressure"] == 92
+    assert sum(channel.upstream_dispatches for channel in channels) == 8
 
 
 def test_pending_overflow_clears_device_singleflight(db_engine, db_session, seed_admin):
@@ -398,15 +607,15 @@ def test_device_singleflight_denial_does_not_send_replacement_job(
     channel.websocket = socket
     registry.replace(channel)
     follower_waiting = threading.Event()
-    original_begin_load = registry.begin_load
+    original_begin_request = registry.begin_request
 
-    def tracked_begin_load(*args, **kwargs):
-        result = original_begin_load(*args, **kwargs)
+    def tracked_begin_request(*args, **kwargs):
+        result = original_begin_request(*args, **kwargs)
         if result[1] is False:
             follower_waiting.set()
         return result
 
-    registry.begin_load = tracked_begin_load
+    registry.begin_request = tracked_begin_request
 
     def signed_request(user_id: int, nonce: str) -> tuple[bytes, dict[str, str]]:
         body = json.dumps(
@@ -453,7 +662,7 @@ def test_device_singleflight_denial_does_not_send_replacement_job(
 
     assert first_response.status_code == 200
     assert second_response.status_code == 503
-    assert second_response.json()["detail"] == "upstream_failed"
+    assert second_response.json()["detail"] == "no_eligible_agent"
     assert len(socket.sent) == 1
 
 
@@ -504,9 +713,40 @@ def test_websocket_authenticates_registered_p256_device(db_engine, db_session, s
         ready = ws.receive_json()
         assert ready["type"] == "ready"
         assert ready["max_inflight"] == 2
+        assert ready["supports"] == ["raw_deflate", "managed_probes"]
+        ws.send_json(
+            {
+                "type": "heartbeat",
+                "generation": ready["generation"],
+                "ready": True,
+                "latency_ms": 20,
+                "capacity": 2,
+                "active_jobs": 0,
+                "load": 0.1,
+                "paused": False,
+                "power": "ac",
+                "supports": ["raw_deflate", "managed_probes"],
+                "probe_available": True,
+            }
+        )
+        probe = ws.receive_json()
+        assert probe["type"] == "probe"
+        assert probe["operation"] == "emergency_readiness"
+        assert probe["timeout_ms"] == 10_000
+        ws.send_json(
+            {
+                "type": "probe_result",
+                "generation": ready["generation"],
+                "probe_id": probe["probe_id"],
+                "ready": True,
+                "latency_ms": 18,
+            }
+        )
 
 
-def test_pending_device_cannot_open_bridge(db_engine, db_session, seed_admin):
+def test_legacy_pending_device_of_approved_account_is_trusted_on_bridge_login(
+    db_engine, db_session, seed_admin
+):
     private_key = ec.generate_private_key(ec.SECP256R1())
     device = AgentDevice(
         id=str(uuid4()),
@@ -549,12 +789,65 @@ def test_pending_device_cannot_open_bridge(db_engine, db_session, seed_admin):
                 ).decode(),
             }
         )
-        try:
-            ws.receive_json()
-        except WebSocketDisconnect:
-            pass
-        else:
-            raise AssertionError("pending device must not become ready")
+        ready = ws.receive_json()
+        assert ready["type"] == "ready"
+
+    db_session.expire_all()
+    trusted = db_session.get(AgentDevice, device.id)
+    assert trusted.approved_at is not None
+    assert trusted.approved_by_user_id == seed_admin.id
+    audit_entry = db_session.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "agent_device.auto_trusted", AuditLog.target_id == device.id
+        )
+    )
+    assert audit_entry is not None
+    assert audit_entry.actor_user_id == seed_admin.id
+
+
+def test_expired_managed_probe_is_released_and_counted(monkeypatch):
+    now = 1_000.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    registry = BrokerRegistry(max_connections=100)
+    channel = _channel("mac", 10)
+    channel.supports = {"managed_probes"}
+    channel.probe_available = True
+    registry.replace(channel)
+    assert registry.reserve_probe(channel, now=now)
+    assert channel.probe_inflight
+
+    assert registry.probe_due(channel, now=now + 11) is False
+    assert channel.probe_inflight is False
+    assert channel.probes_failed == 1
+
+
+def test_probe_scheduler_order_serves_one_hundred_agents_within_budget(monkeypatch):
+    now = 1_000.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    registry = BrokerRegistry(max_connections=100)
+    channels = [_channel(f"mac-{index:03d}", 10) for index in range(100)]
+    for channel in channels:
+        channel.supports = {"managed_probes"}
+        channel.probe_available = True
+        channel.last_upstream_success = now - 121
+        registry.replace(channel)
+
+    served = set()
+    for tick in range(101):
+        tick_now = now + tick * 0.5
+        for channel in registry.due_probe_channels(now=tick_now):
+            if not registry.reserve_probe(channel, now=tick_now):
+                continue
+            served.add(channel.device_id)
+            assert registry.finish_probe(
+                channel,
+                probe_id=channel.probe_id or "",
+                ready=True,
+                latency_ms=10,
+                now=tick_now,
+            )
+
+    assert served == {channel.device_id for channel in channels}
 
 
 def test_internal_rpc_requires_fresh_one_use_hmac(db_engine, seed_admin):
@@ -591,6 +884,110 @@ def test_internal_rpc_requires_fresh_one_use_hmac(db_engine, seed_admin):
 
     assert first.status_code == 503
     assert replay.status_code == 401
+
+
+def test_private_pool_status_is_filtered_for_owner_and_aggregates_without_payloads(
+    db_engine, db_session, seed_admin, seed_royal
+):
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="bridge-secret",
+        emergency_bridge_enabled=True,
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    devices = []
+    for owner, label in ((seed_admin, "Admin Mac"), (seed_royal, "Royal Mac")):
+        device = AgentDevice(
+            id=str(uuid4()),
+            owner_user_id=owner.id,
+            label=label,
+            public_key_x963=b"\x04" + b"x" * 64,
+            environment="production",
+            instance_id=str(settings.robopark_instance_id),
+            approved_at=datetime.now(UTC),
+            approved_by_user_id=owner.id,
+        )
+        db_session.add(device)
+        devices.append(device)
+    db_session.commit()
+    app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
+    channel = _channel(devices[0].id, 12)
+    channel.owner_user_id = seed_admin.id
+    channel.requests = 4
+    channel.completed = 3
+    channel.encoded_bytes = 100
+    channel.decoded_bytes = 250
+    channel.upstream_dispatches = 3
+    channel.upstream_backpressure = 1
+    app.state.registry.replace(channel)
+
+    body = json.dumps(
+        {"requester_user_id": seed_admin.id}, separators=(",", ":"), sort_keys=True
+    ).encode()
+    timestamp = str(int(time.time()))
+    nonce = "pool-status"
+    headers = {
+        "X-Robopark-Timestamp": timestamp,
+        "X-Robopark-Nonce": nonce,
+        "X-Robopark-Signature": body_signature(settings.secret_key, timestamp, nonce, body),
+        "Content-Type": "application/json",
+    }
+    with TestClient(app) as client:
+        response = client.post("/internal/v1/pool-status", content=body, headers=headers)
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["scope"] == "all"
+    assert {item["label"] for item in result["devices"]} == {"Admin Mac", "Royal Mac"}
+    assert result["summary"]["connected"] == 1
+    assert result["summary"]["requests"] == 4
+    assert result["summary"]["encoded_bytes"] == 100
+    assert result["summary"]["upstream_dispatches"] == 3
+    assert result["summary"]["upstream_backpressure"] == 1
+    assert "payload" not in json.dumps(result).lower()
+
+    operator = User(
+        username="pool-operator",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(operator)
+    db_session.flush()
+    operator_device = AgentDevice(
+        id=str(uuid4()),
+        owner_user_id=operator.id,
+        label="Operator Mac",
+        public_key_x963=b"\x04" + b"x" * 64,
+        environment="production",
+        instance_id=str(settings.robopark_instance_id),
+        approved_at=datetime.now(UTC),
+        approved_by_user_id=operator.id,
+    )
+    db_session.add(operator_device)
+    db_session.commit()
+    operator_body = json.dumps(
+        {"requester_user_id": operator.id}, separators=(",", ":"), sort_keys=True
+    ).encode()
+    operator_nonce = "pool-status-operator"
+    operator_timestamp = str(int(time.time()))
+    operator_headers = {
+        "X-Robopark-Timestamp": operator_timestamp,
+        "X-Robopark-Nonce": operator_nonce,
+        "X-Robopark-Signature": body_signature(
+            settings.secret_key, operator_timestamp, operator_nonce, operator_body
+        ),
+        "Content-Type": "application/json",
+    }
+    with TestClient(app) as client:
+        own_response = client.post(
+            "/internal/v1/pool-status", content=operator_body, headers=operator_headers
+        )
+    assert own_response.status_code == 200
+    assert own_response.json()["scope"] == "own"
+    assert [item["id"] for item in own_response.json()["devices"]] == [operator_device.id]
 
 
 def test_result_authority_rechecks_requester_and_source(

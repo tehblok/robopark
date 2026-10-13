@@ -91,3 +91,35 @@ def test_deployment_signature_binds_environment_instance_and_origin(tmp_path):
     assert profile["origin"] == "https://test.example"
     assert profile["environment"] == "test"
     assert profile["purpose"] == "robopark-deployment-v1"
+
+
+def test_workspace_bundle_contains_verified_assets_and_source_identity(tmp_path):
+    import hashlib
+
+    module = builder()
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text('<head></head><script src="/assets/app.js"></script>')
+    (dist / "assets/app.js").write_text('console.log("offline")')
+    target = tmp_path / "workspace"
+    result = module.stage_workspace(dist, target, version="0.2.0-rc.44", commit="a" * 40)
+    assert result["version"] == "0.2.0-rc.44"
+    assert result["source_commit"] == "a" * 40
+    assert (target / "index.html").read_bytes() == (dist / "index.html").read_bytes()
+    assert result["files"]["assets/app.js"]["sha256"] == hashlib.sha256((target / "assets/app.js").read_bytes()).hexdigest()
+    assert json.loads((target / "workspace-manifest.json").read_text()) == result
+
+
+def test_workspace_bundle_rejects_missing_assets_and_symlink(tmp_path):
+    import pytest
+
+    module = builder()
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text('<script src="/assets/missing.js"></script>')
+    with pytest.raises(ValueError, match="workspace_entry_asset_missing"):
+        module.stage_workspace(dist, tmp_path / "first", version="1.0.0", commit="a" * 40)
+    (dist / "index.html").write_text('<head></head>')
+    (dist / "outside.js").symlink_to(tmp_path / "private.key")
+    with pytest.raises(ValueError, match="workspace_symlink"):
+        module.stage_workspace(dist, tmp_path / "second", version="1.0.0", commit="a" * 40)

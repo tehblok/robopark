@@ -448,6 +448,40 @@ export type MediaUploadSession = {
   status: 'active' | 'reinitialized' | 'completed'
 }
 export type MediaUploadComplete = { upload_id: string, media_id: string, completed: true }
+export type AgentPoolDevice = {
+  id: string
+  label: string
+  status: 'ready' | 'busy' | 'paused' | 'stale' | 'offline'
+  connected: boolean
+  ready: boolean
+  capacity: number
+  inflight: number
+  queued: number
+  load: number
+  latency_ms: number | null
+  power: 'ac' | 'battery' | 'low_power' | 'unknown'
+  last_seen_at: string | null
+  requests: number
+  completed: number
+  failed: number
+  encoded_bytes: number
+  decoded_bytes: number
+  upstream_dispatches: number
+  upstream_backpressure: number
+  owner_user_id?: number
+  probes_sent?: number
+  probes_failed?: number
+}
+export type AgentPoolStatus = {
+  enabled: boolean
+  scope: 'own' | 'all'
+  summary: {
+    connected: number; ready: number; busy: number; paused: number; capacity: number; inflight: number; queued: number
+    requests: number; completed: number; failed: number; encoded_bytes: number; decoded_bytes: number
+    probes_sent: number; probes_failed: number; upstream_dispatches: number; upstream_backpressure: number
+  }
+  devices: AgentPoolDevice[]
+}
 export type TaskWorkflow = {
   owner: TrackerPerson | null
   review_state: 'pending' | 'returned' | 'closed' | null
@@ -2231,6 +2265,7 @@ export const api = {
         ? '/reports/badge'
         : `/reports/badge?park_id=${parkId}`,
     ),
+  agentPoolStatus: () => request<AgentPoolStatus>('/agent-devices/pool-status'),
   opsSystemHealth: () => request<SystemHealth>('/admin/ops/system-health'),
   opsReleaseStatus: () => request<ReleaseStatus>('/admin/ops/release-status'),
   opsMaintenance: () => request<OpsMaintenance>('/ops/maintenance'),

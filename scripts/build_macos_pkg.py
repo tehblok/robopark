@@ -76,7 +76,7 @@ def sign_catalog(
                 "length": len(data),
                 "architecture": "arm64",
                 "protocol": 1,
-                "notes": "Тестовый выпуск: служба Mac, регистрация устройства и распределённый доступ Emergency.",
+                "notes": "Офлайн-рабочее место, автоматическое подключение Mac, распределение Emergency и сжатие трафика.",
             }
         },
     }
@@ -115,6 +115,42 @@ def launch_agent() -> dict:
     }
 
 
+def stage_workspace(dist: Path, target: Path, *, version: str, commit: str) -> dict:
+    """Copy only the bounded public web build; private source/config never enters pkg."""
+    if not dist.is_dir() or dist.is_symlink():
+        raise ValueError("workspace_build_missing")
+    files = sorted(dist.rglob("*"))
+    if any(path.is_symlink() for path in files):
+        raise ValueError("workspace_symlink")
+    index = dist / "index.html"
+    if not index.is_file():
+        raise ValueError("workspace_index_missing")
+    entries = re.findall(r'(?:src|href)=["\'](/assets/[^"\']+)["\']', index.read_text())
+    for entry in entries:
+        parts = Path(entry.removeprefix("/")).parts
+        if ".." in parts or not (dist / entry.removeprefix("/")).is_file():
+            raise ValueError("workspace_entry_asset_missing")
+    allowed = {".html", ".js", ".css", ".json", ".svg", ".png", ".jpg", ".jpeg",
+               ".webp", ".ico", ".woff", ".woff2", ".webmanifest", ".wasm"}
+    assets = [path for path in files if path.is_file() and path.suffix in allowed
+              and not any(part.startswith(".") for part in path.relative_to(dist).parts)]
+    if len(assets) > 4096 or sum(path.stat().st_size for path in assets) > 128 * 1024 * 1024:
+        raise ValueError("workspace_build_too_large")
+    manifest = {"version": version, "source_commit": commit, "files": {}}
+    target.mkdir(parents=True)
+    for path in assets:
+        if path.stat().st_size > 16 * 1024 * 1024:
+            raise ValueError("workspace_asset_too_large")
+        relative = path.relative_to(dist)
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        data = path.read_bytes()
+        destination.write_bytes(data)
+        manifest["files"][relative.as_posix()] = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    (target / "workspace-manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+    return manifest
+
+
 def build(
     output: Path,
     *,
@@ -133,6 +169,10 @@ def build(
         raise ValueError("provide_both_developer_id_identities")
     output.mkdir(parents=True, exist_ok=True)
     public = ensure_update_key(key)
+    web = ROOT / "apps/web"
+    if json.loads((web / "package.json").read_text())["version"] != version:
+        raise ValueError("workspace_version_mismatch")
+    subprocess.run(["npm", "run", "build"], cwd=web, check=True)
     scratch = Path(tempfile.gettempdir()) / "robopark-macos-release-build"
     swift_options = [
         "--package-path",
@@ -181,6 +221,7 @@ def build(
             raise ValueError("unexpected_binary_architecture")
         subprocess.run(["strip", "-S", str(executable)], check=True)
         shutil.copy2(ROOT / "apps/macos/Resources/panel.html", resources / "panel.html")
+        workspace = stage_workspace(web / "dist", resources / "workspace", version=version, commit=source_commit)
         (resources / "update-root.json").write_text(
             json.dumps({"ed25519": public}) + "\n"
         )
@@ -212,6 +253,10 @@ def build(
             "LSMinimumSystemVersion": "13.0",
             "LSUIElement": True,
             "NSHighResolutionCapable": True,
+            "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
+            "NSCameraUsageDescription": "Сканирование QR-кодов роботов и добавление фотографий к рабочим задачам.",
+            "NSMicrophoneUsageDescription": "Запись голосовых вложений по вашему запросу.",
+            "RoboparkWorkspaceVersion": version,
         }
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
         launch_dir = payload / "Library/LaunchAgents"
@@ -313,6 +358,8 @@ fi
         "physical_install_tested": False,
         "source_commit": source_commit,
         "source_clean": source_clean,
+        "workspace_assets": len(workspace["files"]),
+        "workspace_bytes": sum(row["size"] for row in workspace["files"].values()),
     }
     final_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     final_clean = not subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=ROOT, text=True).strip()

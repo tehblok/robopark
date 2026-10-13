@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { desktopRuntime, readProtectedLocalValue, removeProtectedLocalValue, writeProtectedLocalValue } from '../../pwa/desktopRuntime'
 
 type Draft = { text: string; revision: string }
 const changedEvent = 'robopark:comment-draft'
@@ -19,7 +20,7 @@ function parseDraft(value: string | null): Draft | null {
 }
 
 function readDraft(key: string | null): Draft | null {
-  try { return key ? parseDraft(localStorage.getItem(key)) : null } catch { return null }
+  try { return key && !desktopRuntime() ? parseDraft(localStorage.getItem(key)) : null } catch { return null }
 }
 
 // Called from a composer keyed by account and issue. Writes happen only on edits,
@@ -35,8 +36,12 @@ export function useCommentDraft(owner?: string, issueKey?: string) {
 
   useEffect(() => {
     if (!key) return
+    let active = true
+    if (desktopRuntime()) void readProtectedLocalValue(key).then(value => { if (active) accept(parseDraft(value)) })
     const onStorage = (event: StorageEvent) => {
-      if (event.key === key || event.key === null) accept(readDraft(key))
+      if (event.key !== key && event.key !== null) return
+      if (desktopRuntime()) void readProtectedLocalValue(key).then(value => { if (active) accept(parseDraft(value)) })
+      else accept(readDraft(key))
     }
     const onLocalChange = (event: Event) => {
       const change = (event as CustomEvent<{ key: string; draft: Draft | null }>).detail
@@ -45,6 +50,7 @@ export function useCommentDraft(owner?: string, issueKey?: string) {
     window.addEventListener('storage', onStorage)
     window.addEventListener(changedEvent, onLocalChange)
     return () => {
+      active = false
       window.removeEventListener('storage', onStorage)
       window.removeEventListener(changedEvent, onLocalChange)
     }
@@ -53,8 +59,8 @@ export function useCommentDraft(owner?: string, issueKey?: string) {
   const save = (next: Draft | null) => {
     if (key) {
       try {
-        if (next) localStorage.setItem(key, JSON.stringify(next))
-        else localStorage.removeItem(key)
+        if (next) void writeProtectedLocalValue(key, JSON.stringify(next)).catch(() => undefined)
+        else removeProtectedLocalValue(key)
       } catch { /* The composer remains usable when storage is unavailable/full. */ }
       window.dispatchEvent(new CustomEvent(changedEvent, { detail: { key, draft: next } }))
     }
@@ -68,6 +74,7 @@ export function useCommentDraft(owner?: string, issueKey?: string) {
     // including those made in another tab or after navigating away and back.
     capture: () => {
       const submitted = current.current
+      if (desktopRuntime()) return () => { if (submitted && current.current?.revision === submitted.revision) save(null) }
       const storedAtSubmission = readDraft(key)
       return () => {
         const storedNow = readDraft(key)

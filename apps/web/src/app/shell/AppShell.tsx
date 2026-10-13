@@ -24,6 +24,8 @@ import { PresentationShell } from '../interface/PresentationShell'
 import { ShareTargetInbox } from '../../pwa/ShareTargetInbox'
 import { clearLegacyShareTargetNotice, useLegacyShareTargetNotice, usePendingShareTargetId } from '../../pwa/shareTargetIntent'
 import { SyncCenter } from '../../pwa/SyncCenter'
+import { OfflineWorkspaceControl } from '../../pwa/OfflineWorkspaceControl'
+import { AgentPoolStatus } from '../../pwa/AgentPoolStatus'
 import { readReportPhotoDraft, writeReportPhotoDraft } from '../../domains/reports/reportPhotoDrafts'
 import { reportDraftKey } from '../../domains/reports/reports'
 import { TelegramAccountPanel } from '../../domains/telegram/TelegramAccountPanel'
@@ -618,7 +620,7 @@ export function AppShell() {
               user={user}
             />
           ) : <span aria-hidden="true" />}
-          <SyncCenter offlineSession={offlineSession} />
+          <SyncCenter offlineSession={offlineSession} offlineControls={<><OfflineWorkspaceControl user={user} /><AgentPoolStatus /></>} />
           <div className="rp-shell__topbar-actions">
             <span className="rp-shell__user">
               <strong>{user.username}</strong>

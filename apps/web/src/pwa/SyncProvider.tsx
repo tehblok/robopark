@@ -12,6 +12,7 @@ import { uploadMedia } from './resumableUpload'
 import { ClientTelemetry } from './clientTelemetry'
 import { runLocalWork, setServiceWorkerSyncState } from './registerServiceWorker'
 import { SyncContext, type SyncContextValue } from './syncContext'
+import { getInstallationDeviceId } from './desktopRuntime'
 
 export type { SyncContextValue } from './syncContext'
 
@@ -45,7 +46,7 @@ async function defaultEngineFactory(options: Parameters<SyncEngineFactory>[0]): 
   if (!options.user) throw new Error('sync_user_required')
   const scope = offlineScopeForUser(options.user, options.park)
   const sendBatch = (batch: Parameters<typeof api.syncBatch>[0], signal?: AbortSignal) => api.syncBatch(batch, signal)
-  const deviceId = `account-${options.accountId}`
+  const deviceId = getInstallationDeviceId()
   const sendMedia = (media: OfflineMedia, signal?: AbortSignal) => uploadMedia(
     { id: media.id, actionId: media.actionId, deviceId, blob: media.blob, mimeType: media.mimeType, sha256: media.sha256, name: media.name },
     {

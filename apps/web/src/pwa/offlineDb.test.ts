@@ -7,6 +7,7 @@ import {
   purgeOfflineScope,
 } from './offlineDb'
 import type { OfflineAction, OfflineScope } from './offlineTypes'
+import { resetDesktopStorageKeyForTests, setDesktopRuntimeForTests } from './desktopRuntime'
 
 const scope = (account = '1', park = '1'): OfflineScope => ({
   account,
@@ -32,13 +33,147 @@ const action = (id: string, state: OfflineAction['state'], updatedAt = 1): Offli
   updatedAt,
 })
 
-beforeEach(() => vi.stubGlobal('indexedDB', new IDBFactory()))
+async function rawRecord(storeName: 'actions' | 'media' | 'entities', id: string): Promise<Record<string, unknown>> {
+  const request = indexedDB.open(OFFLINE_DATABASE_NAME, 2)
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error)
+  })
+  try {
+    const transaction = database.transaction(storeName, 'readonly')
+    const records = await new Promise<Record<string, unknown>[]>((resolve, reject) => {
+      const get = transaction.objectStore(storeName).getAll()
+      get.onsuccess = () => resolve(get.result); get.onerror = () => reject(get.error)
+    })
+    const record = records.find(item => item.id === id || item.key === id)
+    if (!record) throw new Error(`missing raw ${storeName} record ${id}`)
+    return record
+  } finally { database.close() }
+}
+
+async function replaceRawRecord(storeName: 'actions' | 'media' | 'entities', record: Record<string, unknown>): Promise<void> {
+  const request = indexedDB.open(OFFLINE_DATABASE_NAME, 2)
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error)
+  })
+  try {
+    const transaction = database.transaction(storeName, 'readwrite')
+    transaction.objectStore(storeName).put(record)
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve(); transaction.onabort = transaction.onerror = () => reject(transaction.error)
+    })
+  } finally { database.close() }
+}
+
+beforeEach(() => { vi.stubGlobal('indexedDB', new IDBFactory()); setDesktopRuntimeForTests(undefined); resetDesktopStorageKeyForTests() })
 afterEach(async () => {
   await purgeOfflineScope()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('offline database', () => {
+  it('encrypts desktop entities, queued payloads and media blobs while retaining indexed metadata', async () => {
+    setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+    const key = crypto.getRandomValues(new Uint8Array(32))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ key: btoa(String.fromCharCode(...key)) }), { status: 200 })))
+    const db = await openOfflineDb(scope())
+    await db.transaction(writer => {
+      writer.putEntity('private', { address: 'secret-address' })
+      writer.putAction({ ...action('encrypted-action', 'ready'), payload: { text: 'secret-comment' } })
+      writer.putMedia({ id: 'encrypted-photo', actionId: 'encrypted-action', issueKey: 'TASK-1', name: 'a.jpg', blob: new Blob(['secret-photo']), mimeType: 'image/jpeg', sha256: 'a', sizeBytes: 12, state: 'local', createdAt: 1, updatedAt: 1 })
+    })
+
+    expect(await db.getEntity('private')).toEqual({ address: 'secret-address' })
+    expect(await db.getAction('encrypted-action')).toMatchObject({ payload: { text: 'secret-comment' } })
+    expect(await (await db.getMedia('encrypted-photo'))!.blob.text()).toBe('secret-photo')
+
+    const request = indexedDB.open(OFFLINE_DATABASE_NAME, 2)
+    const raw = await new Promise<IDBDatabase>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error) })
+    const transaction = raw.transaction(['entities', 'actions', 'media'], 'readonly')
+    const records = await Promise.all(['entities', 'actions', 'media'].map(store => new Promise<unknown[]>((resolve, reject) => {
+      const read = transaction.objectStore(store).getAll(); read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error)
+    })))
+    const serialized = JSON.stringify(records)
+    expect(serialized).not.toContain('secret-address')
+    expect(serialized).not.toContain('secret-comment')
+    expect(serialized).not.toContain('secret-photo')
+    expect(serialized).toContain('protectedData')
+    raw.close()
+  })
+
+  it('rejects tampered desktop action and media routing metadata and accepts the exact encrypted records after restore', async () => {
+    setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+    const key = crypto.getRandomValues(new Uint8Array(32))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ key: btoa(String.fromCharCode(...key)) }), { status: 200 })))
+    const db = await openOfflineDb(scope())
+    const queued = { ...action('tamper-action', 'ready'), payload: { text: 'immutable-private-payload' } }
+    const photo = { id: 'tamper-photo', actionId: queued.id, issueKey: 'TASK-1', name: 'private.jpg', blob: new Blob(['photo']), mimeType: 'image/jpeg', sha256: 'digest', sizeBytes: 5, state: 'ready' as const, createdAt: 1, updatedAt: 1 }
+    await db.transaction(writer => { writer.putAction(queued); writer.putMedia(photo) })
+    const originalAction = await rawRecord('actions', queued.id)
+    const originalMedia = await rawRecord('media', photo.id)
+
+    for (const patch of [
+      { action: 'submit_review' },
+      { resourceId: 'TASK-REROUTED' },
+      { resource: 'tracker_issue:TASK-REROUTED' },
+      { state: 'confirmed' },
+      { payload: { text: 'injected-plaintext' } },
+    ]) {
+      await replaceRawRecord('actions', { ...originalAction, ...patch })
+      expect(await db.getAction(queued.id)).toBeUndefined()
+      await replaceRawRecord('actions', originalAction)
+      expect(await db.getAction(queued.id)).toMatchObject(queued)
+    }
+    for (const patch of [
+      { issueKey: 'TASK-REROUTED' },
+      { actionId: 'different-action' },
+      { state: 'confirmed' },
+      { blob: new Blob(['injected-plaintext']) },
+    ]) {
+      await replaceRawRecord('media', { ...originalMedia, ...patch })
+      expect(await db.getMedia(photo.id)).toBeUndefined()
+      await replaceRawRecord('media', originalMedia)
+      expect(await db.getMedia(photo.id)).toMatchObject({ issueKey: 'TASK-1', actionId: queued.id, state: 'ready' })
+    }
+    expect((await db.getAction(queued.id))?.payload).toEqual({ text: 'immutable-private-payload' })
+  })
+
+  it('keeps encrypted entities and queued payloads when the native key is temporarily unavailable', async () => {
+    setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+    const key = crypto.getRandomValues(new Uint8Array(32))
+    const available = () => new Response(JSON.stringify({ key: btoa(String.fromCharCode(...key)) }), { status: 200 })
+    vi.stubGlobal('fetch', vi.fn(async () => available()))
+    const db = await openOfflineDb(scope())
+    await db.putEntity('retry-entity', { secret: 'keep-ciphertext' })
+    await db.putAction({ ...action('retry-action', 'ready'), payload: { text: 'keep-immutable-payload' } })
+
+    resetDesktopStorageKeyForTests()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 503 })))
+    expect(await db.getEntity('retry-entity')).toBeUndefined()
+    expect(await db.getAction('retry-action')).toBeUndefined()
+    expect((await rawRecord('entities', 'retry-entity')).data).toBeDefined()
+
+    resetDesktopStorageKeyForTests()
+    vi.stubGlobal('fetch', vi.fn(async () => available()))
+    expect(await db.getEntity('retry-entity')).toEqual({ secret: 'keep-ciphertext' })
+    expect(await db.getAction('retry-action')).toMatchObject({ payload: { text: 'keep-immutable-payload' }, state: 'ready' })
+  })
+
+  it('allocates distinct monotonic desktop action order under concurrent encryption and keeps idempotent retries single', async () => {
+    setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+    const key = crypto.getRandomValues(new Uint8Array(32))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ key: btoa(String.fromCharCode(...key)) }), { status: 200 })))
+    const db = await openOfflineDb(scope())
+    const [first, second] = await Promise.all([
+      db.putQueuedAction(action('parallel-one', 'ready', 1)),
+      db.putQueuedAction(action('parallel-two', 'ready', 1)),
+    ])
+    expect([first && first.createdAt, second && second.createdAt].sort((left, right) => Number(left) - Number(right))).toEqual([1, 2])
+
+    const repeated = action('parallel-retry', 'ready', 1)
+    await Promise.all([db.putQueuedAction(repeated), db.putQueuedAction(repeated)])
+    expect((await db.listActions()).filter(item => item.id === repeated.id)).toHaveLength(1)
+  })
   it('keeps a confirmed receipt when the same action is queued again and rejects changed content', async () => {
     const db = await openOfflineDb(scope())
     const completed = { ...action('one', 'confirmed'), result: { message_id: 42 } }

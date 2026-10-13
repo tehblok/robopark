@@ -259,6 +259,25 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+it('restores durable pending comments after a cold mount with an older timeline snapshot', async () => {
+  const action: OfflineAction = { id: 'durable-comment', deviceId: 'mac', resourceType: 'tracker_issue', resourceId: issue.key,
+    action: 'comment', idempotencyKey: 'durable-comment', baseRevision: null, dependencies: [],
+    payload: { park_id: park.id, text: 'Сохранено перед перезапуском' }, state: 'ready', createdAt: 1000, updatedAt: 1000 }
+  const sync: SyncContextValue = {
+    state: { status: 'offline', pending: 1, conflicts: 0 }, actionTrackingReady: true, scopeKey: 'operator-7',
+    enqueueAction: vi.fn(), enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(),
+    findAction: vi.fn(async () => undefined), subscribeAction: vi.fn(() => () => undefined),
+    listActions: vi.fn(async () => [action,
+      { ...action, id: 'foreign', payload: { park_id: 99, text: 'Другой парк' } },
+      { ...action, id: 'cancelled', state: 'cancelled' as const, payload: { park_id: park.id, text: 'Отменено' } }]),
+  }
+  renderWorkbench({ sync, client: apiClient({ trackerIssue: vi.fn(async () => ({ ...queuedWorkflowIssue, claim: { park_id: park.id } })) }) })
+  await openTaskChat()
+  expect(await screen.findByText('Сохранено перед перезапуском')).toBeVisible()
+  expect(screen.queryByText('Другой парк')).not.toBeInTheDocument()
+  expect(screen.queryByText('Отменено')).not.toBeInTheDocument()
+})
+
 it('allows a mechanic to inspect a task before claiming it for changes', async () => {
   const mechanic: User = { ...user, username: 'mech1', role: 'mechanic', tracker_login: 'mech.login' }
   const unassigned = { ...issue, assignee: null }

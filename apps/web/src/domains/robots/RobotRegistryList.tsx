@@ -9,6 +9,8 @@ import { Panel } from '../../design-system/layout/PageLayout'
 import { classifyApiError } from '../../shared/api/classifyApiError'
 import { periodicDelay, resumeDelay, retryAfterMs } from '../../lib/pollingSchedule'
 import { checkAccessIdentity } from './robotCheckUrl'
+import { currentDeviceResourceCache } from '../../lib/deviceResourceCache'
+import { offlinePreparedRobotsKey } from '../../pwa/offlinePreparation'
 
 function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial<Pick<typeof api, 'robotRegistry'>>; parkId: number | null; scopeLoading: boolean }) {
   const { user, refreshUser } = useAuth()
@@ -70,6 +72,12 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
       }
       setData(value); setError(null)
     }
+    if (!query && state === 'all' && !activeErrors && !openTasks && offset === 0 && user && parkId != null) {
+      const deviceStore = currentDeviceResourceCache()
+      if (deviceStore) void deviceStore.get<RobotRegistry>(offlinePreparedRobotsKey(user.id, parkId))
+        .then(value => { if (current && value?.park_id === parkId) publish(value) })
+        .catch(() => undefined)
+    }
     const load = async () => {
       clear()
       if (!automatic()) return
@@ -124,7 +132,7 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
       window.removeEventListener('online', resume)
       window.removeEventListener('offline', clear)
     }
-  }, [apiClient, parkId, scopePending, query, state, activeErrors, openTasks, offset, retry, allowed])
+  }, [apiClient, parkId, scopePending, query, state, activeErrors, openTasks, offset, retry, allowed, user])
   const change = (key: string, value: string) => {
     const next = new URLSearchParams(params)
     if (value) next.set(key, value); else next.delete(key)

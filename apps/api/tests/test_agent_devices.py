@@ -3,13 +3,14 @@ import json
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from conftest import login_as, role_id_for
-from robopark_api.models import AccessStatus, AgentDevice, AuditLog, User
+from robopark_api.models import AccessStatus, AgentDevice, AgentEnrollment, AuditLog, User
 from robopark_api.routers import agent_devices
 from robopark_api.routers.agent_devices import ClaimRateLimiter
 from robopark_api.security import hash_password
+from robopark_api.services import emergency_bridge_client
 
 
 def _public_key() -> str:
@@ -61,7 +62,7 @@ def test_info_exposes_only_bounded_signed_deployment_profile(client, tmp_path, m
     assert client.get("/agent-devices/info").json()["signed_profile"] is None
 
 
-def test_enrollment_claim_is_one_use_and_private_key_never_enters_api(
+def test_enrollment_claim_is_one_use_auto_approved_and_private_key_never_enters_api(
     client, db_session, seed_admin
 ):
     assert login_as(client, "admin", "secret").status_code == 204
@@ -85,9 +86,19 @@ def test_enrollment_claim_is_one_use_and_private_key_never_enters_api(
     assert second.status_code == 409
     device = db_session.get(AgentDevice, first.json()["device_id"])
     assert device is not None
-    assert device.approved_at is None
+    assert first.json()["status"] == "approved"
+    assert device.approved_at is not None
+    assert device.approved_by_user_id == seed_admin.id
     assert device.public_key_x963 != claim["public_key"]
     assert not hasattr(device, "private_key")
+    audit_entry = db_session.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "agent_device.enrolled", AuditLog.target_id == device.id
+        )
+    )
+    assert audit_entry is not None
+    assert audit_entry.actor_user_id == seed_admin.id
+    assert code not in (audit_entry.detail or "")
 
 
 def test_claim_rejects_environment_or_instance_without_consuming_code(client, seed_admin):
@@ -140,7 +151,9 @@ def test_owner_can_list_and_revoke_device(client, db_session, seed_admin):
     assert db_session.get(AgentDevice, claimed["device_id"]).revoked_at is not None
 
 
-def test_claimed_device_requires_admin_approval_and_records_actor(client, db_session, seed_admin):
+def test_claimed_device_trusts_approved_service_account_and_remains_revocable(
+    client, db_session, seed_admin
+):
     operator = User(
         username="operator-device",
         password_hash=hash_password("secret"),
@@ -163,32 +176,24 @@ def test_claimed_device_requires_admin_approval_and_records_actor(client, db_ses
         },
     ).json()["device_id"]
 
-    assert client.get("/agent-devices").json()["devices"][0]["status"] == "pending"
-    assert client.post(f"/agent-devices/{device_id}/approve").status_code == 403
+    own = client.get("/agent-devices").json()["devices"][0]
+    assert own["status"] == "approved"
+    assert own["approved_by_user_id"] == operator.id
 
     login_as(client, "admin", "secret")
-    pending = client.get("/agent-devices?all=true").json()["devices"]
+    devices = client.get("/agent-devices?all=true").json()["devices"]
     assert any(
         item["id"] == device_id
         and item["owner_username"] == "operator-device"
-        and item["status"] == "pending"
-        for item in pending
+        and item["status"] == "approved"
+        for item in devices
     )
-    approved = client.post(f"/agent-devices/{device_id}/approve")
-
-    assert approved.status_code == 200
-    assert approved.json()["status"] == "approved"
     device = db_session.get(AgentDevice, device_id)
     assert device.approved_at is not None
-    assert device.approved_by_user_id == seed_admin.id
-    entry = db_session.scalar(
-        select(AuditLog).where(
-            AuditLog.action == "admin.agent_device.approved",
-            AuditLog.target_id == device_id,
-        )
-    )
-    assert entry is not None
-    assert entry.actor_user_id == seed_admin.id
+    assert device.approved_by_user_id == operator.id
+
+    assert client.delete(f"/agent-devices/{device_id}").status_code == 204
+    assert db_session.get(AgentDevice, device_id).revoked_at is not None
 
 
 def test_claim_enforces_per_user_device_limit(client, seed_admin, test_settings):
@@ -210,6 +215,87 @@ def test_claim_enforces_per_user_device_limit(client, seed_admin, test_settings)
 
     assert issue_and_claim().status_code == 201
     assert issue_and_claim().status_code == 409
+
+
+def test_new_code_recovers_active_device_with_same_key_at_owner_limit(
+    client, db_session, seed_admin, test_settings
+):
+    test_settings.agent_device_max_per_user = 1
+    login_as(client, "admin", "secret")
+    public_key = _public_key()
+
+    def issue_and_claim(key: str):
+        code = client.post("/agent-devices/enrollments", json={"label": "Desk Mac"}).json()["code"]
+        return client.post(
+            "/agent-devices/claim",
+            json={
+                "code": code,
+                "label": "Desk Mac",
+                "public_key": key,
+                "environment": "production",
+                "instance_id": "00000000-0000-0000-0000-000000000000",
+            },
+        )
+
+    original = issue_and_claim(public_key)
+    recovered = issue_and_claim(public_key)
+
+    assert original.status_code == 201
+    assert recovered.status_code == 201
+    assert recovered.json()["device_id"] == original.json()["device_id"]
+    assert db_session.scalar(select(func.count()).select_from(AgentDevice)) == 1
+    enrollments = list(db_session.scalars(select(AgentEnrollment)).all())
+    assert len(enrollments) == 2
+    assert all(enrollment.consumed_at is not None for enrollment in enrollments)
+    assert issue_and_claim(_public_key()).status_code == 409
+
+
+def test_recovery_does_not_restore_revoked_key_or_cross_owner_identity(
+    client, db_session, seed_admin, test_settings
+):
+    test_settings.agent_device_max_per_user = 1
+    login_as(client, "admin", "secret")
+    public_key = _public_key()
+
+    def issue_and_claim(key: str):
+        code = client.post("/agent-devices/enrollments", json={"label": "Desk Mac"}).json()["code"]
+        return client.post(
+            "/agent-devices/claim",
+            json={
+                "code": code,
+                "label": "Desk Mac",
+                "public_key": key,
+                "environment": "production",
+                "instance_id": "00000000-0000-0000-0000-000000000000",
+            },
+        )
+
+    original = issue_and_claim(public_key)
+    assert original.status_code == 201
+    assert client.delete(f"/agent-devices/{original.json()['device_id']}").status_code == 204
+
+    after_revoke = issue_and_claim(public_key)
+    assert after_revoke.status_code == 201
+    assert after_revoke.json()["device_id"] != original.json()["device_id"]
+
+    operator = User(
+        username="other-device-owner",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(operator)
+    db_session.commit()
+    assert login_as(client, "other-device-owner", "secret").status_code == 204
+
+    other_owner = issue_and_claim(public_key)
+    assert other_owner.status_code == 201
+    assert other_owner.json()["device_id"] not in {
+        original.json()["device_id"],
+        after_revoke.json()["device_id"],
+    }
+    assert db_session.get(AgentDevice, other_owner.json()["device_id"]).owner_user_id == operator.id
 
 
 def test_public_claim_rate_limiter_is_bounded_per_client_and_memory():
@@ -235,7 +321,8 @@ def test_setup_page_is_public_and_uses_csp_compatible_external_script(client):
     assert script.headers["content-type"].startswith("application/javascript")
     assert script.headers["cache-control"] == "no-store"
     assert "?all=true" in script.text
-    assert "доверяю этому Mac как источнику для других пользователей" in script.text
+    assert "Одобрить" not in script.text
+    assert "доверяю этому Mac" not in script.text
 
 
 def test_claim_rejects_non_ascii_code_as_controlled_client_error(client):
@@ -252,3 +339,48 @@ def test_claim_rejects_non_ascii_code_as_controlled_client_error(client):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "invalid_code"
+
+
+def test_pool_status_returns_private_broker_projection_for_current_user(
+    client, seed_admin, test_settings, monkeypatch
+):
+    test_settings.emergency_bridge_enabled = True
+    projected = {
+        "enabled": True,
+        "scope": "all",
+        "summary": {"connected": 1, "ready": 1, "busy": 0, "paused": 0},
+        "devices": [{"id": "mac-1", "label": "Desk Mac", "status": "ready"}],
+    }
+    captured = {}
+
+    def fake_status(*, requester_user_id, settings):
+        captured["requester_user_id"] = requester_user_id
+        captured["settings"] = settings
+        return projected
+
+    monkeypatch.setattr(emergency_bridge_client, "fetch_pool_status", fake_status)
+    login_as(client, "admin", "secret")
+
+    response = client.get("/agent-devices/pool-status")
+
+    assert response.status_code == 200
+    assert response.json() == projected
+    assert captured == {"requester_user_id": seed_admin.id, "settings": test_settings}
+
+
+def test_pool_status_disabled_is_local_and_does_not_call_broker(
+    client, seed_admin, test_settings, monkeypatch
+):
+    test_settings.emergency_bridge_enabled = False
+    monkeypatch.setattr(
+        emergency_bridge_client,
+        "fetch_pool_status",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("broker must not be called")),
+    )
+    login_as(client, "admin", "secret")
+
+    response = client.get("/agent-devices/pool-status")
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is False
+    assert response.json()["devices"] == []

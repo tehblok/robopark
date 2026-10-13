@@ -1,7 +1,8 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IDBDatabase, IDBFactory, IDBObjectStore } from 'fake-indexeddb'
 import { clearReportPhotoDrafts, deleteReportPhotoDraft, quarantineReportPhotoDraft, quarantineReportPhotoDraftsForScope, readReportPhotoDraft, restoreReportPhotoDraftsForScope, writeReportPhotoDraft, type ReportPhotoDraft } from './reportPhotoDrafts'
+import { resetDesktopStorageKeyForTests, setDesktopRuntimeForTests } from '../../pwa/desktopRuntime'
 
 function draft(key = 'robopark:report-draft:1:7', revision = 'one'): ReportPhotoDraft {
   return { key, revision, ownerKey: 'user-1-park-7', activeForm: 'problem', title: 'Колесо', body: 'Не едет', trackerKey: '', createdReportId: 42,
@@ -21,12 +22,109 @@ function injectBeforeNextReadwrite(next: ReportPhotoDraft) {
   return transaction
 }
 
+async function rawDraft(key: string): Promise<Record<string, unknown>> {
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open('robopark-report-drafts-v1', 2)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  try {
+    return await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const request = database.transaction('drafts').objectStore('drafts').get(key)
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+  } finally { database.close() }
+}
+
+async function replaceRawDraft(record: Record<string, unknown>): Promise<void> {
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open('robopark-report-drafts-v1', 2)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  try {
+    const transaction = database.transaction('drafts', 'readwrite')
+    transaction.objectStore('drafts').put(record)
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve()
+      transaction.onabort = transaction.onerror = () => reject(transaction.error)
+    })
+  } finally { database.close() }
+}
+
 const scope = { account: '1', principal: 'alice', parkAccess: '7', role: 'mechanic', permissions: 'reports.create', park: '7', schema: 1 }
 const scopedOwner = JSON.stringify([1, 'alice', null, 'mechanic', 'approved', false, ['reports.create'], [[7, 'North']], [7, 'North']])
 const replacementOwner = JSON.stringify([1, 'bob', null, 'mechanic', 'approved', false, ['reports.create'], [[7, 'North']], [7, 'North']])
 
 beforeEach(async () => { vi.stubGlobal('indexedDB', new IDBFactory()); await clearReportPhotoDrafts() })
+afterEach(() => { setDesktopRuntimeForTests(undefined); resetDesktopStorageKeyForTests(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 describe('persistent report photos', () => {
+  it('encrypts report text and attachment bytes in the desktop database', async () => {
+    setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+    const key = crypto.getRandomValues(new Uint8Array(32))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ key: btoa(String.fromCharCode(...key)) }), { status: 200 })))
+    await writeReportPhotoDraft(draft())
+
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('robopark-report-drafts-v1', 2)
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const record = await new Promise<unknown>((resolve, reject) => {
+      const request = database.transaction('drafts').objectStore('drafts').get('robopark:report-draft:1:7')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    database.close()
+    expect(record).not.toHaveProperty('revision')
+    expect(record).not.toHaveProperty('activeForm')
+    expect(record).not.toHaveProperty('createdReportId')
+    expect(record).not.toHaveProperty('attachmentKind')
+    expect(record).not.toHaveProperty('attachment')
+    expect(JSON.stringify(record)).not.toContain('Колесо')
+    expect(JSON.stringify(record)).not.toContain('Не едет')
+    expect(JSON.stringify(record)).not.toContain('cGhvdG8=')
+    expect(await (await readReportPhotoDraft('robopark:report-draft:1:7'))?.attachment?.blob.text()).toBe('photo')
+  })
+  it('rejects tampered desktop routing fields and restores the unchanged ciphertext', async () => {
+    setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+    const storageKey = crypto.getRandomValues(new Uint8Array(32))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ key: btoa(String.fromCharCode(...storageKey)) }), { status: 200 })))
+    const key = 'robopark:report-draft:1:7'
+    await writeReportPhotoDraft(draft(key, 'protected-revision'))
+    const original = await rawDraft(key)
+
+    for (const mutation of [
+      { createdReportId: 777 },
+      { attachmentKind: 'client_log' },
+      { activeForm: 'question' },
+      { revision: 'forged-revision' },
+      { attachment: { blob: new Blob(['replacement']) } },
+      { draftKey: 'robopark:report-draft:1:999' },
+      { ownerKey: 'different-owner' },
+    ]) {
+      await replaceRawDraft({ ...original, ...mutation })
+      expect(await readReportPhotoDraft(key)).toBeNull()
+      await replaceRawDraft(original)
+      expect(await readReportPhotoDraft(key)).toMatchObject({
+        key, revision: 'protected-revision', createdReportId: 42,
+        activeForm: 'problem', attachmentKind: 'device_photo',
+      })
+    }
+
+    const relocatedKey = 'robopark:report-draft:1:999'
+    await replaceRawDraft({ ...original, key: relocatedKey })
+    expect(await readReportPhotoDraft(relocatedKey)).toBeNull()
+
+    await replaceRawDraft({ ...original, revision: 'forged-revision' })
+    await deleteReportPhotoDraft(key, 'forged-revision')
+    expect(await rawDraft(key)).toBeTruthy()
+    await replaceRawDraft(original)
+    const restored = await readReportPhotoDraft(key)
+    expect(restored?.createdReportId).toBe(42)
+    expect(await restored?.attachment?.blob.text()).toBe('photo')
+  })
   it('restores bytes, metadata and the already-created report only within its user and park', async () => {
     await writeReportPhotoDraft(draft())
     const restored = await readReportPhotoDraft('robopark:report-draft:1:7')

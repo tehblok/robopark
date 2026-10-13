@@ -17,7 +17,7 @@ import { activeOfflineScope, purgeOfflineScope } from './pwa/offlineDb'
 import { reclaimLegacyShareInbox, storageRegistry } from './pwa/storageRegistry'
 import { clearShareTargetInbox, notifyOtherTabsAuthChanged } from './pwa/shareTargetStore'
 import { setServiceWorkerAuthState } from './pwa/registerServiceWorker'
-import { readOfflineIdentity, writeOfflineIdentity } from './shared/auth/offlineIdentity'
+import { clearDesktopOfflineIdentity, readOfflineIdentity, writeOfflineIdentity } from './shared/auth/offlineIdentity'
 import type { OfflineScope } from './pwa/offlineTypes'
 
 const LOCAL_SIGNOUT_KEY = 'robopark:local-signout:v1'
@@ -96,6 +96,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     clearApiValidators()
     void purgeDeviceResourceCache()
     clearProtectedBrowserStorage()
+    void clearDesktopOfflineIdentity()
     interfaceModeStore.setAccount(null)
     setUser(null)
     setLoading(false)
@@ -119,6 +120,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       resourceStore.clearAll()
       clearApiValidators()
       clearProtectedBrowserStorage()
+      void clearDesktopOfflineIdentity()
       interfaceModeStore.setAccount(null)
       void Promise.all([
         ...scopes.map(scope => storageRegistry.purgeScope(scope).catch(() => {})),
@@ -232,6 +234,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
           await clearShareTargetInbox(authorizedUser.current.id).catch(() => {})
           if (generation !== sessionGeneration.current) return authenticatedUser
           clearProtectedBrowserStorage()
+          void clearDesktopOfflineIdentity()
         }
         const previousScope = activeOfflineScope()
         if (previousScope && JSON.stringify(previousScope) !== JSON.stringify(offlineScopeForUser(authenticatedUser, previousScope.park))) {
@@ -323,6 +326,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       // A forbidden resource is not a revoked account. Its data is purged;
       // previously verified identity alone may still restore the offline UI.
       clearProtectedBrowserStorage(undefined, { preserveOfflineIdentity: status === 403 })
+      if (status !== 403) void clearDesktopOfflineIdentity()
       if (status === 401) {
         const previousAccountId = authorizedUser.current?.id ?? null
         clearSessionState()

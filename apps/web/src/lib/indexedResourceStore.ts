@@ -1,4 +1,5 @@
 import { cachePolicy, type DeviceCachePolicy } from './cachePolicy'
+import { sealDesktopJson, unsealDesktopJson } from '../pwa/desktopRuntime'
 
 const DATABASE = 'robopark-resource-cache'
 const STORE = 'resources'
@@ -23,9 +24,11 @@ type Entry = {
   bytes: number
   updatedAt: number
   accessedAt: number
+  expiresAt?: number
 }
 
 export type PersistedResource<T> = { data: T, updatedAt: number }
+export type ResourceBatchEntry = { key: string; data: unknown; updatedAt: number; retentionMs: number }
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -113,7 +116,7 @@ export class IndexedResourceStore {
     const transaction = this.db.transaction(STORE, 'readwrite')
     const store = transaction.objectStore(STORE)
     const entry = await requestResult(store.get(`${this.scope}\0${key}`)) as Entry | undefined
-    if (!entry || Date.now() - entry.updatedAt >= this.policy.staleMs) {
+    if (!entry || Date.now() >= (entry.expiresAt ?? entry.updatedAt + this.policy.staleMs)) {
       if (entry) store.delete(entry.id)
       await transactionDone(transaction)
       return undefined
@@ -121,7 +124,55 @@ export class IndexedResourceStore {
     entry.accessedAt = Date.now()
     store.put(entry)
     await transactionDone(transaction)
-    return { data: entry.data as T, updatedAt: entry.updatedAt }
+    try {
+      return { data: await unsealDesktopJson(entry.data, { purpose: `resource:${this.scope}:${key}` }) as T, updatedAt: entry.updatedAt }
+    } catch (error) {
+      // Native protected storage must never fall back to exposing ciphertext,
+      // plaintext from an older build, or data bound to another installation.
+      if (!(error instanceof Error && error.message.startsWith('desktop_storage_key_'))) {
+        await this.delete(key).catch(() => undefined)
+      }
+      return undefined
+    }
+  }
+
+  /** Publish a prepared snapshot and its status in one transaction. Encryption
+   * happens before opening IndexedDB; quota errors leave the old set intact. */
+  async setBatch(values: ResourceBatchEntry[], generation = this.generation): Promise<boolean> {
+    if (generation !== this.generation || values.length > this.policy.maxEntries
+      || new Set(values.map(value => value.key)).size !== values.length) return false
+    const now = Date.now()
+    const records: Entry[] = await Promise.all(values.map(async value => {
+      if (/^(?:photo|image):original(?::|$)/i.test(value.key)) throw new Error('Original photos are not persisted')
+      const data = await sealDesktopJson(value.data, { purpose: `resource:${this.scope}:${value.key}` })
+      return { id: `${this.scope}\0${value.key}`, scope: this.scope, key: value.key, data,
+        bytes: entryBytes(data), updatedAt: value.updatedAt, accessedAt: now, expiresAt: value.updatedAt + value.retentionMs }
+    }))
+    const batchBytes = records.reduce((sum, record) => sum + record.bytes, 0)
+    if (generation !== this.generation || batchBytes > this.policy.maxBytes) return false
+    const transaction = this.db.transaction(STORE, 'readwrite')
+    const done = transactionDone(transaction)
+    try {
+      const store = transaction.objectStore(STORE)
+      const current = await requestResult(store.getAll()) as Entry[]
+      if (generation !== this.generation) { transaction.abort(); await done.catch(() => undefined); return false }
+      const replaced = new Set(records.map(record => record.id))
+      const remaining = current.filter(record => !replaced.has(record.id)).sort((left, right) => left.accessedAt - right.accessedAt)
+      let totalBytes = batchBytes + remaining.reduce((sum, record) => sum + record.bytes, 0)
+      let totalCount = records.length + remaining.length
+      for (const old of remaining) {
+        if (totalBytes <= this.policy.maxBytes && totalCount <= this.policy.maxEntries) break
+        store.delete(old.id); totalBytes -= old.bytes; totalCount -= 1
+      }
+      for (const record of records) store.put(record)
+      await done
+      return generation === this.generation
+    } catch (error) {
+      try { transaction.abort() } catch { /* Already aborted by IndexedDB. */ }
+      await done.catch(() => undefined)
+      if (isQuotaError(error)) return false
+      throw error
+    }
   }
 
   async set(
@@ -129,13 +180,15 @@ export class IndexedResourceStore {
     data: unknown,
     generation = this.generation,
     updatedAt = Date.now(),
+    retentionMs = this.policy.staleMs,
   ): Promise<boolean> {
     if (generation !== this.generation) return false
     if (/^(?:photo|image):original(?::|$)/i.test(key)) throw new Error('Original photos are not persisted')
     const now = Date.now()
+    const persistedData = await sealDesktopJson(data, { purpose: `resource:${this.scope}:${key}` })
     const entry: Entry = {
-      id: `${this.scope}\0${key}`, scope: this.scope, key, data,
-      bytes: entryBytes(data), updatedAt, accessedAt: now,
+      id: `${this.scope}\0${key}`, scope: this.scope, key, data: persistedData,
+      bytes: entryBytes(persistedData), updatedAt, accessedAt: now, expiresAt: updatedAt + retentionMs,
     }
     if (entry.bytes > this.policy.maxBytes) return false
     try {
@@ -222,7 +275,7 @@ export class IndexedResourceStore {
   private async prune(): Promise<void> {
     const now = Date.now()
     let entries = (await this.allEntries()).sort((a, b) => a.accessedAt - b.accessedAt)
-    const expired = entries.filter(entry => now - entry.updatedAt >= this.policy.staleMs)
+    const expired = entries.filter(entry => now >= (entry.expiresAt ?? entry.updatedAt + this.policy.staleMs))
     if (expired.length) await this.deleteEntries(expired)
     entries = entries.filter(entry => !expired.includes(entry))
     let bytes = entries.reduce((sum, entry) => sum + entry.bytes, 0)

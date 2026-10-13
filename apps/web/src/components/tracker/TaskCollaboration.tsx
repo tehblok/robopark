@@ -3,6 +3,7 @@ import { collaborationClient, type Handoff } from './collaborationClient'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError, type TrackerUserSuggestion } from '../../api'
 import { Button } from '../../design-system/actions/Button'
+import { readProtectedLocalValue, removeProtectedLocalValue, writeProtectedLocalValue } from '../../pwa/desktopRuntime'
 
 export type LifecycleHandoff = {
   assignee: string
@@ -150,14 +151,15 @@ function Content({ issueKey, owner, active, canWrite, embedded = false, onAuthor
     if (!open || loaded || denied) return
     let cancelled = false
     setLoadError('')
-    void collaborationClient.handoff(issueKey).then(next => {
+    void collaborationClient.handoff(issueKey).then(async next => {
       if (cancelled || deniedRef.current) return
       let draft: Handoff | null = null
       try {
-        const raw = localStorage.getItem(storageKey)
+        const raw = await readProtectedLocalValue(storageKey)
         const parsed = raw ? JSON.parse(raw) : null
         if (parsed && typeof parsed.done === 'string' && typeof parsed.remaining === 'string' && typeof parsed.obstacles === 'string' && Number.isInteger(parsed.revision)) draft = parsed
       } catch { setError('Локальный черновик недоступен. Проверьте хранилище браузера.') }
+      if (cancelled || deniedRef.current) return
       setValue(draft ?? next)
       if (draft && draft.revision !== next.revision) setFresh(next)
       setLoaded(true)
@@ -173,8 +175,8 @@ function Content({ issueKey, owner, active, canWrite, embedded = false, onAuthor
     if (deniedRef.current) return
     ++revision.current
     setValue(next)
-    try { localStorage.setItem(storageKey, JSON.stringify(next)) }
-    catch { setError('Не удалось сохранить черновик в браузере. Не закрывайте задачу до сохранения.') }
+    void writeProtectedLocalValue(storageKey, JSON.stringify(next))
+      .catch(() => setError('Не удалось сохранить черновик в браузере. Не закрывайте задачу до сохранения.'))
   }
   const save = async () => {
     if (busy || fresh || deniedRef.current) return
@@ -186,11 +188,11 @@ function Content({ issueKey, owner, active, canWrite, embedded = false, onAuthor
       if (!alive.current || deniedRef.current) return
       if (captured === revision.current) {
         setValue(saved)
-        localStorage.removeItem(storageKey)
+        removeProtectedLocalValue(storageKey)
       } else {
         setValue(current => {
           const next = { ...current, revision: saved.revision, author: saved.author, updated_at: saved.updated_at }
-          localStorage.setItem(storageKey, JSON.stringify(next))
+          void writeProtectedLocalValue(storageKey, JSON.stringify(next)).catch(() => undefined)
           return next
         })
       }

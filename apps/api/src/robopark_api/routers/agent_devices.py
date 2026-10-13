@@ -26,7 +26,7 @@ from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.deps import require_emergency_viewer
 from robopark_api.models import AccessStatus, AgentDevice, AgentEnrollment, User
-from robopark_api.services import audit, rbac
+from robopark_api.services import audit, emergency_bridge_client, rbac
 from robopark_api.services.login_throttle import client_ip
 
 router = APIRouter(prefix="/agent-devices", tags=["agent-devices"])
@@ -210,19 +210,6 @@ async function loadDevices() {
     });
     item.append(revoke);
     item.append(document.createTextNode(' Статус: ' + device.status + ' '));
-    if (canApprove && device.status === 'pending') {
-      const approval = document.createElement('button');
-      approval.type = 'button'; approval.textContent = 'Одобрить';
-      approval.title = 'доверяю этому Mac как источнику для других пользователей';
-      approval.addEventListener('click', async () => {
-        if (!window.confirm('доверяю этому Mac как источнику для других пользователей')) return;
-        const response = await fetch(api + '/' + encodeURIComponent(device.id) + '/approve', {
-          method: 'POST', credentials: 'same-origin'
-        });
-        if (response.ok) await loadDevices(); else showError(response);
-      });
-      item.append(approval);
-    }
     devices.append(item);
   }
 }
@@ -334,6 +321,24 @@ def claim(
     if claimed.rowcount != 1:
         db.rollback()
         raise HTTPException(409, "invalid_code")
+    existing = db.scalar(
+        select(AgentDevice).where(
+            AgentDevice.owner_user_id == enrollment.owner_user_id,
+            AgentDevice.public_key_x963 == public_key,
+            AgentDevice.environment == enrollment.environment,
+            AgentDevice.instance_id == enrollment.instance_id,
+            AgentDevice.revoked_at.is_(None),
+        )
+    )
+    if existing is not None:
+        db.commit()
+        return {
+            "device_id": existing.id,
+            "environment": existing.environment,
+            "instance_id": existing.instance_id,
+            "protocol": PROTOCOL,
+            "status": "approved",
+        }
     active_count = db.scalar(
         select(func.count())
         .select_from(AgentDevice)
@@ -351,16 +356,33 @@ def claim(
         public_key_x963=public_key,
         environment=enrollment.environment,
         instance_id=enrollment.instance_id,
+        approved_at=now,
+        approved_by_user_id=enrollment.owner_user_id,
     )
     db.add(device)
     db.commit()
     db.refresh(device)
+    audit.record(
+        db,
+        action=audit.ACTION_AGENT_DEVICE_ENROLLED,
+        actor=owner,
+        target_type="agent_device",
+        target_id=device.id,
+        detail=json.dumps(
+            {
+                "environment": device.environment,
+                "instance_id": device.instance_id,
+                "label": device.label,
+            },
+            sort_keys=True,
+        ),
+    )
     return {
         "device_id": device.id,
         "environment": device.environment,
         "instance_id": device.instance_id,
         "protocol": PROTOCOL,
-        "status": "pending",
+        "status": "approved",
     }
 
 
@@ -376,13 +398,7 @@ def _device_json(
         "approved_at": device.approved_at.isoformat() if device.approved_at else None,
         "approved_by_user_id": device.approved_by_user_id,
         "revoked_at": device.revoked_at.isoformat() if device.revoked_at else None,
-        "status": (
-            "revoked"
-            if device.revoked_at is not None
-            else "approved"
-            if device.approved_at is not None
-            else "pending"
-        ),
+        "status": ("revoked" if device.revoked_at is not None else "approved"),
     }
     if include_owner:
         item["owner_user_id"] = device.owner_user_id
@@ -443,6 +459,46 @@ def list_devices(
             for item in devices
         ]
     }
+
+
+@router.get("/pool-status")
+def pool_status(
+    user: User = Depends(require_emergency_viewer),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    if not settings.emergency_bridge_enabled:
+        return {
+            "enabled": False,
+            "scope": "all" if rbac.is_admin_or_royal(user) else "own",
+            "summary": dict.fromkeys(
+                (
+                    "connected",
+                    "ready",
+                    "busy",
+                    "paused",
+                    "capacity",
+                    "inflight",
+                    "queued",
+                    "requests",
+                    "completed",
+                    "failed",
+                    "encoded_bytes",
+                    "decoded_bytes",
+                    "probes_sent",
+                    "probes_failed",
+                    "upstream_dispatches",
+                    "upstream_backpressure",
+                ),
+                0,
+            ),
+            "devices": [],
+        }
+    try:
+        return emergency_bridge_client.fetch_pool_status(
+            requester_user_id=user.id, settings=settings
+        )
+    except emergency_bridge_client.BridgeError as exc:
+        raise HTTPException(503, "bridge_unavailable") from exc
 
 
 @router.delete("/{device_id}", status_code=status.HTTP_204_NO_CONTENT)

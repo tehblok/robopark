@@ -175,6 +175,12 @@ describe('SyncCenter', () => {
     expect(screen.queryByText('На устройстве: 0,0 МБ из 0,0 МБ')).not.toBeInTheDocument()
   })
 
+  it('renders offline preparation controls inside the synchronization panel', () => {
+    render(<SyncContextProvider value={syncValue()}><SyncCenter offlineControls={<p>Офлайн-набор готов</p>} /></SyncContextProvider>)
+    fireEvent.click(screen.getByRole('button', { name: /Открыть центр синхронизации/ }))
+    expect(screen.getByText('Офлайн-набор готов')).toBeVisible()
+  })
+
 
   it('summarizes queue, conflicts and local storage without technical language', async () => {
     const value = syncValue()

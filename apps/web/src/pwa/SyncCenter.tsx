@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Button } from '../design-system/actions/Button'
 import { useOptionalSync } from './syncContext'
 import type { OfflineAction, OfflineMedia } from './offlineTypes'
@@ -78,6 +78,7 @@ function queueStateLabel(state: SyncQueueItem['state']): string {
 
 export function SyncCenter({
   offlineSession = false,
+  offlineControls,
   queue,
   estimateStorage = defaultEstimateStorage,
   updateReady: updateReadyOverride,
@@ -88,6 +89,7 @@ export function SyncCenter({
   updateReady?: boolean
   activateUpdate?: () => boolean
   offlineSession?: boolean
+  offlineControls?: ReactNode
 }) {
   const sync = useOptionalSync()
   const [online, setOnline] = useState(() => navigator.onLine !== false)
@@ -166,6 +168,7 @@ export function SyncCenter({
               ? `На устройстве: ${formatStorageBytes(storage.usage)} из ${formatStorageBytes(storage.quota)}`
               : 'Объём на устройстве не измерен'}</span>
           </div>
+          {offlineControls}
           {scopedQueue?.error ? <p role="alert">Не удалось прочитать локальную очередь.</p> : null}
           {actionError ? <p role="alert">{actionError}</p> : null}
           {displayedQueue.length ? <ul>{displayedQueue.slice(0, 20).map(item => <li key={item.id}><span>{item.label}<small>{queueStateLabel(item.state)}</small>{item.reason ? <small>{item.reason}</small> : null}</span>{item.cancelable !== false ? <button aria-label={`Отменить «${item.label}»`} onClick={() => void sync.cancelAction(item.id).then(() => setActionError(null)).catch(() => setActionError('Синхронизация занята или действие связано с другой записью. Повторите отмену позже.'))} type="button">Отменить</button> : null}</li>)}</ul> : null}

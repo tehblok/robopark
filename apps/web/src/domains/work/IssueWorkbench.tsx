@@ -55,7 +55,7 @@ import { TaskSyncStatus } from './TaskSyncStatus'
 import { TaskTimeline } from './TaskTimeline'
 import { StableMutationKey } from './stableMutationKey'
 import { loadWorkPage, oldestFirst } from './workData'
-import { buildClaimAction, buildCommentAction, buildHandoffAction, buildSubmitReviewAction } from './offlineTaskActions'
+import { buildClaimAction, buildCommentAction, buildHandoffAction, buildSubmitReviewAction, mergeQueuedTaskTimeline } from './offlineTaskActions'
 import type { OfflineAction } from '../../pwa/offlineTypes'
 import { useOptionalSync } from '../../pwa/syncContext'
 import { prepareImage } from '../../pwa/mediaPipeline'
@@ -66,6 +66,7 @@ import {
   workIssueHref,
   type WorkUrlState,
 } from './workUrl'
+import { workAccessKey, workListCacheKey, workPrincipalKey } from './workCacheKey'
 import './work.css'
 
 export type IssueWorkbenchApiClient = Pick<
@@ -491,20 +492,6 @@ function RelatedTasksPanel({ apiClient, issueKey, selectedProblem, onOpen, park,
   </>
 }
 
-const parkScope = (park: Park) => [park.id, park.tag?.trim(), park.tracker_queue?.trim(), park.is_active !== false]
-
-function workPrincipalKey(user: User): string {
-  return JSON.stringify([
-    user.id, user.username, user.tracker_login, user.role, user.access_status,
-    Boolean(user.must_change_password), [...new Set(user.permissions ?? [])].sort(),
-    [...user.parks].sort((a, b) => a.id - b.id).map(parkScope),
-  ])
-}
-
-function workAccessKey(user: User, selectedPark: Park): string {
-  return `${workPrincipalKey(user)}:${JSON.stringify(parkScope(selectedPark))}`
-}
-
 function ResourceWarning({
   failure,
   onRetry,
@@ -592,7 +579,7 @@ export function TaskController({
     return { ...state, filters }
   }, [allowUntagged, manager, state])
   const mechanicAllStatuses = user.role === 'mechanic' && !requestState.filters.status
-  const listKey = `${accessPrefix}list:${selectedPark.id}:${JSON.stringify({ filters: requestState.filters, sort: requestState.sort, page: requestState.page })}`
+  const listKey = workListCacheKey(user, selectedPark, requestState)
   const includeHidden = manager && Boolean(requestState.filters.includeHidden)
   const detailKey = issueKey ? `${accessPrefix}issue:${issueKey}${includeHidden ? ':hidden' : ''}` : ''
   const commentsKey = issueKey ? `${accessPrefix}comments:${issueKey}` : ''
@@ -878,6 +865,16 @@ export function TaskController({
   ))
   const claimParkId = detail.data?.claim?.park_id ?? null
   const taskParkId = user.parks.some(park => park.id === claimParkId) ? claimParkId : null
+  const timelineHydrationKey = JSON.stringify([accessPrefix, issueKey, taskParkId, sync?.scopeKey])
+  const [durableTimeline, setDurableTimeline] = useState<{ key: string; actions: OfflineAction[] } | null>(null)
+  useEffect(() => {
+    if (!sync?.listActions || sync.actionTrackingReady === false || !issueKey || taskParkId == null) return
+    let active = true
+    void sync.listActions().then(actions => {
+      if (active) setDurableTimeline({ key: timelineHydrationKey, actions })
+    }).catch(() => { if (active) setDurableTimeline(null) })
+    return () => { active = false }
+  }, [issueKey, sync, taskParkId, timelineHydrationKey])
   const canChat = Boolean(detail.data?.workflow && !hiddenDetail)
   const activeTab = requestedTab === 'check' && !mechanicCanCheck || requestedTab === 'chat' ? 'task' : requestedTab
   const changeTab = (detailTab: WorkSection) => onStateChange({ ...state, detailTab }, { replace: false })
@@ -1084,7 +1081,9 @@ export function TaskController({
         )
       ),
   )
-  const taskComments = comments.data ?? []
+  const taskComments = durableTimeline?.key === timelineHydrationKey && sync?.actionTrackingReady !== false && issueKey && taskParkId != null
+    ? mergeQueuedTaskTimeline(comments.data ?? [], durableTimeline.actions, issueKey, taskParkId, user.username)
+    : comments.data ?? []
   const hasQualifyingComment = detail.data?.workflow?.has_current_cycle_comment ?? false
   const queuePagination = list.data && taskView === 'queue' && (state.page > 1 || list.data.has_more) ? (
     <nav aria-label="Страницы задач" className="rp-work-pagination">

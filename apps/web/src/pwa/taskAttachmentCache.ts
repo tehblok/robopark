@@ -1,4 +1,5 @@
 import type { TrackerAttachment } from '../api'
+import { desktopRuntime, sealDesktopJson, unsealDesktopJson } from './desktopRuntime'
 
 const DATABASE = 'robopark-task-attachment-cache'
 const STORE = 'attachments'
@@ -14,6 +15,7 @@ type CacheEntry = {
   accessedAt: number
   storedAt: number
 }
+type StoredCacheEntry = Omit<CacheEntry, 'blob'> & { blob?: Blob; protectedData?: unknown; mimeType?: string }
 
 type AttachmentFetcher = (url: string) => Promise<Blob>
 type AttachmentAuthorizer = (url: string) => Promise<void>
@@ -67,20 +69,55 @@ function cacheKey(namespace: string, attachment: TrackerAttachment, url: string)
   return `${namespace}\0${attachment.id}\0${url}`
 }
 
+async function blobBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  return btoa(binary)
+}
+
+function base64Blob(value: string, type: string): Blob {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return new Blob([bytes], { type })
+}
+
+async function prepareEntry(entry: CacheEntry): Promise<StoredCacheEntry> {
+  if (!desktopRuntime()) return entry
+  const { blob, ...metadata } = entry
+  return {
+    ...metadata, mimeType: blob.type,
+    protectedData: await sealDesktopJson({ blob: await blobBase64(blob) }, { purpose: `task-attachment:${entry.namespace}:${entry.key}` }),
+  }
+}
+
+async function decodeEntry(entry: StoredCacheEntry | undefined): Promise<CacheEntry | undefined> {
+  if (!entry) return undefined
+  if (!desktopRuntime()) return entry as CacheEntry
+  if (!entry.protectedData || typeof entry.mimeType !== 'string') return undefined
+  try {
+    const data = await unsealDesktopJson(entry.protectedData, { purpose: `task-attachment:${entry.namespace}:${entry.key}` }) as { blob?: unknown }
+    if (typeof data.blob !== 'string') return undefined
+    const { protectedData: _protectedData, mimeType, ...metadata } = entry
+    return { ...metadata, blob: base64Blob(data.blob, mimeType) }
+  } catch { return undefined }
+}
+
 async function readEntry(key: string): Promise<CacheEntry | undefined> {
   const db = await openDatabase()
   const transaction = db.transaction(STORE, 'readonly')
   const store = transaction.objectStore(STORE)
-  const entry = await requestResult(store.get(key)) as CacheEntry | undefined
+  const entry = await requestResult(store.get(key)) as StoredCacheEntry | undefined
   await transactionDone(transaction)
-  return entry
+  return decodeEntry(entry)
 }
 
 async function touchBlob(key: string): Promise<void> {
   const db = await openDatabase()
   const transaction = db.transaction(STORE, 'readwrite')
   const store = transaction.objectStore(STORE)
-  const entry = await requestResult(store.get(key)) as CacheEntry | undefined
+  const entry = await requestResult(store.get(key)) as StoredCacheEntry | undefined
   if (entry) {
     entry.accessedAt = nextAccessedAt()
     store.put(entry)
@@ -90,11 +127,12 @@ async function touchBlob(key: string): Promise<void> {
 
 async function storeBlob(entry: CacheEntry): Promise<void> {
   if (entry.bytes > MAX_BYTES) return
+  const prepared = await prepareEntry(entry)
   const db = await openDatabase()
   const transaction = db.transaction(STORE, 'readwrite')
   const store = transaction.objectStore(STORE)
-  store.put(entry)
-  const entries = await requestResult(store.getAll()) as CacheEntry[]
+  store.put(prepared)
+  const entries = await requestResult(store.getAll()) as StoredCacheEntry[]
   let totalBytes = entries.reduce((sum, item) => sum + item.bytes, 0)
   const oldest = entries.sort((left, right) => left.accessedAt - right.accessedAt)
   while (oldest.length > MAX_ENTRIES || totalBytes > MAX_BYTES) {

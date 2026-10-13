@@ -9,6 +9,7 @@ import { SystemOperations } from './SystemOperations'
 import { OtaUpdatePanel } from './ota/OtaUpdatePanel'
 import { PrivilegedSecurityPanel } from './PrivilegedSecurityPanel'
 import { clearOperationReservation, readOperationReservation } from './operationReservation'
+import { desktopRuntime } from '../../pwa/desktopRuntime'
 import './system.css'
 
 const POLL_MS = 30_000
@@ -25,7 +26,7 @@ function reconcilingJob(id: string): SystemJob {
   return { id, kind: '', state: 'queued', phase: 'Проверяем получение запроса', progress_percent: 0, error: null }
 }
 
-export function SystemPage({ client = systemClient }: { client?: SystemClient }) {
+export function SystemPage({ client = systemClient, desktop = desktopRuntime() !== null }: { client?: SystemClient; desktop?: boolean }) {
   const { user } = useAuth()
   const allowed = user?.role === 'admin' || user?.role === 'royal'
   const royal = user?.role === 'royal'
@@ -221,7 +222,9 @@ export function SystemPage({ client = systemClient }: { client?: SystemClient })
       <a href="#system-storage">Занятое место</a>
       {royal && user && <a href="#system-security">Безопасность</a>}
       {royal && user && pageCapabilities && <a href="#system-operations">Обслуживание</a>}
-      {royal && <a href="/terminal.html">Терминал хоста</a>}
+      {royal && (desktop
+        ? <p>Терминал доступен только на серверном сайте при подключённой сети.</p>
+        : <a href="/terminal.html">Терминал хоста</a>)}
     </nav>}
     {!pageSummary ? !scopedFailed && <LoadingState label="Загружаем состояние системы" variant="page" /> : <SystemMetrics history={pageHistory} summary={pageSummary} />}
     {royal && user && <div className="rp-system-anchor" id="system-security"><PrivilegedSecurityPanel username={user.username} /></div>}

@@ -5,9 +5,21 @@ import {
   buildHandoffAction,
   buildInventoryWriteoffAction,
   buildSubmitReviewAction,
+  mergeQueuedTaskTimeline,
 } from './offlineTaskActions'
+import type { OfflineAction } from '../../pwa/offlineTypes'
 
 const common = { issueKey: 'RP-77', parkId: 7, id: '12345678-action', now: 1_789_000_000_000 }
+
+it('restores command chronology independently of IndexedDB UUID order and removes terminal overlays', () => {
+  const stored = (id: string, createdAt: number, state: OfflineAction['state'] = 'ready'): OfflineAction => ({
+    ...buildCommentAction({ ...common, id, now: createdAt, author: 'Механик', text: id }).action,
+    state, createdAt, updatedAt: createdAt,
+  })
+  const old = buildCommentAction({ ...common, id: 'cancelled', author: 'Механик', text: 'cancelled' }).timelineItem
+  const items = mergeQueuedTaskTimeline([old], [stored('a', 2000), stored('z', 1000), stored('cancelled', 500, 'cancelled')], common.issueKey, common.parkId, 'Механик')
+  expect(items.map(item => item.text)).toEqual(['z', 'a'])
+})
 
 describe('offline task actions', () => {
   it('keeps the park and stable identity for a queued claim', () => {

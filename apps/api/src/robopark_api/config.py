@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     # --- Emergency cache --------------------------------------------------
     #: Maximum simultaneous Emergency HTTP requests in one API worker.
     emergency_max_concurrency: int = 8
+    emergency_bridge_upstream_reads_per_second: float = Field(default=8.0, ge=1.0, le=64.0)
     emergency_bridge_enabled: bool = False
     emergency_bridge_url: str = "http://emergency-bridge:8091"
     emergency_direct_fallback_enabled: bool = False
