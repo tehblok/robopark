@@ -73,10 +73,8 @@ def probe_host_capabilities(
     npu = is_new_vim4 and _exists(root, "/dev/aml-npu", "/dev/galcore")
     cuda = is_orin and _exists(
         root,
-        "/dev/nvhost-nvdec",
+        "/dev/nvidia0",
         "/dev/nvhost-ctrl-gpu",
-        "/usr/lib/libcuda.so",
-        "/usr/lib/libnvjpeg.so",
     )
     nvme = any(
         (root / "sys/class/block" / name).exists() for name in ("nvme0n1", "nvme1n1")

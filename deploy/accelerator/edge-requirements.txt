@@ -1,0 +1,4 @@
+# Install into a separate --system-site-packages venv on the verified AGX.
+# TensorRT 10.16.2 Python bindings come from the matching JetPack APT packages.
+# Do not install generic pip TensorRT, torch or the export/tools extras here.
+tensorrt-edgellm[server]==0.11.0

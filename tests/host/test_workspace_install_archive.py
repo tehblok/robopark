@@ -3,16 +3,16 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import subprocess
 import tarfile
+import tomllib
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-import tomllib
 from robopark_ota import verify_ota
-
 from scripts.build_ota import BuildError
 from scripts.build_workspace_install import (
     build_workspace_install_archive,
@@ -35,6 +35,10 @@ def test_workspace_snapshot_includes_staged_runtime_modules_without_local_data(t
         "apps/web/src/domains/map/MapPage.tsx": "export const newScreen = true\n",
         "apps/web/src/design-system/data/EntityRow.tsx": "export const row = true\n",
         "deploy/host/robopark_host/storage_inventory.py": "value = 2\n",
+        "deploy/support/robopark-install-preset.enc": "encrypted personal preset",
+        "deploy/support/robopark_support_ed25519.age": "encrypted private key",
+        "deploy/support/private.pem": "private key",
+        "output/backups/khadas-test.tar.gz.cms": "encrypted backup",
         "apps/api/data/private.db": "do not package",
         "apps/api/src/credentials.json": "do not package",
         "apps/api/tests/test_private.py": "do not package",
@@ -45,7 +49,7 @@ def test_workspace_snapshot_includes_staged_runtime_modules_without_local_data(t
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(content)
     subprocess.run(
-        ["git", "-C", str(repository), "add", "VERSION", "README.md", "apps/api/src/app.py", "apps/web/src/design-system/data/EntityRow.tsx", "apps/web/src/domains/map/MapPage.tsx", "deploy/host/robopark_host/storage_inventory.py", "deploy/tuna.env"],
+        ["git", "-C", str(repository), "add", "VERSION", "README.md", "apps/api/src/app.py", "apps/web/src/design-system/data/EntityRow.tsx", "apps/web/src/domains/map/MapPage.tsx", "deploy/host/robopark_host/storage_inventory.py", "deploy/tuna.env", "deploy/support/robopark-install-preset.enc", "deploy/support/robopark_support_ed25519.age", "deploy/support/private.pem", "output/backups/khadas-test.tar.gz.cms"],
         check=True,
     )
 
@@ -176,12 +180,24 @@ def test_workspace_archive_contains_current_indexed_runtime_and_no_tests(tmp_pat
 
     with tarfile.open(archive, "r:gz") as package:
         names = package.getnames()
-        assert set(names) == {"INSTALL.sh", "README-RU.md", "SOURCE-SNAPSHOT.json", "SHA256SUMS", next(name for name in names if name.endswith(".ota"))}
+        assert set(names) == {
+            "INSTALL.sh", "INSTALL-AGX.sh", "robopark-agx.py",
+            "README-RU.md", "AGX-README-RU.md", "AGX-ACCELERATION-RU.md",
+            "GEACX1-STORAGE-RU.md", "RESTORE-KHADAS-RU.md",
+            "SOURCE-SNAPSHOT.json", "SHA256SUMS",
+            next(name for name in names if name.endswith(".ota")),
+        }
         ota_name = next(name for name in names if name.endswith(".ota"))
         ota_data = package.extractfile(ota_name).read()
         source = json.load(package.extractfile("SOURCE-SNAPSHOT.json"))
-        install_data = package.extractfile("INSTALL.sh").read()
-        readme_data = package.extractfile("README-RU.md").read()
+        install_data = {
+            name: package.extractfile(name).read()
+            for name in (
+                "INSTALL.sh", "INSTALL-AGX.sh", "robopark-agx.py",
+                "README-RU.md", "AGX-README-RU.md", "AGX-ACCELERATION-RU.md",
+                "GEACX1-STORAGE-RU.md", "RESTORE-KHADAS-RU.md",
+            )
+        }
         checksum = package.extractfile("SHA256SUMS").read().decode()
     embedded = tmp_path / ota_name
     embedded.write_bytes(ota_data)
@@ -203,6 +219,8 @@ def test_workspace_archive_contains_current_indexed_runtime_and_no_tests(tmp_pat
     assert not any("/tests/" in path or "/e2e/" in path for path in release_paths)
     assert not any("/data/robopark.db" in path or ".pnpm-store" in path for path in release_paths)
     assert verified.manifest.app_version == source["version"]
+    assert (ROOT / "VERSION").read_text().strip() in verified.manifest.compatible_from
+    assert source["version"] not in verified.manifest.compatible_from
     assert api_version == api_lock_version == web_version == source["version"]
     assert web_lock["version"] == web_lock["packages"][""]["version"] == source["version"]
     assert f'APP_VERSION = "{source["version"]}"' in context
@@ -214,22 +232,98 @@ def test_workspace_archive_contains_current_indexed_runtime_and_no_tests(tmp_pat
     assert release_notes in " ".join(verified.manifest.changes[:-1])
     assert all(len(item) <= 500 for item in verified.manifest.changes)
     install_hashes = {
-        "INSTALL.sh": hashlib.sha256(install_data).hexdigest(),
-        "README-RU.md": hashlib.sha256(readme_data).hexdigest(),
+        name: hashlib.sha256(data).hexdigest() for name, data in install_data.items()
     }
-    identity = hashlib.sha256(
-        b"robopark-install-archive-v1\0"
-        + bytes.fromhex(source["source_sha256"])
-        + bytes.fromhex(source["base_git_sha"])
-        + bytes.fromhex(install_hashes["INSTALL.sh"])
-        + bytes.fromhex(install_hashes["README-RU.md"])
-    ).hexdigest()
+    identity_digest = hashlib.sha256(b"robopark-install-archive-v1\0")
+    identity_digest.update(bytes.fromhex(source["source_sha256"]))
+    identity_digest.update(bytes.fromhex(source["base_git_sha"]))
+    for name in install_data:
+        identity_digest.update(bytes.fromhex(install_hashes[name]))
+    identity = identity_digest.hexdigest()
     assert source["install_file_sha256"] == install_hashes
     assert source["archive_identity_sha256"] == identity
     assert source["version"] == snapshot_version((ROOT / "VERSION").read_text().strip(), identity)
     assert ota_name in checksum
-    assert "INSTALL.sh" in checksum
-    assert "README-RU.md" in checksum
+    assert all(name in checksum for name in install_data)
+
+
+def _agx_installer_fixture(tmp_path: Path, *, platform_rc: int, install_rc: int) -> tuple[Path, Path]:
+    directory = tmp_path / "package"
+    directory.mkdir()
+    for name in ("INSTALL-AGX.sh", "robopark-agx.py"):
+        source = ROOT / "deploy/install-archive" / name if name.endswith(".sh") else ROOT / "deploy/host/robopark_host" / "agx_preflight.py"
+        destination = directory / name
+        destination.write_bytes(source.read_bytes())
+        destination.chmod(0o755)
+    (directory / "robopark-test.ota").write_text("ota")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "python.log"
+    fake_python = fake_bin / "python3"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$FAKE_LOG\"\n"
+        "case \"$1:$2\" in\n"
+        "  *robopark-agx.py:check) exit \"$PLATFORM_RC\" ;;\n"
+        "  *robopark-test.ota:verify) printf '%s\\n' '{\"version\":\"0.2.0-test\"}'; exit 0 ;;\n"
+        "  *robopark-test.ota:install) exit \"$INSTALL_RC\" ;;\n"
+        "  -c:*) printf '%s\\n' '0.2.0-test'; exit 0 ;;\n"
+        "esac\n"
+        "exit 0\n"
+    )
+    fake_python.chmod(0o755)
+    fake_id = fake_bin / "id"
+    fake_id.write_text("#!/bin/sh\necho 0\n")
+    fake_id.chmod(0o755)
+    checksum_files = ("INSTALL-AGX.sh", "robopark-agx.py", "robopark-test.ota")
+    (directory / "SHA256SUMS").write_text("".join(
+        f"{hashlib.sha256((directory / name).read_bytes()).hexdigest()}  {name}\n"
+        for name in checksum_files
+    ))
+    environment = tmp_path / "environment"
+    environment.write_text(json.dumps({
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_LOG": str(log),
+        "PLATFORM_RC": str(platform_rc),
+        "INSTALL_RC": str(install_rc),
+    }))
+    return directory, environment
+
+
+def _run_agx_installer(directory: Path, environment: Path) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, **json.loads(environment.read_text())}
+    return subprocess.run(
+        [str(directory / "INSTALL-AGX.sh"), "install"],
+        cwd=directory, env=env, capture_output=True, text=True,
+    )
+
+
+def test_agx_installer_rejects_wrong_platform_before_ota_install(tmp_path: Path):
+    directory, environment = _agx_installer_fixture(tmp_path, platform_rc=2, install_rc=0)
+    result = _run_agx_installer(directory, environment)
+    calls = (tmp_path / "python.log").read_text()
+    assert result.returncode == 2
+    assert "robopark-test.ota install" not in calls
+
+
+def test_agx_installer_cancel_does_not_start_accelerator_setup(tmp_path: Path):
+    directory, environment = _agx_installer_fixture(tmp_path, platform_rc=0, install_rc=1)
+    result = _run_agx_installer(directory, environment)
+    calls = (tmp_path / "python.log").read_text()
+    assert result.returncode != 0
+    assert "robopark-test.ota install" in calls
+    assert " prepare " not in calls
+    assert "deploy/accelerator/install.py" not in calls
+
+
+def test_agx_installer_never_reports_success_without_installed_bundle_version(tmp_path: Path):
+    directory, environment = _agx_installer_fixture(tmp_path, platform_rc=0, install_rc=0)
+    result = _run_agx_installer(directory, environment)
+    calls = (tmp_path / "python.log").read_text()
+    assert result.returncode == 2
+    assert "готова" not in result.stdout.lower()
+    assert " prepare " not in calls
+    assert "deploy/accelerator/install.py" not in calls
 
 
 def test_parallel_archives_do_not_share_temporary_output(tmp_path: Path):

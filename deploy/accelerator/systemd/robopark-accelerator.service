@@ -1,0 +1,63 @@
+[Unit]
+Description=Robopark optional TensorRT and media accelerator
+Requires=robopark-storage.target
+After=robopark-storage.target
+ConditionPathExists=/opt/robopark-accelerator/current/robopark-accel
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=robopark-accel
+Group=10001
+SupplementaryGroups=video render
+Environment=ROBOPARK_ACCEL_SOCKET=/run/robopark-accel/accelerator.sock
+RuntimeDirectory=robopark-accel
+RuntimeDirectoryMode=0750
+ExecStartPre=+/usr/bin/python3 -I /opt/robopark/host-tools/robopark-storage-reconcile --check
+ExecStart=/usr/bin/python3 -I /opt/robopark-accelerator/current/robopark-accel serve
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=60
+TimeoutStopSec=15
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/robopark/accelerator /run/robopark-accel
+DevicePolicy=closed
+DeviceAllow=/dev/dri/renderD128 rw
+DeviceAllow=/dev/nvidia0 rw
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia-uvm rw
+DeviceAllow=/dev/nvidia-uvm-tools rw
+DeviceAllow=/dev/nvmap rw
+DeviceAllow=/dev/nvhost-ctrl rw
+DeviceAllow=/dev/nvhost-gpu rw
+DeviceAllow=/dev/nvhost-ctrl-gpu rw
+DeviceAllow=/dev/nvhost-prof-gpu rw
+DeviceAllow=/dev/nvhost-as-gpu rw
+DeviceAllow=/dev/nvhost-vic rw
+DeviceAllow=/dev/nvhost-nvjpg rw
+DeviceAllow=/dev/nvhost-ctrl-nvdla0 rw
+DeviceAllow=/dev/nvhost-ctrl-nvdla1 rw
+DeviceAllow=/dev/nvhost-nvdla0 rw
+DeviceAllow=/dev/nvhost-nvdla1 rw
+DeviceAllow=/dev/nvhost-dla0 rw
+DeviceAllow=/dev/nvhost-dla1 rw
+UMask=0007
+MemoryMax=4G
+MemorySwapMax=0
+TasksMax=128
+LimitNOFILE=512
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

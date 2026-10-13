@@ -1124,7 +1124,7 @@ def test_capability_fixtures_require_a_healthy_jpeg_probe(tmp_path):
             "orin",
             "NVIDIA Jetson AGX Orin",
             "nvidia,tegra234",
-            ("/dev/nvhost-nvdec",),
+            ("/dev/nvhost-ctrl-gpu",),
             ("/usr/lib/libnvjpeg.so",),
             "orin",
             False,

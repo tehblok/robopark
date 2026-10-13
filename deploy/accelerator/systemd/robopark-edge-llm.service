@@ -1,0 +1,52 @@
+[Unit]
+Description=Robopark optional TensorRT Edge-LLM provider
+Requires=robopark-storage.target
+After=robopark-storage.target
+ConditionPathExists=/var/lib/robopark/accelerator/edge-venv/bin/python
+ConditionPathExists=/var/lib/robopark/accelerator/edge-profile.json
+ConditionPathExists=/var/lib/robopark/accelerator/edge-api-key
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=robopark-accel
+Group=robopark-accel
+SupplementaryGroups=video render
+Environment=ROBOPARK_EDGE_HOST=127.0.0.1 ROBOPARK_EDGE_PORT=18082
+ExecStartPre=+/usr/bin/python3 -I /opt/robopark/host-tools/robopark-storage-reconcile --check
+ExecStart=/var/lib/robopark/accelerator/edge-venv/bin/python -I /opt/robopark-accelerator/current/robopark-accel edge-serve
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=900
+TimeoutStopSec=30
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+ReadWritePaths=/var/lib/robopark/accelerator
+DevicePolicy=closed
+DeviceAllow=/dev/dri/renderD128 rw
+DeviceAllow=/dev/nvidia0 rw
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia-uvm rw
+DeviceAllow=/dev/nvidia-uvm-tools rw
+DeviceAllow=/dev/nvmap rw
+DeviceAllow=/dev/nvhost-ctrl rw
+DeviceAllow=/dev/nvhost-gpu rw
+DeviceAllow=/dev/nvhost-ctrl-gpu rw
+DeviceAllow=/dev/nvhost-prof-gpu rw
+DeviceAllow=/dev/nvhost-as-gpu rw
+UMask=0077
+MemoryMax=16G
+MemorySwapMax=0
+TasksMax=256
+LimitNOFILE=1024
+LimitCORE=0

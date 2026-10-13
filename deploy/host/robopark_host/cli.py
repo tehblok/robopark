@@ -356,6 +356,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("ai-broker")
     commands.add_parser("ai-verify")
     commands.add_parser("ai-check")
+    agx_check = commands.add_parser("agx-check")
+    agx_check.add_argument("--require-ai", action="store_true")
     commands.add_parser("ai-activate-intent")
     register_model = commands.add_parser("ai-model-register")
     register_model.add_argument("--file", type=Path, required=True)
@@ -397,6 +399,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     arguments = build_parser().parse_args(values)
     paths = paths_from_environment()
+    if arguments.command == "agx-check":
+        from .agx_preflight import inspect
+
+        report = inspect(paths.root)
+        _print(report)
+        ready = "native_ai_ready" if arguments.require_ai else "platform_ready"
+        return 0 if report[ready] else 2
     if arguments.command not in {"status", "doctor", "terminal-worker"}:
         from .storage_compatibility import require_storage_operations
         from .storage_layout import StorageError

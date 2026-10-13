@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 from robopark_ota import verify_ota
-
 from scripts import build_workspace_install as install
 from scripts.build_ota import BuildError
 from scripts.robopark_version import ReleaseVersion
@@ -23,12 +22,11 @@ _MIGRATION_FUNCTIONS = "\ndef upgrade() -> None:\n    pass\n\ndef downgrade() ->
 def _copy_buildable_repository(destination: Path) -> Path:
     paths = set(install.workspace_source_files(ROOT))
     paths.update({
-        Path("deploy/install-archive/INSTALL.sh"),
         Path("deploy/install-archive/UPDATE.sh"),
         Path("docs/runbooks/local-update.md"),
         Path("docs/runbooks/system-operations.md"),
-        Path("docs/runbooks/usb-clean-install.md"),
     })
+    paths.update(relative for _archive_name, relative in install._INSTALL_FILES)
     for relative in paths:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)

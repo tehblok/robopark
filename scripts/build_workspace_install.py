@@ -14,27 +14,26 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from pathlib import Path
-
 import tomllib
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.build_ota import (
+from scripts.build_ota import (  # noqa: E402
     BuildError,
     build_ota,
     include_source_path,
     validate_output_directory,
 )
-from scripts.robopark_version import ReleaseVersion
+from scripts.robopark_version import ReleaseVersion  # noqa: E402
 
 _RUNTIME_DATA = {"apps/api/data/emergency_sections.json"}
 _RUNTIME_DATA_PREFIXES = ("apps/api/data/", "apps/bot/legacy/data/", "deploy/data/")
 _UNTRACKED_PREFIXES = (
     "apps/api/src/", "apps/api/alembic/versions/", "apps/web/src/", "apps/web/terminal.html", "apps/web/public/", "apps/web/docker-entrypoint.d/", "apps/bot/",
-    "deploy/host/", "deploy/ota/robopark_ota/",
+    "deploy/host/", "deploy/accelerator/", "deploy/ota/robopark_ota/",
     "deploy/installer/lib/", "deploy/systemd/",
     "scripts/audit-dependencies.sh",
     "apps/web/scripts/install-dependencies.sh",
@@ -52,9 +51,19 @@ _SECRET_FILE_NAMES = {
     "credentials.json", "secrets.json", "secret.json", "tokens.json",
     "token.json", "passwords.json", "private.json",
 }
+_WORKSPACE_INSTALL_EXCLUDED = {
+    "deploy/support/robopark-install-preset.enc",
+    "deploy/support/robopark_support_ed25519.age",
+}
 _INSTALL_FILES = (
     ("INSTALL.sh", Path("deploy/install-archive/INSTALL.sh")),
+    ("INSTALL-AGX.sh", Path("deploy/install-archive/INSTALL-AGX.sh")),
+    ("robopark-agx.py", Path("deploy/host/robopark_host/agx_preflight.py")),
     ("README-RU.md", Path("docs/runbooks/usb-clean-install.md")),
+    ("AGX-README-RU.md", Path("docs/runbooks/agx-test-install.md")),
+    ("AGX-ACCELERATION-RU.md", Path("docs/runbooks/agx-acceleration.md")),
+    ("GEACX1-STORAGE-RU.md", Path("docs/runbooks/geacx1-storage.md")),
+    ("RESTORE-KHADAS-RU.md", Path("docs/runbooks/khadas-cms-restore.md")),
 )
 
 
@@ -73,6 +82,8 @@ def _allowed_source(relative: Path) -> bool:
     name = relative.as_posix()
     leaf = relative.name.lower()
     if not include_source_path(relative) or relative.is_absolute() or ".." in relative.parts:
+        return False
+    if name in _WORKSPACE_INSTALL_EXCLUDED:
         return False
     if leaf.startswith(".env") or leaf.endswith(".env") or leaf in _SECRET_FILE_NAMES:
         return False
@@ -271,6 +282,11 @@ def _stage_snapshot(
     web_lock_path.write_text(json.dumps(web_lock, ensure_ascii=False, indent=2) + "\n")
     metadata_path = stage / "deploy/release-metadata.json"
     metadata = json.loads(metadata_path.read_text())
+    compatible = metadata.get("compatible_from_versions")
+    if not isinstance(compatible, list) or not all(isinstance(item, str) for item in compatible):
+        raise BuildError("version_rewrite_failed:release-metadata.json")
+    if base_version not in compatible:
+        compatible.append(base_version)
     metadata["update_notes"] = metadata["update_notes"].strip().replace(
         base_version, version, 1
     )
@@ -345,9 +361,16 @@ def build_workspace_install_archive(repository: Path, output: Path) -> Path:
             f"{hashlib.sha256(data).hexdigest()}  {name}\n"
             for name, data in sorted(checked.items())
         ).encode()
+        executable_install_files = {"INSTALL.sh", "INSTALL-AGX.sh", "robopark-agx.py"}
         members = [
-            _tar_member("INSTALL.sh", install_files["INSTALL.sh"], 0o755),
-            _tar_member("README-RU.md", install_files["README-RU.md"]),
+            *(
+                _tar_member(
+                    archive_name,
+                    install_files[archive_name],
+                    0o755 if archive_name in executable_install_files else 0o644,
+                )
+                for archive_name, _relative in _INSTALL_FILES
+            ),
             _tar_member("SOURCE-SNAPSHOT.json", snapshot_data),
             _tar_member("SHA256SUMS", checksum),
             _tar_member(ota.name, ota_data),
