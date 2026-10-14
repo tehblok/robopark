@@ -1,3 +1,4 @@
+import logging
 import os
 import subprocess
 import sys
@@ -29,6 +30,27 @@ from robopark_api.models import (
     User,
 )
 from robopark_api.task_workflow_models import ReliableAction
+
+
+def test_migration_preserves_existing_application_warnings(
+    sqlite_database_url, monkeypatch, caplog
+):
+    from yandex_tracker_client import collections
+
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    logger = logging.getLogger("yandex_tracker_client.collections")
+    monkeypatch.setattr(logger, "disabled", False)
+    command.upgrade(Config("alembic.ini"), "head")
+    assert logger.disabled is False
+    # fileConfig deliberately replaces root handlers; capture this logger directly.
+    logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            matched = collections.match_collection("/v2/robopark-unknown/42")
+        assert matched is collections.Unknown
+        assert "Unrecognized collection: /v2/robopark-unknown/42" in caplog.text
+    finally:
+        logger.removeHandler(caplog.handler)
 
 
 def test_metadata_has_required_tables():

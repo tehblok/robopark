@@ -15,7 +15,7 @@ from robopark_api.services import system_observability  # noqa: F401 — registe
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Build Settings directly instead of the cached get_settings(): a migration run
 # must always honour the DATABASE_URL of the current environment, never a value

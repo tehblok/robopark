@@ -1,3 +1,5 @@
+import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -92,7 +94,15 @@ def test_registry_aggregates_supported_robot_aliases_without_substring_matches(
     assert row["task_keys"] == [f"ROBOPARK-{index}" for index in range(8)]
 
 
-def test_registry_cache_is_read_only_identity_bound_and_expires(client, db_session, registry):
+def test_registry_cache_is_read_only_identity_bound_and_expires(
+    client, db_session, registry, monkeypatch
+):
+    # TTL semantics must not depend on CPU contention during the full suite.
+    # Keep only this cache's clock controlled; event-loop time remains real.
+    now = [50_000.0]
+    monkeypatch.setattr(
+        emergency_cache, "time", SimpleNamespace(monotonic=lambda: now[0], time=time.time)
+    )
     payload = {"isOnline": True, "batteriesStatus": {"chargePercents": 81}, "errors": ["motor"]}
     with (
         patch(
@@ -123,8 +133,8 @@ def test_registry_cache_is_read_only_identity_bound_and_expires(client, db_sessi
             return_value=("fake", "two"),
         ):
             assert client.get("/robots").json()["items"][0]["telemetry"] is None
-        with patch("robopark_api.services.emergency_cache.PAYLOAD_CACHE_TTL_SECONDS", 0):
-            assert client.get("/robots").json()["items"][0]["telemetry"] is None
+        now[0] += emergency_cache.PAYLOAD_CACHE_TTL_SECONDS
+        assert client.get("/robots").json()["items"][0]["telemetry"] is None
         emergency.assert_not_called()
 
 
