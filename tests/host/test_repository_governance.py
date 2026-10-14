@@ -1,6 +1,6 @@
 import importlib.util
-from pathlib import Path
 import re
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -28,7 +28,15 @@ def test_retired_release_delivery_is_absent_from_production_code():
     )
     # Mac catalogs and deployment profiles are a separate, requested trust
     # boundary. This does not restore retired Linux OTA signing machinery.
-    mac_signing_files = {"scripts/build_macos_pkg.py", "scripts/build_test_release.py", "scripts/sign_macos_deployment.py"}
+    mac_signing_files = {
+        "scripts/build_macos_pkg.py",
+        "scripts/build_test_release.py",
+        "scripts/sign_macos_deployment.py",
+        # The Khadas wrapper verifies the same public Mac deployment profile;
+        # the embedded Linux OTA retains its existing hash-based contract.
+        "scripts/build_khadas_test_setup.py",
+        "scripts/khadas_test_setup.py",
+    }
     roots = [ROOT / name for name in ("apps", "deploy", "scripts", ".github")]
     violations = []
     for root in roots:
