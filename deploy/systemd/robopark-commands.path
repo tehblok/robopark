@@ -1,6 +1,11 @@
 [Unit]
+# Application watchers run after core, not before paths.target.
+DefaultDependencies=no
+Requires=sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
 Description=Robopark approved host commands
-After=robopark.service
+After=robopark.service sysinit.target
 
 [Path]
 PathExists=/var/lib/robopark/ops/inbox/approved.json

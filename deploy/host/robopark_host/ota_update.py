@@ -887,6 +887,8 @@ class SystemOtaUpdateRuntime:
         from .ai_install import reconcile_ai_installation
         reconcile_ai_installation(self.paths, candidate, self.runner, auto_install=False)
         self.runner.run(["systemctl", "daemon-reload"], timeout=60)
+        from .resilience_install import reconcile_host_resilience
+        reconcile_host_resilience(candidate, self.runner)
         self.runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
 
     def health_check(self, request: OtaUpdateRequest, package: VerifiedOta) -> None:

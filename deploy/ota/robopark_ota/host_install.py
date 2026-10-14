@@ -928,6 +928,8 @@ class HostInstallRuntime:
             "init",
         ])
         self._run(["systemctl", "daemon-reload"])
+        if (self.release / "deploy/systemd/robopark-resilience-setup.service").is_file():
+            self._run(["systemctl", "start", "robopark-resilience-setup.service"])
         units = (
             "docker.service",
             "robopark.service",

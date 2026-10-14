@@ -594,3 +594,16 @@ def test_docker_readiness_failure_has_bounded_attempts_and_command_timeouts():
     ]
     assert len([command for command, _ in calls if command == ["docker", "info"]]) == 10
     assert all(0 < options["timeout"] <= 60 for _, options in calls)
+
+
+@pytest.mark.parametrize("name", ["robopark-commands.path", "robopark-bot.path"])
+def test_late_application_watchers_do_not_order_before_paths_target(name):
+    # Default path units are Before=paths.target; these watchers are After=core,
+    # whose terminal setup is After=basic.target After=paths.target: a boot cycle.
+    config = unit(name)["Unit"]
+    assert config.get("DefaultDependencies") == "no"
+    assert "sysinit.target" in config["Requires"].split()
+    assert "sysinit.target" in config["After"].split()
+    assert "robopark.service" in config["After"].split()
+    assert "shutdown.target" in config["Before"].split()
+    assert "shutdown.target" in config["Conflicts"].split()

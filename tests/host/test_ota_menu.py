@@ -182,7 +182,12 @@ def test_local_update_restores_tuna_using_previous_updater(monkeypatch, host_pat
     monkeypatch.setattr(ota_update, "OtaUpdateEngine", lambda *_args: SimpleNamespace(apply=lambda *_args: receipt))
     monkeypatch.setattr(local_update, "restart_enabled_tuna", lambda runner: calls.append(runner) or "active")
 
-    assert local_update.apply_local_update(bundle, root=host_paths.root)["version"] == "0.2.0-rc.11"
+    resilience_calls = []
+    monkeypatch.setattr(local_update, "reconcile_published_resilience", lambda paths, runner: resilience_calls.append(paths) or "ready")
+    result = local_update.apply_local_update(bundle, root=host_paths.root)
+    assert result["version"] == "0.2.0-rc.11"
+    assert result["host_resilience"] == "ready"
+    assert resilience_calls == [host_paths]
     assert len(calls) == 1
 
 

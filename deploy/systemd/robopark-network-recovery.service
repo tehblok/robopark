@@ -1,0 +1,15 @@
+[Unit]
+Description=Robopark bounded Wi-Fi recovery
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+RuntimeDirectory=robopark-network
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/local/libexec/robopark-network-recovery.py
+TimeoutStartSec=100s

@@ -18,6 +18,9 @@ install_services() {
     python3 -I "$ROBOPARK_OPT/host-tools/robopark" bootstrap-compose || die runtime_bootstrap_failed
     python3 -I "$INSTALLER_DIR/lib/install-services.py" "$ROBOPARK_ROOT" || die unit_install_failed
     systemctl daemon-reload
+    if [ -f "$ROBOPARK_OPT/current/deploy/systemd/robopark-resilience-setup.service" ]; then
+        systemctl start robopark-resilience-setup.service || die host_resilience_setup_failed
+    fi
     systemctl enable docker.service robopark.service robopark-tuna.service robopark-updater.service \
         robopark-doctor.timer robopark-watchdog.timer robopark-commands.path
     for unit in docker.service robopark.service robopark-tuna.service robopark-updater.service robopark-doctor.timer robopark-watchdog.timer robopark-commands.path; do

@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply Robopark host resilience policy
+After=NetworkManager.service systemd-journald.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStartPre=/usr/bin/python3 -I /opt/robopark/host-tools/robopark-storage-reconcile --apply
+ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark-host-resilience
+TimeoutStartSec=180s
