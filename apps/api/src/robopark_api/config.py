@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     emergency_max_concurrency: int = 8
     emergency_bridge_upstream_reads_per_second: float = Field(default=8.0, ge=1.0, le=64.0)
     emergency_bridge_enabled: bool = False
+    # Server→Mac→server CSV relay trades bandwidth for CPU. Keep it opt-in on Wi-Fi.
+    compute_csv_offload_enabled: bool = False
     emergency_bridge_url: str = "http://emergency-bridge:8091"
     emergency_direct_fallback_enabled: bool = False
     robopark_environment: Literal["test", "production"] = "production"

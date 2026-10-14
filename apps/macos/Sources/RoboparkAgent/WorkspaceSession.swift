@@ -76,8 +76,10 @@ struct WorkspaceProfile: Codable {
     private func persist() throws {
         if let profile { try SecureStore.writeData(JSONEncoder().encode(profile), account: "workspace-profile-v1") }
     }
-    func call(path: String, method: String = "GET", object: [String: Any]? = nil, timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
+    func call(path: String, method: String = "GET", object: [String: Any]? = nil,
+              headers additionalHeaders: [String: String] = [:], timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
         var headers: [String: String] = ["accept": "application/json"]
+        for (name, value) in additionalHeaders { headers[name] = value }
         let body = try object.map { try JSONSerialization.data(withJSONObject: $0) } ?? Data()
         if object != nil { headers["content-type"] = "application/json" }
         return try await request(target: path, method: method, headers: headers, body: body, timeout: timeout)

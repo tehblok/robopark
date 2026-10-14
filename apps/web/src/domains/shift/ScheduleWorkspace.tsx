@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useLocation } from 'react-router-dom'
 import { api, type ScheduleCopyCreate, type ScheduleCreate, type ScheduleDeleteOptions, type ScheduleEntry, type ScheduleListParams, type ScheduleParticipant, type SchedulePatternCreate, type ScheduleUpdate, type User } from '../../api'
 import { useAuth } from '../../auth-context'
 import { useParkScope } from '../../app/park/parkScope'
@@ -7,6 +8,7 @@ import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedba
 import { PageLayout, Panel } from '../../design-system/layout/PageLayout'
 import { TabPanel, Tabs } from '../../design-system/navigation/Tabs'
 import { NotificationCenter } from '../../pwa/NotificationCenter'
+import { AnnouncementComposer } from '../../pwa/AnnouncementComposer'
 import { resourceStore } from '../../lib/resource'
 import { offlineScopeForUser } from '../../lib/deviceResourceCache'
 import { useOptionalSync } from '../../pwa/syncContext'
@@ -172,10 +174,11 @@ export function ScheduleWorkspace({ apiClient = api, initialAnchor, user, select
     })
     return () => { employeeGeneration.current += 1 }
   }, [apiClient, parkId, participantReload, scopeKey, user.role])
-  if (parkId == null) return <PageLayout title="График"><EmptyState title="Выберите парк" /></PageLayout>
+  const notifications = <section id="notifications" key={`notifications:${user.id}:${user.role}:${permissionsKey}:${user.parks.map(park => park.id).join(",")}`}><NotificationCenter />{user.role === 'royal' ? <AnnouncementComposer /> : null}</section>
+  if (parkId == null) return <PageLayout title="График"><EmptyState title="Выберите парк" />{notifications}</PageLayout>
   const scheduleFailure = errorKey === requestKey ? classifyApiError(loadError, 'Не удалось загрузить график.') : null
-  if (scheduleFailure && !items) return <PageLayout title="График"><ErrorState description={scheduleFailure.description} onRetry={scheduleFailure.retryable ? () => setScheduleReload(current => current + 1) : undefined} title="Не удалось загрузить график" /></PageLayout>
-  if (!items) return <PageLayout title="График"><LoadingState label="Загружаем график" variant="page" /></PageLayout>
+  if (scheduleFailure && !items) return <PageLayout title="График"><ErrorState description={scheduleFailure.description} onRetry={scheduleFailure.retryable ? () => setScheduleReload(current => current + 1) : undefined} title="Не удалось загрузить график" />{notifications}</PageLayout>
+  if (!items) return <PageLayout title="График"><LoadingState label="Загружаем график" variant="page" />{notifications}</PageLayout>
   const admin = user.role === 'admin'
   const royal = user.role === 'royal'
   const tabs = admin
@@ -349,12 +352,16 @@ export function ScheduleWorkspace({ apiClient = api, initialAnchor, user, select
     {!admin && !royal ? <TabPanel active={selectedSection === 'patterns'} id="schedule-panel-patterns" labelledBy="tab-patterns">
       {selectedSection === 'patterns' ? <Panel description="Повторяйте собственные смены, отпуск или болезнь без назначения другим сотрудникам." title="Мои шаблоны"><SchedulePlanner apiClient={apiClient} employees={[{ id: user.id, display_name: user.username, role: user.role === 'operator' ? 'operator' : user.role === 'driver' ? 'driver' : 'mechanic' }]} lockEmployees onCreated={addPlanned} onQueue={sync ? queuePlanner : undefined} parkId={parkId} queueReady={sync === null || queueReady} /></Panel> : null}
     </TabPanel> : null}
-    <NotificationCenter />
+    {notifications}
   </PageLayout>
 }
 
 export function SchedulePage() {
   const { user } = useAuth()
   const { parkId } = useParkScope()
+  const location = useLocation()
+  useEffect(() => {
+    if (location.hash === '#notifications') document.getElementById('notifications')?.scrollIntoView?.({ block: 'start' })
+  }, [location.hash, user?.id])
   return user ? <ScheduleWorkspace selectedParkId={parkId} user={user} /> : null
 }

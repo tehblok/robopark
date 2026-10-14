@@ -28,6 +28,7 @@ import IOKit.ps
     private var compressedResults = false
     private var runID = UUID()
     private var previousCPUTicks: [UInt64]?
+    var hasActiveEmergencyJobs: Bool { !jobs.isEmpty || probeTask != nil }
 
     init() {
         do {
@@ -148,7 +149,7 @@ import IOKit.ps
         try? SecureStore.deleteData(pendingAccount)
         start()
     }
-    func claimAuthenticated(origin: String, label: String,
+    func claimAuthenticated(origin: String, label: String, startEmergency: Bool = true,
                             claim: ([String: Any]) async throws -> (Data, HTTPURLResponse)) async throws {
         let run = runID
         let server = try ServerOrigin(origin)
@@ -192,7 +193,7 @@ import IOKit.ps
         do { try persist() }
         catch { registration = nil; throw error }
         try? SecureStore.deleteData(pendingAccount)
-        start()
+        if startEmergency { start() }
     }
     func updateCookie(_ value: String) throws {
         guard registration != nil, value.utf8.count <= 32 * 1024,
@@ -361,6 +362,8 @@ import IOKit.ps
                 "ready": Date() < self.readyUntil && self.registration?.paused == false && !self.thermallyPaused,
                 "latency_ms": self.latency], through: channel)
         }
+        // Managed Emergency work preempts compute as soon as the probe lease is accepted.
+        onChange?()
     }
     private func probeIfNeeded(granted: Bool = false, timeout: Double = 8) async {
         guard !probing, let profile = registration, !profile.paused, !thermallyPaused,
@@ -430,5 +433,6 @@ import IOKit.ps
             guard !Task.isCancelled, self.generation == jobGeneration else { return }
             try? await self.send(answer, through: channel)
         }
+        onChange?()
     }
 }

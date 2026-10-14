@@ -58,7 +58,7 @@ def test_builder_rejects_signed_profile_schema_runtime_would_reject(
     )
     output = tmp_path / "install.pyz"
     with pytest.raises(ValueError, match="profile_schema_invalid"):
-        builder.build_bundle(output, ota, profile, public, instance, verify=fake_ota)
+        builder.build_bundle(output, ota, profile, public, instance, verify=fake_ota, version="0.2.3-rc.1")
     assert not output.exists()
 
 
@@ -154,7 +154,7 @@ def test_signed_but_unreviewed_root_prevents_delivery(tmp_path, monkeypatch):
     monkeypatch.setattr(builder, "EXPECTED_UPDATE_ROOT", "different-reviewed-key")
     with pytest.raises(ValueError, match="untrusted_update_root"):
         builder.build_bundle(
-            tmp_path / "install.pyz", ota, profile, public, instance, verify=fake_ota
+            tmp_path / "install.pyz", ota, profile, public, instance, verify=fake_ota, version="0.2.3-rc.1"
         )
 
 

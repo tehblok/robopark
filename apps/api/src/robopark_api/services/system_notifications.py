@@ -27,11 +27,11 @@ def health_alerts(health: SystemHealthOut) -> list[tuple[str, str, str]]:
             if check.code in _DISK_CHECKS
             else "anomaly"
             if check.code in _ANOMALY_CHECKS
-            else "integration_down"
+            else "network_problem"
             if check.code in _INTEGRATION_CHECKS
-            else "problem"
+            else "system_problem"
         )
-        alerts.append((event_type, f"{check.code}:{check.status}", check.message))
+        alerts.append((event_type, f"{event_type}:{check.code}", check.message))
     if health.update.state == "rolled_back" or health.update.publication == "degraded":
         alerts.append(("update_failure", "update:degraded", "Обновление требует внимания"))
     if health.overall == "degraded" and not alerts:

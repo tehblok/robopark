@@ -17,11 +17,15 @@ for origin in ["http://example.com", "https://u:p@example.com", "https://example
 let origin = try ServerOrigin("https://example.com/")
 try check(origin.api("agent-devices/info").absoluteString == "https://example.com/api/agent-devices/info", "API URL")
 try check(origin.webSocket.absoluteString == "wss://example.com/api/emergency/bridge/ws", "WS URL")
+try check(origin.computeWebSocket.absoluteString == "wss://example.com/api/emergency/bridge/compute/ws", "compute WS URL")
 let key = P256.Signing.PrivateKey()
 let c = Challenge(type: "challenge", nonce: "nonce-123", environment: "test", instance_id: "instance", protocolVersion: 1)
 let signature = try c.sign(key: key, environment: "test", instanceID: "instance")
 try check(key.publicKey.isValidSignature(try P256.Signing.ECDSASignature(derRepresentation: signature),
             for: Data("robopark-bridge-v1\ninstance\ntest\nnonce-123".utf8)), "Python-compatible DER challenge")
+let computeSignature = try c.signCompute(key: key, environment: "test", instanceID: "instance")
+try check(key.publicKey.isValidSignature(try P256.Signing.ECDSASignature(derRepresentation: computeSignature),
+            for: Data("robopark-compute-v1\ninstance\ntest\nnonce-123".utf8)), "compute challenge has an independent signing domain")
 rejects("wrong environment") { _ = try c.sign(key: key, environment: "production", instanceID: "instance") }
 rejects("wrong instance") { _ = try c.sign(key: key, environment: "test", instanceID: "other") }
 try check(try EmergencyTarget.url(vin: "YASADR00000000664").absoluteString == "https://emergency.sdc.yandex-team.ru/api/v1/YASADR00000000664/", "fixed upstream")
@@ -85,6 +89,40 @@ rejects("automatic update cannot leave fixed origin") { _ = try decodedForeignTa
 try check(try decodedTarget.fixedArtifactURL(origin: origin).host == "example.com", "automatic update remains on fixed origin")
 let nominal = ResourceTelemetry(cpuPercent: 32, memoryPercent: 41, thermalState: "normal")
 try check(nominal.capacity(base: 2, activeJobs: 0, ready: true, paused: false) == 2, "nominal Mac exposes bounded capacity")
+try check(nominal.computeCapacity(activeJobs: 0, ready: true, paused: false, lowPower: false) == 1, "compute pool exposes one free-resource slot")
+try check(ApplicationInstallPathPolicy.allowsApplicationsDirectory(owner: 0, group: 80, permissions: 0o775), "standard root:admin 0775 Applications directory is trusted")
+try check(!ApplicationInstallPathPolicy.allowsApplicationsDirectory(owner: 0, group: 0, permissions: 0o775), "group-writable Applications requires the admin group")
+try check(!ApplicationInstallPathPolicy.allowsApplicationsDirectory(owner: 0, group: 80, permissions: 0o777), "world-writable Applications is rejected")
+let inbox = try NativeNotificationPolicy.parseInbox(JSONSerialization.data(withJSONObject: [
+    ["id": 7, "event_type": "new_task", "protected_text": "Проверьте задачу", "read_at": NSNull()],
+    ["id": "report-8", "event_type": "report", "protected_text": "Отчёт готов", "read_at": "2026-10-14T10:00:00Z"],
+]))
+try check(inbox.count == 2 && inbox[0].unread && !inbox[1].unread, "native inbox accepts all bounded server categories and read state")
+try check(NativeNotificationPolicy.title(for: "operator_comment") == "Комментарий оператора", "notification category has a fixed native title")
+try check(NativeNotificationPolicy.title(for: "system_problem") == "Проблема системы" &&
+          NativeNotificationPolicy.title(for: "network_problem") == "Проблема сети", "royal incident categories have distinct fixed titles")
+let maintenance = try NativeNotificationPolicy.parseMaintenance(JSONSerialization.data(withJSONObject: ["active": true, "kind": "planned", "operator": "ops"]))
+try check(maintenance.active && maintenance.kind == "planned", "bounded maintenance fallback is parsed")
+var maintenanceEpisodes = NativeMaintenanceEpisodePolicy()
+try check(maintenanceEpisodes.update(active: true, fingerprint: "same", makeEpisodeID: { "episode-1" }) == .started("episode-1"), "maintenance episode starts once")
+try check(maintenanceEpisodes.update(active: true, fingerprint: "same", makeEpisodeID: { "unused" }) == .unchanged, "active maintenance polling is deduplicated")
+try check(maintenanceEpisodes.update(active: false, fingerprint: "same") == .recovered("episode-1"), "maintenance recovery is emitted once")
+try check(maintenanceEpisodes.update(active: true, fingerprint: "same", makeEpisodeID: { "episode-2" }) == .started("episode-2"), "same maintenance kind can start again inside the dedup TTL")
+let unicodeInbox = try NativeNotificationPolicy.parseInbox(JSONSerialization.data(withJSONObject: [[
+    "id": "announcement-emoji", "event_type": "announcement", "protected_text": String(repeating: "🛠", count: 1000)
+]]))
+try check(unicodeInbox[0].protectedText.utf8.count == 4000, "native inbox accepts the server's 1000-Unicode-character text limit")
+rejects("notification text bound") { _ = try NativeNotificationPolicy.parseInbox(JSONSerialization.data(withJSONObject: [["id": 1, "event_type": "task", "protected_text": String(repeating: "🛠", count: 1001)]])) }
+var incident = NativeIncidentPolicy()
+try check(incident.failed(isRoyal: true, networkAvailable: true) == nil && incident.failed(isRoyal: true, networkAvailable: true) == nil, "royal incident waits for three failures")
+try check(incident.failed(isRoyal: true, networkAvailable: true) == .serverIssue, "royal server incident starts after three online failures")
+try check(incident.succeeded(isRoyal: true) == .recovered && incident.succeeded(isRoyal: true) == nil, "royal recovery is emitted once")
+var offlineIncident = NativeIncidentPolicy()
+_ = offlineIncident.failed(isRoyal: true, networkAvailable: false); _ = offlineIncident.failed(isRoyal: true, networkAvailable: false)
+try check(offlineIncident.failed(isRoyal: true, networkAvailable: false) == .networkIssue, "offline client is never reported as a server outage")
+try check(ResourceTelemetry(cpuPercent: 70, memoryPercent: 20, thermalState: "normal").computeCapacity(activeJobs: 0, ready: true, paused: false, lowPower: false) == 0, "compute drains at CPU threshold")
+try check(ResourceTelemetry(cpuPercent: 20, memoryPercent: 80, thermalState: "normal").computeCapacity(activeJobs: 0, ready: true, paused: false, lowPower: false) == 0, "compute drains at memory threshold")
+try check(nominal.computeCapacity(activeJobs: 0, ready: true, paused: false, lowPower: true) == 0, "compute drains in low power mode")
 let warm = ResourceTelemetry(cpuPercent: 70, memoryPercent: 65, thermalState: "fair")
 try check(warm.capacity(base: 2, activeJobs: 0, ready: true, paused: false) == 1, "fair thermal state throttles capacity")
 for overloaded in [
@@ -130,4 +168,19 @@ try check(LoginPolicy.allows(URL(string: "https://passport.yandex-team.ru/auth?r
 for address in ["https://attacker.example", "https://passport.yandex-team.ru.attacker.example", "http://passport.yandex-team.ru", "https://u:p@passport.yandex-team.ru", "https://passport.yandex-team.ru:8443"] {
     try check(!LoginPolicy.allows(URL(string: address)!), "login phishing navigation blocked")
 }
+let timeoutRunner = ComputeWorkerProcess()
+let timeoutStarted = Date()
+do {
+    _ = try await timeoutRunner.run(frame: Data("{}".utf8), timeoutMilliseconds: 50,
+                                    executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["5"])
+    fatalError("FAIL: compute child timeout was ignored")
+} catch { checks += 1 }
+try check(Date().timeIntervalSince(timeoutStarted) < 1.5, "compute timeout terminates child promptly")
+let cancelRunner = ComputeWorkerProcess()
+let cancelStarted = Date()
+let cancellable = Task { try await cancelRunner.run(frame: Data("{}".utf8), timeoutMilliseconds: 10_000,
+                                                     executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["5"]) }
+try await Task.sleep(nanoseconds: 50_000_000); cancellable.cancel()
+do { _ = try await cancellable.value; fatalError("FAIL: cancelled compute child completed") } catch { checks += 1 }
+try check(Date().timeIntervalSince(cancelStarted) < 1.5, "compute cancellation terminates child promptly")
 print("PASS: \(checks) protocol, scope, update signature and artifact integrity checks")

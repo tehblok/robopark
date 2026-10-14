@@ -1,4 +1,7 @@
+import { transformOnMac } from './computeImage'
+
 const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
+const preparedFiles = new WeakSet<File>()
 
 export type PreparedImage = {
   blob: Blob
@@ -15,6 +18,30 @@ export type PrepareImageOptions = {
   maxSourceBytes?: number
   maxEdge?: number
   quality?: number
+}
+
+function usefulPhoto(result: Blob | null, source: File): result is Blob {
+  return result !== null && result.size > 0 && result.size < source.size && ACCEPTED_IMAGE_TYPES.has(result.type)
+}
+
+async function transformPhoto(source: File, maxEdge: number, quality: number): Promise<Blob> {
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean, effectiveType?: string } }).connection
+  const constrained = navigator.hardwareConcurrency > 0 && navigator.hardwareConcurrency <= 2
+  // CPU-poor devices may ask a free Mac directly. A metered/slow source keeps
+  // processing local to avoid transmitting its larger original unnecessarily.
+  const peerFirst = constrained && source.size >= 1024 * 1024 && !connection?.saveData
+    && !['slow-2g', '2g'].includes(connection?.effectiveType ?? '')
+  if (peerFirst) {
+    const peer = await transformOnMac(source, maxEdge, quality)
+    if (usefulPhoto(peer, source)) return peer
+  }
+  const local = await transformOffThread(source, maxEdge, quality).catch(() => source)
+  if (usefulPhoto(local, source)) return local
+  if (!peerFirst && source.size >= 256 * 1024) {
+    const peer = await transformOnMac(source, maxEdge, quality)
+    if (usefulPhoto(peer, source)) return peer
+  }
+  return source
 }
 
 async function sha256(blob: Blob): Promise<string> {
@@ -69,7 +96,7 @@ export async function prepareImage(source: File, options: PrepareImageOptions = 
   if (source.size <= 0) throw new Error('media_empty')
   if (source.size > (options.maxSourceBytes ?? 15 * 1024 * 1024)) throw new Error('media_too_large')
   const converted = kind === 'photo'
-    ? await transformOffThread(source, options.maxEdge ?? 1920, options.quality ?? 0.82).catch(() => source)
+    ? await transformPhoto(source, options.maxEdge ?? 1920, options.quality ?? 0.82)
     : source
   // A local optimization must never enlarge uploads or discard a usable original.
   const blob = converted.size > 0 && converted.size < source.size && ACCEPTED_IMAGE_TYPES.has(converted.type)
@@ -90,4 +117,19 @@ export async function prepareImage(source: File, options: PrepareImageOptions = 
       URL.revokeObjectURL(previewUrl)
     },
   }
+}
+
+/** Existing multipart photo flows share source-side compression and safe fallback. */
+export async function preparePhotoFile(source: File): Promise<File> {
+  if (preparedFiles.has(source) || !ACCEPTED_IMAGE_TYPES.has(source.type) || source.size < 256 * 1024) return source
+  try {
+    const prepared = await prepareImage(source)
+    try {
+      if (prepared.blob === source) { preparedFiles.add(source); return source }
+      const extension = prepared.mimeType === 'image/webp' ? 'webp' : prepared.mimeType === 'image/png' ? 'png' : 'jpg'
+      const result = new File([prepared.blob], `${source.name.replace(/\.[^.]+$/, '')}.${extension}`, { type: prepared.mimeType, lastModified: source.lastModified })
+      preparedFiles.add(result)
+      return result
+    } finally { prepared.releasePreview() }
+  } catch { return source }
 }

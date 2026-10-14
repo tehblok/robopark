@@ -1,6 +1,15 @@
 import Foundation
 import Darwin
 
+public enum ApplicationInstallPathPolicy {
+    /// `/Applications` is normally root:admin 0775 on macOS. The app bundle
+    /// below it remains root-owned and non-writable by group or others.
+    public static func allowsApplicationsDirectory(owner: UInt32, group: UInt32, permissions: Int) -> Bool {
+        owner == 0 && permissions & 0o002 == 0 &&
+            (permissions & 0o020 == 0 || group == 80)
+    }
+}
+
 public struct SecureUpdateStorage {
     public let root: URL
     public let expectedOwner: uid_t

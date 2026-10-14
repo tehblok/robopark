@@ -26,6 +26,7 @@ import { clearLegacyShareTargetNotice, useLegacyShareTargetNotice, usePendingSha
 import { SyncCenter } from '../../pwa/SyncCenter'
 import { OfflineWorkspaceControl } from '../../pwa/OfflineWorkspaceControl'
 import { AgentPoolStatus } from '../../pwa/AgentPoolStatus'
+import { ComputePoolStatus } from '../../pwa/ComputePoolStatus'
 import { readReportPhotoDraft, writeReportPhotoDraft } from '../../domains/reports/reportPhotoDrafts'
 import { reportDraftKey } from '../../domains/reports/reports'
 import { TelegramAccountPanel } from '../../domains/telegram/TelegramAccountPanel'
@@ -620,8 +621,9 @@ export function AppShell() {
               user={user}
             />
           ) : <span aria-hidden="true" />}
-          <SyncCenter offlineSession={offlineSession} offlineControls={<><OfflineWorkspaceControl user={user} /><AgentPoolStatus /></>} />
+          <SyncCenter offlineSession={offlineSession} offlineControls={<><OfflineWorkspaceControl user={user} /><ComputePoolStatus /><AgentPoolStatus /></>} />
           <div className="rp-shell__topbar-actions">
+            <IconButton label="Уведомления" icon="notifications" onClick={() => navigate('/schedule#notifications')} variant="ghost" />
             <span className="rp-shell__user">
               <strong>{user.username}</strong>
               <span>{roleLabel(user.role)}</span>

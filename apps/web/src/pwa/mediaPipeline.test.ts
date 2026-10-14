@@ -1,12 +1,38 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { prepareImage } from './mediaPipeline'
+import { transformOnMac } from './computeImage'
+vi.mock('./computeImage', () => ({ transformOnMac: vi.fn().mockResolvedValue(null) }))
 
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  vi.mocked(transformOnMac).mockReset().mockResolvedValue(null)
 })
 
 describe('prepareImage', () => {
+  it('keeps effective local processing at the source and sends no peer traffic', async () => {
+    class WorkerStub {
+      onmessage?: (event: MessageEvent) => void
+      postMessage(request: { id: string }) { this.onmessage?.({ data: { id: request.id, blob: new Blob(['small'], { type: 'image/webp' }) } } as MessageEvent) }
+      terminate() {}
+    }
+    vi.stubGlobal('Worker', WorkerStub); vi.stubGlobal('createImageBitmap', vi.fn()); vi.stubGlobal('OffscreenCanvas', class {})
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:local')
+    const prepared = await prepareImage(new File([new Uint8Array(300000)], 'large.jpg', { type: 'image/jpeg' }))
+    expect(prepared.sizeBytes).toBe(5)
+    expect(transformOnMac).not.toHaveBeenCalled()
+  })
+  it('uses a free Mac when local processing is unavailable and keeps the smaller result', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:peer')
+    vi.stubGlobal('createImageBitmap', undefined)
+    const processed = new Blob(['jpeg'], { type: 'image/jpeg' })
+    vi.mocked(transformOnMac).mockResolvedValue(processed)
+    const source = new File([new Uint8Array(300000)], 'large.png', { type: 'image/png' })
+    const prepared = await prepareImage(source)
+    expect(prepared.blob).toBe(processed)
+    expect(prepared.originalBlob).toBe(source)
+    expect(transformOnMac).toHaveBeenCalledOnce()
+  })
   it('requests a 1920px WebP conversion at 82% quality', async () => {
     const postMessage = vi.fn()
     const terminate = vi.fn()

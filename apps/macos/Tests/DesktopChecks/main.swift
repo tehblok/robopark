@@ -18,6 +18,14 @@ try check(proxyRequest.value(forHTTPHeaderField: "Cookie") == "session=native-on
 try check(proxyRequest.value(forHTTPHeaderField: "Authorization") == nil, "arbitrary authorization not forwarded")
 try check(proxyRequest.value(forHTTPHeaderField: "Origin") == "https://example.com", "native CSRF origin")
 try check(proxyRequest.value(forHTTPHeaderField: "X-Chunk-SHA256") == "hash", "upload integrity header preserved")
+let computeBody = Data(repeating: 0x61, count: 6 * 1024 * 1024)
+let computeImage = try WorkspaceProxyPolicy.request(origin: proxyOrigin, target: "/api/compute/image", method: "POST",
+    headers: ["content-type": "application/json"], body: computeBody, cookies: [nativeCookie])
+try check(computeImage.url?.path == "/api/compute/image" && computeImage.httpBody?.count == computeBody.count,
+          "bounded desktop proxy carries compute image requests")
+let computePool = try WorkspaceProxyPolicy.request(origin: proxyOrigin, target: "/api/compute/pool", method: "GET",
+    headers: [:], body: Data(), cookies: [nativeCookie])
+try check(computePool.url?.path == "/api/compute/pool", "desktop proxy carries compute pool status")
 let expiredCookie = WorkspaceCookie(name: "old", value: "expired", path: "/", expires: .distantPast)
 let narrowCookie = WorkspaceCookie(name: "narrow", value: "value", path: "/api/admin", expires: nil)
 let scopedRequest = try WorkspaceProxyPolicy.request(origin: proxyOrigin, target: "/api/administrator", method: "GET", headers: [:], body: Data(), cookies: [expiredCookie, narrowCookie])

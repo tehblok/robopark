@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   ArrowRight,
   BarChart3,
+  Bell,
   Camera,
   CheckCircle2,
   ChevronDown,
@@ -46,8 +47,10 @@ export type IconName =
   | 'close' | 'refresh' | 'warning' | 'critical' | 'success' | 'info'
   | 'offline' | 'attachment' | 'camera' | 'download' | 'send' | 'filter'
   | 'clock' | 'assignee' | 'menu' | 'chevron-down' | 'settings' | 'external-link'
+  | 'notifications'
 
 const ICONS = {
+  notifications: Bell,
   overview: Gauge,
   work: ClipboardList,
   robot: RobotGlyph,

@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 router = APIRouter(prefix="/distribution/v1/macos", tags=["agent-distribution"])
-_PACKAGE = re.compile(r"Robopark-[A-Za-z0-9._+-]+-arm64\.pkg\Z")
+_PACKAGE = re.compile(r"Robopark-[A-Za-z0-9._+-]+-arm64\.(?:pkg|command)\Z")
 
 
 def distribution_root() -> Path:

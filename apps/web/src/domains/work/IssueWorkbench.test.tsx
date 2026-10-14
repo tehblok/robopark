@@ -859,8 +859,9 @@ it('blocks an early write-off until durable pending-action hydration completes',
   const sync: SyncContextValue = { state: { status: 'idle', pending: 1, conflicts: 0 }, enqueueAction, enqueueMedia: vi.fn(), syncNow: vi.fn(), cancelAction: vi.fn(), resolveConflict: vi.fn(), findAction, subscribeAction: vi.fn(() => () => undefined) }
   renderWorkbench({ client: apiClient({ trackerIssue: vi.fn(async () => claimedIssue), searchInventory: vi.fn(async () => ({ items: [part], limit: 200, offset: 0, total: 1 })) }), currentUser: mechanic, sync })
   fireEvent.click(await screen.findByRole('button', { name: 'Списать запчасть' }))
-  fireEvent.change(await screen.findByRole('combobox', { name: 'Компонента' }), { target: { value: '21' } })
-  fireEvent.change(await screen.findByRole('combobox', { name: 'Запчасть' }), { target: { value: '91' } })
+  // Hydration deliberately disables the whole form. Do not synthesize changes
+  // to disabled controls that a user cannot make while the queue is loading.
+  expect(await screen.findByRole('combobox', { name: 'Компонента' })).toBeDisabled()
 
   expect(screen.getByRole('button', { name: 'Списать в задачу' })).toBeDisabled()
   fireEvent.submit(screen.getByRole('form', { name: 'Списание запчасти' }))

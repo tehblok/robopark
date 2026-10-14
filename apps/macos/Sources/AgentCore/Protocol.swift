@@ -35,6 +35,11 @@ public struct ServerOrigin: Equatable {
         parts.scheme = "wss"
         return parts.url!
     }
+    public var computeWebSocket: URL {
+        var parts = URLComponents(url: api("emergency/bridge/compute/ws"), resolvingAgainstBaseURL: false)!
+        parts.scheme = "wss"
+        return parts.url!
+    }
 }
 
 public struct Challenge: Codable {
@@ -53,6 +58,12 @@ public struct Challenge: Codable {
               instance_id == instanceID, !nonce.isEmpty, nonce.count <= 256,
               !nonce.contains("\n") else { throw AgentError.wrongServer }
         return try key.signature(for: Data("robopark-bridge-v1\n\(instanceID)\n\(environment)\n\(nonce)".utf8)).derRepresentation
+    }
+    public func signCompute(key: P256.Signing.PrivateKey, environment: String, instanceID: String) throws -> Data {
+        guard type == "challenge", protocolVersion == 1, self.environment == environment,
+              instance_id == instanceID, !nonce.isEmpty, nonce.count <= 256,
+              !nonce.contains("\n") else { throw AgentError.wrongServer }
+        return try key.signature(for: Data("robopark-compute-v1\n\(instanceID)\n\(environment)\n\(nonce)".utf8)).derRepresentation
     }
 }
 

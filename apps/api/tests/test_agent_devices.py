@@ -10,7 +10,7 @@ from robopark_api.models import AccessStatus, AgentDevice, AgentEnrollment, Audi
 from robopark_api.routers import agent_devices
 from robopark_api.routers.agent_devices import ClaimRateLimiter
 from robopark_api.security import hash_password
-from robopark_api.services import emergency_bridge_client
+from robopark_api.services import emergency_bridge_client, rbac
 
 
 def _public_key() -> str:
@@ -33,6 +33,7 @@ def test_info_is_public_and_does_not_expose_secrets(client):
         "protocol": 1,
         "claim_url": "/api/agent-devices/claim",
         "websocket_url": "/api/emergency/bridge/ws",
+        "compute_websocket_url": "/api/emergency/bridge/compute/ws",
         "signed_profile": None,
     }
 
@@ -123,6 +124,26 @@ def test_authenticated_first_login_claims_device_without_manual_code_and_is_idem
     assert device is not None
     assert device.owner_user_id == seed_admin.id
     assert device.approved_by_user_id == seed_admin.id
+
+
+def test_authenticated_compute_registration_does_not_require_emergency_permission(
+    client, seed_admin, monkeypatch
+):
+    login_as(client, "admin", "secret")
+    monkeypatch.setattr(rbac, "has_permission", lambda *_args, **_kwargs: False)
+
+    response = client.post(
+        "/agent-devices/claim-auth",
+        json={
+            "label": "Compute-only Mac",
+            "public_key": _public_key(),
+            "environment": "production",
+            "instance_id": "00000000-0000-0000-0000-000000000000",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["owner_user_id"] == seed_admin.id
 
 
 def test_authenticated_claim_cannot_move_key_to_another_account_or_restore_revocation(

@@ -22,6 +22,8 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from robopark_api.compute_bridge import MAX_FRAME_BYTES as COMPUTE_MAX_FRAME_BYTES
+from robopark_api.compute_bridge import create_compute_router
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.models import AccessStatus, AgentDevice, TelegramAccount, User
@@ -389,6 +391,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
         max_connections=100,
         upstream_reads_per_second=settings.emergency_bridge_upstream_reads_per_second,
     )
+    compute_router = create_compute_router(session_factory, settings)
 
     async def probe_scheduler() -> None:
         while True:
@@ -425,6 +428,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+            await compute_router.shutdown()
 
     app = FastAPI(
         title="Robopark Emergency Bridge",
@@ -436,6 +440,8 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
     authority_slots = asyncio.Semaphore(16)
     authority_waiters = 0
     app.state.registry = registry
+    app.include_router(compute_router)
+    app.state.compute_registry = compute_router.registry
 
     def authenticate_internal(request: Request, body: bytes) -> None:
         timestamp = request.headers.get("X-Robopark-Timestamp", "")
@@ -1064,7 +1070,7 @@ def main() -> None:
         host="0.0.0.0",
         port=8091,
         workers=1,
-        ws_max_size=MAX_FRAME_BYTES,
+        ws_max_size=max(MAX_FRAME_BYTES, COMPUTE_MAX_FRAME_BYTES),
         ws_max_queue=1,
     )
 

@@ -195,6 +195,11 @@ chmod 755 '/Library/Application Support/RoboparkUpdater'
 chown root:wheel '/Library/Application Support/RoboparkUpdater/config.json' '/Library/Application Support/RoboparkUpdater/update-root.json'
 chmod 644 '/Library/Application Support/RoboparkUpdater/config.json' '/Library/Application Support/RoboparkUpdater/update-root.json'
 /bin/launchctl bootstrap system /Library/LaunchDaemons/ru.robopark.update-helper.plist 2>/dev/null || true
+install_lock='/Library/Application Support/RoboparkUpdater/install.lock'
+if [ -f "$install_lock/state" ] && [ ! -L "$install_lock/state" ] && [ "$(/usr/bin/stat -f %u "$install_lock/state")" = 0 ]; then
+  mode=$(/usr/bin/awk -F= '$1 == "mode" { print $2 }' "$install_lock/state")
+  case "$mode" in auto|package) /bin/rm -f "$install_lock/state"; /bin/rmdir "$install_lock" 2>/dev/null || true;; esac
+fi
 session_uid=$(/usr/bin/stat -f %u /dev/console)
 case "$session_uid" in ''|*[!0-9]*) exit 0;; esac
 if [ "$session_uid" -ge 501 ]; then
@@ -339,6 +344,11 @@ def build(
         env=env,
         check=True,
     )
+    subprocess.run(
+        ["swift", "build", *swift_options, "--product", "RoboparkComputeWorker"],
+        env=env,
+        check=True,
+    )
     bin_path = Path(
         subprocess.check_output(
             ["swift", "build", *swift_options, "--show-bin-path"], env=env, text=True
@@ -361,6 +371,15 @@ def build(
             raise ValueError("unexpected_binary_architecture")
         subprocess.run(["strip", "-S", str(executable)], check=True)
         shutil.copy2(ROOT / "apps/macos/Resources/panel.html", resources / "panel.html")
+        shutil.copy2(ROOT / "apps/macos/Resources/compute-peer.html", resources / "compute-peer.html")
+        shutil.copy2(ROOT / "scripts/macos_uninstall.sh", resources / "uninstall.command")
+        (resources / "uninstall.command").chmod(0o755)
+        compute_worker = executable.parent / "RoboparkComputeWorker"
+        shutil.copy2(bin_path / "RoboparkComputeWorker", compute_worker)
+        compute_worker.chmod(0o755)
+        if subprocess.check_output(["lipo", "-archs", str(compute_worker)], text=True).strip() != "arm64":
+            raise ValueError("unexpected_compute_worker_architecture")
+        subprocess.run(["strip", "-S", str(compute_worker)], check=True)
         workspace = stage_workspace(
             web / "dist", resources / "workspace", version=version, commit=source_commit
         )
@@ -391,6 +410,7 @@ def build(
             "CFBundleDisplayName": "Robopark",
             "CFBundleExecutable": "RoboparkAgent",
             "CFBundlePackageType": "APPL",
+            "NSLocalNetworkUsageDescription": "Robopark использует локальную сеть для прямой обработки изображений на этом Mac.",
             **bundle_versions(version, int(time.time())),
             "LSMinimumSystemVersion": "13.0",
             "LSUIElement": True,
@@ -416,6 +436,8 @@ def build(
         ]
         if sign_application:
             signing.append("--timestamp")
+        subprocess.run([*signing, str(compute_worker)], check=True)
+        subprocess.run(["codesign", "--verify", "--strict", str(compute_worker)], check=True)
         helper_dir = payload / "Library/PrivilegedHelperTools"
         helper_dir.mkdir(parents=True)
         helper = helper_dir / "RoboparkUpdater"
@@ -437,14 +459,127 @@ def build(
         (helper_support / "update-root.json").write_text(
             json.dumps({"ed25519": public}) + "\n"
         )
+        numeric = info["CFBundleVersion"]
+        release_version = info["RoboparkReleaseVersion"]
         scripts = work / "scripts"
         scripts.mkdir()
-        (scripts / "preinstall").write_text("""#!/bin/sh
+        (scripts / "preinstall").write_text(f"""#!/bin/sh
 set -eu
+support='/Library/Application Support/RoboparkUpdater'
+install_lock="$support/install.lock"
+created_lock=0
+cleanup_lock() {{
+  status=$?
+  trap - EXIT HUP INT TERM
+  if [ "$status" -ne 0 ] && [ "$created_lock" -eq 1 ]; then
+    /bin/rm -f "$install_lock/state"
+    /bin/rmdir "$install_lock" 2>/dev/null || true
+  fi
+  exit "$status"
+}}
+trap cleanup_lock EXIT HUP INT TERM
+if [ ! -e "$support" ]; then
+  /bin/mkdir "$support"
+  /usr/sbin/chown root:wheel "$support"
+  /bin/chmod 755 "$support"
+fi
+if [ -L "$support" ] || [ "$(/usr/bin/stat -f %u "$support")" != 0 ] || [ $((8#$(/usr/bin/stat -f %Lp "$support") & 8#022)) -ne 0 ]; then
+  echo 'Robopark updater support directory is unsafe.' >&2
+  exit 1
+fi
+auto_lock=0
+if [ -e "$install_lock" ]; then
+  if [ -L "$install_lock" ] || [ "$(/usr/bin/stat -f %u "$install_lock")" != 0 ]; then
+    echo 'Robopark installation lock is unsafe.' >&2
+    exit 1
+  fi
+  lock_state="$install_lock/state"
+  package_path=${{PACKAGE_PATH:-}}
+  if [ "$package_path" = "$support/verified-update.pkg" ] && [ -f "$package_path" ] && [ ! -L "$package_path" ] && \
+     [ "$(/usr/bin/stat -f %u "$package_path")" = 0 ] && [ "$(/usr/bin/stat -f %g "$package_path")" = 0 ] && \
+     [ $((8#$(/usr/bin/stat -f %Lp "$package_path") & 8#077)) -eq 0 ] && \
+     [ -f "$lock_state" ] && [ ! -L "$lock_state" ] && \
+     [ "$(/usr/bin/stat -f %u "$lock_state")" = 0 ] && [ $((8#$(/usr/bin/stat -f %Lp "$lock_state") & 8#077)) -eq 0 ]; then
+    lock_mode=$(/usr/bin/awk -F= '$1 == "mode" {{ print $2 }}' "$lock_state")
+    helper_pid=$(/usr/bin/awk -F= '$1 == "helper_pid" {{ print $2 }}' "$lock_state")
+    case "$helper_pid" in ''|*[!0-9]*) helper_pid=0;; esac
+    if [ "$lock_mode" = auto ] && [ "$(/bin/ps -p "$helper_pid" -o comm= 2>/dev/null | /usr/bin/xargs)" = '/Library/PrivilegedHelperTools/RoboparkUpdater' ]; then
+      auto_lock=1
+    fi
+  fi
+  if [ "$auto_lock" -eq 1 ]; then :
+  else
+  now=$(/bin/date +%s); lock_time=$(/usr/bin/stat -f %m "$install_lock")
+  installer_count=$(/bin/ps -axo comm= | /usr/bin/grep -Fxc '/usr/sbin/installer' || true)
+  if [ $((now - lock_time)) -lt 600 ] || [ "$installer_count" -gt 1 ]; then
+    echo 'Another Robopark installation is active; retry after it completes.' >&2
+    exit 1
+  fi
+  /bin/rm -f "$install_lock/state"
+  /bin/rmdir "$install_lock" 2>/dev/null || {{ echo 'Robopark installation lock cannot be recovered safely.' >&2; exit 1; }}
+  fi
+fi
+if [ "$auto_lock" -eq 0 ]; then
+  /bin/mkdir -m 700 "$install_lock"
+  created_lock=1
+  /usr/bin/printf '%s\n' 'mode=package' 'version={release_version}' > "$install_lock/state"
+  /usr/sbin/chown root:wheel "$install_lock" "$install_lock/state"
+  /bin/chmod 700 "$install_lock"
+  /bin/chmod 600 "$install_lock/state"
+fi
 if [ -L /Applications/Robopark.app ]; then
   echo 'Refusing a symbolic-link application destination.' >&2
   exit 1
 fi
+if [ -e '/Library/Application Support/RoboparkUpdater/retiring' ]; then
+  echo 'Robopark is being removed; retry installation after removal completes.' >&2
+  exit 1
+fi
+if [ -e "$support/lifecycle.lock" ]; then
+  if [ "$auto_lock" -ne 1 ]; then
+    echo 'Another Robopark installation is active; retry after it completes.' >&2
+    exit 1
+  fi
+  authorized=0; tries=0
+  while [ "$tries" -lt 20 ]; do
+    state="$support/lifecycle.lock/state.json"
+    if [ -f "$state" ] && [ ! -L "$state" ] && [ "$(/usr/bin/stat -f %u "$state")" = 0 ] && [ $((8#$(/usr/bin/stat -f %Lp "$state") & 8#077)) -eq 0 ]; then
+      installer_pid=$(/usr/bin/plutil -extract installer_pid raw -o - "$state" 2>/dev/null || true)
+      case "$installer_pid" in
+        ''|*[!0-9]*) ;;
+        *) [ "$(/bin/ps -p "$installer_pid" -o comm= 2>/dev/null | /usr/bin/xargs)" = '/usr/sbin/installer' ] && authorized=1 && break ;;
+      esac
+    fi
+    tries=$((tries + 1)); /bin/sleep 0.5
+  done
+  if [ "$authorized" -ne 1 ]; then
+    echo 'Another Robopark installation is active; retry after it completes.' >&2
+    exit 1
+  fi
+fi
+installed=$(/usr/libexec/PlistBuddy -c 'Print :RoboparkReleaseVersion' /Applications/Robopark.app/Contents/Info.plist 2>/dev/null || true)
+case "$installed" in
+  '') ;;
+  *)
+    if ! /usr/bin/printf '%s\n' "$installed" | /usr/bin/grep -Eq '^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$'; then
+      echo 'Existing Robopark version is invalid; refusing replacement.' >&2; exit 1
+    fi
+    old_base=${{installed%%-*}}; old_suffix=${{installed#"$old_base"}}
+    new='{release_version}'; new_base=${{new%%-*}}; new_suffix=${{new#"$new_base"}}
+    old_ifs=$IFS; IFS=.; set -- $old_base; IFS=$old_ifs; old_a=$1; old_b=$2; old_c=$3
+    old_ifs=$IFS; IFS=.; set -- $new_base; IFS=$old_ifs; new_a=$1; new_b=$2; new_c=$3
+    old_stage=1; old_rc=0; new_stage=1; new_rc=0
+    if [ -n "$old_suffix" ]; then old_stage=0; old_rc=${{old_suffix#-rc.}}; fi
+    if [ -n "$new_suffix" ]; then new_stage=0; new_rc=${{new_suffix#-rc.}}; fi
+    if [ "$old_a" -gt "$new_a" ] || {{ [ "$old_a" -eq "$new_a" ] && [ "$old_b" -gt "$new_b" ]; }} || \
+       {{ [ "$old_a" -eq "$new_a" ] && [ "$old_b" -eq "$new_b" ] && [ "$old_c" -gt "$new_c" ]; }} || \
+       {{ [ "$old_a" -eq "$new_a" ] && [ "$old_b" -eq "$new_b" ] && [ "$old_c" -eq "$new_c" ] && [ "$old_stage" -gt "$new_stage" ]; }} || \
+       {{ [ "$old_a" -eq "$new_a" ] && [ "$old_b" -eq "$new_b" ] && [ "$old_c" -eq "$new_c" ] && [ "$old_stage" -eq "$new_stage" ] && [ "$old_rc" -gt "$new_rc" ]; }}; then
+      echo 'Refusing to downgrade Robopark.' >&2
+      exit 1
+    fi
+    ;;
+esac
 """)
         (scripts / "postinstall").write_text(postinstall_script())
         for script in scripts.iterdir():
@@ -455,7 +590,6 @@ fi
             ["codesign", "--verify", "--deep", "--strict", str(app)], check=True
         )
         # .pkg version is numeric; the app and signed catalog retain full semver.
-        numeric = info["CFBundleVersion"]
         package = output / filename
         command = [
             "pkgbuild",

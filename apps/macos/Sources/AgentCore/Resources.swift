@@ -18,4 +18,11 @@ public struct ResourceTelemetry: Equatable {
         let thermalLimit = thermalState == "fair" || cpuPercent >= 80 || memoryPercent >= 80 ? 1 : min(8, base)
         return thermalLimit
     }
+
+    public func computeCapacity(activeJobs: Int, ready: Bool, paused: Bool, lowPower: Bool) -> Int {
+        guard ready, !paused, !lowPower, activeJobs == 0,
+              thermalState != "serious", thermalState != "critical",
+              cpuPercent < 70, memoryPercent < 80 else { return 0 }
+        return 1
+    }
 }

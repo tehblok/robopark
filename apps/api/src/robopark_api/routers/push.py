@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import and_, delete, exists, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from robopark_api.config import get_settings
 from robopark_api.crypto import encrypt_secret
 from robopark_api.db import get_db
-from robopark_api.deps import require_approved, require_user
+from robopark_api.deps import require_approved, require_royal, require_user
 from robopark_api.models import AccessStatus, Role, User, UserPark
 from robopark_api.notification_delivery_models import NotificationDelivery
 from robopark_api.schedule_models import (
@@ -24,7 +24,9 @@ from robopark_api.schedule_models import (
     PushSubscription,
     SystemIncidentOccurrence,
 )
-from robopark_api.schedule_schemas import PushPreferenceIn, PushSubscriptionIn
+from robopark_api.schedule_schemas import AnnouncementIn, PushPreferenceIn, PushSubscriptionIn
+from robopark_api.services import reliable_actions
+from robopark_api.services.database_locks import database_idempotency_lock
 from robopark_api.services.schedules import NOTIFICATION_ROLES, RoutingEvent, eligible_recipients
 
 router = APIRouter(prefix="/push", tags=["push"])
@@ -33,6 +35,10 @@ logger = logging.getLogger(__name__)
 _P256_ORDER = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 INBOX_RETENTION = timedelta(days=1)
 NOTIFICATION_CLEANUP_BATCH_SIZE = 500
+
+
+def _notification_action(event_type: str) -> str | None:
+    return "open_inbox" if event_type == "action_required" else None
 
 
 def _visible_inbox_scope(user: User):
@@ -352,6 +358,13 @@ class PushService:
                     occurrence.last_seen_at = now
                 else:
                     occurrence.resolved_at = now
+                    self.emit_in_transaction(
+                        db,
+                        event_type="system_recovered",
+                        park_id=None,
+                        protected_text="Работа системы восстановлена",
+                        event_key=f"system-recovered:{occurrence.id}",
+                    )
             db.commit()
 
 
@@ -377,6 +390,54 @@ def push_config(user: User = Depends(require_approved)):
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "push_not_configured")
     _, public_key = _vapid_key_pair(settings.secret_key)
     return {"public_key": public_key}
+
+
+@router.post("/announcements")
+def create_announcement(
+    payload: AnnouncementIn,
+    request: Request,
+    royal: User = Depends(require_royal),
+    db: Session = Depends(get_db),
+):
+    request_id = str(payload.request_id)
+    action_payload = payload.model_dump(mode="json", exclude={"request_id"})
+    lock_key = f"push-announcement:{royal.id}:{request_id}"
+    with database_idempotency_lock(db, lock_key):
+        try:
+            begin = reliable_actions.begin_action(
+                db,
+                actor=royal,
+                resource_type="push_announcement",
+                resource_id="global",
+                action="announce",
+                idempotency_key=request_id,
+                payload=action_payload,
+            )
+            if begin.result is not None:
+                return begin.result
+            event = request.app.state.push_service.emit_in_transaction(
+                db,
+                event_type=payload.event_type,
+                park_id=None,
+                protected_text=payload.protected_text,
+                event_key=f"announcement:{request_id}",
+            )
+            result = {
+                "request_id": request_id,
+                "event_id": event["event_id"],
+                "event_type": payload.event_type,
+                "action": _notification_action(payload.event_type),
+                "counters": {
+                    "inbox_created": len(event["internal_recipient_ids"]),
+                    "push_eligible": len(event["recipient_ids"]),
+                },
+            }
+            reliable_actions.complete_action(db, begin.row, result)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    return result
 
 
 @router.post("/subscriptions", status_code=status.HTTP_201_CREATED)
@@ -433,29 +494,50 @@ def preferences(
 
 
 @router.get("/inbox")
-def inbox(user: User = Depends(require_approved), db: Session = Depends(get_db)):
+def inbox(
+    request: Request,
+    response: Response,
+    user: User = Depends(require_approved),
+    db: Session = Depends(get_db),
+):
     now = datetime.now(UTC)
-    rows = db.scalars(
-        select(NotificationEvent)
-        .where(
-            NotificationEvent.user_id == user.id,
-            _visible_inbox_scope(user),
-            _unexpired_inbox_scope(now=now),
+    rows = list(
+        db.scalars(
+            select(NotificationEvent)
+            .where(
+                NotificationEvent.user_id == user.id,
+                _visible_inbox_scope(user),
+                _unexpired_inbox_scope(now=now),
+            )
+            .order_by(NotificationEvent.created_at.desc(), NotificationEvent.id.desc())
+            .limit(200)
         )
-        .order_by(NotificationEvent.created_at.desc(), NotificationEvent.id.desc())
-        .limit(200)
     )
-    return [
+    payload = [
         {
             "id": row.id,
             "event_type": row.event_type,
             "park_id": row.park_id,
             "protected_text": row.protected_text,
+            "action": _notification_action(row.event_type),
             "read_at": row.read_at,
             "created_at": row.created_at,
         }
         for row in rows
     ]
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=lambda value: value.isoformat() if isinstance(value, datetime) else str(value),
+    ).encode()
+    etag = f'"{hashlib.sha256(canonical).hexdigest()}"'
+    headers = {"Cache-Control": "private, no-cache", "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    response.headers.update(headers)
+    return payload
 
 
 @router.post("/inbox/{event_id}/read")

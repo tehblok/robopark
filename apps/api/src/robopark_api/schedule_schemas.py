@@ -1,8 +1,9 @@
 from datetime import date, datetime, time
 from typing import Literal
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ScheduleKind = Literal["shift", "vacation", "sick"]
 SchedulePattern = Literal["none", "5/2", "4/4", "3/3", "2/2"]
@@ -162,3 +163,27 @@ class PushSubscriptionIn(BaseModel):
 class PushPreferenceIn(BaseModel):
     categories: list[str] = Field(max_length=32)
     system_enabled: bool = True
+
+
+class AnnouncementIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID
+    event_type: Literal["announcement", "maintenance", "action_required"]
+    protected_text: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("protected_text")
+    @classmethod
+    def plain_bounded_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value or any(ord(char) < 32 and char not in "\n\t" for char in value):
+            raise ValueError("invalid_plain_text")
+        return value
+
+    @model_validator(mode="after")
+    def action_has_no_url(self):
+        if self.event_type == "action_required" and any(
+            marker in self.protected_text.casefold() for marker in ("http://", "https://", "www.")
+        ):
+            raise ValueError("action_url_not_allowed")
+        return self

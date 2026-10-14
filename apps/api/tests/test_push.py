@@ -1,5 +1,6 @@
 import time
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import sessionmaker
@@ -41,6 +42,145 @@ def _operator(db, park_id: int) -> User:
     db.commit()
     db.refresh(user)
     return user
+
+
+def _active_user(db, *, username: str, role: str) -> User:
+    user = User(
+        username=username,
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db, role),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def test_royal_announcement_reaches_every_active_approved_role_even_on_leave(
+    client,
+    db_session,
+    seed_royal,
+    seed_admin,
+    seed_mechanic,
+    seed_pending_operator,
+    seed_park_with_tracker,
+):
+    operator = _active_user(db_session, username="announcement-operator", role=RoleSlug.OPERATOR)
+    driver = _active_user(db_session, username="announcement-driver", role=RoleSlug.DRIVER)
+    inactive = _active_user(db_session, username="announcement-inactive", role=RoleSlug.DRIVER)
+    inactive.is_active = False
+    now = datetime.now(UTC)
+    db_session.add(
+        ScheduleEntry(
+            owner_user_id=seed_mechanic.id,
+            park_id=seed_park_with_tracker.id,
+            kind="vacation",
+            start_at=now - timedelta(days=1),
+            end_at=now + timedelta(days=1),
+            created_by_user_id=seed_mechanic.id,
+            updated_by_user_id=seed_mechanic.id,
+        )
+    )
+    db_session.commit()
+    request_id = str(uuid4())
+    payload = {
+        "request_id": request_id,
+        "event_type": "maintenance",
+        "protected_text": "Технические работы в 22:00",
+    }
+    login_as(client, seed_royal.username, "secret")
+
+    created = client.post("/push/announcements", json=payload)
+    replay = client.post("/push/announcements", json=payload)
+
+    assert created.status_code == replay.status_code == 200
+    assert created.json() == {
+        "request_id": request_id,
+        "event_id": created.json()["event_id"],
+        "event_type": "maintenance",
+        "action": None,
+        "counters": {"inbox_created": 5, "push_eligible": 5},
+    }
+    assert replay.json() == created.json()
+    excluded_ids = {inactive.id, seed_pending_operator.id}
+    assert not set(
+        db_session.scalars(
+            select(NotificationEvent.user_id).where(NotificationEvent.user_id.in_(excluded_ids))
+        )
+    )
+    for recipient in (seed_royal, seed_admin, seed_mechanic, operator, driver):
+        login_as(client, recipient.username, "secret")
+        inbox = client.get("/push/inbox").json()
+        assert [(item["event_type"], item["protected_text"]) for item in inbox] == [
+            ("maintenance", "Технические работы в 22:00")
+        ]
+
+    login_as(client, seed_royal.username, "secret")
+    conflict = client.post(
+        "/push/announcements", json={**payload, "protected_text": "Другой текст"}
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "reliable_action_payload_conflict"
+
+    db_session.execute(
+        NotificationEvent.__table__.update()
+        .where(NotificationEvent.event_type == "maintenance")
+        .values(created_at=datetime.now(UTC) - timedelta(hours=25))
+    )
+    db_session.commit()
+    push.prune_notification_data(db_session)
+    replay_after_retention = client.post("/push/announcements", json=payload)
+    assert replay_after_retention.json() == created.json()
+    assert (
+        db_session.scalars(
+            select(NotificationEvent).where(NotificationEvent.event_type == "maintenance")
+        ).all()
+        == []
+    )
+
+
+def test_announcements_are_royal_only_and_action_is_fixed(client, seed_admin, seed_royal):
+    payload = {
+        "request_id": str(uuid4()),
+        "event_type": "action_required",
+        "protected_text": "Откройте приложение и подтвердите ознакомление",
+    }
+    login_as(client, seed_admin.username, "secret")
+    assert client.post("/push/announcements", json=payload).status_code == 403
+
+    login_as(client, seed_royal.username, "secret")
+    response = client.post("/push/announcements", json=payload)
+    assert response.status_code == 200
+    assert response.json()["action"] == "open_inbox"
+    inbox = client.get("/push/inbox").json()
+    assert inbox[0]["action"] == "open_inbox"
+    assert "url" not in inbox[0]
+
+
+def test_announcement_payload_is_bounded_and_has_no_action_url(client, seed_royal):
+    login_as(client, seed_royal.username, "secret")
+    base = {"request_id": str(uuid4()), "event_type": "action_required"}
+
+    assert (
+        client.post(
+            "/push/announcements",
+            json={**base, "protected_text": "Посмотрите https://example.invalid"},
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post("/push/announcements", json={**base, "protected_text": "x" * 1001}).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/push/announcements",
+            json={**base, "protected_text": "Откройте приложение", "url": "https://x.invalid"},
+        ).status_code
+        == 422
+    )
 
 
 def test_submit_review_replay_keeps_persisted_reviewer_after_shift_change(
@@ -434,13 +574,72 @@ def test_inbox_hides_owner_alert_after_role_is_downgraded(client, db_session, se
     )
     notification_id = f"{event['event_id']}-{seed_royal.id}"
     login_as(client, seed_royal.username, "secret")
-    assert [item["id"] for item in client.get("/push/inbox").json()] == [notification_id]
+    visible = client.get("/push/inbox")
+    assert [item["id"] for item in visible.json()] == [notification_id]
 
     seed_royal.role_id = role_id_for(db_session, RoleSlug.MECHANIC)
     db_session.commit()
 
-    assert client.get("/push/inbox").json() == []
+    hidden = client.get("/push/inbox", headers={"If-None-Match": visible.headers["etag"]})
+    assert hidden.status_code == 200
+    assert hidden.headers["etag"] != visible.headers["etag"]
+    assert hidden.json() == []
     assert client.post(f"/push/inbox/{notification_id}/read").status_code == 404
+
+
+def test_inbox_etag_is_private_and_changes_with_visible_authorized_state(
+    client, db_session, seed_mechanic
+):
+    assert client.get("/push/inbox", headers={"If-None-Match": '"anything"'}).status_code == 401
+    event = client.app.state.push_service.emit_for_tests(
+        event_type="return",
+        park_id=seed_mechanic.parks[0].id,
+        protected_text="Return task",
+        recipient_user_ids={seed_mechanic.id},
+    )
+    notification_id = f"{event['event_id']}-{seed_mechanic.id}"
+    login_as(client, seed_mechanic.username, "secret")
+
+    first = client.get("/push/inbox")
+    assert first.status_code == 200
+    assert first.headers["cache-control"] == "private, no-cache"
+    etag = first.headers["etag"]
+    unchanged = client.get("/push/inbox", headers={"If-None-Match": etag})
+    assert unchanged.status_code == 304
+    assert unchanged.content == b""
+
+    assert client.post(f"/push/inbox/{notification_id}/read").status_code == 200
+    read = client.get("/push/inbox", headers={"If-None-Match": etag})
+    assert read.status_code == 200
+    assert read.headers["etag"] != etag
+
+    row = db_session.get(NotificationEvent, notification_id)
+    row.created_at = datetime.now(UTC) - timedelta(hours=25)
+    db_session.commit()
+    expired = client.get("/push/inbox", headers={"If-None-Match": read.headers["etag"]})
+    assert expired.status_code == 200
+    assert expired.json() == []
+    assert expired.headers["etag"] != read.headers["etag"]
+
+    fresh = client.app.state.push_service.emit_for_tests(
+        event_type="return",
+        park_id=seed_mechanic.parks[0].id,
+        protected_text="Another task",
+        recipient_user_ids={seed_mechanic.id},
+    )
+    visible = client.get("/push/inbox")
+    db_session.execute(
+        delete(UserPark).where(
+            UserPark.user_id == seed_mechanic.id,
+            UserPark.park_id == seed_mechanic.parks[0].id,
+        )
+    )
+    db_session.commit()
+    hidden = client.get("/push/inbox", headers={"If-None-Match": visible.headers["etag"]})
+    assert hidden.status_code == 200
+    assert hidden.json() == []
+    assert hidden.headers["etag"] != visible.headers["etag"]
+    assert fresh["event_id"]
 
 
 def test_delayed_targeted_notification_skips_changed_role(client, db_session, seed_mechanic):

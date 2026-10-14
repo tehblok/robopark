@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
-from robopark_api.deps import require_emergency_viewer
+from robopark_api.deps import require_approved, require_emergency_viewer
 from robopark_api.models import AccessStatus, AgentDevice, AgentEnrollment, User
 from robopark_api.services import audit, emergency_bridge_client, rbac, robot_registry
 from robopark_api.services.login_throttle import client_ip
@@ -160,6 +160,7 @@ def info(response: Response, settings: Settings = Depends(get_settings)) -> dict
         "protocol": PROTOCOL,
         "claim_url": "/api/agent-devices/claim",
         "websocket_url": "/api/emergency/bridge/ws",
+        "compute_websocket_url": "/api/emergency/bridge/compute/ws",
         "signed_profile": _signed_profile(),
     }
 
@@ -475,7 +476,7 @@ def _authenticated_device_payload(device: AgentDevice) -> dict:
 def claim_authenticated(
     payload: AuthenticatedClaimIn,
     response: Response,
-    user: User = Depends(require_emergency_viewer),
+    user: User = Depends(require_approved),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> dict:
@@ -495,12 +496,7 @@ def claim_authenticated(
         .with_for_update(of=User)
         .execution_options(populate_existing=True)
     )
-    if (
-        owner is None
-        or not owner.is_active
-        or owner.access_status != AccessStatus.approved.value
-        or not rbac.has_permission(db, owner, rbac.PERMISSION_NAV_EMERGENCY)
-    ):
+    if owner is None or not owner.is_active or owner.access_status != AccessStatus.approved.value:
         raise HTTPException(403, "device_enrollment_forbidden")
     existing = db.scalar(
         select(AgentDevice).where(

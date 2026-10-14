@@ -10,6 +10,7 @@ def test_distribution_is_independent_of_frontend_and_has_bounded_file_allowlist(
     monkeypatch.setattr(agent_distribution, "distribution_root", lambda: tmp_path)
     (tmp_path / "catalog.json").write_text('{"payload":"test","signature":"test"}')
     (tmp_path / "Robopark-0.2.0-rc.44-arm64.pkg").write_bytes(b"package")
+    (tmp_path / "Robopark-0.2.3-rc.2-arm64.command").write_bytes(b"#!/bin/bash\nexit 0\n")
     (tmp_path / "secret.key").write_bytes(b"never serve")
     app = FastAPI()
     app.include_router(agent_distribution.router)
@@ -20,6 +21,10 @@ def test_distribution_is_independent_of_frontend_and_has_bounded_file_allowlist(
         package = client.get("/distribution/v1/macos/Robopark-0.2.0-rc.44-arm64.pkg")
         assert package.status_code == 200
         assert package.content == b"package"
+        command = client.get("/distribution/v1/macos/Robopark-0.2.3-rc.2-arm64.command")
+        assert command.status_code == 200
+        assert command.content.startswith(b"#!/bin/bash")
+        assert command.headers["content-disposition"].startswith("attachment;")
         for path in ("secret.key", "../secret.key", "%2e%2e%2fsecret.key", "update-root.json"):
             assert client.get("/distribution/v1/macos/" + path).status_code == 404
 

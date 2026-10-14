@@ -4,6 +4,9 @@ import { Button } from '../design-system/actions/Button'
 import { EmptyState, ErrorState, LoadingState } from '../design-system/feedback/AsyncState'
 import { Panel } from '../design-system/layout/PageLayout'
 import { decodeApplicationServerKey, enableSystemNotifications } from './notifications'
+import { desktopRuntime } from './desktopRuntime'
+import { loadNotificationInbox, rememberNotificationRead } from './notificationInbox'
+import { currentDeviceResourceCache } from '../lib/deviceResourceCache'
 
 export type NotificationApiClient = {
   notificationInbox: () => Promise<NotificationEvent[]>
@@ -24,6 +27,12 @@ const eventLabel: Record<string, string> = {
   disk_low: 'Мало места',
   update_failure: 'Сбой обновления',
   server_problem: 'Проблема системы',
+  system_problem: 'Проблема системы',
+  network_problem: 'Проблема сети',
+  system_recovered: 'Работа восстановлена',
+  announcement: 'Объявление',
+  maintenance: 'Технические работы',
+  action_required: 'Требуется действие',
 }
 
 const NOTIFICATION_RETENTION_MS = 24 * 60 * 60 * 1_000
@@ -49,12 +58,32 @@ function removeExpired(items: NotificationEvent[] | null, now = Date.now()) {
 export function NotificationCenter({ apiClient = api }: { apiClient?: NotificationApiClient }) {
   const [items, setItems] = useState<NotificationEvent[] | null>(null)
   const [error, setError] = useState(false)
+  const [cached, setCached] = useState(false)
   const [reload, setReload] = useState(0)
   const [readError, setReadError] = useState<string | null>(null)
   const [readingId, setReadingId] = useState<string | null>(null)
   const reading = useRef<string | null>(null)
   const [systemStatus, setSystemStatus] = useState<'idle' | 'busy' | 'enabled' | 'denied' | 'unsupported' | 'error'>('idle')
-  useEffect(() => { let active = true; setError(false); void apiClient.notificationInbox().then(value => { if (active) { setItems(value); setError(false) } }).catch(() => { if (active) setError(true) }); return () => { active = false } }, [apiClient, reload])
+  useEffect(() => {
+    let active = true
+    let pending = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const refresh = async () => {
+      if (!active || pending) return
+      clearTimeout(timer); pending = true
+      let delay = 60_000
+      try {
+        const value = await loadNotificationInbox(() => apiClient.notificationInbox())
+        if (active) { setItems(value.items); setCached(value.offline); setError(false) }
+        if (value.offline) delay = 300_000
+      } catch { if (active) setError(true); delay = 300_000 }
+      finally { pending = false; if (active) timer = setTimeout(() => { if (document.visibilityState !== 'hidden') void refresh() }, delay) }
+    }
+    const resume = () => { if (document.visibilityState !== 'hidden') void refresh() }
+    setError(false); void refresh()
+    document.addEventListener('visibilitychange', resume); window.addEventListener('online', resume)
+    return () => { active = false; clearTimeout(timer); document.removeEventListener('visibilitychange', resume); window.removeEventListener('online', resume) }
+  }, [apiClient, reload])
   useEffect(() => {
     if (!items) return
     const now = Date.now()
@@ -82,6 +111,8 @@ export function NotificationCenter({ apiClient = api }: { apiClient?: Notificati
   }, [items])
   const markRead = async (notification: NotificationEvent) => {
     const { id } = notification
+    const readStore = currentDeviceResourceCache()
+    const readGeneration = readStore?.captureGeneration()
     if (reading.current) return
     reading.current = id
     setReadingId(id)
@@ -89,7 +120,10 @@ export function NotificationCenter({ apiClient = api }: { apiClient?: Notificati
     try {
       const result = await apiClient.notificationRead(id)
       if (!result.ok) throw new Error('notification_read_failed')
-      setItems(current => current?.map(item => item.id === id ? { ...item, read_at: new Date().toISOString() } : item) ?? null)
+      if (currentDeviceResourceCache() !== readStore || (readStore && !readStore.isGenerationCurrent(readGeneration!))) return
+      const readAt = new Date(currentTime()).toISOString()
+      setItems(current => current?.map(item => item.id === id ? { ...item, read_at: readAt } : item) ?? null)
+      void rememberNotificationRead(id, readAt)
     } catch {
       const expiresAt = notificationExpiresAt(notification)
       if (expiresAt !== null && expiresAt <= currentTime()) {
@@ -126,8 +160,9 @@ export function NotificationCenter({ apiClient = api }: { apiClient?: Notificati
   if (error) return <ErrorState description="Уведомления остались на сервере. Повторите загрузку." onRetry={() => setReload(current => current + 1)} title="Не удалось загрузить уведомления" />
   if (!items) return <LoadingState label="Загружаем уведомления" />
   return <Panel title="Уведомления" description="События сохраняются здесь независимо от разрешения системных уведомлений.">
+    {cached ? <p role="status">Нет свежей связи. Показаны сохранённые уведомления за последние 24 часа.</p> : null}
     {readError ? <p role="alert">{readError}</p> : null}
-    {systemStatus !== 'enabled' ? <div className="rp-notification-system">
+    {desktopRuntime() ? <p>Системные уведомления macOS включаются в меню Robopark → Служба и подключение. Сообщения сохраняются здесь и без баннеров.</p> : systemStatus !== 'enabled' ? <div className="rp-notification-system">
       <Button disabled={systemStatus === 'busy'} onClick={() => void enablePush()} size="compact" variant="secondary">
         {systemStatus === 'busy' ? 'Включаем…' : 'Включить уведомления на устройстве'}
       </Button>

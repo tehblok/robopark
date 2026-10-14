@@ -16,6 +16,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
+from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.deps import require_user
 from robopark_api.inventory_schemas import (
@@ -99,6 +100,7 @@ def export_inventory(
     format: Literal["csv", "xlsx"] = "xlsx",
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ):
     try:
         media_type, filename, body = _run(
@@ -108,6 +110,9 @@ def export_inventory(
                 park_id=park_id,
                 all_parks=scope == "all",
                 format=format,
+                remote_compute_enabled=(
+                    settings.emergency_bridge_enabled and settings.compute_csv_offload_enabled
+                ),
             )
         )
     except OverflowError as exc:

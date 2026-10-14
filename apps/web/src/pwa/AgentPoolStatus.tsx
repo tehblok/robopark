@@ -1,21 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api, type AgentPoolStatus as PoolStatus } from '../api'
 import './AgentPoolStatus.css'
+import { statusLabel, formatBytes, ownerName, type GraphDevice } from './poolFormatting'
 
-const statusLabel: Record<PoolStatus['devices'][number]['status'], string> = {
-  online: 'в сети', ready: 'готов', busy: 'занят', corporate_unavailable: 'корпоративная сеть недоступна', paused: 'приостановлен', stale: 'нет свежих данных', offline: 'не в сети',
-}
-
-function formatBytes(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} МБ`
-  return `${Math.round(value / 1_000)} КБ`
-}
-
-function ownerName(device: PoolStatus['devices'][number]): string {
-  return device.owner_display_name || device.owner_username || 'Сотрудник'
-}
-
-function NetworkGraph({ status }: { status: PoolStatus }) {
+export function NetworkGraph({ status }: { status: { devices: GraphDevice[] } }) {
   const displayed = status.devices.slice(0, 12)
   const owners = Array.from(new Map(displayed.map(device => [device.owner_user_id ?? ownerName(device), ownerName(device)])).entries())
   let nextRowY = 36

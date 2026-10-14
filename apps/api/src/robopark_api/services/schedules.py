@@ -32,13 +32,29 @@ NOTIFICATION_ROLES = {
     "report": ({"operator", "admin", "royal"}, False),
     "review_task": ({"operator"}, False),
     "problem": ({"operator", "admin", "royal"}, False),
-    "anomaly": ({"operator", "admin", "royal"}, False),
+    "anomaly": ({"royal"}, False),
     "integration_down": ({"royal"}, False),
+    "network_problem": ({"royal"}, False),
     "disk_low": ({"royal"}, False),
     "update_failure": ({"royal"}, False),
     "server_problem": ({"royal"}, False),
+    "system_problem": ({"royal"}, False),
+    "system_recovered": ({"royal"}, False),
+    "announcement": ({"mechanic", "driver", "operator", "admin", "royal"}, False),
+    "maintenance": ({"mechanic", "driver", "operator", "admin", "royal"}, False),
+    "action_required": ({"mechanic", "driver", "operator", "admin", "royal"}, False),
 }
-CRITICAL_ROYAL_EVENTS = {"integration_down", "disk_low", "update_failure", "server_problem"}
+CRITICAL_ROYAL_EVENTS = {
+    "anomaly",
+    "integration_down",
+    "network_problem",
+    "disk_low",
+    "update_failure",
+    "server_problem",
+    "system_problem",
+    "system_recovered",
+}
+BROADCAST_EVENTS = {"announcement", "maintenance", "action_required"}
 ROUTING_BATCH_SIZE = 200
 
 
@@ -85,6 +101,8 @@ def eligible_recipients(event: RoutingEvent, at: datetime) -> list[User]:
 def _eligible_recipient_batch(
     event: RoutingEvent, at: datetime, users: list[User], requires_shift: bool
 ) -> list[User]:
+    if event.event_type in BROADCAST_EVENTS and event.park_id is None:
+        return users
     db = event.db
     user_ids = [user.id for user in users]
     park_users = (
@@ -184,14 +202,17 @@ def _eligible_recipient_batch(
         for user in users
         if (event.park_id is None or user.role == "royal" or user.id in park_users)
         and (
-            user.role == "royal"
-            and event.event_type in CRITICAL_ROYAL_EVENTS
-            or not states.get(user.id, (False, False, False))[1]
-            and (
-                not requires_shift
-                or states.get(user.id, (False, False, False))[0]
-                or not states.get(user.id, (False, False, False))[2]
-                and user.id in fallback_open
+            event.event_type in BROADCAST_EVENTS
+            or (
+                user.role == "royal"
+                and event.event_type in CRITICAL_ROYAL_EVENTS
+                or not states.get(user.id, (False, False, False))[1]
+                and (
+                    not requires_shift
+                    or states.get(user.id, (False, False, False))[0]
+                    or not states.get(user.id, (False, False, False))[2]
+                    and user.id in fallback_open
+                )
             )
         )
     ]

@@ -703,3 +703,23 @@ describe('API transport metadata', () => {
     expect(fetcher.mock.calls[2][1]).toEqual(expect.objectContaining({ headers: {} }))
   })
 })
+
+
+describe('conditional notification inbox', () => {
+  afterEach(() => { clearApiValidators(); vi.unstubAllGlobals() })
+  it('reuses a 304 inbox but drops validators on account change', async () => {
+    clearApiValidators()
+    const value = [{ id: 'event', protected_text: 'Private event' }]
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(value), { headers: { ETag: '"inbox-1"' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+      .mockResolvedValueOnce(new Response('[]'))
+    vi.stubGlobal('fetch', fetcher)
+    expect(await api.notificationInbox()).toEqual(value)
+    expect(await api.notificationInbox()).toEqual(value)
+    expect(fetcher.mock.calls[1][1].headers).toMatchObject({ 'If-None-Match': '"inbox-1"' })
+    clearApiValidators()
+    expect(await api.notificationInbox()).toEqual([])
+    expect(fetcher.mock.calls[2][1].headers).toEqual({})
+  })
+})

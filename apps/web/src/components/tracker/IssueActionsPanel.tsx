@@ -15,6 +15,7 @@ import { ru } from '../../i18n/ru'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { pendingTrackerSubmissions, trackerReliabilityError } from './trackerReliability'
 import { useCommentDraft } from './useCommentDraft'
+import { preparePhotoFile } from '../../pwa/mediaPipeline'
 import './task-card.css'
 
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
@@ -92,7 +93,13 @@ function AttachmentActions({
 
   const submitPhoto = async () => {
     if (!photoFile || !onAttach) return
-    if (await run('attach', () => onAttach(photoFile))) clearPhoto()
+    if (await run('attach', async () => {
+      // Prepare before the parent computes its idempotency identity; retain
+      // these exact bytes for a retry after a lost response.
+      const prepared = await preparePhotoFile(photoFile)
+      setPhotoFile(prepared)
+      await onAttach(prepared)
+    })) clearPhoto()
   }
 
   return (

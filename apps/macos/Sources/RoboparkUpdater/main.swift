@@ -1,9 +1,13 @@
 import Foundation
 import CryptoKit
 import AgentCore
+import Darwin
 
 private let support = URL(fileURLWithPath: "/Library/Application Support/RoboparkUpdater", isDirectory: true)
 private let appInfo = URL(fileURLWithPath: "/Applications/Robopark.app/Contents/Info.plist")
+private let retirement = support.appendingPathComponent("retiring")
+private let lifecycleLock = support.appendingPathComponent("lifecycle.lock", isDirectory: true)
+private let installLock = support.appendingPathComponent("install.lock", isDirectory: true)
 private let storage = SecureUpdateStorage(root: support, expectedOwner: 0, trustedAncestors: [
     URL(fileURLWithPath: "/Library", isDirectory: true),
     URL(fileURLWithPath: "/Library/Application Support", isDirectory: true),
@@ -26,6 +30,12 @@ private struct HelperState: Codable {
     var checked_at: Int64 = 0
 }
 
+private struct LifecycleState: Codable {
+    let helper_pid: Int32
+    let installer_pid: Int32?
+    let installer_started_at: Int64?
+}
+
 private final class RedirectDeny: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,
@@ -35,12 +45,16 @@ private final class RedirectDeny: NSObject, URLSessionTaskDelegate {
     }
 }
 
-private func requireSecureDirectory(_ url: URL) throws {
+private func requireSecureDirectory(_ url: URL, applicationsParent: Bool = false) throws {
     let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    let owner = (attributes[.ownerAccountID] as? NSNumber)?.uint32Value ?? UInt32.max
+    let group = (attributes[.groupOwnerAccountID] as? NSNumber)?.uint32Value ?? UInt32.max
+    let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
     guard values.isDirectory == true, values.isSymbolicLink != true,
-          (attributes[.ownerAccountID] as? NSNumber)?.intValue == 0,
-          ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o022 == 0 else {
+          applicationsParent
+            ? ApplicationInstallPathPolicy.allowsApplicationsDirectory(owner: owner, group: group, permissions: permissions)
+            : owner == 0 && permissions & 0o022 == 0 else {
         throw AgentError.invalidCatalog
     }
 }
@@ -89,8 +103,124 @@ private func writeState(_ state: HelperState) throws {
     try FileManager.default.setAttributes([.posixPermissions: 0o644, .ownerAccountID: 0, .groupOwnerAccountID: 0], ofItemAtPath: publicURL.path)
 }
 
+private func isRetiring() -> Bool {
+    FileManager.default.fileExists(atPath: retirement.path)
+}
+
+private var lifecycleStateURL: URL { lifecycleLock.appendingPathComponent("state.json") }
+
+private func processPath(_ pid: Int32) -> String? {
+    guard pid > 1 else { return nil }
+    var buffer = [CChar](repeating: 0, count: 4096)
+    let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+    guard length > 0 else { return nil }
+    return String(cString: buffer)
+}
+
+private func readLifecycleState() throws -> LifecycleState {
+    try requireSecureDirectory(lifecycleLock)
+    let values = try lifecycleStateURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+    let attributes = try FileManager.default.attributesOfItem(atPath: lifecycleStateURL.path)
+    guard values.isRegularFile == true, values.isSymbolicLink != true,
+          let size = values.fileSize, size > 0, size <= 4096,
+          (attributes[.ownerAccountID] as? NSNumber)?.intValue == 0,
+          ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o077 == 0 else {
+        throw AgentError.invalidCatalog
+    }
+    return try JSONDecoder().decode(LifecycleState.self, from: Data(contentsOf: lifecycleStateURL))
+}
+
+private func writeLifecycleState(installerPID: Int32? = nil, installerStartedAt: Int64? = nil) throws {
+    let bytes = try JSONEncoder().encode(LifecycleState(helper_pid: getpid(), installer_pid: installerPID,
+                                                        installer_started_at: installerStartedAt))
+    try bytes.write(to: lifecycleStateURL, options: [.atomic])
+    try FileManager.default.setAttributes([.posixPermissions: 0o600, .ownerAccountID: 0, .groupOwnerAccountID: 0],
+                                          ofItemAtPath: lifecycleStateURL.path)
+}
+
+private func anyInstallerRunning() -> Bool {
+    var pids = [pid_t](repeating: 0, count: 4096)
+    let listed = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+    guard listed > 0 else { return true }
+    let count = min(Int(listed), pids.count)
+    return pids.prefix(count).contains { processPath($0) == "/usr/sbin/installer" }
+}
+
+private func prepareLifecycleLock() throws {
+    if FileManager.default.fileExists(atPath: lifecycleLock.path) {
+        try requireSecureDirectory(lifecycleLock)
+        let children = try FileManager.default.contentsOfDirectory(atPath: lifecycleLock.path)
+        guard children.isEmpty || children == ["state.json"] else { throw AgentError.invalidCatalog }
+        if children == ["state.json"] {
+            let stale = try readLifecycleState()
+            if let installer = stale.installer_pid, installer > 1,
+               processPath(installer) == "/usr/sbin/installer" {
+                throw AgentError.invalidCatalog
+            }
+            let now = Int64(Date().timeIntervalSince1970)
+            if stale.installer_pid == -1,
+               now - (stale.installer_started_at ?? now) < 600 {
+                throw AgentError.invalidCatalog
+            }
+            if anyInstallerRunning() {
+                throw AgentError.invalidCatalog
+            }
+            try FileManager.default.removeItem(at: lifecycleStateURL)
+        }
+        // The kernel update lock is already held, so no earlier helper remains.
+        // A recorded installer is the only child allowed to outlive it.
+        guard rmdir(lifecycleLock.path) == 0 else { throw AgentError.invalidCatalog }
+    }
+    try FileManager.default.createDirectory(at: lifecycleLock, withIntermediateDirectories: false,
+                                            attributes: [.posixPermissions: 0o700, .ownerAccountID: 0, .groupOwnerAccountID: 0])
+    try writeLifecycleState()
+}
+
+private func removeLifecycleLock() {
+    try? FileManager.default.removeItem(at: lifecycleStateURL)
+    _ = rmdir(lifecycleLock.path)
+}
+
+private func prepareInstallLock(package: URL, startedAt: Int64) throws {
+    guard package.standardizedFileURL == support.appendingPathComponent("verified-update.pkg").standardizedFileURL else {
+        throw AgentError.invalidCatalog
+    }
+    if FileManager.default.fileExists(atPath: installLock.path) {
+        try requireSecureDirectory(installLock)
+        let state = installLock.appendingPathComponent("state")
+        let values = try state.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
+                                                        .contentModificationDateKey])
+        let attributes = try FileManager.default.attributesOfItem(atPath: state.path)
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, (1...4096).contains(size),
+              (attributes[.ownerAccountID] as? NSNumber)?.intValue == 0,
+              ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o077 == 0,
+              Date().timeIntervalSince(values.contentModificationDate ?? Date()) >= 600,
+              !anyInstallerRunning(),
+              let text = String(data: try Data(contentsOf: state), encoding: .utf8),
+              text.split(separator: "\n").contains(where: { $0 == "mode=auto" || $0 == "mode=package" }) else {
+            throw AgentError.invalidCatalog
+        }
+        try FileManager.default.removeItem(at: state)
+        guard rmdir(installLock.path) == 0 else { throw AgentError.invalidCatalog }
+    }
+    try FileManager.default.createDirectory(at: installLock, withIntermediateDirectories: false,
+                                            attributes: [.posixPermissions: 0o700, .ownerAccountID: 0, .groupOwnerAccountID: 0])
+    let state = installLock.appendingPathComponent("state")
+    let value = "mode=auto\nhelper_pid=\(getpid())\nstarted_at=\(startedAt)\n"
+    do {
+        try Data(value.utf8).write(to: state, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600, .ownerAccountID: 0, .groupOwnerAccountID: 0],
+                                              ofItemAtPath: state.path)
+    } catch {
+        try? FileManager.default.removeItem(at: state)
+        _ = rmdir(installLock.path)
+        throw error
+    }
+}
+
 private func installedVersion() throws -> String {
-    try requireSecureDirectory(URL(fileURLWithPath: "/Applications", isDirectory: true))
+    try requireSecureDirectory(URL(fileURLWithPath: "/Applications", isDirectory: true), applicationsParent: true)
     try requireSecureDirectory(URL(fileURLWithPath: "/Applications/Robopark.app", isDirectory: true))
     try requireSecureDirectory(URL(fileURLWithPath: "/Applications/Robopark.app/Contents", isDirectory: true))
     let values = try appInfo.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
@@ -138,7 +268,14 @@ private func runInstaller(_ package: URL) throws {
     process.arguments = command.arguments
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
+    let startedAt = Int64(Date().timeIntervalSince1970)
+    try prepareInstallLock(package: package, startedAt: startedAt)
+    try writeLifecycleState(installerPID: -1, installerStartedAt: startedAt)
     try process.run()
+    do { try writeLifecycleState(installerPID: process.processIdentifier, installerStartedAt: startedAt) }
+    catch {
+        process.terminate(); process.waitUntilExit(); throw error
+    }
     process.waitUntilExit()
     guard process.terminationReason == .exit, process.terminationStatus == 0 else { throw AgentError.unsupportedRelease }
 }
@@ -150,11 +287,26 @@ private func runInstaller(_ package: URL) throws {
         do { lock = try storage.acquireLock() }
         catch { return }
         defer { try? lock.close() }
+        guard !isRetiring() else { return }
+        do { try prepareLifecycleLock() }
+        catch { return }
+        defer { removeLifecycleLock() }
+        guard !isRetiring() else { return }
         let loaded: HelperState
         do { loaded = try loadState() }
         catch { return }
         var state = loaded
         do {
+            let app = URL(fileURLWithPath: "/Applications/Robopark.app", isDirectory: true)
+            let appValues = try? app.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard appValues?.isDirectory == true, appValues?.isSymbolicLink != true else {
+                state.status = "removed"
+                state.message = "Robopark удалён; автоматическая переустановка отключена."
+                state.installed_version = ""
+                state.checked_at = Int64(Date().timeIntervalSince1970)
+                try? writeState(state)
+                return
+            }
             let config = try JSONDecoder().decode(FixedConfig.self, from: regularRootFile("config.json", maximum: 16 * 1024))
             guard config.schema == 1, config.origin == TestDeploymentAssignment.origin,
                   config.environment == TestDeploymentAssignment.environment,
@@ -188,6 +340,7 @@ private func runInstaller(_ package: URL) throws {
             state.status = "downloading"
             state.message = "Загружается проверенное обновление \(verified.target.version)"
             try writeState(state)
+            guard !isRetiring() else { return }
             let packageURL = try verified.target.fixedArtifactURL(origin: origin)
             let (package, packageResponse) = try await boundedGET(packageURL, origin: origin,
                 limit: verified.target.length, timeout: 300)
@@ -198,6 +351,7 @@ private func runInstaller(_ package: URL) throws {
             defer { try? FileManager.default.removeItem(at: staged) }
             state.status = "installing"; state.message = "Устанавливается \(verified.target.version)"
             try writeState(state)
+            guard !isRetiring() else { return }
             try runInstaller(staged)
             let installed = try installedVersion()
             guard installed == verified.target.version else { throw AgentError.unsupportedRelease }

@@ -1,4 +1,6 @@
+import base64
 import csv
+import hashlib
 import io
 from datetime import date, datetime
 
@@ -25,7 +27,7 @@ from robopark_api.models import (
     UserPark,
 )
 from robopark_api.security import hash_password
-from robopark_api.services import inventory_exports
+from robopark_api.services import compute_client, inventory_exports
 
 
 def _user(db, slug, username, parks=()):
@@ -43,9 +45,12 @@ def _user(db, slug, username, parks=()):
     return user
 
 
+@pytest.mark.parametrize("offload", [False, True])
 def test_mechanic_can_export_assigned_park_as_utf8_bom_csv(
-    client, db_session, seed_park_with_tracker
+    client, db_session, seed_park_with_tracker, test_settings, monkeypatch, offload
 ):
+    test_settings.emergency_bridge_enabled = True
+    test_settings.compute_csv_offload_enabled = offload
     mechanic = _user(db_session, "mechanic", "export-mechanic", [seed_park_with_tracker])
     component = InventoryCatalogComponent(
         name="=component",
@@ -78,6 +83,28 @@ def test_mechanic_can_export_assigned_park_as_utf8_bom_csv(
     )
     db_session.commit()
     login_as(client, mechanic.username, "secret")
+    remote = {"called": False}
+
+    def render(operation, payload, requester_user_id, deadline_ms=20_000):
+        remote["called"] = True
+        assert operation == "csv_render_v1"
+        assert requester_user_id == mechanic.id
+        assert deadline_ms == 20_000
+        assert payload["rows"][0][3:6] == ["'=component", "'+part", "'=1+1"]
+        output = io.StringIO(newline="")
+        output.write("\ufeff")
+        writer = csv.writer(output)
+        writer.writerow(payload["headers"])
+        writer.writerows(payload["rows"])
+        raw = output.getvalue().encode()
+        return {
+            "data_base64": base64.b64encode(raw).decode(),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "mime_type": "text/csv; charset=utf-8",
+            "device_id": "mac-csv",
+        }
+
+    monkeypatch.setattr(compute_client, "dispatch_compute", render)
 
     response = client.get(
         "/inventory/export",
@@ -85,6 +112,7 @@ def test_mechanic_can_export_assigned_park_as_utf8_bom_csv(
     )
 
     assert response.status_code == 200, response.text
+    assert remote["called"] is offload
     assert response.content.startswith(b"\xef\xbb\xbf")
     rows = list(csv.reader(io.StringIO(response.content.decode("utf-8-sig"))))
     assert rows[0] == [
@@ -1058,3 +1086,19 @@ def test_xlsx_receipt_snapshot_is_not_mixed_when_post_replaces_draft_line(
     assert exported[0][12] == old_line_id
     assert exported[0][17] == "OLD-CUTOFF"
     assert exported[0][18] == 3
+
+
+def test_remote_csv_rejects_self_hashed_but_semantically_changed_output(monkeypatch):
+    payload = {"headers": ["Name", "Count"], "rows": [["Alice", "2"], ["Bob", "3"]]}
+    changed = "\ufeffName,Count\r\nAlice,2\r\nMallory,999\r\n".encode()
+    monkeypatch.setattr(
+        inventory_exports.compute_client,
+        "dispatch_compute",
+        lambda *_args, **_kwargs: {
+            "data_base64": base64.b64encode(changed).decode(),
+            "sha256": hashlib.sha256(changed).hexdigest(),
+            "mime_type": "text/csv; charset=utf-8",
+        },
+    )
+
+    assert inventory_exports._remote_csv(payload, requester_user_id=1) is None

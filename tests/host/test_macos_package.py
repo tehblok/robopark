@@ -69,6 +69,18 @@ def test_automatic_updater_is_fixed_root_daemon_without_user_arguments():
     assert "KeepAlive" not in daemon
 
 
+def test_package_bundles_and_individually_signs_compute_worker_and_uninstaller():
+    source = (ROOT / "scripts/build_macos_pkg.py").read_text()
+    assert '"--product", "RoboparkComputeWorker"' in source
+    assert 'bin_path / "RoboparkComputeWorker"' in source
+    assert "subprocess.run([*signing, str(compute_worker)], check=True)" in source
+    assert 'ROOT / "apps/macos/Resources/compute-peer.html"' in source
+    assert 'ROOT / "scripts/macos_uninstall.sh"' in source
+    assert '(resources / "uninstall.command").chmod(0o755)' in source
+    assert "Refusing to downgrade Robopark" in source
+    assert "lifecycle.lock" in source and "verified-update.pkg" in source
+
+
 def test_installer_scripts_preserve_disabled_autostart_and_do_not_kill_running_app():
     module = builder()
     script = module.postinstall_script()

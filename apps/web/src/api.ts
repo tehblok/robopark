@@ -1,5 +1,6 @@
 import type { AnalyticsBucket, AnalyticsTaskKeysGroup, HistoricalAnalytics } from './domains/analytics/analyticsModel'
 import { activateTaskAttachmentCache, clearTaskAttachmentCache } from './pwa/taskAttachmentCache'
+import { preparePhotoFile } from './pwa/mediaPipeline'
 import type {
   InventoryCatalogComponent,
   InventoryCatalogDeleteSummary,
@@ -114,6 +115,8 @@ export type ScheduleCopyCreate = {
   idempotency_key?: string; park_id: number; owner_user_ids: number[]; source_start: string; source_end: string; target_start: string; timezone: string
 }
 export type NotificationEvent = { id: string; event_type: string; park_id: number | null; protected_text: string; read_at: string | null; created_at: string }
+export type AnnouncementRequest = { request_id: string; event_type: 'announcement' | 'maintenance' | 'action_required'; protected_text: string }
+export type AnnouncementReceipt = { request_id: string; event_id: string; event_type: AnnouncementRequest['event_type']; action: 'open_inbox' | null; counters: { inbox_created: number; push_eligible: number } }
 
 export type RobotRegistryRow = {
   vin: string; short_number: string; park_ids: number[]; task_count: number; task_keys: string[]; issue_keys: string[]
@@ -494,6 +497,21 @@ export type AgentPoolStatus = {
     cache_hits?: number; compression_saved_bytes?: number
   }
   devices: AgentPoolDevice[]
+}
+export type ComputePoolMetrics = {
+  connected: number; ready: number; capacity: number; inflight: number; active_jobs: number
+  completed: number; failed: number; direct_input_bytes: number; direct_output_bytes: number
+  signaling_bytes: number; direct_completed: number; direct_failed: number
+  direct_cancelled: number; direct_retries: number; direct_fallback: number
+}
+export type ComputePoolStatus = {
+  enabled: boolean; scope: 'own' | 'all'; summary: ComputePoolMetrics
+  devices: Array<Pick<AgentPoolDevice, 'id' | 'label' | 'status' | 'owner_user_id' | 'owner_username' | 'owner_display_name' | 'cpu_percent' | 'memory_percent' | 'thermal_state' | 'power'> & {
+    capacity: number; inflight: number; active_jobs: number; completed: number; failed: number
+    connected: boolean; ready: boolean; supports: string[]; version: string | null
+    direct_input_bytes: number; direct_output_bytes: number; signaling_bytes: number
+    direct_completed: number; direct_failed: number; direct_cancelled: number; direct_retries: number; direct_fallback: number
+  }>
 }
 export type TaskWorkflow = {
   owner: TrackerPerson | null
@@ -1384,6 +1402,8 @@ type ValidatorRequest<T> = {
   generation: number
   sequence: number
 }
+const notificationValidators = new Map<string, ValidatorEntry<NotificationEvent[]>>()
+const notificationValidatorRequests = new Map<string, ValidatorRequestState<NotificationEvent[]>>()
 const revisionValidators = new Map<string, ValidatorEntry<{ revision: number }>>()
 const trackerIssueValidators = new Map<string, ValidatorEntry<Paged<TrackerIssue>>>()
 const revisionValidatorRequests = new Map<string, ValidatorRequestState<{ revision: number }>>()
@@ -1392,6 +1412,13 @@ const VALIDATOR_MAX_ENTRIES = 128
 const VALIDATOR_MAX_BYTES = 4 * 1024 * 1024
 const VALIDATOR_MAX_AGE_MS = 12 * 60 * 60 * 1000
 let apiValidatorGeneration = 0
+
+async function preparedAccountPhoto(file: File): Promise<File> {
+  const generation = apiValidatorGeneration
+  const result = await preparePhotoFile(file)
+  if (generation !== apiValidatorGeneration) throw new ApiError(409, 'account_changed')
+  return result
+}
 
 function validatorBytes<T>(key: string, etag: string, value: T): number {
   return new TextEncoder().encode(`${key}${etag}${JSON.stringify(value)}`).byteLength
@@ -1508,6 +1535,9 @@ function completeValidatorNotModified<T>(
 
 export function clearApiValidators(): void {
   apiValidatorGeneration += 1
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('robopark:compute-cancel'))
+  notificationValidators.clear()
+  notificationValidatorRequests.clear()
   revisionValidators.clear()
   trackerIssueValidators.clear()
   revisionValidatorRequests.clear()
@@ -1538,6 +1568,35 @@ async function conditionalTrackerIssues(path: string): Promise<Paged<TrackerIssu
     )
   } finally {
     finishValidatorRequest(trackerIssueValidatorRequests, path, request)
+  }
+}
+
+async function conditionalNotificationInbox(path = '/push/inbox'): Promise<NotificationEvent[]> {
+  const request = beginValidatorRequest(notificationValidatorRequests, path)
+  const cached = cachedValidator(notificationValidators, path)
+  try {
+    return await fetchWithTimeout(
+      `/api${path}`,
+      { credentials: 'include', cache: 'no-store', headers: cached ? { 'If-None-Match': cached.etag } : {} },
+      JSON_TIMEOUT_MS,
+      async response => {
+        if (request.generation !== apiValidatorGeneration) throw new ApiError(409, 'account_changed')
+        if (response.status === 304 && cached) {
+          const current = completeValidatorNotModified(notificationValidators, path, request)
+          return current ?? conditionalNotificationInbox(path)
+        }
+        if (!response.ok) {
+          throw new ApiError(response.status, await readErrorDetail(response), responseRequestId(response), responseRetryAfter(response))
+        }
+        const value = await response.json() as NotificationEvent[]
+        if (request.generation !== apiValidatorGeneration) throw new ApiError(409, 'account_changed')
+        return completeValidatorResponse(
+          notificationValidators, path, request, response.headers.get('ETag'), value,
+        )
+      },
+    )
+  } finally {
+    finishValidatorRequest(notificationValidatorRequests, path, request)
   }
 }
 
@@ -1610,8 +1669,9 @@ export const api = {
   scheduleBulk: (body: Omit<ScheduleCreate, 'idempotency_key'> & { owner_user_ids: number[]; repeat_count: number; repeat_every_days: number }) => request<ScheduleEntry[]>('/schedules/bulk', { method: 'POST', body: JSON.stringify(body) }),
   schedulePattern: (body: SchedulePatternCreate) => request<ScheduleEntry[]>('/schedules/pattern', { method: 'POST', body: JSON.stringify(body) }),
   scheduleCopy: (body: ScheduleCopyCreate) => request<ScheduleEntry[]>('/schedules/copy', { method: 'POST', body: JSON.stringify(body) }),
-  notificationInbox: () => request<NotificationEvent[]>('/push/inbox'),
+  notificationInbox: () => conditionalNotificationInbox(),
   notificationRead: (id: string) => request<{ ok: boolean }>(`/push/inbox/${id}/read`, { method: 'POST' }),
+  notificationAnnounce: (body: AnnouncementRequest) => request<AnnouncementReceipt>('/push/announcements', { method: 'POST', body: JSON.stringify(body) }),
   pushConfig: () => request<{ public_key: string }>('/push/config'),
   pushSubscribe: (body: { endpoint: string; p256dh: string; auth: string }) => request<{ id: string; endpoint_hash: string }>('/push/subscriptions', { method: 'POST', body: JSON.stringify(body) }),
   pushPreferences: (categories: string[], system_enabled = true) => request<{ categories: string[]; system_enabled: boolean }>('/push/preferences', { method: 'PUT', body: JSON.stringify({ categories, system_enabled }) }),
@@ -2144,7 +2204,8 @@ export const api = {
     inventoryRequest<InventoryCatalogComponent>('/inventory/catalog/components', { method: 'POST', body: inventoryStringify(payload) }),
   updateInventoryCatalogComponent: (id: number, payload: Partial<Pick<InventoryCatalogComponent, 'name' | 'is_active'>>) =>
     inventoryRequest<InventoryCatalogComponent>(`/inventory/catalog/components/${id}`, { method: 'PATCH', body: inventoryStringify(payload) }),
-  replaceInventoryCatalogComponentPhoto: (id: number, photo: File) => {
+  replaceInventoryCatalogComponentPhoto: async (id: number, photo: File) => {
+    photo = await preparedAccountPhoto(photo)
     const form = new FormData(); form.append('photo', photo, photo.name)
     return inventoryFormRequest<InventoryCatalogComponent>(`/inventory/catalog/components/${id}/photo`, form, 'PUT')
   },
@@ -2159,7 +2220,8 @@ export const api = {
     inventoryRequest<InventoryCatalogPart>('/inventory/catalog/parts', { method: 'POST', body: inventoryStringify(payload) }),
   updateInventoryCatalogPart: (id: number, payload: Partial<Pick<InventoryCatalogPart, 'component_id' | 'name' | 'article' | 'is_active'>>) =>
     inventoryRequest<InventoryCatalogPart>(`/inventory/catalog/parts/${id}`, { method: 'PATCH', body: inventoryStringify(payload) }),
-  replaceInventoryCatalogPartPhoto: (id: number, photo: File) => {
+  replaceInventoryCatalogPartPhoto: async (id: number, photo: File) => {
+    photo = await preparedAccountPhoto(photo)
     const form = new FormData(); form.append('photo', photo, photo.name)
     return inventoryFormRequest<InventoryCatalogPart>(`/inventory/catalog/parts/${id}/photo`, form, 'PUT')
   },
@@ -2204,12 +2266,14 @@ export const api = {
   inventoryMovements: (parkId: number) => inventoryRequest<InventoryMovement[]>(`/inventory/movements?park_id=${parkId}`),
   inventoryComponentPhotoUrl: (id: number) => `/api/inventory/components/${id}/photo`,
   inventoryPartPhotoUrl: (id: number) => `/api/inventory/parts/${id}/photo`,
-  createInventoryComponent: (parkId: number, name: string, photo?: File | null) => {
+  createInventoryComponent: async (parkId: number, name: string, photo?: File | null) => {
+    if (photo) photo = await preparedAccountPhoto(photo)
     const form = new FormData(); form.append('park_id', String(parkId)); form.append('name', name)
     if (photo) form.append('photo', photo, photo.name)
     return inventoryFormRequest<InventoryComponent>('/inventory/components', form)
   },
-  createInventoryPart: (payload: { park_id: number; component_id: number; name: string; article: string; quantity: InventoryInt64; minimum_quantity: InventoryInt64; location: string; photo?: File | null }) => {
+  createInventoryPart: async (payload: { park_id: number; component_id: number; name: string; article: string; quantity: InventoryInt64; minimum_quantity: InventoryInt64; location: string; photo?: File | null }) => {
+    if (payload.photo) payload = { ...payload, photo: await preparedAccountPhoto(payload.photo) }
     const form = new FormData()
     Object.entries(payload).forEach(([key, value]) => { if (key !== 'photo') form.append(key, String(value)) })
     if (payload.photo) form.append('photo', payload.photo, payload.photo.name)
@@ -2242,7 +2306,8 @@ export const api = {
   },
   report: (id: number) => request<Report>(`/reports/${id}`),
   reportDelete: (id: number) => request<void>(`/reports/${id}`, { method: 'DELETE' }),
-  reportAttach: (id: number, kind: ReportAttachmentKind, file: File) => {
+  reportAttach: async (id: number, kind: ReportAttachmentKind, file: File) => {
+    if (kind === 'device_photo') file = await preparedAccountPhoto(file)
     const form = new FormData()
     form.append('kind', kind)
     form.append('file', file, file.name)
@@ -2279,6 +2344,7 @@ export const api = {
         : `/reports/badge?park_id=${parkId}`,
     ),
   agentPoolStatus: () => request<AgentPoolStatus>('/agent-devices/pool-status'),
+  computePoolStatus: () => request<ComputePoolStatus>('/compute/pool'),
   opsSystemHealth: () => request<SystemHealth>('/admin/ops/system-health'),
   opsReleaseStatus: () => request<ReleaseStatus>('/admin/ops/release-status'),
   opsMaintenance: () => request<OpsMaintenance>('/ops/maintenance'),

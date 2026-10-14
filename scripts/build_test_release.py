@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.build_macos_command import build as build_macos_command
 from scripts.build_ota import (
     BuildError,
     build_ota,
@@ -135,16 +136,31 @@ def validate_macos_source(package: Path, expected_commit: str) -> None:
     try:
         with tempfile.TemporaryDirectory(prefix="robopark-pkg-source-") as temporary:
             expanded = Path(temporary) / "expanded"
-            subprocess.run(["pkgutil", "--expand-full", os.fspath(package), os.fspath(expanded)],
-                           check=True, capture_output=True, timeout=120)
+            subprocess.run(
+                ["pkgutil", "--expand-full", os.fspath(package), os.fspath(expanded)],
+                check=True,
+                capture_output=True,
+                timeout=120,
+            )
             info = expanded / "Payload/Applications/Robopark.app/Contents/Info.plist"
             if info.is_symlink() or not info.is_file() or info.stat().st_size > 16384:
                 raise ValueError
             document = plistlib.loads(info.read_bytes())
-            if not isinstance(document, dict) or document.get("RoboparkSourceCommit") != expected_commit or document.get("RoboparkSourceClean") is not True:
+            if (
+                not isinstance(document, dict)
+                or document.get("RoboparkSourceCommit") != expected_commit
+                or document.get("RoboparkSourceClean") is not True
+            ):
                 raise ValueError
-    except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-        raise ReleaseBuildError("macos_source_commit_mismatch_rebuild_package") from error
+    except (
+        OSError,
+        ValueError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        raise ReleaseBuildError(
+            "macos_source_commit_mismatch_rebuild_package"
+        ) from error
 
 
 def _validate_macos_assets(
@@ -245,6 +261,7 @@ def stage_release_source(
     macos_pkg: Path | None,
     macos_update_root: Path | None = None,
     version: str,
+    include_macos_command: bool = False,
 ) -> Path:
     """Export the reviewed index and add only the two generated Mac assets."""
 
@@ -297,11 +314,23 @@ def stage_release_source(
     staged_catalog = assets / "catalog.json"
     shutil.copyfile(package, staged_package)
     shutil.copyfile(catalog, staged_catalog)
+    extra_assets = []
+    if include_macos_command:
+        command = assets / f"Robopark-{version}-arm64.command"
+        build_macos_command(package, command, version=version)
+        extra_assets.append(os.fspath(command.relative_to(destination)))
     relative_package = staged_package.relative_to(destination)
     relative_catalog = staged_catalog.relative_to(destination)
     try:
         subprocess.run(
-            ["git", "add", "--", os.fspath(relative_package), os.fspath(relative_catalog)],
+            [
+                "git",
+                "add",
+                "--",
+                os.fspath(relative_package),
+                os.fspath(relative_catalog),
+                *extra_assets,
+            ],
             cwd=destination,
             check=True,
             capture_output=True,
@@ -319,6 +348,7 @@ def write_delivery_metadata(
     macos_pkg: Path | None = None,
     macos_update_root: Path | None = None,
     source: dict[str, str] | None = None,
+    include_macos_command: bool = False,
 ) -> Path:
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -364,6 +394,11 @@ def write_delivery_metadata(
             "update_root": _artifact(target_update_root),
         }
         artifacts.extend((target, target_catalog, target_update_root))
+        if include_macos_command:
+            command = output / f"Robopark-{version}-arm64.command"
+            build_macos_command(target, command, version=version)
+            document["macos"]["installer"] = _artifact(command)
+            artifacts.append(command)
 
     manifest = output / "release-manifest.json"
     manifest.write_text(
@@ -371,7 +406,10 @@ def write_delivery_metadata(
         encoding="utf-8",
     )
     (output / "SHA256SUMS").write_text(
-        "".join(f"{_sha256(path)}  {path.name}\n" for path in sorted(artifacts, key=lambda item: item.name)),
+        "".join(
+            f"{_sha256(path)}  {path.name}\n"
+            for path in sorted(artifacts, key=lambda item: item.name)
+        ),
         encoding="utf-8",
     )
     (output / "README-RU.txt").write_text(
@@ -383,6 +421,15 @@ def write_delivery_metadata(
             "Бывший production Khadas RC43 переводится отдельным Robopark-Khadas-Test-<версия>.pyz; см. START-HERE.md.\n"
             "Каждому одновременно работающему серверу нужен отдельный HTTPS-адрес.\n"
             "Перед установкой проверьте SHA256SUMS. Этот пакет не выполняет SSH-развёртывание.\n"
+            + (
+                f"Mac: один файл Robopark-{version}-arm64.command; установка или локальное обновление сохраняет данные.\n"
+                "Онлайн-обновление автоматически проверяет подписанный каталог тестового сервера.\n"
+                "Удаление: меню Robopark → Удалить Robopark… или скрипт с --uninstall.\n"
+                "--uninstall-remove-data также удаляет локальные данные текущего пользователя.\n"
+                "Сборка без Apple notarization; скрипт не отключает защиту macOS.\n"
+                if include_macos_command and macos_pkg is not None
+                else ""
+            )
         ),
         encoding="utf-8",
     )
@@ -390,11 +437,15 @@ def write_delivery_metadata(
 
 
 def _run_gate(repository: Path) -> None:
-    subprocess.run([str(repository / "scripts/verify.sh"), "fast"], cwd=repository, check=True)
+    subprocess.run(
+        [str(repository / "scripts/verify.sh"), "fast"], cwd=repository, check=True
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build a reviewed Khadas/AGX test delivery")
+    parser = argparse.ArgumentParser(
+        description="Build a reviewed Khadas/AGX test delivery"
+    )
     parser.add_argument("output", type=Path)
     parser.add_argument("--macos-pkg", type=Path)
     parser.add_argument("--macos-update-root", type=Path)
@@ -417,6 +468,7 @@ def main(argv: list[str] | None = None) -> int:
                 macos_pkg=args.macos_pkg,
                 macos_update_root=args.macos_update_root,
                 version=version,
+                include_macos_command=True,
             )
             if args.macos_pkg is not None:
                 validate_macos_source(args.macos_pkg, git_sha)
@@ -432,8 +484,14 @@ def main(argv: list[str] | None = None) -> int:
                     "reviewed_tree": reviewed_tree,
                     "kind": "committed-release",
                 },
+                include_macos_command=True,
             )
-    except (BuildError, ReleaseBuildError, OSError, subprocess.CalledProcessError) as error:
+    except (
+        BuildError,
+        ReleaseBuildError,
+        OSError,
+        subprocess.CalledProcessError,
+    ) as error:
         print(str(error), file=sys.stderr)
         return 1
     print(json.dumps({"manifest": str(manifest), "version": version}, sort_keys=True))

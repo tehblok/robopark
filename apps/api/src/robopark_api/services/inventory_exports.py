@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import csv
+import hashlib
 import io
+import json
 import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -25,7 +28,8 @@ from robopark_api.models import (
     Park,
     User,
 )
-from robopark_api.services import inventory_access, inventory_catalog
+from robopark_api.services import compute_client, inventory_access, inventory_catalog
+from robopark_api.services.emergency_bridge_client import BridgeError
 from robopark_api.services.rbac import PERMISSION_INVENTORY_EXPORT, has_permission
 
 MAX_EXPORT_ROWS = 100_000
@@ -34,6 +38,9 @@ MAX_XLSX_SIGNIFICANT_DIGITS = 15
 XLSX_TEXT_CHUNK_SIZE = 32_766
 XLSX_SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+REMOTE_CSV_MAX_ROWS = 10_000
+REMOTE_CSV_MAX_PAYLOAD_BYTES = 6 * 1024 * 1024
+REMOTE_CSV_MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 
 STOCK_HEADERS = (
     "ID парка",
@@ -634,6 +641,71 @@ def _build_csv(db: Session, query: ExportQuery, snapshot: ExportSnapshot):
         raise
 
 
+def _bounded_csv_payload(db: Session, query: ExportQuery, snapshot: ExportSnapshot) -> dict | None:
+    if len(snapshot.identities[query.title]) > REMOTE_CSV_MAX_ROWS:
+        return None
+    rows = []
+    for row in _snapshot_payload_rows(db, query, snapshot.identities[query.title]):
+        rows.append(["" if value is None else str(_safe_cell(value)) for value in row])
+        if len(rows) > REMOTE_CSV_MAX_ROWS:
+            return None
+    payload = {"headers": list(query.headers), "rows": rows}
+    payload_size = len(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    )
+    if payload_size > REMOTE_CSV_MAX_PAYLOAD_BYTES:
+        return None
+    return payload
+
+
+def _remote_csv(payload: dict, *, requester_user_id: int):
+    try:
+        result = compute_client.dispatch_compute(
+            "csv_render_v1", payload, requester_user_id, deadline_ms=20_000
+        )
+        raw = base64.b64decode(result.get("data_base64", ""), validate=True)
+    except (BridgeError, TypeError, ValueError):
+        return None
+    if (
+        not raw.startswith(b"\xef\xbb\xbf")
+        or len(raw) > REMOTE_CSV_MAX_OUTPUT_BYTES
+        or result.get("mime_type") != "text/csv; charset=utf-8"
+        or result.get("sha256") != hashlib.sha256(raw).hexdigest()
+    ):
+        return None
+    try:
+        decoded_rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig"), newline="")))
+    except (UnicodeDecodeError, csv.Error):
+        return None
+    if decoded_rows != [payload["headers"], *payload["rows"]]:
+        return None
+    spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
+        max_size=XLSX_SPOOL_MEMORY_BYTES, mode="w+b"
+    )
+    spool.write(raw)
+    spool.seek(0)
+    return spool
+
+
+def _build_materialized_csv(payload: dict):
+    spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
+        max_size=XLSX_SPOOL_MEMORY_BYTES, mode="w+b"
+    )
+    text = io.TextIOWrapper(spool, encoding="utf-8", newline="", write_through=True)
+    try:
+        text.write("\ufeff")
+        writer = csv.writer(text)
+        writer.writerow(payload["headers"])
+        writer.writerows(payload["rows"])
+        text.flush()
+        text.detach()
+        spool.seek(0)
+        return spool
+    except Exception:
+        spool.close()
+        raise
+
+
 def _file_chunks(file_obj) -> Iterator[bytes]:
     try:
         while chunk := file_obj.read(64 * 1024):
@@ -649,6 +721,7 @@ def build_inventory_export(
     park_id: int | None,
     all_parks: bool,
     format: str,
+    remote_compute_enabled: bool = False,
 ) -> tuple[str, str, Iterator[bytes]]:
     park_ids = _park_ids(db, user, park_id=park_id, all_parks=all_parks)
     if format not in {"csv", "xlsx"}:
@@ -657,15 +730,26 @@ def build_inventory_export(
     # Scope is now immutable integer data; release the authorization read
     # transaction before opening the dedicated export snapshot connection.
     db.rollback()
+    csv_payload = None
     with _export_session(db) as snapshot_db:
         if format == "csv":
             queries = (stock_query,)
             snapshot = _capture_export_snapshot(snapshot_db, queries, include_aliases=False)
-            spool = _build_csv(snapshot_db, stock_query, snapshot)
+            csv_payload = (
+                _bounded_csv_payload(snapshot_db, stock_query, snapshot)
+                if remote_compute_enabled
+                else None
+            )
+            if csv_payload is None:
+                spool = _build_csv(snapshot_db, stock_query, snapshot)
         else:
             queries = _xlsx_queries(park_ids)
             snapshot = _capture_export_snapshot(snapshot_db, queries, include_aliases=True)
             spool = _build_xlsx(snapshot_db, queries, snapshot)
+    if csv_payload is not None:
+        spool = _remote_csv(csv_payload, requester_user_id=user.id) or _build_materialized_csv(
+            csv_payload
+        )
     suffix = "all" if all_parks else f"park-{park_ids[0]}"
     if format == "csv":
         return (

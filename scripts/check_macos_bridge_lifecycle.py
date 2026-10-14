@@ -116,11 +116,15 @@ def main() -> int:
         "private func refreshProbeTarget", 1
     )[0]
     wake = application.split("@objc func wake", 1)[1].split("@objc func quit", 1)[0]
+    sleep = application.split("@objc func sleep", 1)[1].split("@objc func quit", 1)[0]
     probe_timer = application.split("probeTimer = Timer.scheduledTimer", 1)[1].split(
         "private func initializeWorkspace", 1
     )[0]
     refresh_probe = application.split("private func refreshProbeTarget", 1)[1].split(
         "@objc func showPanel", 1
+    )[0]
+    identity = application.split("private func accountVerified", 1)[1].split(
+        "private func accountLogout", 1
     )[0]
     bridge_source = (MACOS / "Sources/RoboparkAgent/Bridge.swift").read_text()
     if "bridge.start()" in launch:
@@ -130,11 +134,27 @@ def main() -> int:
     if (
         "UserDefaults.standard.set(false" not in logout
         or "bridge.stop()" not in logout
-        or "if accountActive { bridge.start()" not in wake
+        or "compute.stop()" not in logout
+        or "notifications.stop(removeDelivered: true)" not in logout
+        or "if accountActive {" not in wake
+        or "if emergencyAuthorized { bridge.start()" not in wake
+        or "compute.start()" not in wake
+        or "notifications.resume()" not in wake
+        or "bridge.stop()" not in sleep
+        or "compute.stop()" not in sleep
+        or "notifications.suspend()" not in sleep
     ):
         raise SystemExit("FAIL: logout/wake account activation gate regressed")
+    if 'presentWorkspace(route: "/schedule#notifications")' not in application:
+        raise SystemExit("FAIL: native notification action is not fixed to the bundled notification center route")
+    fast_path = identity.split("if accountActive, activeAccountID == userID", 1)[1].split("let run = UUID()", 1)[0]
+    if "compute.start()" in fast_path or "claimAuthenticated" in fast_path or "notifications.start" not in fast_path:
+        raise SystemExit("FAIL: repeated same-account identity refresh restarts the compute lease")
     if "if granted && managedProbes" in bridge_source:
         raise SystemExit("FAIL: managed readiness bypasses the real Emergency request")
+    accept_probe = bridge_source.split("private func acceptProbe", 1)[1].split("private func probeIfNeeded", 1)[0]
+    if "probeTask = Task" not in accept_probe or "onChange?()" not in accept_probe:
+        raise SystemExit("FAIL: accepted Emergency probe does not immediately preempt compute")
     if "else { self.restoreAccountSession() }" not in probe_timer:
         raise SystemExit(
             "FAIL: a transient reboot outage cannot recover the account session"

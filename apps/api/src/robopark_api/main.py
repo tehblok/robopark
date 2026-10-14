@@ -41,6 +41,7 @@ from robopark_api.routers import (
     campaigns,
     changes,
     client_telemetry,
+    compute,
     dashboard,
     emergency,
     health,
@@ -205,6 +206,7 @@ def create_app() -> FastAPI:
     app.include_router(campaigns.router)
     app.include_router(changes.router)
     app.include_router(client_telemetry.router)
+    app.include_router(compute.router)
     app.include_router(inventory.router)
     app.include_router(internal_bot.router)
     app.include_router(native_telegram.router)

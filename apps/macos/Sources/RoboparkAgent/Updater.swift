@@ -65,7 +65,9 @@ import AgentCore
             guard values.isRegularFile == true, values.isSymbolicLink != true,
                   let size = values.fileSize, size > 0, size <= 64 * 1024 else { throw AgentError.invalidCatalog }
             let status = try JSONDecoder().decode(PublicStatus.self, from: Data(contentsOf: url))
-            if !catalogTarget.isEmpty, status.target_version != catalogTarget,
+            if status.installed_version != version, !status.installed_version.isEmpty {
+                message = "Установлена версия \(status.installed_version). Перезапустите Robopark, сейчас запущена \(version)."
+            } else if !catalogTarget.isEmpty, status.target_version != catalogTarget,
                status.installed_version != catalogTarget {
                 message = "Доступна подписанная версия \(catalogTarget). Системная служба установит её автоматически в течение 15 минут."
             } else {

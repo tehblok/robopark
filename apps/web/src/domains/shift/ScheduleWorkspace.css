@@ -67,6 +67,9 @@
 .rp-notification-list { display: grid; gap: var(--rp-space-2); list-style: none; margin: 0; padding: 0; }
 .rp-notification-list li { align-items: center; border-block-end: 1px solid var(--rp-border); display: flex; gap: var(--rp-space-3); justify-content: space-between; padding: var(--rp-space-2) 0; }
 .rp-notification-list p { margin: var(--rp-space-1) 0 0; }
+.rp-announcement-form { display: grid; gap: var(--rp-form-gap); max-inline-size: 48rem; }
+.rp-announcement-form > .rp-button { justify-self: start; }
+#notifications { display: grid; gap: var(--rp-section-gap); scroll-margin-block-start: 6rem; }
 
 @media (max-width: 719px) {
   .rp-schedule > .rp-page-layout__content > .rp-tabs--primary { flex-wrap: wrap; overflow-x: visible; }

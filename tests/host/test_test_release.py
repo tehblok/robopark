@@ -44,10 +44,15 @@ def _host_env(path: Path) -> dict[str, str]:
 
 
 def _signed_mac_assets(
-    directory: Path, version: str, *, channel: str = "rc", catalog_overrides: dict | None = None
+    directory: Path,
+    version: str,
+    *,
+    channel: str = "rc",
+    catalog_overrides: dict | None = None,
+    package_bytes: bytes = b"mac-release",
 ) -> tuple[Path, Path]:
     package = directory / f"Robopark-{version}-arm64.pkg"
-    package.write_bytes(b"mac-release")
+    package.write_bytes(package_bytes)
     document = {
         "schema": 1,
         "generation": 2026101301,
@@ -126,8 +131,12 @@ def test_generated_instance_identity_is_a_canonical_uuid(tmp_path: Path):
     assert str(UUID(values["ROBOPARK_INSTANCE_ID"])) == values["ROBOPARK_INSTANCE_ID"]
 
 
-@pytest.mark.parametrize("public_origin", ["https://prod.example.test/", "https://prod.example.test:443/"])
-def test_test_install_rejects_production_origin_before_writing_config(tmp_path: Path, public_origin):
+@pytest.mark.parametrize(
+    "public_origin", ["https://prod.example.test/", "https://prod.example.test:443/"]
+)
+def test_test_install_rejects_production_origin_before_writing_config(
+    tmp_path: Path, public_origin
+):
     with pytest.raises(ValueError, match="test_origin_must_be_isolated"):
         write_host_configuration(
             tmp_path,
@@ -154,9 +163,13 @@ def test_test_role_cannot_activate_production_preset(tmp_path: Path):
 
 
 @pytest.mark.parametrize("bridge_enabled", [False, True])
-def test_installed_compose_keeps_single_process_private_bridge(host_paths, bridge_enabled):
+def test_installed_compose_keeps_single_process_private_bridge(
+    host_paths, bridge_enabled
+):
     host_paths.etc.mkdir(parents=True)
-    (host_paths.etc / "host.env").write_text(f"UVICORN_WORKERS=2\nEMERGENCY_BRIDGE_ENABLED={str(bridge_enabled).lower()}\n")
+    (host_paths.etc / "host.env").write_text(
+        f"UVICORN_WORKERS=2\nEMERGENCY_BRIDGE_ENABLED={str(bridge_enabled).lower()}\n"
+    )
     proc = host_paths.root / "proc"
     proc.mkdir()
     (proc / "meminfo").write_text(f"MemTotal: {8 * 1024 * 1024} kB\n")
@@ -212,7 +225,9 @@ def test_reviewed_workspace_accepts_staged_changes_but_rejects_unstaged_or_untra
     repository = tmp_path / "repository"
     repository.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.test"], cwd=repository, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
     source = repository / "tracked.txt"
     source.write_text("base\n")
@@ -273,11 +288,47 @@ def test_delivery_metadata_binds_server_and_optional_mac_artifacts(tmp_path: Pat
     assert checksums == sorted(checksums, key=lambda row: row.split("  ", 1)[1])
 
 
+def test_one_file_installer_is_built_from_the_signed_package_and_hash_listed(
+    tmp_path: Path,
+):
+    output = tmp_path / "release"
+    output.mkdir()
+    ota = output / "server.ota"
+    ota.write_bytes(b"server")
+    package, root = _signed_mac_assets(
+        tmp_path, "0.2.3-rc.2", package_bytes=b"xar!test-payload"
+    )
+    manifest = json.loads(
+        write_delivery_metadata(
+            output,
+            version="0.2.3-rc.2",
+            server_ota=ota,
+            macos_pkg=package,
+            macos_update_root=root,
+            include_macos_command=True,
+        ).read_text()
+    )
+    installer = manifest["macos"]["installer"]
+    command = output / installer["path"]
+    assert command.name == "Robopark-0.2.3-rc.2-arm64.command"
+    assert hashlib.sha256(command.read_bytes()).hexdigest() == installer["sha256"]
+    assert (
+        f"{installer['sha256']}  {command.name}" in (output / "SHA256SUMS").read_text()
+    )
+    verified = subprocess.run(
+        ["bash", str(command), "--verify"], capture_output=True, text=True, check=False
+    )
+    assert verified.returncode == 0, verified.stderr
+    assert hashlib.sha256(package.read_bytes()).hexdigest() in verified.stdout
+
+
 def test_mac_assets_are_added_only_inside_release_snapshot(tmp_path: Path):
     repository = tmp_path / "repository"
     repository.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.test"], cwd=repository, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
     (repository / "VERSION").write_text("1.2.3\n")
     subprocess.run(["git", "add", "VERSION"], cwd=repository, check=True)
@@ -299,15 +350,20 @@ def test_mac_assets_are_added_only_inside_release_snapshot(tmp_path: Path):
     staged = subprocess.run(
         ["git", "ls-files"], cwd=snapshot, check=True, capture_output=True, text=True
     ).stdout.splitlines()
-    assert f"apps/api/src/robopark_api/agent_distribution_assets/{package.name}" in staged
+    assert (
+        f"apps/api/src/robopark_api/agent_distribution_assets/{package.name}" in staged
+    )
     assert "apps/api/src/robopark_api/agent_distribution_assets/catalog.json" in staged
-    assert subprocess.run(
-        ["git", "ls-files", "*agent_distribution_assets*"],
-        cwd=repository,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout == ""
+    assert (
+        subprocess.run(
+            ["git", "ls-files", "*agent_distribution_assets*"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == ""
+    )
 
 
 def test_release_snapshot_preserves_tracked_ignored_sources_without_ignored_secrets(
@@ -395,7 +451,9 @@ def test_mac_release_requires_root_and_rejects_fake_signature(tmp_path: Path):
     package, update_root = _signed_mac_assets(tmp_path, "1.2.3")
 
     with pytest.raises(ReleaseBuildError, match="macos_update_root_required"):
-        write_delivery_metadata(output, version="1.2.3", server_ota=ota, macos_pkg=package)
+        write_delivery_metadata(
+            output, version="1.2.3", server_ota=ota, macos_pkg=package
+        )
 
     linked_root = tmp_path / "linked-root.json"
     linked_root.symlink_to(update_root)
@@ -429,12 +487,16 @@ def test_mac_release_requires_root_and_rejects_fake_signature(tmp_path: Path):
         {"expires": "never"},
     ],
 )
-def test_mac_release_rejects_invalid_signed_catalog_contract(tmp_path: Path, overrides: dict):
+def test_mac_release_rejects_invalid_signed_catalog_contract(
+    tmp_path: Path, overrides: dict
+):
     output = tmp_path / "release"
     output.mkdir()
     ota = output / "server.ota"
     ota.write_bytes(b"server")
-    package, update_root = _signed_mac_assets(tmp_path, "1.2.3", catalog_overrides=overrides)
+    package, update_root = _signed_mac_assets(
+        tmp_path, "1.2.3", catalog_overrides=overrides
+    )
 
     with pytest.raises(ReleaseBuildError, match="invalid_macos_catalog"):
         write_delivery_metadata(
@@ -485,7 +547,6 @@ def test_mac_release_rejects_package_with_different_embedded_root(
         )
 
 
-
 def test_release_identity_must_match_committed_source(tmp_path):
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -493,7 +554,20 @@ def test_release_identity_must_match_committed_source(tmp_path):
     path = repository / "VERSION"
     path.write_text("1.0.0\n")
     subprocess.run(["git", "add", "VERSION"], cwd=repository, check=True)
-    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "initial"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+    )
     require_committed_source(repository)
     path.write_text("1.0.1\n")
     subprocess.run(["git", "add", "VERSION"], cwd=repository, check=True)
@@ -501,16 +575,31 @@ def test_release_identity_must_match_committed_source(tmp_path):
         require_committed_source(repository)
 
 
-@pytest.mark.parametrize("embedded,clean,valid", [("expected", True, True), ("old", True, False), ("expected", False, False)])
-def test_package_source_matches_committed_release(monkeypatch, tmp_path, embedded, clean, valid):
+@pytest.mark.parametrize(
+    "embedded,clean,valid",
+    [("expected", True, True), ("old", True, False), ("expected", False, False)],
+)
+def test_package_source_matches_committed_release(
+    monkeypatch, tmp_path, embedded, clean, valid
+):
     import plistlib
+
     def expand(command, **kwargs):
-        path = Path(command[-1]) / "Payload/Applications/Robopark.app/Contents/Info.plist"
+        path = (
+            Path(command[-1]) / "Payload/Applications/Robopark.app/Contents/Info.plist"
+        )
         path.parent.mkdir(parents=True)
-        path.write_bytes(plistlib.dumps({"RoboparkSourceCommit": embedded, "RoboparkSourceClean": clean}))
+        path.write_bytes(
+            plistlib.dumps(
+                {"RoboparkSourceCommit": embedded, "RoboparkSourceClean": clean}
+            )
+        )
+
     monkeypatch.setattr(build_test_release.subprocess, "run", expand)
     if valid:
         build_test_release.validate_macos_source(tmp_path / "package.pkg", "expected")
     else:
         with pytest.raises(ReleaseBuildError, match="macos_source_commit_mismatch"):
-            build_test_release.validate_macos_source(tmp_path / "package.pkg", "expected")
+            build_test_release.validate_macos_source(
+                tmp_path / "package.pkg", "expected"
+            )
