@@ -20,15 +20,23 @@ def unit(name):
     return parsed
 
 
-def test_tuna_requires_ready_application_and_bounded_restart():
+def test_tuna_requires_ready_application_and_retries_network_failures_forever():
     tuna = unit("robopark-tuna.service")
     assert "robopark.service" in tuna["Unit"]["Requires"].split()
     assert {"network-online.target", "robopark.service"} <= set(
         tuna["Unit"]["After"].split()
     )
     assert tuna["Service"]["Restart"] == "on-failure"
+    assert tuna["Unit"]["StartLimitIntervalSec"] == "0"
+    assert tuna["Service"]["RestartSec"] == "30"
+    assert tuna["Service"]["Environment"] == "GODEBUG=http2client=0"
     assert int(tuna["Service"]["TimeoutStartSec"]) <= 180
-    assert int(tuna["Unit"]["StartLimitBurst"]) <= 5
+
+    legacy = configparser.ConfigParser(interpolation=None, strict=False)
+    legacy.read(REPO / "deploy/tuna.service")
+    assert legacy["Unit"]["StartLimitIntervalSec"] == "0"
+    assert legacy["Service"]["RestartSec"] == "30"
+    assert legacy["Service"]["Environment"] == "GODEBUG=http2client=0"
 
 
 def test_boot_never_builds_or_uses_a_mutable_compose_config():
@@ -88,6 +96,7 @@ def test_boot_recreates_stable_lock_directory_before_sandboxed_units_start():
     assert tmpfiles.read_text() == (
         "d /run/lock/robopark 0700 root root -\n"
         "d /run/robopark-ai 0750 root 10001 -\n"
+        "d /var/lib/robopark/ai :0750 :root :root -\n"
     )
     installer = (REPO / "deploy/installer/lib/install-services.py").read_text()
     assert '"deploy/tmpfiles.d/robopark.conf"' in installer
@@ -95,6 +104,20 @@ def test_boot_recreates_stable_lock_directory_before_sandboxed_units_start():
     updater = (REPO / "deploy/host/robopark_host/updater.py").read_text()
     assert "deploy/tmpfiles.d/robopark.conf" in updater
     assert "etc/tmpfiles.d/robopark.conf" in updater
+
+
+def test_ai_state_tmpfiles_rule_preserves_existing_metadata():
+    tmpfiles = REPO / "deploy/tmpfiles.d/robopark.conf"
+    rules = [line.split() for line in tmpfiles.read_text().splitlines()]
+
+    assert [
+        "d",
+        "/var/lib/robopark/ai",
+        ":0750",
+        ":root",
+        ":root",
+        "-",
+    ] in rules
 
 
 @pytest.mark.parametrize(
@@ -194,9 +217,13 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
         calls.append(command)
         if command[:3] == ["docker", "buildx", "inspect"]:
             return f"Name: {command[-1]}\nDriver: docker-container\n"
+        if command[:4] == ["docker", "container", "ls", "--all"]:
+            return command[command.index("--filter") + 1].removeprefix("name=^/").removesuffix("$")
         if command[:2] == ["docker", "inspect"]:
             builder = command[-1].removeprefix("buildx_buildkit_").removesuffix("0")
             return json.dumps(["ROBOPARK_BUILDER_OWNER=" + builder])
+        if command[:2] == ["docker", "stop"]:
+            return ""
         if command[:3] == ["docker", "buildx", "prune"]:
             return ""
         if command[:3] == ["docker", "buildx", "du"]:
@@ -579,3 +606,16 @@ def test_docker_readiness_failure_has_bounded_attempts_and_command_timeouts():
     ]
     assert len([command for command, _ in calls if command == ["docker", "info"]]) == 10
     assert all(0 < options["timeout"] <= 60 for _, options in calls)
+
+
+@pytest.mark.parametrize("name", ["robopark-commands.path", "robopark-bot.path"])
+def test_late_application_watchers_do_not_order_before_paths_target(name):
+    # Default path units are Before=paths.target; these watchers are After=core,
+    # whose terminal setup is After=basic.target After=paths.target: a boot cycle.
+    config = unit(name)["Unit"]
+    assert config.get("DefaultDependencies") == "no"
+    assert "sysinit.target" in config["Requires"].split()
+    assert "sysinit.target" in config["After"].split()
+    assert "robopark.service" in config["After"].split()
+    assert "shutdown.target" in config["Before"].split()
+    assert "shutdown.target" in config["Conflicts"].split()

@@ -465,3 +465,14 @@ def test_prepare_rejects_unverifiable_daemon_configuration(
     monkeypatch.setattr(setup, "_run", run)
     with pytest.raises(RuntimeError, match="storage_custom_container_root"):
         setup._require_stopped(root)
+
+
+def test_socket_storage_guard_can_start_before_basic_target(setup_host):
+    setup, root, _ = setup_host
+    layout = setup.plan_storage("emmc-nvme-data", "/dev/nvme0n1p1", root=root)["layout"]
+    guard = setup.storage_units(layout)["robopark-storage-check.service"]
+    # docker.socket -> guard -> basic -> sockets.target -> docker.socket
+    # was a real cycle: the guard must not acquire service default dependencies.
+    assert "DefaultDependencies=no" in guard
+    for directive in ("Requires=sysinit.target", "After=sysinit.target", "Conflicts=shutdown.target", "Before=shutdown.target"):
+        assert directive in guard

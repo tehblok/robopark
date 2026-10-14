@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Entrypoint for root-owned Robopark host resilience setup."""
+
+import json
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+RELEASE = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from robopark_host.host_resilience import setup
+
+if __name__ == "__main__":
+    print(json.dumps(setup(release_root=RELEASE), sort_keys=True))

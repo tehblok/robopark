@@ -90,6 +90,21 @@ def install_units(root):
     if ai and len(ai) != len(ai_names):
         raise ValueError("ai_payload_invalid")
     contents.update(ai)
+    resilience_names = (
+        "robopark-resilience-setup.service", "robopark-network-recovery.service",
+        "robopark-network-recovery.timer",
+    )
+    resilience_sources = [release / "deploy/systemd" / name for name in resilience_names]
+    resilience_sources += [release / relative for relative in (
+        "deploy/host/robopark-host-resilience",
+        "deploy/host/robopark_host/host_resilience.py",
+        "deploy/host/robopark_host/network_recovery.py",
+    )]
+    if any(path.exists() or path.is_symlink() for path in resilience_sources):
+        if any(path.is_symlink() or not path.is_file() for path in resilience_sources):
+            raise ValueError("resilience_payload_invalid")
+        for name in resilience_names:
+            contents[name] = (release / "deploy/systemd" / name).read_bytes()
     tmpfiles_source = release / TMPFILES_SOURCE
     tmpfiles_target = root / TMPFILES_TARGET
     if tmpfiles_source.is_symlink() or not tmpfiles_source.is_file():

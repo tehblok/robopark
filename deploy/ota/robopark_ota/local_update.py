@@ -44,6 +44,24 @@ def restart_enabled_tuna(runner, *, wait: bool = True) -> str:
         return "failed"
 
 
+def reconcile_published_resilience(paths, runner) -> str:
+    """Bridge older installed updaters after their durable publish boundary.
+
+    The local OTA runs the installed runtime, not candidate Python modules.
+    Start policy setup in a separate systemd service using the verified release.
+    Persistent host policy intentionally survives a later app rollback.
+    """
+    release = paths.current.resolve(strict=True)
+    if release.parent != paths.releases.resolve(strict=True):
+        raise RuntimeError("invalid_host_tools")
+    if not (release / "deploy/systemd/robopark-resilience-setup.service").is_file():
+        return "absent"
+    runner.run([sys.executable, "-I", str(release / "deploy/installer/lib/install-services.py"), str(paths.root)], timeout=60)
+    runner.run(["systemctl", "daemon-reload"], timeout=60)
+    runner.run(["systemctl", "start", "robopark-resilience-setup.service"], timeout=180)
+    return "ready"
+
+
 def _stage_upload(source: Path, target: Path, expected_sha256: str) -> None:
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if target.parent.is_symlink() or target.exists() or target.is_symlink():
@@ -126,6 +144,12 @@ def apply_local_update(bundle: Path, *, root: Path = Path("/")) -> dict:
                     "publication_error": "ota_tuna_restart_failed",
                 })
                 result["publication"] = "degraded"
+        if receipt.phase == "published":
+            # Never roll data back after publication if host policy fails.
+            try:
+                result["host_resilience"] = reconcile_published_resilience(paths, runner)
+            except (OSError, RuntimeError, ValueError):
+                result["host_resilience"] = "degraded"
         if receipt.phase != "published":
             raise RuntimeError(receipt.error or "ota_update_failed")
         return result

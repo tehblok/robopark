@@ -1,0 +1,12 @@
+[Unit]
+Description=Check and recover Robopark Wi-Fi every minute
+
+[Timer]
+OnBootSec=120s
+OnUnitActiveSec=60s
+AccuracySec=1s
+RandomizedDelaySec=0
+Unit=robopark-network-recovery.service
+
+[Install]
+WantedBy=timers.target

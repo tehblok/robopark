@@ -99,6 +99,10 @@ def _import_startrek():
     except ImportError as exc:
         raise TrackerError("yandex-tracker-client is not installed") from exc
 
+    from robopark_api.services.tracker_sdk_compat import ensure_offices_collection
+
+    ensure_offices_collection()
+
     return TrackerClient
 
 

@@ -78,6 +78,12 @@ def test_writer_added_after_rc26_must_self_guard_its_first_start():
     """A future unit can be scheduled beside core before global reconciliation."""
 
     for path in (ROOT / "deploy/systemd").glob("robopark*.service"):
+        if path.name == "robopark-network-recovery.service":
+            # OS-level recovery must also work without the application disk.
+            content = path.read_text()
+            assert "ExecStart=/usr/local/libexec/robopark-network-recovery.py" in content
+            assert "/opt/robopark" not in content
+            continue
         if path.name in RC26_WRITERS:
             continue
         commands = [

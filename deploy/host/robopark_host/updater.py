@@ -73,12 +73,14 @@ TMPFILES_TARGET = Path("etc/tmpfiles.d/robopark.conf")
 def _activate_system_files(paths, candidate, *, check_space=True):
     from .ai_install import AI_UNITS, ai_payload_present
     from .storage_compatibility import refresh_storage_release_guard
+    from .resilience_install import RESILIENCE_UNITS, resilience_payload_present
     from .terminal_install import TERMINAL_UNITS, terminal_payload_present
 
     refresh_storage_release_guard(paths, candidate, check_space=check_space)
     terminal_payload_present(candidate)
     ai_payload_present(candidate)
-    for unit in (*UNITS, *TERMINAL_UNITS, *AI_UNITS):
+    resilience_payload_present(candidate)
+    for unit in (*UNITS, *TERMINAL_UNITS, *AI_UNITS, *RESILIENCE_UNITS):
         source = candidate / "deploy/systemd" / unit
         if source.is_file():
             atomic_copy(source, paths.root / "etc/systemd/system" / unit, 0o644)
@@ -1455,6 +1457,8 @@ def _complete(paths, journal, runner):
     manifest = verify_directory(candidate, directory_key(paths, candidate))
     phase("reconciling")
     runner.run(["systemctl", "daemon-reload"], timeout=60)
+    from .resilience_install import reconcile_host_resilience
+    reconcile_host_resilience(candidate, runner)
     runner.run(["systemctl", "restart", "robopark.service"], timeout=900)
     if not runner.wait_ready(
         project="robopark", config=paths.state / "current-compose.json", timeout=180,

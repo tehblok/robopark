@@ -181,7 +181,7 @@ def test_workspace_archive_contains_current_indexed_runtime_and_no_tests(tmp_pat
     with tarfile.open(archive, "r:gz") as package:
         names = package.getnames()
         assert set(names) == {
-            "INSTALL.sh", "INSTALL-AGX.sh", "robopark-agx.py",
+            "INSTALL.sh", "INSTALL-AGX.sh", "nvidia-bootfw-guard.sh", "robopark-agx.py",
             "README-RU.md", "AGX-README-RU.md", "AGX-ACCELERATION-RU.md",
             "GEACX1-STORAGE-RU.md", "RESTORE-KHADAS-RU.md",
             "SOURCE-SNAPSHOT.json", "SHA256SUMS",
@@ -193,7 +193,7 @@ def test_workspace_archive_contains_current_indexed_runtime_and_no_tests(tmp_pat
         install_data = {
             name: package.extractfile(name).read()
             for name in (
-                "INSTALL.sh", "INSTALL-AGX.sh", "robopark-agx.py",
+                "INSTALL.sh", "INSTALL-AGX.sh", "nvidia-bootfw-guard.sh", "robopark-agx.py",
                 "README-RU.md", "AGX-README-RU.md", "AGX-ACCELERATION-RU.md",
                 "GEACX1-STORAGE-RU.md", "RESTORE-KHADAS-RU.md",
             )
@@ -250,7 +250,7 @@ def test_workspace_archive_contains_current_indexed_runtime_and_no_tests(tmp_pat
 def _agx_installer_fixture(tmp_path: Path, *, platform_rc: int, install_rc: int) -> tuple[Path, Path]:
     directory = tmp_path / "package"
     directory.mkdir()
-    for name in ("INSTALL-AGX.sh", "robopark-agx.py"):
+    for name in ("INSTALL-AGX.sh", "nvidia-bootfw-guard.sh", "robopark-agx.py"):
         source = ROOT / "deploy/install-archive" / name if name.endswith(".sh") else ROOT / "deploy/host/robopark_host" / "agx_preflight.py"
         destination = directory / name
         destination.write_bytes(source.read_bytes())
@@ -275,7 +275,10 @@ def _agx_installer_fixture(tmp_path: Path, *, platform_rc: int, install_rc: int)
     fake_id = fake_bin / "id"
     fake_id.write_text("#!/bin/sh\necho 0\n")
     fake_id.chmod(0o755)
-    checksum_files = ("INSTALL-AGX.sh", "robopark-agx.py", "robopark-test.ota")
+    fake_dpkg_query = fake_bin / "dpkg-query"
+    fake_dpkg_query.write_text("#!/bin/sh\nexit 1\n")
+    fake_dpkg_query.chmod(0o755)
+    checksum_files = ("INSTALL-AGX.sh", "nvidia-bootfw-guard.sh", "robopark-agx.py", "robopark-test.ota")
     (directory / "SHA256SUMS").write_text("".join(
         f"{hashlib.sha256((directory / name).read_bytes()).hexdigest()}  {name}\n"
         for name in checksum_files

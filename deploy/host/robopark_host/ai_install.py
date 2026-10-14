@@ -56,6 +56,27 @@ def _prepare_ai_bridge(paths, runner) -> None:
         raise ReleaseError("ai_bridge_invalid")
 
 
+def _prepare_broker_state(paths) -> None:
+    state = paths.var / "ai"
+    try:
+        info = state.lstat()
+    except FileNotFoundError:
+        try:
+            state.mkdir(mode=0o750, parents=True)
+        except FileExistsError:
+            pass
+        except OSError as error:
+            raise ReleaseError("ai_state_invalid") from error
+        try:
+            info = state.lstat()
+        except OSError as error:
+            raise ReleaseError("ai_state_invalid") from error
+    except OSError as error:
+        raise ReleaseError("ai_state_invalid") from error
+    if not stat.S_ISDIR(info.st_mode):
+        raise ReleaseError("ai_state_invalid")
+
+
 def migration_compose(paths, config: Path, identity: str) -> Path:
     """Render a migration-only config without optional boot-time bind mounts."""
     document = json.loads(config.read_text())
@@ -216,6 +237,7 @@ def reconcile_ai_installation(paths, release, runner, *, auto_install=False):
             )
         publish_status(paths, supported=False, reason=reason)
         return
+    _prepare_broker_state(paths)
     if auto_install and enabled_intent is None:
         write_enabled_intent(paths, False)
         enabled_intent = False

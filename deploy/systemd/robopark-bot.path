@@ -1,7 +1,11 @@
 [Unit]
+# Application watchers run after core, not before paths.target.
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
 Description=Watch Robopark Telegram bot desired state
-Requires=robopark.service
-After=robopark.service
+Requires=robopark.service sysinit.target
+After=robopark.service sysinit.target
 PartOf=robopark.service
 
 [Path]

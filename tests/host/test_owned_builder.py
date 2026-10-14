@@ -1,6 +1,7 @@
 """An owned Buildx builder is the only target for Robopark builds and pruning."""
 
 import json
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -39,10 +40,11 @@ def test_bootstrap_commands_share_the_host_runner_docker_config(monkeypatch, tmp
 
 
 class Buildx:
-    def __init__(self, *, driver="docker-container", owner=True):
+    def __init__(self, *, driver="docker-container", owner=True, container_present=None):
         self.driver = driver
         self.owner = owner
         self.created = False
+        self.container_present = container_present
         self.commands = []
 
     def run(self, argv, **kwargs):
@@ -50,11 +52,24 @@ class Buildx:
         if argv[:3] == ["docker", "buildx", "create"]:
             self.created = True
             return b""
+        if argv[:2] == ["docker", "stop"]:
+            self.container_present = False
+            return b""
         if argv[:3] == ["docker", "buildx", "inspect"]:
             if not self.created:
                 raise FileNotFoundError("builder absent")
+            if "--bootstrap" in argv:
+                self.container_present = True
             return f"Name: {argv[-1]}\nDriver: {self.driver}\n".encode()
+        if argv[:4] == ["docker", "container", "ls", "--all"]:
+            name = argv[argv.index("--filter") + 1].removeprefix("name=^/").removesuffix("$")
+            present = self.container_present is not False and (
+                self.container_present is True or self.created
+            )
+            return (name + "\n" if present else "").encode()
         if argv[:3] == ["docker", "inspect", "--type"]:
+            if self.container_present is False or self.container_present is None and not self.created:
+                raise FileNotFoundError("container absent")
             name = argv[-1].removeprefix("buildx_buildkit_").removesuffix("0")
             return json.dumps([f"ROBOPARK_BUILDER_OWNER={name if self.owner else 'foreign'}"]).encode()
         raise AssertionError(argv)
@@ -123,6 +138,84 @@ def test_builder_identity_is_durable_and_reused_after_interrupted_creation(host_
         ["docker", "buildx", "create", "--name", name, "--driver", "docker-container",
          "--driver-opt", "default-load=true", "--driver-opt", f"env.ROBOPARK_BUILDER_OWNER={name}"]
     ]
+    assert [argv for argv, _ in buildx.commands if argv[:2] == ["docker", "stop"]] == [
+        ["docker", "stop", "--time", "10", f"buildx_buildkit_{name}0"]
+    ]
+
+
+def test_existing_owned_builder_refreshes_resolver_before_bootstrap(host_paths):
+    from robopark_host.state import atomic_write_json
+
+    name = "robopark-buildkit-" + "a" * 32
+    atomic_write_json(host_paths.state / "buildkit-builder.json", {
+        "schema": 1, "name": name, "driver": "docker-container",
+    })
+    buildx = Buildx()
+    buildx.created = True
+
+    assert ensure_owned_builder(host_paths, buildx) == name
+
+    commands = [argv for argv, _ in buildx.commands]
+    owner_inspects = [
+        index for index, argv in enumerate(commands)
+        if argv[:3] == ["docker", "inspect", "--type"] and "--format" in argv
+    ]
+    stop = commands.index(
+        ["docker", "stop", "--time", "10", f"buildx_buildkit_{name}0"]
+    )
+    bootstrap = commands.index(["docker", "buildx", "inspect", "--bootstrap", name])
+    assert owner_inspects[0] < stop < bootstrap < owner_inspects[1]
+
+
+def test_new_builder_bootstrap_does_not_stop_container(host_paths):
+    buildx = Buildx()
+
+    ensure_owned_builder(host_paths, buildx)
+
+    assert not any(argv[:2] == ["docker", "stop"] for argv, _ in buildx.commands)
+
+
+def test_existing_builder_without_container_bootstraps_without_unsafe_stop(host_paths):
+    from robopark_host.state import atomic_write_json
+
+    name = "robopark-buildkit-" + "b" * 32
+    atomic_write_json(host_paths.state / "buildkit-builder.json", {
+        "schema": 1, "name": name, "driver": "docker-container",
+    })
+    buildx = Buildx(container_present=False)
+    buildx.created = True
+
+    assert ensure_owned_builder(host_paths, buildx) == name
+    commands = [argv for argv, _ in buildx.commands]
+    assert not any(argv[:2] == ["docker", "stop"] for argv in commands)
+    assert ["docker", "buildx", "inspect", "--bootstrap", name] in commands
+
+
+@pytest.mark.parametrize(
+    "error",
+    [subprocess.TimeoutExpired(["docker", "container", "ls"], 30), OSError("docker unavailable")],
+)
+def test_container_inventory_error_fails_closed_before_stop_or_bootstrap(host_paths, error):
+    from robopark_host.state import atomic_write_json
+
+    name = "robopark-buildkit-" + "e" * 32
+    atomic_write_json(host_paths.state / "buildkit-builder.json", {
+        "schema": 1, "name": name, "driver": "docker-container",
+    })
+
+    class InventoryFailure(Buildx):
+        def run(self, argv, **kwargs):
+            if argv[:4] == ["docker", "container", "ls", "--all"]:
+                self.commands.append((argv, kwargs))
+                raise error
+            return super().run(argv, **kwargs)
+
+    buildx = InventoryFailure()
+    buildx.created = True
+    with pytest.raises(type(error)):
+        ensure_owned_builder(host_paths, buildx)
+    assert not any(argv[:2] == ["docker", "stop"] for argv, _ in buildx.commands)
+    assert not any("--bootstrap" in argv for argv, _ in buildx.commands)
 
 
 def test_builder_identity_rejects_foreign_driver_before_any_build(host_paths):
@@ -144,6 +237,7 @@ def test_builder_with_matching_name_but_foreign_container_owner_is_rejected(host
     with pytest.raises(ValueError, match="builder_identity_invalid"):
         ensure_owned_builder(host_paths, buildx)
     assert not any(argv[:3] == ["docker", "buildx", "create"] for argv, _ in buildx.commands)
+    assert not any(argv[:2] == ["docker", "stop"] for argv, _ in buildx.commands)
 
 
 @pytest.mark.parametrize("damage", ["symlink", "mode", "name", "driver"])

@@ -145,6 +145,102 @@ def test_reconcile_installation_never_auto_installs_on_unsupported_host(host_pat
 
     ai_install.reconcile_ai_installation(host_paths, release, Runner(), auto_install=True)
     assert calls == [{"supported": False, "reason": "agx_required"}]
+    assert not (host_paths.var / "ai").exists()
+
+
+def test_blank_supported_host_prepares_broker_state_before_start_without_ai_install(
+    host_paths, monkeypatch
+):
+    from robopark_host import ai_install, ai_runtime
+
+    release = _release(host_paths)
+    state = host_paths.var / "ai"
+    state.parent.mkdir(parents=True)
+    monkeypatch.setattr(ai_install, "probe_support", lambda _paths: (True, None))
+    monkeypatch.setattr(ai_install, "publish_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ai_runtime, "installed", lambda _paths, **_kwargs: False)
+    monkeypatch.setattr(
+        ai_runtime, "runtime_installed", lambda _paths, **_kwargs: False
+    )
+    for name in ("ensure_service_account", "ensure_api_key", "install_runtime"):
+        monkeypatch.setattr(
+            ai_runtime,
+            name,
+            lambda *_args, _name=name, **_kwargs: pytest.fail(
+                f"{_name} must not run"
+            ),
+        )
+    calls = []
+
+    class Runner:
+        def run(self, argv, **_kwargs):
+            calls.append(argv)
+            if argv[-1] == "robopark-ai-broker.service":
+                assert state.is_dir()
+                assert not state.is_symlink()
+
+    ai_install.reconcile_ai_installation(
+        host_paths, release, Runner(), auto_install=False
+    )
+
+    assert state.is_dir()
+    assert state.stat().st_mode & 0o777 == 0o750
+    assert list(state.iterdir()) == []
+    assert ["systemctl", "restart", "robopark-ai-broker.service"] in calls
+
+
+def test_existing_broker_state_is_preserved_across_reconciliation(host_paths, monkeypatch):
+    from robopark_host import ai_install, ai_runtime
+
+    release = _release(host_paths)
+    state = host_paths.var / "ai"
+    state.parent.mkdir(parents=True)
+    state.mkdir(mode=0o711)
+    marker = state / "preserved"
+    marker.write_text("existing data\n")
+    monkeypatch.setattr(ai_install, "probe_support", lambda _paths: (True, None))
+    monkeypatch.setattr(ai_install, "publish_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ai_runtime, "installed", lambda _paths, **_kwargs: False)
+    monkeypatch.setattr(
+        ai_runtime, "runtime_installed", lambda _paths, **_kwargs: False
+    )
+    runner = SimpleNamespace(run=lambda *_args, **_kwargs: None)
+
+    ai_install.reconcile_ai_installation(host_paths, release, runner)
+    ai_install.reconcile_ai_installation(host_paths, release, runner)
+
+    assert state.stat().st_mode & 0o777 == 0o711
+    assert marker.read_text() == "existing data\n"
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "file"])
+def test_unsafe_broker_state_is_rejected_before_service_start(
+    host_paths, monkeypatch, unsafe
+):
+    from robopark_host import ai_install
+
+    release = _release(host_paths)
+    state = host_paths.var / "ai"
+    state.parent.mkdir(parents=True)
+    if unsafe == "symlink":
+        target = host_paths.var / "attacker-ai"
+        target.mkdir()
+        state.symlink_to(target, target_is_directory=True)
+    else:
+        state.write_text("not a directory\n")
+    monkeypatch.setattr(ai_install, "probe_support", lambda _paths: (True, None))
+    monkeypatch.setattr(ai_install, "publish_status", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(ReleaseError, match="ai_state_invalid"):
+        ai_install.reconcile_ai_installation(
+            host_paths,
+            release,
+            SimpleNamespace(
+                run=lambda *_args, **_kwargs: pytest.fail(
+                    "unsafe state reached service reconciliation"
+                )
+            ),
+        )
 
 
 def test_reconcile_installation_does_not_rewrite_valid_bridge_metadata(
@@ -368,6 +464,31 @@ def test_boot_bridge_is_created_by_tmpfiles_and_broker_does_not_depend_on_core()
     assert "RuntimeDirectory" not in broker["Service"]
     assert "robopark.service" not in broker["Unit"].get("Requires", "")
     assert "robopark.service" in broker["Unit"]["Before"]
+
+
+def test_broker_unit_prepares_missing_state_before_storage_check():
+    from test_systemd_units import REPO, unit
+
+    raw = (REPO / "deploy/systemd/robopark-ai-broker.service").read_text()
+    pre_commands = [
+        line.removeprefix("ExecStartPre=")
+        for line in raw.splitlines()
+        if line.startswith("ExecStartPre=")
+    ]
+    assert pre_commands == [
+        "+/usr/bin/systemd-tmpfiles --create --prefix=/var/lib/robopark/ai "
+        "/etc/tmpfiles.d/robopark.conf",
+        "+/usr/bin/python3 -I -c \"import os, stat; assert "
+        "stat.S_ISDIR(os.lstat('/var/lib/robopark/ai').st_mode), "
+        "'ai_state_invalid'\"",
+        "+/usr/bin/python3 -I /opt/robopark/host-tools/robopark-storage-reconcile "
+        "--check",
+    ]
+    assert "StateDirectory=" not in raw
+    assert "StateDirectoryMode=" not in raw
+    service = unit("robopark-ai-broker.service")["Service"]
+    assert "-/var/lib/robopark/ai" in service["ReadWritePaths"].split()
+    assert "/var/lib/robopark/ai" not in service["ReadWritePaths"].split()
 
 
 def test_production_config_projects_ai_into_api_and_worker(host_paths):

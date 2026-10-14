@@ -828,9 +828,19 @@ class HostInstallRuntime:
         opt = self.root / "opt/robopark"
         _replace_symlink(opt / "current", self.release)
         _replace_symlink(opt / "host-tools", self.release / "deploy/host")
-        if (self.release / "deploy/systemd/robopark-terminal-setup.service").is_file():
+        terminal_present = (self.release / "deploy/systemd/robopark-terminal-setup.service").is_file()
+        ai_present = (self.release / "deploy/systemd/robopark-ai-setup.service").is_file()
+        if terminal_present or ai_present:
             install = self.release / "deploy/installer/lib/install-services.py"
             self._run([sys.executable, str(install), str(self.root)])
+        if ai_present:
+            # Compose mounts the bridge even when optional AI models are off.
+            # Install the transient directory before migrations or API startup.
+            self._run([
+                "systemd-tmpfiles", "--create", "--prefix=/run/robopark-ai",
+                str(self.root / "etc/tmpfiles.d/robopark.conf"),
+            ])
+        if terminal_present:
             self._run([sys.executable, "-I", str(self.release / "deploy/host/robopark"), "terminal-prepare"])
         self._run(
             [
@@ -964,6 +974,8 @@ class HostInstallRuntime:
             "init",
         ])
         self._run(["systemctl", "daemon-reload"])
+        if (self.release / "deploy/systemd/robopark-resilience-setup.service").is_file():
+            self._run(["systemctl", "start", "robopark-resilience-setup.service"])
         units = (
             "docker.service",
             "robopark.service",

@@ -34,6 +34,7 @@ _NVME = re.compile(r"/dev/nvme[0-9]+n[0-9]+p[0-9]+\Z")
 _UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z")
 _DAEMONS = ("docker.socket", "docker.service", "containerd.service")
 _WRITERS = (
+    "robopark-resilience-setup.service",
     "robopark.service",
     "robopark-updater.service",
     "robopark-commands.service",
@@ -253,6 +254,9 @@ def storage_units(layout: dict) -> dict[str, str]:
     # code can run. It is not retained active, so new start jobs recheck it.
     result["robopark-storage-check.service"] = dependencies + (
         "Description=Validate Robopark storage before service activation\n"
+        # docker.socket needs this guard before sockets.target/basic.target.
+        "DefaultDependencies=no\nRequires=sysinit.target\nAfter=sysinit.target\n"
+        "Conflicts=shutdown.target\nBefore=shutdown.target\n"
         "\n[Service]\nType=oneshot\n"
         "ExecStart=/usr/bin/python3 -I /usr/lib/robopark-storage/storage_layout.py check --presence-only\n"
         "TimeoutStartSec=20\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectHome=yes\nUMask=0077\n"

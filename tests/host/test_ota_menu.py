@@ -182,7 +182,12 @@ def test_local_update_restores_tuna_using_previous_updater(monkeypatch, host_pat
     monkeypatch.setattr(ota_update, "OtaUpdateEngine", lambda *_args: SimpleNamespace(apply=lambda *_args: receipt))
     monkeypatch.setattr(local_update, "restart_enabled_tuna", lambda runner: calls.append(runner) or "active")
 
-    assert local_update.apply_local_update(bundle, root=host_paths.root)["version"] == "0.2.0-rc.11"
+    resilience_calls = []
+    monkeypatch.setattr(local_update, "reconcile_published_resilience", lambda paths, runner: resilience_calls.append(paths) or "ready")
+    result = local_update.apply_local_update(bundle, root=host_paths.root)
+    assert result["version"] == "0.2.0-rc.11"
+    assert result["host_resilience"] == "ready"
+    assert resilience_calls == [host_paths]
     assert len(calls) == 1
 
 
@@ -204,3 +209,12 @@ def test_online_preset_install_passes_explicit_preset_without_opening_menu(monke
     monkeypatch.setattr(cli, "run_interactive", lambda: pytest.fail("unexpected menu"))
     assert cli.main(["install", "--preset", "robopark"]) == 0
     assert calls == [(bundle, Path("/"), {"preset": "robopark"})]
+
+
+def test_local_update_reports_policy_failure_after_successful_publication(monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda _: "ОБНОВИТЬ")
+    monkeypatch.setattr(cli, "apply_local_update", lambda _: {"version": "0.2.1", "sha256": "a" * 64, "host_resilience": "degraded"})
+    cli._update(Path("verified.ota"))
+    output = capsys.readouterr()
+    assert "0.2.1" in output.out
+    assert "robopark-resilience-setup.service" in output.err

@@ -2126,3 +2126,28 @@ def test_publish_rejects_projection_without_service_states(tmp_path: Path):
     runtime._run = run
     with pytest.raises(RuntimeError, match="host_health_projection_missing"):
         runtime.publish()
+
+
+def test_clean_install_creates_ai_bind_before_any_compose_start(tmp_path):
+    root = tmp_path / "host"
+    release = root / "opt/robopark/releases/0.2.0"
+    for relative in ("deploy/host/robopark", "deploy/compose_secrets.py",
+                     "deploy/systemd/robopark-ai-setup.service",
+                     "deploy/installer/lib/install-services.py",
+                     "deploy/tmpfiles.d/robopark.conf"):
+        path = release / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# fixture\n")
+    runtime = object.__new__(HostInstallRuntime)
+    runtime.root, runtime.release, runtime.etc = root, release, root / "etc/robopark"
+    runtime.tuna = TunaConfiguration()
+    runtime.enable_support_ssh = False
+    calls = []
+    runtime._run = lambda command, **kwargs: calls.append(command)
+    runtime.configure()
+    install = next(i for i,c in enumerate(calls) if str(release / "deploy/installer/lib/install-services.py") in c)
+    tmpfiles = calls.index(["systemd-tmpfiles", "--create", "--prefix=/run/robopark-ai",
+                           str(root / "etc/tmpfiles.d/robopark.conf")])
+    bootstrap = next(i for i,c in enumerate(calls) if c[-1] == "bootstrap-compose")
+    assert install < tmpfiles < bootstrap
+    assert not any(c[-1] in ("ai-prepare", "ai-reconcile") for c in calls)

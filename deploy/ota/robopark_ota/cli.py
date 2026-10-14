@@ -208,6 +208,8 @@ def _update(bundle: Path) -> None:
         raise RuntimeError("confirmation_required")
     result = apply_local_update(bundle)
     print(f"Robopark {result['version']} обновлён. SHA-256: {result['sha256']}")
+    if result.get("host_resilience") == "degraded":
+        print("Приложение обновлено, но настройка восстановления сети не завершена. Проверьте robopark-resilience-setup.service.", file=sys.stderr)
     if result.get("publication") == "degraded":
         print("Приложение обновлено, но Tuna не запустилась. Проверьте состояние robopark-tuna.service.", file=sys.stderr)
 

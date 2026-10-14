@@ -8,6 +8,7 @@ systemd state are changed; dependencies are only reported and never installed.
 from __future__ import annotations
 
 import argparse
+import grp
 import hashlib
 import importlib.util
 import json
@@ -38,6 +39,7 @@ except ImportError:  # Direct execution from an unpacked Robopark release.
 UNIT_NAMES = ("robopark-accelerator.service", "robopark-edge-llm.service")
 MODULES = ("PIL", "numpy", "onnx")
 EXECUTABLES = ("gst-launch-1.0", "trtexec")
+SERVICE_GID = 10001
 
 
 class InstallError(ValueError):
@@ -159,11 +161,41 @@ def _account_ids(runner: Callable[[list[str]], None]) -> tuple[int, int]:
     try:
         account = pwd.getpwnam("robopark-accel")
     except KeyError:
+        account = None
+    if account is not None and account.pw_uid == 0:
+        raise InstallError("service_account_must_be_nonroot")
+
+    try:
+        grp.getgrgid(SERVICE_GID)
+    except KeyError:
+        try:
+            runtime_group = grp.getgrnam("robopark-runtime")
+        except KeyError:
+            runner(
+                [
+                    "groupadd",
+                    "--system",
+                    "--gid",
+                    str(SERVICE_GID),
+                    "robopark-runtime",
+                ]
+            )
+        else:
+            if runtime_group.gr_gid != SERVICE_GID:
+                raise InstallError("service_group_name_conflict")
+    for name in ("video", "render"):
+        try:
+            grp.getgrnam(name)
+        except KeyError:
+            runner(["groupadd", "--system", name])
+
+    if account is None:
         runner(
             [
                 "useradd",
                 "--system",
-                "--user-group",
+                "--gid",
+                str(SERVICE_GID),
                 "--groups",
                 "video,render",
                 "--home-dir",
@@ -177,9 +209,7 @@ def _account_ids(runner: Callable[[list[str]], None]) -> tuple[int, int]:
             account = pwd.getpwnam("robopark-accel")
         except KeyError as error:
             raise InstallError("service_account_creation_failed") from error
-    if account.pw_uid == 0:
-        raise InstallError("service_account_must_be_nonroot")
-    return account.pw_uid, 10001
+    return account.pw_uid, SERVICE_GID
 
 
 def _guard_destinations(root: Path) -> None:
@@ -228,8 +258,12 @@ def _write_release(
     release_id: str,
     files: dict[str, str],
 ) -> Path:
-    releases = root / "opt/robopark-accelerator/releases"
-    releases.mkdir(parents=True, exist_ok=True, mode=0o755)
+    accelerator_root = root / "opt/robopark-accelerator"
+    accelerator_root.mkdir(parents=True, exist_ok=True, mode=0o755)
+    accelerator_root.chmod(0o755)
+    releases = accelerator_root / "releases"
+    releases.mkdir(exist_ok=True, mode=0o755)
+    releases.chmod(0o755)
     release = releases / release_id
     expected_manifest = (
         json.dumps(
@@ -342,6 +376,7 @@ def prepare(
     source: Path | None = None,
     apply: bool = False,
     start: bool = False,
+    operator_confirmed_platform: bool = False,
     inspect_fn: Callable[[Path], dict] | None = None,
     storage_fn: Callable[..., dict] | None = None,
     dependency_fn: Callable[[], dict] | None = None,
@@ -356,8 +391,9 @@ def prepare(
     if start and not apply:
         raise InstallError("start_requires_apply")
     platform = inspect_fn(root)
-    if not platform.get("platform_ready") or not platform.get("identity", {}).get(
-        "matches_recovery"
+    if not operator_confirmed_platform and (
+        not platform.get("platform_ready")
+        or not platform.get("identity", {}).get("matches_recovery")
     ):
         blockers = platform.get("blockers") or ["recovery_identity_mismatch"]
         raise InstallError("platform_preflight_failed:" + ",".join(blockers))
@@ -369,6 +405,8 @@ def prepare(
     dependencies = dependency_fn()
     report = {
         "schema": 1,
+        "operator_confirmed_platform": operator_confirmed_platform,
+        "observed_platform": platform,
         "state": "planned",
         "applied": False,
         "started": False,
@@ -403,11 +441,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--start", action="store_true")
+    parser.add_argument("--operator-confirmed-platform", action="store_true")
     args = parser.parse_args(argv)
     try:
         report = prepare(
             root=args.root,
             source=args.source,
+            operator_confirmed_platform=args.operator_confirmed_platform,
             apply=args.apply,
             start=args.start,
         )

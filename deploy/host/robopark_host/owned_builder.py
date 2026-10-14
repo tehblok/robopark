@@ -85,6 +85,7 @@ def inspect_owned_builder(paths, run, *, bootstrap: bool = False) -> str:
 def ensure_owned_builder(paths, runner) -> str:
     """Create once under the host lock; never switch Docker's global default."""
     name = owned_builder_name(paths)
+    durable_identity_existed = name is not None
     if name is None:
         name = f"robopark-buildkit-{uuid4().hex}"
         # The durable identity precedes Docker creation so an interrupted
@@ -100,17 +101,39 @@ def ensure_owned_builder(paths, runner) -> str:
             return runner(argv)
         return runner.run(argv, timeout=timeout, capture=capture)
 
+    def verified_run(argv):
+        raw = run(argv, timeout=90 if "--bootstrap" in argv else 30, capture=True)
+        if isinstance(raw, bytes):
+            return raw.decode("utf-8", "replace")
+        return raw
+
+    def probe_exists(argv) -> bool:
+        probe = getattr(runner, "run_cleanup", None)
+        if callable(probe):
+            return probe(argv, timeout=30)
+        try:
+            run(argv, timeout=30, capture=True)
+            return True
+        except (OSError, ReleaseError, subprocess.CalledProcessError):
+            return False
+
+    def owned_container_exists(container: str) -> bool:
+        output = verified_run([
+            "docker", "container", "ls", "--all",
+            "--filter", f"name=^/{container}$", "--format", "{{.Names}}",
+        ])
+        if not isinstance(output, str) or len(output) > 65536:
+            raise ValueError("builder_identity_invalid")
+        names = output.splitlines()
+        if not names:
+            return False
+        if names == [container]:
+            return True
+        raise ValueError("builder_identity_invalid")
+
     # Absence is expected on first use. Do not claim the OTA failure log for
     # this handled probe; create/bootstrap/build failures must retain it.
-    probe = getattr(runner, "run_cleanup", None)
-    if callable(probe):
-        exists = probe(inspect, timeout=30)
-    else:
-        try:
-            run(inspect, timeout=30, capture=True)
-            exists = True
-        except (OSError, ReleaseError, subprocess.CalledProcessError):
-            exists = False
+    exists = probe_exists(inspect)
     if not exists:
         run(
             [
@@ -120,12 +143,14 @@ def ensure_owned_builder(paths, runner) -> str:
             ],
             timeout=90,
         )
-
-    def verified_run(argv):
-        raw = run(argv, timeout=90 if "--bootstrap" in argv else 30, capture=True)
-        if isinstance(raw, bytes):
-            return raw.decode("utf-8", "replace")
-        return raw
+    elif durable_identity_existed:
+        container = "buildx_buildkit_" + name + "0"
+        if owned_container_exists(container):
+            # Verify the durable receipt, Buildx driver, and private owner marker
+            # before stopping anything. Starting the same owned container again
+            # makes Docker regenerate its resolver configuration from the host.
+            inspect_owned_builder(paths, verified_run, bootstrap=False)
+            run(["docker", "stop", "--time", "10", container], timeout=30)
 
     # A matching Buildx name/driver is insufficient: a replaced container may
     # use another project's cache. Bootstrap it so the owner marker is inspectable.
