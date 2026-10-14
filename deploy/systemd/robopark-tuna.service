@@ -3,17 +3,17 @@ Description=Robopark Tuna HTTPS ingress
 Wants=network-online.target
 Requires=robopark.service
 After=network-online.target robopark.service
-StartLimitIntervalSec=300
-StartLimitBurst=3
+StartLimitIntervalSec=0
 
 [Service]
 LimitNOFILE=65536
 TasksMax=4096
 Type=simple
+Environment=GODEBUG=http2client=0
 EnvironmentFile=/etc/robopark/tuna.env
 ExecStart=/bin/sh /opt/robopark/current/deploy/tuna-http.sh
 Restart=on-failure
-RestartSec=10
+RestartSec=30
 TimeoutStartSec=150
 TimeoutStopSec=30
 NoNewPrivileges=true

@@ -2,20 +2,21 @@
 
 ## Установка и обновление
 
-Текущий production-выпуск — [Robopark 0.2.1 для AGX](https://github.com/tehblok/robopark/releases/tag/v0.2.1).
+Текущий production-выпуск — [Robopark 0.2.2 для AGX](https://github.com/tehblok/robopark/releases/tag/v0.2.2).
 Он включает исправления production 0.2.0, устраняет циклы загрузки systemd
 и добавляет постоянное восстановление Wi-Fi без энергосбережения.
-[Изменения, совместимость и границы проверки](docs/releases/0.2.1.md).
+Tuna повторяет подключение без лимита попыток; сборщик OTA обновляет DNS хоста.
+[Изменения, совместимость и границы проверки](docs/releases/0.2.2.md).
 
-В GitHub Release находятся `robopark-0.2.1-install.tar.gz`,
-`robopark-0.2.1.ota` и `SHA256SUMS`. Распакуйте установочный архив,
+В GitHub Release находятся `robopark-0.2.2-install.tar.gz`,
+`robopark-0.2.2.ota` и `SHA256SUMS`. Распакуйте установочный архив,
 сверьте `sha256sum -c SHA256SUMS` и следуйте [инструкции AGX](docs/runbooks/agx-test-install.md).
 Для уже подтверждённого оператором AGX на L4T 39.2.1 предусмотрен
 `./INSTALL-AGX.sh --operator-confirmed-platform install`.
-На работающем хосте используйте `python3 robopark-0.2.1.ota update` от root.
+На работающем хосте используйте `python3 robopark-0.2.2.ota update` от root.
 Это также применяет новую политику при переходе со старого обновлятора 0.2.0.
 OTA обновляет приложение. Для исправления отдельно установленного accelerator
-после обновления распакуйте комплект 0.2.1 и выполните
+после обновления распакуйте комплект 0.2.2 и выполните
 `./INSTALL-AGX.sh --operator-confirmed-platform setup`.
 
 Публичный комплект не содержит резервных копий, паролей, доменных токенов

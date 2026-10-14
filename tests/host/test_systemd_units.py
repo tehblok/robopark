@@ -20,15 +20,23 @@ def unit(name):
     return parsed
 
 
-def test_tuna_requires_ready_application_and_bounded_restart():
+def test_tuna_requires_ready_application_and_retries_network_failures_forever():
     tuna = unit("robopark-tuna.service")
     assert "robopark.service" in tuna["Unit"]["Requires"].split()
     assert {"network-online.target", "robopark.service"} <= set(
         tuna["Unit"]["After"].split()
     )
     assert tuna["Service"]["Restart"] == "on-failure"
+    assert tuna["Unit"]["StartLimitIntervalSec"] == "0"
+    assert tuna["Service"]["RestartSec"] == "30"
+    assert tuna["Service"]["Environment"] == "GODEBUG=http2client=0"
     assert int(tuna["Service"]["TimeoutStartSec"]) <= 180
-    assert int(tuna["Unit"]["StartLimitBurst"]) <= 5
+
+    legacy = configparser.ConfigParser(interpolation=None, strict=False)
+    legacy.read(REPO / "deploy/tuna.service")
+    assert legacy["Unit"]["StartLimitIntervalSec"] == "0"
+    assert legacy["Service"]["RestartSec"] == "30"
+    assert legacy["Service"]["Environment"] == "GODEBUG=http2client=0"
 
 
 def test_boot_never_builds_or_uses_a_mutable_compose_config():
@@ -209,9 +217,13 @@ def test_bootstrap_pins_fresh_images_and_restricts_mounts(host_paths):
         calls.append(command)
         if command[:3] == ["docker", "buildx", "inspect"]:
             return f"Name: {command[-1]}\nDriver: docker-container\n"
+        if command[:4] == ["docker", "container", "ls", "--all"]:
+            return command[command.index("--filter") + 1].removeprefix("name=^/").removesuffix("$")
         if command[:2] == ["docker", "inspect"]:
             builder = command[-1].removeprefix("buildx_buildkit_").removesuffix("0")
             return json.dumps(["ROBOPARK_BUILDER_OWNER=" + builder])
+        if command[:2] == ["docker", "stop"]:
+            return ""
         if command[:3] == ["docker", "buildx", "prune"]:
             return ""
         if command[:3] == ["docker", "buildx", "du"]:
