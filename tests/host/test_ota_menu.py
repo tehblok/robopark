@@ -209,3 +209,12 @@ def test_online_preset_install_passes_explicit_preset_without_opening_menu(monke
     monkeypatch.setattr(cli, "run_interactive", lambda: pytest.fail("unexpected menu"))
     assert cli.main(["install", "--preset", "robopark"]) == 0
     assert calls == [(bundle, Path("/"), {"preset": "robopark"})]
+
+
+def test_local_update_reports_policy_failure_after_successful_publication(monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda _: "ОБНОВИТЬ")
+    monkeypatch.setattr(cli, "apply_local_update", lambda _: {"version": "0.2.1", "sha256": "a" * 64, "host_resilience": "degraded"})
+    cli._update(Path("verified.ota"))
+    output = capsys.readouterr()
+    assert "0.2.1" in output.out
+    assert "robopark-resilience-setup.service" in output.err
