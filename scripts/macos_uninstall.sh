@@ -123,7 +123,7 @@ if [ "$mode" = --remove-data ] && [ "$console_uid" -ge 501 ]; then
   /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/defaults delete ru.robopark.agent >/dev/null 2>&1 || true
   # Delete only our own generic-password service, without printing keychain data.
   count=0
-  while [ "$count" -lt 64 ] && /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/security delete-generic-password -s ru.robopark.agent >/dev/null 2>&1; do count=$((count + 1)); done
+  while [ "$count" -lt 512 ] && /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/security delete-generic-password -s ru.robopark.agent >/dev/null 2>&1; do count=$((count + 1)); done
   echo 'Robopark удалён. Локальные данные текущего пользователя удалены.'
 else
   echo 'Robopark удалён. Локальные данные сохранены для повторной установки.'

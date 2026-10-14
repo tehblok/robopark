@@ -28,6 +28,265 @@ try check(key.publicKey.isValidSignature(try P256.Signing.ECDSASignature(derRepr
             for: Data("robopark-compute-v1\ninstance\ntest\nnonce-123".utf8)), "compute challenge has an independent signing domain")
 rejects("wrong environment") { _ = try c.sign(key: key, environment: "production", instanceID: "instance") }
 rejects("wrong instance") { _ = try c.sign(key: key, environment: "test", instanceID: "other") }
+let unboundOwner = DeviceOwnerBinding(ownerUserID: nil, activeUserID: nil)
+let legacyLogin = try unboundOwner.acceptingAuthenticatedUser(7)
+try check(legacyLogin.ownerUserID == nil && legacyLogin.activeUserID == 7,
+          "legacy Mac may authenticate only long enough to resolve its owner from claim-auth")
+rejects("legacy session cannot switch account before authoritative owner claim") {
+    _ = try legacyLogin.acceptingAuthenticatedUser(8)
+}
+let claimedOwner = try legacyLogin.bindingAuthoritativeOwner(7)
+try check(claimedOwner.ownerUserID == 7 && claimedOwner.activeUserID == 7,
+          "server claim permanently binds the Mac to its authenticated owner")
+rejects("claim cannot bind a different owner than the authenticated account") {
+    _ = try legacyLogin.bindingAuthoritativeOwner(8)
+}
+rejects("another account cannot sign into an owner-bound Mac") {
+    _ = try claimedOwner.acceptingAuthenticatedUser(8)
+}
+let signedOutOwner = claimedOwner.signedOut()
+try check(signedOutOwner.ownerUserID == 7 && signedOutOwner.activeUserID == nil,
+          "logout preserves permanent owner binding")
+let persistedOwner = try JSONDecoder().decode(DeviceOwnerBinding.self,
+    from: JSONEncoder().encode(signedOutOwner))
+try check(try persistedOwner.acceptingAuthenticatedUser(7) == claimedOwner,
+          "persisted owner may reconnect after application restart")
+let ownerClaim = try JSONDecoder().decode(AuthenticatedDeviceClaim.self, from: Data("""
+    {"device_id":"11111111-1111-4111-8111-111111111111","owner_user_id":7,"status":"approved",
+     "instance_id":"instance","environment":"test"}
+    """.utf8))
+try ownerClaim.validate(expectedOwnerUserID: 7, existingDeviceID: nil)
+checks += 1
+rejects("claim response owner must match the authenticated workspace owner") {
+    try ownerClaim.validate(expectedOwnerUserID: 8, existingDeviceID: nil)
+}
+rejects("claim response cannot replace an installed device identity") {
+    try ownerClaim.validate(expectedOwnerUserID: 7,
+                            existingDeviceID: "22222222-2222-4222-8222-222222222222")
+}
+rejects("claim response without an authoritative owner is rejected") {
+    _ = try JSONDecoder().decode(AuthenticatedDeviceClaim.self, from: Data("""
+        {"device_id":"11111111-1111-4111-8111-111111111111","status":"approved",
+         "instance_id":"instance","environment":"test"}
+        """.utf8))
+}
+let oauthState = "0123456789abcdef0123456789abcdef"
+let oauthCallback = URL(string: "https://oauth.yandex-team.ru/verification_code#access_token=token-123&expires_in=3600&state=\(oauthState)")!
+let oauthCredential = try CorporateAuthPolicy.oauthCredential(from: oauthCallback,
+                                                               expectedState: oauthState,
+                                                               now: Date(timeIntervalSince1970: 1_000))
+try check(oauthCredential.token == "token-123"
+          && oauthCredential.expiresAt == Date(timeIntervalSince1970: 4_600),
+          "exact OAuth callback yields a bounded expiring token")
+for callback in [
+    "https://attacker.example/verification_code#access_token=x&expires_in=3600&state=\(oauthState)",
+    "https://oauth.yandex-team.ru/other#access_token=x&expires_in=3600&state=\(oauthState)",
+    "https://oauth.yandex-team.ru/verification_code#access_token=x&expires_in=3600&state=wrong",
+    "https://oauth.yandex-team.ru/verification_code#access_token=x&access_token=y&expires_in=3600&state=\(oauthState)",
+] {
+    rejects("forged or duplicate OAuth callback") {
+        _ = try CorporateAuthPolicy.oauthCredential(from: URL(string: callback)!,
+                                                     expectedState: oauthState,
+                                                     now: Date(timeIntervalSince1970: 1_000))
+    }
+}
+let sessionCandidate = CorporateCookieCandidate(name: "Session_id", value: "session-value",
+    domain: ".yandex-team.ru", path: "/", secure: true,
+    expires: Date(timeIntervalSince1970: 10_000))
+try check(try CorporateAuthPolicy.sessionCookie(from: [sessionCandidate], now: Date(timeIntervalSince1970: 1_000))
+          == "Session_id=session-value", "single parent-domain Session_id is accepted")
+rejects("host-specific Session_id cannot shadow parent identity") {
+    _ = try CorporateAuthPolicy.sessionCookie(from: [CorporateCookieCandidate(name: "Session_id", value: "x",
+        domain: "emergency.sdc.yandex-team.ru", path: "/", secure: true, expires: nil)], now: Date())
+}
+rejects("duplicate Session_id cookies are rejected") {
+    _ = try CorporateAuthPolicy.sessionCookie(from: [sessionCandidate, sessionCandidate], now: Date(timeIntervalSince1970: 1_000))
+}
+try check(CorporateAuthPolicy.identityStatus(httpStatus: 200,
+    body: Data("{\"login\":\"Owner.Login\",\"dismissed\":false}".utf8), expectedLogin: "owner.login") == .ready,
+    "verified corporate identity matches authoritative owner")
+try check(CorporateAuthPolicy.identityStatus(httpStatus: 200,
+    body: Data("{\"login\":\"other\",\"dismissed\":false}".utf8), expectedLogin: "owner.login") == .ownerMismatch,
+    "wrong corporate owner fails closed")
+try check(CorporateAuthPolicy.identityStatus(httpStatus: 200,
+    body: Data("{\"login\":\"owner.login\",\"dismissed\":true}".utf8), expectedLogin: "owner.login") == .accessDenied,
+    "dismissed corporate identity cannot become ready")
+try check(CorporateAuthPolicy.identityStatus(httpStatus: 401, body: Data(), expectedLogin: "owner.login") == .reauthRequired,
+    "401 requires reauthentication")
+try check(CorporateAuthPolicy.identityStatus(httpStatus: 403, body: Data(), expectedLogin: "owner.login") == .accessDenied,
+    "403 remains access denied")
+try check(CorporateAuthPolicy.identityStatus(httpStatus: 500, body: Data(), expectedLogin: "owner.login") == .networkUnavailable,
+    "upstream failure remains network unavailable")
+try check(!oauthCredential.isUsable(now: Date(timeIntervalSince1970: 4_550))
+          && oauthCredential.isUsable(now: Date(timeIntervalSince1970: 4_000)),
+          "expired or nearly expired token is not reused")
+func corporateEnvelope(service: String = "tracker", action: String = "issue_read",
+                       resource: String = "TEST-1", params: [String: Any] = [:],
+                       owner: Int = 7, login: String = "owner.login") throws -> Data {
+    try JSONSerialization.data(withJSONObject: ["service": service, "action": action,
+        "resource": resource, "params": params, "owner_user_id": owner,
+        "owner_tracker_login": login, "requester_user_id": 7], options: [.sortedKeys])
+}
+let issueRequest = try CorporateReadPolicy.decode(try corporateEnvelope(), expectedOwnerUserID: 7,
+                                                   expectedOwnerTrackerLogin: "Owner.Login")
+let issuePlan = try CorporateReadPolicy.plan(issueRequest)
+try check(issuePlan.method == "GET"
+          && issuePlan.url.absoluteString == "https://st-api.yandex-team.ru/v2/issues/TEST-1",
+          "typed Tracker issue request has a fixed HTTPS destination")
+let installations = try CorporateReadPolicy.decode(try corporateEnvelope(service: "inventory",
+    action: "rover_installations", resource: "a664", params: ["offset": 2, "limit": 25, "slot": "/base/lidar"]),
+    expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")
+let installationsPlan = try CorporateReadPolicy.plan(installations)
+let installationQuery = URLComponents(url: installationsPlan.url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+try check(installationsPlan.url.host == CorporateReadPolicy.inventoryHost
+          && installationsPlan.url.absoluteString.hasPrefix("https://inventory.sdc.yandex-team.ru/api/v1/installations/")
+          && installationQuery.contains(URLQueryItem(name: "rover", value: "a664")),
+          "Inventory request cannot select a host or path")
+for envelope in [
+    try corporateEnvelope(owner: 8),
+    try corporateEnvelope(login: "other.login"),
+    try corporateEnvelope(action: "arbitrary_read"),
+    try corporateEnvelope(action: "comments_read", resource: "https://evil.example/x"),
+    try corporateEnvelope(action: "comments_read", resource: "TEST-1/comments"),
+] {
+    rejects("wrong owner, action, URL host or subresource is rejected") {
+        _ = try CorporateReadPolicy.decode(envelope, expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")
+    }
+}
+rejects("corporate request envelope is bounded") {
+    _ = try CorporateReadPolicy.decode(Data(repeating: 0x20, count: CorporateReadPolicy.maxRequestBytes + 1),
+        expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")
+}
+let countRequest = try CorporateReadPolicy.decode(try corporateEnvelope(action: "issues_count", resource: "count",
+    params: ["query": "Queue: TEST"]), expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")
+let normalizedCount = try CorporateReadPolicy.result(status: 200, data: Data("42".utf8), headers: [:], request: countRequest)
+try check((normalizedCount["payload"] as? [String: Int])?["count"] == 42,
+          "Tracker scalar count is normalized to a typed object")
+let searchRequest = try CorporateReadPolicy.decode(try corporateEnvelope(action: "issues_search", resource: "search",
+    params: ["query": "Queue: TEST", "order": ["-updatedAt"], "page": 2, "per_page": 25,
+             "expand": "transitions", "fields": "key,summary"]),
+    expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")
+let searchPlan = try CorporateReadPolicy.plan(searchRequest)
+let searchBody = try JSONSerialization.jsonObject(with: searchPlan.body!) as? [String: Any]
+let searchQuery = URLComponents(url: searchPlan.url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+try check(Set(searchBody?.keys.map { $0 } ?? []) == Set(["query", "order"])
+          && searchQuery.contains(URLQueryItem(name: "page", value: "2"))
+          && searchQuery.contains(URLQueryItem(name: "perPage", value: "25"))
+          && searchQuery.contains(URLQueryItem(name: "expand", value: "transitions"))
+          && searchQuery.contains(URLQueryItem(name: "fields", value: "key,summary")),
+          "Tracker search sends pagination and projections as URL query")
+for (status, expected) in [(401, CorporateReadError.auth), (403, .accessDenied), (404, .notFound),
+                           (429, .rateLimited), (500, .network)] {
+    do { _ = try CorporateReadPolicy.result(status: status, data: Data("{}".utf8), headers: [:], request: issueRequest)
+         fatalError("FAIL: corporate HTTP error \(status) accepted") }
+    catch let error as CorporateReadError { try check(error == expected, "corporate HTTP status maps to stable wire error") }
+}
+rejects("corporate response is bounded") {
+    _ = try CorporateReadPolicy.result(status: 200,
+        data: Data(repeating: UInt8(ascii: "x"), count: CorporateReadPolicy.maxResponseBytes + 1),
+        headers: [:], request: issueRequest)
+}
+try check(CorporateReadPolicy.admits(inflight: 0) && CorporateReadPolicy.admits(inflight: 1)
+          && !CorporateReadPolicy.admits(inflight: 2),
+          "corporate executor admits exactly two concurrent requests")
+try check(try CorporateReadPolicy.inventoryRover(serverAuthorizedVIN: "YASADR00000000664") == "a664",
+          "Inventory readiness uses only the server-authorized Emergency VIN")
+func writeEnvelope(action: String = "comment_create", params: [String: Any] = ["text": "hello"],
+                   owner: Int = 7, command: String = "11111111-1111-4111-8111-111111111111",
+                   step: String = "comment:1") throws -> Data {
+    try JSONSerialization.data(withJSONObject: ["service": "tracker", "action": action,
+        "resource": "TEST-1", "params": params, "owner_user_id": owner,
+        "owner_tracker_login": "owner.login", "requester_user_id": 7,
+        "command_id": command, "step_id": step], options: [.sortedKeys])
+}
+let commentWrite = try CorporateWritePolicy.decode(try writeEnvelope(), expectedOwnerUserID: 7,
+                                                     expectedOwnerTrackerLogin: "owner.login")
+let commentPlan = try CorporateWritePolicy.plan(commentWrite)
+try check(commentPlan.method == "POST" && commentPlan.url.absoluteString ==
+          "https://st-api.yandex-team.ru/v2/issues/TEST-1/comments",
+          "comment write has a fixed Tracker endpoint")
+let patchWrite = try CorporateWritePolicy.decode(try writeEnvelope(action: "issue_patch",
+    params: ["fields": ["assignee": NSNull(), "tags": ["robot"], "solutionMethod": "repair"], "version": "17"]),
+    expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")
+let patchPlan = try CorporateWritePolicy.plan(patchWrite)
+try check(patchPlan.url.query == nil && patchPlan.ifMatch == "17",
+          "issue patch sends version through the Tracker If-Match contract")
+let attachmentWrite = try CorporateWritePolicy.decode(try writeEnvelope(action: "attachment_upload",
+    params: ["filename": "photo.jpg", "content_type": "image/jpeg",
+             "data_base64": Data("image".utf8).base64EncodedString()]),
+    expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")
+try check(try CorporateWritePolicy.plan(attachmentWrite).url.absoluteString ==
+          "https://st-api.yandex-team.ru/v2/attachments/",
+          "attachment upload uses Tracker temporary storage")
+let numericAttachment = try CorporateWritePolicy.result(status: 201,
+    data: Data("{\"id\":123}".utf8), request: attachmentWrite)
+try check((numericAttachment["payload"] as? [String: Any])?["id"] as? String == "123",
+          "numeric Tracker attachment ids are normalized before a durable success")
+let longAttachment = try CorporateWritePolicy.result(status: 201,
+    data: Data("{\"longId\":\"55\"}".utf8), request: attachmentWrite)
+try check((longAttachment["payload"] as? [String: Any])?["id"] as? String == "55",
+          "Tracker temporary attachment longId is normalized to the durable id contract")
+let longComment = try CorporateWritePolicy.result(status: 201,
+    data: Data("{\"longId\":\"56\"}".utf8), request: commentWrite)
+try check((longComment["payload"] as? [String: Any])?["id"] as? String == "56",
+          "Tracker comment longId is normalized after successful creation")
+for bad in [
+    try writeEnvelope(owner: 8), try writeEnvelope(action: "delete_issue"),
+    try writeEnvelope(action: "issue_patch", params: ["fields": ["summary": "escape"]]),
+    try writeEnvelope(step: "../other"),
+] {
+    rejects("write owner, action, fields and step are bounded") {
+        _ = try CorporateWritePolicy.decode(bad, expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")
+    }
+}
+let receipt = CorporateWriteReceipt(ownerUserID: 7, deviceID: "device", commandID: commentWrite.commandID,
+    stepID: commentWrite.stepID, digest: String(repeating: "a", count: 64))
+try receipt.validate(ownerUserID: 7, deviceID: "device", digest: String(repeating: "a", count: 64))
+rejects("receipt cannot be reused with a different envelope") {
+    try receipt.validate(ownerUserID: 7, deviceID: "device", digest: String(repeating: "b", count: 64))
+}
+var executingReceipt = receipt; executingReceipt.state = .executing
+let reloadedExecuting = try JSONDecoder().decode(CorporateWriteReceipt.self,
+    from: JSONEncoder().encode(executingReceipt))
+try check(try reloadedExecuting.disposition(ownerUserID: 7, deviceID: "device",
+    digest: String(repeating: "a", count: 64)) == .outcomeUnknown,
+    "restart never resends an executing receipt")
+let replayBytes = Data("{\"ok\":true}".utf8)
+var completedReceipt = receipt; completedReceipt.state = .completed; completedReceipt.wireResult = replayBytes
+try check(try completedReceipt.disposition(ownerUserID: 7, deviceID: "device",
+    digest: String(repeating: "a", count: 64)) == .replay(replayBytes),
+    "duplicate completed command replays its durable result")
+var receiptIndex = CorporateWriteReceiptIndex()
+for number in 0..<CorporateWriteReceiptIndex.capacity { try receiptIndex.reserve("receipt-\(number)") }
+try receiptIndex.reserve("receipt-0")
+rejects("receipt capacity uses backpressure and never evicts unknown outcomes") {
+    try receiptIndex.reserve("receipt-over-capacity")
+}
+try check(completedReceipt.permitsAcknowledgement(ownerUserID: 7, deviceID: "device",
+    commandID: receipt.commandID, stepID: receipt.stepID), "completed receipt accepts its exact durable ACK")
+try check(!executingReceipt.permitsAcknowledgement(ownerUserID: 7, deviceID: "device",
+    commandID: receipt.commandID, stepID: receipt.stepID), "executing receipt cannot be garbage collected")
+var unknownReceipt = receipt; unknownReceipt.state = .unknown
+try check(!unknownReceipt.permitsAcknowledgement(ownerUserID: 7, deviceID: "device",
+    commandID: receipt.commandID, stepID: receipt.stepID), "unknown receipt survives server ACK")
+try check(!completedReceipt.permitsAcknowledgement(ownerUserID: 8, deviceID: "device",
+    commandID: receipt.commandID, stepID: receipt.stepID)
+    && !completedReceipt.permitsAcknowledgement(ownerUserID: 7, deviceID: "other-device",
+    commandID: receipt.commandID, stepID: receipt.stepID)
+    && !completedReceipt.permitsAcknowledgement(ownerUserID: 7, deviceID: "device",
+    commandID: UUID().uuidString.lowercased(), stepID: receipt.stepID), "foreign ACK cannot release a receipt")
+for number in 0..<1000 {
+    let account = "receipt-\(number)"
+    receiptIndex.releaseAcknowledged(account)
+    try receiptIndex.reserve("receipt-\(number + CorporateWriteReceiptIndex.capacity)")
+}
+try check(receiptIndex.accounts.count == CorporateWriteReceiptIndex.capacity,
+          "ACK releases completed slots for more than 256 lifetime operations")
+var writeAdmission = CorporateWriteAdmission()
+try writeAdmission.acquire("attempt-one")
+rejects("concurrent corporate write receives busy backpressure") { try writeAdmission.acquire("attempt-two") }
+writeAdmission.release("attempt-one")
+try writeAdmission.acquire("attempt-two")
 try check(try EmergencyTarget.url(vin: "YASADR00000000664").absoluteString == "https://emergency.sdc.yandex-team.ru/api/v1/YASADR00000000664/", "fixed upstream")
 for vin in ["664", "../admin", "https://evil.example", "YASADR00000000664?x", "YASADR１２３４５６７８９０１"] {
     rejects("noncanonical VIN") { _ = try EmergencyTarget.url(vin: vin) }

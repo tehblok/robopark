@@ -10,6 +10,16 @@ afterEach(() => {
 })
 
 describe('prepareImage', () => {
+  it('tries local processing between direct failure and relay on a weak device', async () => {
+    vi.spyOn(navigator, 'hardwareConcurrency', 'get').mockReturnValue(2)
+    vi.stubGlobal('createImageBitmap', undefined)
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:relay')
+    vi.mocked(transformOnMac).mockResolvedValueOnce(null).mockResolvedValueOnce(new Blob(['jpeg'], { type: 'image/jpeg' }))
+    const prepared = await prepareImage(new File([new Uint8Array(1_100_000)], 'large.png', { type: 'image/png' }))
+    expect(prepared.sizeBytes).toBe(4)
+    expect(transformOnMac).toHaveBeenNthCalledWith(1, expect.any(File), 1920, 0.82, 'direct')
+    expect(transformOnMac).toHaveBeenNthCalledWith(2, expect.any(File), 1920, 0.82, 'relay')
+  })
   it('keeps effective local processing at the source and sends no peer traffic', async () => {
     class WorkerStub {
       onmessage?: (event: MessageEvent) => void

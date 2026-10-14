@@ -95,10 +95,10 @@ class BrokerRegistry:
         self.pending: dict[tuple[str, str, str, str], PendingJob] = {}
         self.cache: dict[tuple[str, str, str], tuple[float, dict, int]] = {}
         self.cache_bytes = 0
-        self.shared_cache: dict[str, tuple[float, dict, str, int]] = {}
+        self.shared_cache: dict[tuple[tuple[int, ...], str], tuple[float, dict, str, int]] = {}
         self.shared_cache_bytes = 0
         self.loads: dict[tuple[str, str, str], asyncio.Future] = {}
-        self.request_loads: dict[str, asyncio.Future] = {}
+        self.request_loads: dict[tuple[tuple[int, ...], str], asyncio.Future] = {}
         self.metrics = {
             "requests": 0,
             "attempts": 0,
@@ -566,13 +566,14 @@ class BrokerRegistry:
             self.cache[key] = (time.monotonic(), payload, size_bytes)
             self.cache_bytes += size_bytes
 
-    def shared_cache_get(self, vin: str) -> tuple[dict, str] | None:
-        cached = self.shared_cache.get(vin)
+    def shared_cache_get(self, owner_scope: tuple[int, ...], vin: str) -> tuple[dict, str] | None:
+        key = (owner_scope, vin)
+        cached = self.shared_cache.get(key)
         if cached is None:
             return None
         loaded_at, payload, source_device_id, size_bytes = cached
         if time.monotonic() - loaded_at > self.cache_ttl_seconds:
-            self.shared_cache.pop(vin, None)
+            self.shared_cache.pop(key, None)
             self.shared_cache_bytes = max(0, self.shared_cache_bytes - size_bytes)
             return None
         channel = self.channels.get(source_device_id)
@@ -581,8 +582,16 @@ class BrokerRegistry:
         self.metrics["cache_hits"] += 1
         return payload, source_device_id
 
-    def shared_cache_put(self, vin: str, payload: dict, *, source_device_id: str) -> None:
-        previous = self.shared_cache.pop(vin, None)
+    def shared_cache_put(
+        self,
+        owner_scope: tuple[int, ...],
+        vin: str,
+        payload: dict,
+        *,
+        source_device_id: str,
+    ) -> None:
+        key = (owner_scope, vin)
+        previous = self.shared_cache.pop(key, None)
         if previous is not None:
             self.shared_cache_bytes = max(0, self.shared_cache_bytes - previous[3])
         size_bytes = len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
@@ -594,7 +603,7 @@ class BrokerRegistry:
             removed = self.shared_cache.pop(oldest)
             self.shared_cache_bytes = max(0, self.shared_cache_bytes - removed[3])
         if size_bytes <= self.max_cache_bytes:
-            self.shared_cache[vin] = (
+            self.shared_cache[key] = (
                 time.monotonic(),
                 payload,
                 source_device_id,
@@ -602,8 +611,8 @@ class BrokerRegistry:
             )
             self.shared_cache_bytes += size_bytes
 
-    def shared_cache_remove(self, vin: str) -> None:
-        cached = self.shared_cache.pop(vin, None)
+    def shared_cache_remove(self, owner_scope: tuple[int, ...], vin: str) -> None:
+        cached = self.shared_cache.pop((owner_scope, vin), None)
         if cached is not None:
             self.shared_cache_bytes = max(0, self.shared_cache_bytes - cached[3])
 
@@ -636,25 +645,27 @@ class BrokerRegistry:
         else:
             future.set_result(payload)
 
-    def begin_request(self, vin: str) -> tuple[asyncio.Future, bool]:
-        existing = self.request_loads.get(vin)
+    def begin_request(self, owner_scope: tuple[int, ...], vin: str) -> tuple[asyncio.Future, bool]:
+        key = (owner_scope, vin)
+        existing = self.request_loads.get(key)
         if existing is not None:
             return existing, False
         future = asyncio.get_running_loop().create_future()
         future.add_done_callback(
             lambda completed: completed.exception() if not completed.cancelled() else None
         )
-        self.request_loads[vin] = future
+        self.request_loads[key] = future
         return future, True
 
     def finish_request(
         self,
+        owner_scope: tuple[int, ...],
         vin: str,
         *,
         result: tuple[dict, str] | None = None,
         error: BaseException | None = None,
     ) -> None:
-        future = self.request_loads.pop(vin, None)
+        future = self.request_loads.pop((owner_scope, vin), None)
         if future is None or future.done():
             return
         if error is not None:

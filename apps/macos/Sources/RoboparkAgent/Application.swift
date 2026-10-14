@@ -27,6 +27,8 @@ import AgentCore
     private var probeRefreshTask: Task<Void, Never>?
     private var identityRestoreTask: Task<Void, Never>?
     private var enrollmentRun = UUID()
+    private var corporateLoginRun = UUID()
+    private var corporateOAuthState: String?
     private var accountActive = false
     private var emergencyAuthorized = false
     private var activeAccountID: Int?
@@ -173,11 +175,13 @@ import AgentCore
                 if !canUseEmergency { self.bridge.stop() }
                 if let existing = self.bridge.registration,
                    existing.instanceID != profile.instanceID || existing.origin != profile.origin {
-                    try self.bridge.disconnect()
+                    throw AgentError.ownerMismatch
                 }
                 if !self.accountActive || self.activeAccountID != userID { try self.bridge.clearProbe() }
                 let label = String((Host.current().localizedName ?? "Mac").prefix(80))
-                try await self.bridge.claimAuthenticated(origin: profile.origin, label: label, startEmergency: canUseEmergency) { object in
+                try await self.bridge.claimAuthenticated(origin: profile.origin, label: label,
+                                                          expectedOwnerUserID: userID,
+                                                          startEmergency: canUseEmergency) { object in
                     try await session.call(path: "/api/agent-devices/claim-auth", method: "POST", object: object)
                 }
                 self.accountActive = true
@@ -216,6 +220,8 @@ import AgentCore
         compute.stop()
         notifications.stop(removeDelivered: true)
         updater.reset()
+        corporateLoginRun = UUID(); corporateOAuthState = nil
+        loginWindow?.close(); loginWindow = nil; loginView = nil
     }
     private func refreshProbeTarget() {
         guard accountActive, emergencyAuthorized, probeRefreshTask == nil, let session = workspace?.session,
@@ -365,26 +371,11 @@ import AgentCore
                     let (info, _) = try await bridge.verifiedInfo(origin)
                     guard let workspace else { throw NetworkFailure.invalid }
                     if let old = workspace.session.profile, old.origin != origin.url.absoluteString || old.instanceID != info.instance_id {
-                        await accountLogout()
-                        await clearWorkspaceData()
-                        try workspace.session.clear()
+                        throw AgentError.ownerMismatch
                     }
                     try workspace.session.configure(origin: origin, info: info)
                     showWorkspace()
                 case "emergencyLogin": try bridge.requireTrust(); openEmergencyLogin()
-                case "disconnect":
-                    let alert = NSAlert()
-                    alert.messageText = "Отключить этот Mac?"
-                    alert.informativeText = "Ключ устройства и корпоративная сессия будут удалены с Mac. В браузере отзовите устройство в списке. После отключения можно подключить другой сервер."
-                    alert.addButton(withTitle: "Отмена"); alert.addButton(withTitle: "Отключить")
-                    if alert.runModal() == .alertSecondButtonReturn {
-                        if let origin = bridge.registration?.origin { NSWorkspace.shared.open(try ServerOrigin(origin).api("agent-devices/setup")) }
-                        await accountLogout()
-                        try workspace?.session.clear()
-                        await clearWorkspaceData()
-                        try bridge.disconnect(); loginWindow?.close(); loginWindow = nil; loginView = nil
-                        updater.reset()
-                    }
                 case "pause": try bridge.pause(!(bridge.registration?.paused ?? false))
                 case "autostart":
                     try autostart.setEnabled(body["enabled"] as? Bool ?? true)
@@ -411,42 +402,100 @@ import AgentCore
             }
         }
     }
+    private func freshOAuthState() throws -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw NetworkFailure.invalid
+        }
+        return Data(bytes).base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
     func openEmergencyLogin() {
-        guard bridge.registration != nil else { return }
+        guard accountActive, emergencyAuthorized,
+              let ownerUserID = bridge.registration?.ownerUserID,
+              activeAccountID == ownerUserID,
+              CorporateAuthPolicy.normalizedLogin(bridge.registration?.ownerTrackerLogin) != nil else {
+            lastError = "Для владельца Mac не задан корпоративный логин. Обновите профиль на сервере."
+            render(); return
+        }
+        let state: String
+        do { state = try freshOAuthState() }
+        catch { lastError = "Не удалось безопасно начать корпоративный вход."; render(); return }
+        let run = UUID(); corporateLoginRun = run; corporateOAuthState = state
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = self
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 740),
                            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        win.title = "Вход в Emergency — корпоративная сессия этого Mac"
+        win.title = "Подключение корпоративных сервисов"
         win.contentView = view; win.isReleasedWhenClosed = false; win.center()
         loginWindow = win; loginView = view
-        view.load(URLRequest(url: URL(string: "https://\(EmergencyTarget.host)/")!))
+        guard let url = try? CorporateAuthPolicy.authorizationURL(state: state) else { return }
+        view.load(URLRequest(url: url))
         win.makeKeyAndOrderFront(nil)
+    }
+    private func verifyCorporateIdentity(authorization: String, run: UUID) async -> (CorporateIdentityStatus, String?) {
+        guard corporateLoginRun == run, accountActive, emergencyAuthorized,
+              activeAccountID == bridge.registration?.ownerUserID,
+              let owner = CorporateAuthPolicy.normalizedLogin(bridge.registration?.ownerTrackerLogin) else {
+            return (.ownerMismatch, nil)
+        }
+        do {
+            let (body, response) = try await Network.corporateIdentity(authorization: authorization)
+            return (CorporateAuthPolicy.identityStatus(httpStatus: response.statusCode, body: body, expectedLogin: owner),
+                    CorporateAuthPolicy.identityLogin(from: body))
+        } catch { return (.networkUnavailable, nil) }
+    }
+    private func showCorporateFailure(_ status: CorporateIdentityStatus) {
+        switch status {
+        case .reauthRequired: lastError = "Корпоративная сессия истекла. Выполните вход повторно."
+        case .accessDenied: lastError = "Корпоративный аккаунт не имеет доступа к сервисам."
+        case .networkUnavailable: lastError = "Не удалось проверить корпоративный аккаунт. Проверьте сеть."
+        case .ownerMismatch: lastError = "Этот корпоративный аккаунт не принадлежит владельцу Mac."
+        case .ready: break
+        }
+        render()
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if webView === panel { render(); return }
         if webView === workspaceView { return }
-        guard webView === loginView, webView.url?.host == EmergencyTarget.host else { return }
+        guard webView === loginView, webView.url?.host?.lowercased() == EmergencyTarget.host,
+              accountActive, emergencyAuthorized,
+              let ownerUserID = bridge.registration?.ownerUserID,
+              activeAccountID == ownerUserID else { return }
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
-            let selected = cookies.filter { cookie in
-                let domain = cookie.domain.hasPrefix(".") ? String(cookie.domain.dropFirst()) : cookie.domain
-                return cookie.isSecure && (EmergencyTarget.host == domain || EmergencyTarget.host.hasSuffix("." + domain))
-                    && (cookie.expiresDate == nil || cookie.expiresDate! > Date())
+            guard let self, self.accountActive, self.emergencyAuthorized,
+                  let ownerUserID = self.bridge.registration?.ownerUserID,
+                  self.activeAccountID == ownerUserID else { return }
+            let candidates = cookies.map { cookie in
+                CorporateCookieCandidate(name: cookie.name, value: cookie.value, domain: cookie.domain,
+                    path: cookie.path, secure: cookie.isSecure, expires: cookie.expiresDate)
             }
-            guard !selected.isEmpty else { return }
-            let header = HTTPCookie.requestHeaderFields(with: selected)["Cookie"] ?? ""
-            do { try self?.bridge.updateCookie(header) }
-            catch { self?.lastError = "Не удалось сохранить корпоративную сессию в Keychain." }
-            self?.render()
+            guard let header = try? CorporateAuthPolicy.sessionCookie(from: candidates) else {
+                self.lastError = "Корпоративная сессия не подтверждена: требуется единый защищённый Session_id."
+                self.render(); return
+            }
+            let run = self.corporateLoginRun
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let (status, login) = await self.verifyCorporateIdentity(authorization: header, run: run)
+                guard self.corporateLoginRun == run, self.loginView === webView else { return }
+                guard status == .ready, let login else { self.showCorporateFailure(status); return }
+                do {
+                    try self.bridge.storeVerifiedSession(header, login: login)
+                    self.loginWindow?.close(); self.loginWindow = nil; self.loginView = nil
+                    self.corporateOAuthState = nil
+                    self.bridge.start(); self.render()
+                } catch { self.showCorporateFailure(.ownerMismatch) }
+            }
         }
     }
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
                  completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         guard webView === loginView,
               challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              challenge.protectionSpace.host == EmergencyTarget.host,
+              CorporateAuthPolicy.browserHosts.contains(challenge.protectionSpace.host.lowercased()),
               let trust = challenge.protectionSpace.serverTrust,
               let url = Bundle.main.url(forResource: "YandexInternalRootCA", withExtension: "der"),
               let bytes = try? Data(contentsOf: url),
@@ -470,8 +519,31 @@ import AgentCore
         }
         else if webView === panel { decisionHandler(url.standardizedFileURL == panelURL?.standardizedFileURL ? .allow : .cancel) }
         else {
+            if webView === loginView, url.scheme == "https",
+               url.host?.lowercased() == CorporateAuthPolicy.oauthHost,
+               url.path == CorporateAuthPolicy.callbackURL.path {
+                decisionHandler(.cancel)
+                guard let state = corporateOAuthState else { showCorporateFailure(.reauthRequired); return }
+                corporateOAuthState = nil
+                let run = corporateLoginRun
+                guard let credential = try? CorporateAuthPolicy.oauthCredential(from: url, expectedState: state) else {
+                    showCorporateFailure(.reauthRequired); return
+                }
+                Task { @MainActor [weak self, weak webView] in
+                    guard let self, let webView else { return }
+                    let (status, login) = await self.verifyCorporateIdentity(
+                        authorization: "OAuth \(credential.token)", run: run)
+                    guard self.corporateLoginRun == run, self.loginView === webView else { return }
+                    guard status == .ready, let login else { self.showCorporateFailure(status); return }
+                    do {
+                        try self.bridge.storeVerifiedOAuth(credential, login: login)
+                        webView.load(URLRequest(url: URL(string: "https://\(EmergencyTarget.host)/")!))
+                    } catch { self.showCorporateFailure(.ownerMismatch) }
+                }
+                return
+            }
             let allowed = LoginPolicy.allows(url)
-            if allowed { loginWindow?.title = "Вход в Emergency — " + (url.host ?? "") }
+            if allowed { loginWindow?.title = "Подключение корпоративных сервисов — " + (url.host ?? "") }
             else {
                 lastError = "Переход на непроверенный сервер входа заблокирован: " + (url.host ?? "неизвестный адрес")
                 render()

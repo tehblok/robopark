@@ -23,6 +23,10 @@ import IOKit.ps
     private var socket: URLSessionWebSocketTask?
     private var jobs: [String: Task<Void, Never>] = [:]
     private var jobTokens: [String: UUID] = [:]
+    private var corporateJobs: [String: Task<Void, Never>] = [:]
+    private var corporateJobTokens: [String: UUID] = [:]
+    private var corporateWriteJob: (attempt: String, token: UUID, task: Task<Void, Never>)?
+    private var corporateWriteAdmission = CorporateWriteAdmission()
     private var directLease: DirectLease?
     private var generation = ""
     private var peerAvailable = false
@@ -84,7 +88,12 @@ import IOKit.ps
 
     private func cleanupConnection() {
         heartbeat?.cancel(); heartbeat = nil
-        jobs.values.forEach { $0.cancel() }; jobs.removeAll(); jobTokens.removeAll(); directLease = nil; active = 0
+        jobs.values.forEach { $0.cancel() }; jobs.removeAll(); jobTokens.removeAll()
+        corporateJobs.values.forEach { $0.cancel() }; corporateJobs.removeAll(); corporateJobTokens.removeAll()
+        // Keep the write slot fenced until URLSession cancellation has fully
+        // unwound and the task has persisted `unknown`.
+        corporateWriteJob?.task.cancel()
+        directLease = nil; active = 0
         peer.cancelAll()
         socket?.cancel(with: .goingAway, reason: nil); socket = nil; generation = ""; peerAvailable = false
     }
@@ -117,8 +126,9 @@ import IOKit.ps
         try await send(["type": "auth", "device_id": profile.deviceID, "signature": signature.base64EncodedString()], through: channel)
         guard let ready = try JSONSerialization.jsonObject(with: await receive(channel)) as? [String: Any],
               ready["type"] as? String == "ready", let nextGeneration = ready["generation"] as? String,
-              !nextGeneration.isEmpty else { throw AgentError.wrongServer }
+              !nextGeneration.isEmpty, let ownerUserID = ready["owner_user_id"] as? Int else { throw AgentError.wrongServer }
         guard runID == run, !Task.isCancelled else { throw CancellationError() }
+        try bridge.acceptServerOwner(ownerUserID: ownerUserID, trackerLogin: ready["owner_tracker_login"] as? String)
         generation = nextGeneration; state = "Готов к вычислениям"; onChange?()
         do { try await peer.startIfNeeded(); peerAvailable = true }
         catch { peerAvailable = false }
@@ -135,6 +145,7 @@ import IOKit.ps
             switch message["type"] as? String {
             case "compute_job": try acceptJob(message)
             case "compute_cancel", "cancel": cancel(message)
+            case "corporate_write_receipt_ack": acknowledgeCorporateWrite(message)
             case "compute_peer_offer":
                 guard peerAvailable else {
                     guard message["generation"] as? String == generation,
@@ -169,18 +180,41 @@ import IOKit.ps
         let resources = telemetry()
         let paused = bridge.registration?.paused == true
         let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
-        let capacity = resources.computeCapacity(activeJobs: active, ready: true, paused: paused || bridge.hasActiveEmergencyJobs,
-                                                 lowPower: lowPower)
+        _ = await bridge.verifiedCorporateOAuth()
+        let corporateReady = bridge.hasVerifiedCorporateOAuth && !paused
+        let inventoryStatus = corporateReady
+            ? await bridge.verifyInventoryReadiness()
+            : CorporateInventoryStatus.unverifiedHostACL
+        let computeCapacity = resources.computeCapacity(activeJobs: active, ready: true,
+            paused: paused || bridge.hasActiveEmergencyJobs, lowPower: lowPower)
         var supports = ["image_resize_v1", "csv_render_v1"]
         if peerAvailable { supports.append("webrtc_datachannel_v1") }
-        try await send(["type": "heartbeat", "generation": generation, "capacity": capacity, "active_jobs": active,
+        if corporateReady {
+            supports.append(contentsOf: CorporateReadPolicy.capabilities)
+            supports.append(CorporateWritePolicy.operation); supports.append(CorporateWritePolicy.capability)
+        }
+        try await send(["type": "heartbeat", "generation": generation,
+                        "capacity": computeCapacity, "active_jobs": active, "paused": paused,
+                        "corporate_read_capacity": corporateReady ? 2 : 0,
+                        "corporate_write_capacity": corporateReady ? 1 : 0,
+                        "corporate_active_jobs": corporateJobs.count,
+                        "corporate_active_writes": corporateWriteJob == nil ? 0 : 1,
                         "cpu_percent": resources.cpuPercent, "memory_percent": resources.memoryPercent,
                         "thermal_state": resources.thermalState, "power": lowPower ? "low_power" : powerState,
                         "supports": supports,
+                        "corporate_inventory_status": inventoryStatus.rawValue,
                         "version": Bundle.main.object(forInfoDictionaryKey: "RoboparkReleaseVersion") as? String ?? "development"])
     }
 
     private func acceptJob(_ message: [String: Any]) throws {
+        if message["operation"] as? String == "corporate_read_v1" {
+            try acceptCorporateJob(message)
+            return
+        }
+        if message["operation"] as? String == CorporateWritePolicy.operation {
+            try acceptCorporateWriteJob(message)
+            return
+        }
         let resources = telemetry()
         guard message["generation"] as? String == generation,
               let attempt = message["attempt_id"] as? String, UUID(uuidString: attempt) != nil,
@@ -237,10 +271,213 @@ import IOKit.ps
         }
     }
 
+    private func acceptCorporateJob(_ message: [String: Any]) throws {
+        guard message["generation"] as? String == generation,
+              let attempt = message["attempt_id"] as? String, UUID(uuidString: attempt) != nil,
+              let job = message["job_id"] as? String, UUID(uuidString: job) != nil,
+              let digest = message["payload_sha256"] as? String,
+              digest.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+              let timeout = message["timeout_ms"] as? Int, (1...15_000).contains(timeout),
+              let encoded = message["payload_base64"] as? String,
+              let payload = Data(base64Encoded: encoded), payload.count <= CorporateReadPolicy.maxRequestBytes,
+              SHA256.hash(data: payload).map({ String(format: "%02x", $0) }).joined() == digest,
+              corporateJobs[attempt] == nil, CorporateReadPolicy.admits(inflight: corporateJobs.count),
+              bridge.registration?.paused == false, bridge.hasVerifiedCorporateOAuth else {
+            throw AgentError.invalidJob
+        }
+        guard let profile = bridge.registration, let owner = profile.ownerUserID,
+              let ownerLogin = CorporateAuthPolicy.normalizedLogin(profile.ownerTrackerLogin) else {
+            throw AgentError.ownerMismatch
+        }
+        let request = try CorporateReadPolicy.decode(payload, expectedOwnerUserID: owner,
+                                                     expectedOwnerTrackerLogin: ownerLogin)
+        let plan = try CorporateReadPolicy.plan(request)
+        let leasedRun = runID; let leasedGeneration = generation; let token = UUID()
+        corporateJobTokens[attempt] = token
+        corporateJobs[attempt] = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.runID == leasedRun, self.generation == leasedGeneration,
+                   self.corporateJobTokens[attempt] == token {
+                    self.corporateJobTokens.removeValue(forKey: attempt)
+                    self.corporateJobs.removeValue(forKey: attempt)
+                    self.onChange?()
+                }
+            }
+            do {
+                guard let credential = await self.bridge.verifiedCorporateOAuth(),
+                      credential.login == request.ownerTrackerLogin else { throw CorporateReadError.auth }
+                let result = try await Network.corporateRead(plan: plan, oauthToken: credential.token,
+                    request: request, timeout: Double(timeout) / 1000)
+                guard !Task.isCancelled, self.runID == leasedRun, self.generation == leasedGeneration,
+                      self.corporateJobTokens[attempt] == token,
+                      self.bridge.registration?.trackerOAuthToken == credential.token else { throw CancellationError() }
+                let resultBytes = try JSONSerialization.data(withJSONObject: result)
+                guard resultBytes.count <= CorporateReadPolicy.maxResponseBytes + 32 * 1024 else { throw CorporateReadError.tooLarge }
+                self.completed += 1; self.inputBytes += payload.count; self.outputBytes += resultBytes.count
+                try await self.send(["type": "compute_result", "generation": leasedGeneration,
+                    "job_id": job, "attempt_id": attempt, "payload_sha256": digest,
+                    "ok": true, "result": result])
+            } catch is CancellationError { }
+            catch {
+                let failure = error as? CorporateReadError ?? .network
+                if failure == .auth { self.bridge.invalidateCorporateOAuth() }
+                guard self.runID == leasedRun, self.generation == leasedGeneration,
+                      self.corporateJobTokens[attempt] == token else { return }
+                try? await self.send(["type": "compute_result", "generation": leasedGeneration,
+                    "job_id": job, "attempt_id": attempt, "payload_sha256": digest,
+                    "ok": false, "error": failure.wireCode])
+            }
+        }
+        onChange?()
+    }
+
+    private func receipt(_ account: String) throws -> CorporateWriteReceipt? {
+        guard let data = try SecureStore.readData(account) else { return nil }
+        do { return try JSONDecoder().decode(CorporateWriteReceipt.self, from: data) }
+        catch { throw CorporateWriteError.receiptStorage }
+    }
+
+    private func storeReceipt(_ receipt: CorporateWriteReceipt, account: String) throws {
+        do { try SecureStore.writeData(JSONEncoder().encode(receipt), account: account) }
+        catch { throw CorporateWriteError.receiptStorage }
+    }
+
+    private func acceptCorporateWriteJob(_ message: [String: Any]) throws {
+        guard message["generation"] as? String == generation,
+              let attempt = message["attempt_id"] as? String, UUID(uuidString: attempt) != nil,
+              let job = message["job_id"] as? String, UUID(uuidString: job) != nil,
+              let digest = message["payload_sha256"] as? String,
+              digest.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+              let timeout = message["timeout_ms"] as? Int, (1...20_000).contains(timeout),
+              let encoded = message["payload_base64"] as? String,
+              let payload = Data(base64Encoded: encoded), payload.count <= CorporateWritePolicy.maxRequestBytes,
+              SHA256.hash(data: payload).map({ String(format: "%02x", $0) }).joined() == digest,
+              bridge.registration?.paused == false, bridge.hasVerifiedCorporateOAuth,
+              let profile = bridge.registration, let owner = profile.ownerUserID,
+              let ownerLogin = CorporateAuthPolicy.normalizedLogin(profile.ownerTrackerLogin) else {
+            throw AgentError.invalidJob
+        }
+        let request = try CorporateWritePolicy.decode(payload, expectedOwnerUserID: owner,
+                                                       expectedOwnerTrackerLogin: ownerLogin)
+        let plan = try CorporateWritePolicy.plan(request)
+        let account = CorporateWritePolicy.receiptAccount(ownerUserID: owner, deviceID: profile.deviceID,
+            commandID: request.commandID, stepID: request.stepID)
+        if corporateWriteAdmission.attemptID != nil {
+            Task { try? await send(["type": "compute_result", "generation": generation,
+                "job_id": job, "attempt_id": attempt, "payload_sha256": digest,
+                "ok": false, "error": CorporateWriteError.busy.wireCode]) }
+            return
+        }
+        do {
+            if let saved = try receipt(account) {
+                try saved.validate(ownerUserID: owner, deviceID: profile.deviceID, digest: digest)
+                switch saved.state {
+                case .completed:
+                    guard let bytes = saved.wireResult,
+                          let wire = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] else {
+                        throw CorporateWriteError.receiptStorage
+                    }
+                    Task { var result = wire; result["type"] = "compute_result"; result["generation"] = generation
+                        result["job_id"] = job; result["attempt_id"] = attempt; result["payload_sha256"] = digest
+                        try? await send(result) }
+                    return
+                case .executing, .unknown:
+                    Task { try? await send(["type": "compute_result", "generation": generation,
+                        "job_id": job, "attempt_id": attempt, "payload_sha256": digest,
+                        "ok": false, "error": CorporateWriteError.outcomeUnknown.wireCode]) }
+                    return
+                case .prepared: break
+                }
+            } else {
+                try SecureStore.reserveCorporateWriteReceipt(account)
+                try storeReceipt(CorporateWriteReceipt(ownerUserID: owner, deviceID: profile.deviceID,
+                    commandID: request.commandID, stepID: request.stepID, digest: digest), account: account)
+            }
+        } catch let failure as CorporateWriteError {
+            Task { try? await send(["type": "compute_result", "generation": generation,
+                "job_id": job, "attempt_id": attempt, "payload_sha256": digest,
+                "ok": false, "error": failure.wireCode]) }
+            return
+        }
+        let leasedRun = runID; let leasedGeneration = generation; let token = UUID()
+        try corporateWriteAdmission.acquire(attempt)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.corporateWriteJob?.attempt == attempt && self.corporateWriteJob?.token == token {
+                    self.corporateWriteAdmission.release(attempt)
+                    self.corporateWriteJob = nil; self.onChange?()
+                }
+            }
+            var executing = CorporateWriteReceipt(ownerUserID: owner, deviceID: profile.deviceID,
+                commandID: request.commandID, stepID: request.stepID, digest: digest, state: .executing)
+            do {
+                try self.storeReceipt(executing, account: account)
+            } catch {
+                try? await self.send(["type": "compute_result", "generation": leasedGeneration,
+                    "job_id": job, "attempt_id": attempt, "payload_sha256": digest,
+                    "ok": false, "error": CorporateWriteError.receiptStorage.wireCode])
+                return
+            }
+            var wire: [String: Any]
+            do {
+                guard let credential = await self.bridge.verifiedCorporateOAuth(),
+                      credential.login == request.ownerTrackerLogin else { throw CorporateWriteError.auth }
+                let result = try await Network.corporateWrite(plan: plan, oauthToken: credential.token,
+                    request: request, timeout: Double(timeout) / 1000)
+                wire = ["ok": true, "result": result]
+            } catch let failure as CorporateWriteError {
+                if failure == .auth { self.bridge.invalidateCorporateOAuth() }
+                if failure == .outcomeUnknown || failure == .network {
+                    executing.state = .unknown
+                    try? self.storeReceipt(executing, account: account)
+                    wire = ["ok": false, "error": CorporateWriteError.outcomeUnknown.wireCode]
+                } else { wire = ["ok": false, "error": failure.wireCode] }
+            } catch {
+                executing.state = .unknown; try? self.storeReceipt(executing, account: account)
+                wire = ["ok": false, "error": CorporateWriteError.outcomeUnknown.wireCode]
+            }
+            if executing.state != .unknown {
+                guard let bytes = try? JSONSerialization.data(withJSONObject: wire) else { return }
+                executing.state = .completed; executing.wireResult = bytes
+                do { try self.storeReceipt(executing, account: account) }
+                catch { wire = ["ok": false, "error": CorporateWriteError.outcomeUnknown.wireCode] }
+            }
+            guard self.runID == leasedRun, self.generation == leasedGeneration,
+                  self.corporateWriteJob?.attempt == attempt, self.corporateWriteJob?.token == token else { return }
+            var result = wire; result["type"] = "compute_result"; result["generation"] = leasedGeneration
+            result["job_id"] = job; result["attempt_id"] = attempt; result["payload_sha256"] = digest
+            try? await self.send(result)
+        }
+        corporateWriteJob = (attempt, token, task); onChange?()
+    }
+
+    private func acknowledgeCorporateWrite(_ message: [String: Any]) {
+        guard message["generation"] as? String == generation,
+              let profile = bridge.registration, let owner = profile.ownerUserID,
+              message["owner_user_id"] as? Int == owner,
+              message["device_id"] as? String == profile.deviceID,
+              let command = message["command_id"] as? String, UUID(uuidString: command) != nil,
+              let step = message["step_id"] as? String,
+              step.range(of: "^[a-z0-9_:-]{1,64}$", options: .regularExpression) != nil else { return }
+        let account = CorporateWritePolicy.receiptAccount(ownerUserID: owner,
+            deviceID: profile.deviceID, commandID: command, stepID: step)
+        // Unknown/executing entries are never erased. Lost ACKs are replayed
+        // after reconnect; failure to write Keychain retains backpressure.
+        try? SecureStore.acknowledgeCorporateWriteReceipt(account, ownerUserID: owner,
+            deviceID: profile.deviceID, commandID: command, stepID: step)
+    }
+
     private func cancel(_ message: [String: Any]) {
         guard message["generation"] as? String == generation, let attempt = message["attempt_id"] as? String else { return }
         jobTokens.removeValue(forKey: attempt)
         jobs.removeValue(forKey: attempt)?.cancel()
+        corporateJobTokens.removeValue(forKey: attempt)
+        corporateJobs.removeValue(forKey: attempt)?.cancel()
+        if corporateWriteJob?.attempt == attempt {
+            corporateWriteJob?.task.cancel()
+        }
         if directLease?.attemptID == attempt { directLease = nil }
         peer.cancel(message)
         active = directLease == nil && jobs.isEmpty ? 0 : 1

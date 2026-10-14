@@ -269,7 +269,11 @@ def get_robot_payload(
                     _metadata.update(stale=False, age_seconds=0.0)
                 return payload
             except emergency_bridge_client.BridgeError as exc:
-                if not settings.emergency_direct_fallback_enabled:
+                unavailable = (
+                    not isinstance(exc, emergency_bridge_client.BridgeRequestError)
+                    or exc.availability
+                )
+                if not settings.emergency_direct_fallback_enabled or not unavailable:
                     raise emergency_client.EmergencyError("emergency bridge unavailable") from exc
         elif not settings.emergency_direct_fallback_enabled:
             raise emergency_client.EmergencyError("emergency bridge requires requester authority")

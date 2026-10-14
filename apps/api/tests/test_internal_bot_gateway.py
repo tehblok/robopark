@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from robopark_api.models import Park
 from robopark_api.services import platform_settings, tracker_client
 
@@ -181,9 +183,20 @@ def test_gateway_rejects_symlinked_key_file(client, monkeypatch, tmp_path):
     assert response.json() == {"detail": "bot_bridge_unavailable"}
 
 
+@pytest.mark.parametrize("mac_gateway", [False, True])
 def test_search_uses_platform_token_and_preserves_tracker_shape(
-    client, db_session, monkeypatch, tmp_path
+    client, db_session, monkeypatch, tmp_path, test_settings, mac_gateway
 ):
+    from robopark_api.services import tracker_gateway_transport
+
+    test_settings.robopark_environment = "test"
+    test_settings.emergency_bridge_enabled = True
+    test_settings.mac_corporate_gateway_enabled = mac_gateway
+    monkeypatch.setattr(
+        tracker_gateway_transport,
+        "credential",
+        lambda *args, **kwargs: pytest.fail("bot must retain its configured service identity"),
+    )
     _configure_bridge(monkeypatch, tmp_path)
     _configure_tracker(db_session)
     _configure_active_queue(db_session)

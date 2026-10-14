@@ -38,7 +38,7 @@ def authorized_issue(db, user, key):
     # Local handoffs and presence must not outlive an upstream park/queue move.
     # This request is an authorization read, so a previous TTL response is unsafe.
     try:
-        issue = tracker_client.get_issue(token=_require_token(db), key=key)
+        issue = tracker_client.get_issue(token=_require_token(db, user), key=key)
     except tracker_client.TrackerError as exc:
         raise HTTPException(502, "tracker_upstream_error") from exc
     if issue is None:

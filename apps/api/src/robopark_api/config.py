@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     emergency_bridge_enabled: bool = False
     # Server→Mac→server CSV relay trades bandwidth for CPU. Keep it opt-in on Wi-Fi.
     compute_csv_offload_enabled: bool = False
+    # Read-only corporate traffic may use the owner's Mac on the test stand only.
+    mac_corporate_gateway_enabled: bool = False
+    # Test gateway availability may fall back to the existing server credential.
+    mac_corporate_server_fallback_enabled: bool = True
     emergency_bridge_url: str = "http://emergency-bridge:8091"
     emergency_direct_fallback_enabled: bool = False
     robopark_environment: Literal["test", "production"] = "production"

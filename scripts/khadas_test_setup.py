@@ -862,7 +862,9 @@ class Transition:
                 "SESSION_COOKIE_NAME": "robopark_test_session",
                 "EMERGENCY_BRIDGE_ENABLED": "true",
                 "EMERGENCY_BRIDGE_URL": "http://emergency-bridge:8091",
-                "EMERGENCY_DIRECT_FALLBACK_ENABLED": "false",
+                "EMERGENCY_DIRECT_FALLBACK_ENABLED": "true",
+                "MAC_CORPORATE_GATEWAY_ENABLED": "true",
+                "MAC_CORPORATE_SERVER_FALLBACK_ENABLED": "true",
             },
         )
         _patch_env(
@@ -989,7 +991,9 @@ class Transition:
             and host.get("SESSION_COOKIE_NAME") == "robopark_test_session"
             and host.get("EMERGENCY_BRIDGE_ENABLED") == "true"
             and host.get("EMERGENCY_BRIDGE_URL") == "http://emergency-bridge:8091"
-            and host.get("EMERGENCY_DIRECT_FALLBACK_ENABLED") == "false"
+            and host.get("EMERGENCY_DIRECT_FALLBACK_ENABLED") == "true"
+            and host.get("MAC_CORPORATE_GATEWAY_ENABLED") == "true"
+            and host.get("MAC_CORPORATE_SERVER_FALLBACK_ENABLED") == "true"
             and tuna.get("TUNA_SUBDOMAIN") == "roboparktest"
             and tuna.get("TUNA_DOMAIN") == ""
             and tuna.get("TUNA_LOCATION") == "ru"

@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "target_version": "0.2.3-rc.2",
-  "migration_head": "0064_agent_device_identity",
+  "target_version": "0.2.3-rc.3",
+  "migration_head": "0065_corporate_write_receipts",
   "known_heads": [
     "0055_media_upload_park",
     "0056_host_terminal",
@@ -12,7 +12,8 @@
     "0061_telegram_account_metadata",
     "0062_notification_retention_idx",
     "0063_agent_devices",
-    "0064_agent_device_identity"
+    "0064_agent_device_identity",
+    "0065_corporate_write_receipts"
   ],
   "bridge_before": "0.2.0-rc.8",
   "bridge_version": "0.2.0-rc.8",

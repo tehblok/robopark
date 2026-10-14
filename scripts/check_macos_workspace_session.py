@@ -232,6 +232,87 @@ func testTransport() -> URLSession {
             headers: ["Content-Length": "33554433"], body: Data(), delay: 0)
         do { _ = try await recovered.request(target: "/api/oversize", method: "GET", headers: [:], body: Data()); fatalError("FAIL: oversized response accepted") } catch { checks += 1 }
         try check(recovered.profile?.cookies.isEmpty == true, "oversized response cannot mutate session")
+
+        // The server-derived device owner survives logout and process restart.
+        // A login cookie is held until /auth/me proves that the same owner is
+        // using this installation; no other API is reachable in that window.
+        SecureStore.reset(); MockURLProtocol.reset()
+        let ownerSession = try WorkspaceSession(transport: testTransport())
+        try ownerSession.configure(origin: originA, info: infoA)
+        var registration = Registration(origin: originA.url.absoluteString,
+            deviceID: "11111111-1111-4111-8111-111111111111", instanceID: instanceA,
+            environment: "test", label: "Owner Mac", privateKey: Data(repeating: 1, count: 32))
+        registration.ownerUserID = 7
+        registration.signedProfile = infoA.signed_profile
+        try ownerSession.useRegistration(registration)
+        var acceptedIdentities = 0
+        ownerSession.onIdentity = { _ in acceptedIdentities += 1 }
+        MockURLProtocol.replies["POST /api/auth/login?"] = .init(status: 200,
+            headers: ["Set-Cookie": "native_session=owner; Path=/; Secure; HttpOnly"],
+            body: Data("{}".utf8), delay: 0)
+        let ownerLogin = try await ownerSession.proxy(local("POST", "/api/auth/login", body: "{}"))
+        try check(ownerLogin.status == 200 && ownerSession.profile?.accountID == nil,
+                  "successful login waits for authoritative identity")
+        let requestsBeforeVerification = MockURLProtocol.seen.count
+        let earlyData = try await ownerSession.proxy(local("GET", "/api/tasks"))
+        try check(earlyData.status == 403 && MockURLProtocol.seen.count == requestsBeforeVerification,
+                  "unverified login cannot access workspace APIs")
+
+        MockURLProtocol.replies["GET /api/auth/me?"] = .init(status: 200, headers: [:],
+            body: Data("{\"id\":8,\"access_status\":\"approved\"}".utf8), delay: 0)
+        let wrongOwner = try await ownerSession.proxy(local("GET", "/api/auth/me"))
+        try check(wrongOwner.status == 403 && acceptedIdentities == 0,
+                  "different account is rejected before application activation")
+        try check(ownerSession.profile?.ownerUserID == 7 && ownerSession.profile?.accountID == nil
+                  && ownerSession.profile?.cookies.isEmpty == true,
+                  "owner mismatch clears the foreign session without rebinding the Mac")
+
+        MockURLProtocol.replies["POST /api/auth/login?"] = .init(status: 200,
+            headers: ["Set-Cookie": "native_session=owner-again; Path=/; Secure; HttpOnly"],
+            body: Data("{}".utf8), delay: 0)
+        _ = try await ownerSession.proxy(local("POST", "/api/auth/login", body: "{}"))
+        MockURLProtocol.replies["GET /api/auth/me?"] = .init(status: 200, headers: [:],
+            body: Data("{\"id\":7,\"access_status\":\"approved\"}".utf8), delay: 0)
+        let correctOwner = try await ownerSession.proxy(local("GET", "/api/auth/me"))
+        try check(correctOwner.status == 200 && acceptedIdentities == 1
+                  && ownerSession.profile?.ownerUserID == 7 && ownerSession.profile?.accountID == 7,
+                  "registered owner can sign in after a rejected account switch")
+
+        let ownerRestart = try WorkspaceSession(transport: testTransport())
+        MockURLProtocol.replies["GET /api/auth/me?"] = .init(status: 200, headers: [:],
+            body: Data("{\"id\":7,\"access_status\":\"approved\"}".utf8), delay: 0)
+        let ownerRestored = await ownerRestart.restoreIdentity()
+        try check(ownerRestored
+                  && ownerRestart.profile?.ownerUserID == 7 && ownerRestart.profile?.accountID == 7,
+                  "persisted owner reconnects after application restart")
+        MockURLProtocol.replies["POST /api/auth/logout?"] = .init(status: 204, headers: [:],
+            body: Data(), delay: 0)
+        _ = try await ownerRestart.proxy(local("POST", "/api/auth/logout", body: "{}"))
+        let ownerSignedOutRestart = try WorkspaceSession(transport: testTransport())
+        try check(ownerSignedOutRestart.profile?.ownerUserID == 7
+                  && ownerSignedOutRestart.profile?.accountID == nil,
+                  "logout preserves owner binding across restart")
+
+        SecureStore.reset(); MockURLProtocol.reset()
+        let legacyOwner = try WorkspaceSession(transport: testTransport())
+        try legacyOwner.configure(origin: originA, info: infoA)
+        MockURLProtocol.replies["POST /api/auth/login?"] = .init(status: 200,
+            headers: ["Set-Cookie": "native_session=legacy; Path=/; Secure; HttpOnly"],
+            body: Data("{}".utf8), delay: 0)
+        _ = try await legacyOwner.proxy(local("POST", "/api/auth/login", body: "{}"))
+        MockURLProtocol.replies["GET /api/auth/me?"] = .init(status: 200, headers: [:],
+            body: Data("{\"id\":7,\"access_status\":\"approved\"}".utf8), delay: 0)
+        _ = try await legacyOwner.proxy(local("GET", "/api/auth/me"))
+        let requestsBeforeOwnerClaim = MockURLProtocol.seen.count
+        let legacyEarlyData = try await legacyOwner.proxy(local("GET", "/api/tasks"))
+        try check(legacyEarlyData.status == 403 && MockURLProtocol.seen.count == requestsBeforeOwnerClaim,
+                  "legacy installation cannot use workspace APIs before server claim resolves owner")
+        try legacyOwner.useRegistration(registration)
+        MockURLProtocol.replies["GET /api/tasks?"] = .init(status: 200, headers: [:],
+            body: Data("[]".utf8), delay: 0)
+        let legacyAfterClaim = try await legacyOwner.proxy(local("GET", "/api/tasks"))
+        try check(legacyAfterClaim.status == 200,
+                  "server-derived claim unlocks legacy installation for its owner")
         print("PASS: \(checks) production WorkspaceSession lifecycle, cookie isolation and generation checks")
     }
 }

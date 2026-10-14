@@ -18,11 +18,29 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from copy import deepcopy
+from functools import wraps
 from typing import Any
 
 from robopark_api.services import bot_tracker_gateway, tracker_client
 from robopark_api.services.live_merge import LiveMergeTimeout, LiveMergeUpstreamError
 from robopark_api.services.response_cache import ResponseCache
+from robopark_api.services.tracker_gateway_transport import GatewayCredential
+
+
+def _owner_gateway_read(function):
+    """Service-account cache entries never satisfy a personal Mac request.
+
+    The gateway broker may coalesce owner-scoped reads; this older cache has no
+    upstream authority key and is deliberately bypassed for those requests.
+    """
+
+    @wraps(function)
+    def read(*args, **kwargs):
+        if isinstance(kwargs.get("token"), GatewayCredential):
+            return getattr(tracker_client, function.__name__)(*args, **kwargs)
+        return function(*args, **kwargs)
+
+    return read
 
 
 class _TrackerCache[T](ResponseCache[T]):
@@ -167,6 +185,7 @@ def _invalidate_issue_projections(issue_key: str, *, membership_changed: bool) -
             projections.clear()
 
 
+@_owner_gateway_read
 def search_issues(
     *,
     token: str,
@@ -187,6 +206,7 @@ def search_issues(
     )
 
 
+@_owner_gateway_read
 def search_issue_page(
     *,
     token: str,
@@ -212,6 +232,7 @@ def search_issue_page(
     )
 
 
+@_owner_gateway_read
 def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
     return _issue_cache.get_or_load(
         key,
@@ -219,6 +240,7 @@ def get_issue(*, token: str, key: str) -> dict[str, Any] | None:
     )
 
 
+@_owner_gateway_read
 def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:
     return _comments_cache.get_or_load(
         key,
@@ -226,6 +248,7 @@ def list_comments(*, token: str, key: str) -> list[dict[str, Any]]:
     )
 
 
+@_owner_gateway_read
 def list_transitions(*, token: str, key: str) -> list[dict[str, Any]]:
     return _transitions_cache.get_or_load(
         key,
@@ -233,6 +256,7 @@ def list_transitions(*, token: str, key: str) -> list[dict[str, Any]]:
     )
 
 
+@_owner_gateway_read
 def fetch_park_blockers(
     *,
     token: str,
@@ -262,6 +286,7 @@ def fetch_park_blockers(
     )
 
 
+@_owner_gateway_read
 def search_robot_tickets(*, token: str, queue: str, query: str) -> list[dict[str, Any]]:
     ck = f"{queue}|{query}"
     return _robot_tickets_cache.get_or_load(
@@ -377,6 +402,7 @@ def native_robot_payload(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+@_owner_gateway_read
 def count_issues(*, token: str, query: str) -> int:
     """Merge identical Startrek count queries across cabinets (not per user)."""
     return _count_cache.get_or_load(

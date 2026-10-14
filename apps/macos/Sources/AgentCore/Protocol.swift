@@ -2,12 +2,13 @@ import Foundation
 import CryptoKit
 
 public enum AgentError: Error, LocalizedError {
-    case invalidOrigin, invalidJob, wrongServer, invalidCatalog, expiredCatalog, rollback, missingChannel, unsupportedRelease
+    case invalidOrigin, invalidJob, wrongServer, ownerMismatch, invalidCatalog, expiredCatalog, rollback, missingChannel, unsupportedRelease
     public var errorDescription: String? {
         switch self {
         case .invalidOrigin: return "Укажите HTTPS-адрес сервера без пути, пароля и параметров."
         case .invalidJob: return "Недопустимое задание."
         case .wrongServer: return "Сервер не подтверждён подписью администратора или не совпадает с регистрацией."
+        case .ownerMismatch: return "Этот Mac закреплён за другим аккаунтом Robopark."
         case .invalidCatalog: return "Не удалось проверить подпись каталога обновлений."
         case .expiredCatalog: return "Каталог обновлений устарел. Установленная версия сохранена."
         case .rollback: return "Отклонён устаревший каталог обновлений."
@@ -98,7 +99,17 @@ public struct Registration: Codable {
     public var environment: String
     public var label: String
     public var privateKey: Data
+    public var ownerUserID: Int?
+    public var ownerTrackerLogin: String?
     public var cookie: String = ""
+    public var corporateLogin: String?
+    public var corporateCookieVerifiedAt: Date?
+    public var trackerOAuthToken: String?
+    public var trackerOAuthExpiresAt: Date?
+    public var trackerOAuthVerifiedAt: Date?
+    public var inventoryOAuthVerifiedAt: Date?
+    public var inventoryOAuthStatus: String?
+    public var corporateIdentityStatus: String?
     public var probeVIN: String = ""
     public var channel: String = "rc"
     public var catalogURL: String = ""
@@ -113,7 +124,7 @@ public struct Registration: Codable {
 
 
 public enum LoginPolicy {
-    public static let hosts: Set<String> = [EmergencyTarget.host, "passport.yandex-team.ru"]
+    public static let hosts = CorporateAuthPolicy.browserHosts
     public static func allows(_ url: URL) -> Bool {
         guard url.scheme == "https", let host = url.host?.lowercased(), hosts.contains(host),
               url.user == nil, url.password == nil, url.port == nil || url.port == 443 else { return false }

@@ -3,14 +3,229 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import secrets
 import time
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-OPERATIONS = frozenset({"image_resize_v1", "csv_render_v1"})
+from robopark_api.services import corporate_gateway_contract, corporate_write_contract
+from robopark_api.services.compute_routing_health import RoutingHealth
+
+LOCAL_OPERATIONS = frozenset({"image_resize_v1", "csv_render_v1"})
+OPERATIONS = LOCAL_OPERATIONS | {
+    corporate_gateway_contract.OPERATION,
+    corporate_write_contract.OPERATION,
+}
 MAX_RESULT_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
+RELAY_TICKET_TTL_SECONDS = 30.0
+RELAY_CLAIM_TTL_SECONDS = 60.0
+RELAY_BUDGET_BYTES_PER_MINUTE = 64 * 1024 * 1024
+
+
+@dataclass
+class RelayTicket:
+    token: str
+    requester_user_id: int
+    payload_bytes: int
+    payload_sha256: str
+    reserved_bytes: int
+    created_at: float
+    expires_at: float
+    claimed: bool = False
+
+
+class RelayAdmissionPool:
+    """Small in-memory gate placed before any relay payload is uploaded."""
+
+    def __init__(
+        self,
+        *,
+        max_active: int = 2,
+        max_requester_active: int = 1,
+        budget_bytes_per_minute: int = RELAY_BUDGET_BYTES_PER_MINUTE,
+        ticket_ttl_seconds: float = RELAY_TICKET_TTL_SECONDS,
+        claim_ttl_seconds: float = RELAY_CLAIM_TTL_SECONDS,
+        now: Callable[[], float] = time.monotonic,
+        token_factory: Callable[[], str] | None = None,
+    ) -> None:
+        self.max_active = max_active
+        self.max_requester_active = max_requester_active
+        self.budget_bytes_per_minute = budget_bytes_per_minute
+        self.ticket_ttl_seconds = min(30.0, ticket_ttl_seconds)
+        self.claim_ttl_seconds = max(
+            self.ticket_ttl_seconds,
+            min(RELAY_CLAIM_TTL_SECONDS, claim_ttl_seconds),
+        )
+        self._now = now
+        self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
+        self._tickets: dict[str, RelayTicket] = {}
+        self._expired: dict[str, float] = {}
+        self._budget_events: deque[tuple[float, str, int]] = deque()
+        self._metrics = {"relay_admitted": 0, "relay_rejected": 0, "relay_payload_bytes": 0}
+
+    @staticmethod
+    def estimated_transport_bytes(payload_bytes: int) -> int:
+        # Covers browser→API, internal base64 envelopes, up to two worker attempts,
+        # bounded JPEG result envelopes, and a small fixed signaling allowance.
+        return payload_bytes * 10 + 64 * 1024
+
+    def _prune(self) -> None:
+        now = self._now()
+        for token, ticket in list(self._tickets.items()):
+            if ticket.expires_at <= now:
+                self._tickets.pop(token, None)
+                self._expired[token] = now + 60.0
+                if not ticket.claimed:
+                    self._remove_budget_event(token)
+        while self._budget_events and self._budget_events[0][0] <= now - 60.0:
+            self._budget_events.popleft()
+        for token, expires_at in list(self._expired.items()):
+            if expires_at <= now:
+                self._expired.pop(token, None)
+
+    def _remove_budget_event(self, token: str) -> None:
+        self._budget_events = deque(item for item in self._budget_events if item[1] != token)
+
+    def _reject(self, reason: str) -> None:
+        self._metrics["relay_rejected"] += 1
+        raise OverflowError(reason)
+
+    def admit(
+        self,
+        *,
+        requester_user_id: int,
+        payload_bytes: int,
+        payload_sha256: str,
+        worker_available: bool,
+    ) -> RelayTicket:
+        self._prune()
+        if not worker_available:
+            self._reject("relay_unavailable")
+        if len(self._tickets) >= self.max_active:
+            self._reject("relay_busy")
+        if (
+            sum(ticket.requester_user_id == requester_user_id for ticket in self._tickets.values())
+            >= self.max_requester_active
+        ):
+            self._reject("relay_requester_busy")
+        reserved_bytes = self.estimated_transport_bytes(payload_bytes)
+        if (
+            sum(item[2] for item in self._budget_events) + reserved_bytes
+            > self.budget_bytes_per_minute
+        ):
+            self._reject("relay_budget_exhausted")
+        token = self._token_factory()
+        if token in self._tickets:
+            raise RuntimeError("relay_ticket_collision")
+        now = self._now()
+        ticket = RelayTicket(
+            token=token,
+            requester_user_id=requester_user_id,
+            payload_bytes=payload_bytes,
+            payload_sha256=payload_sha256,
+            reserved_bytes=reserved_bytes,
+            created_at=now,
+            expires_at=now + self.ticket_ttl_seconds,
+        )
+        self._tickets[token] = ticket
+        self._budget_events.append((now, token, reserved_bytes))
+        self._metrics["relay_admitted"] += 1
+        return ticket
+
+    def claim(self, token: str, *, requester_user_id: int, payload_bytes: int) -> RelayTicket:
+        self._prune()
+        ticket = self._tickets.get(token)
+        if ticket is None:
+            reason = "relay_ticket_expired" if token in self._expired else "relay_ticket_not_found"
+            raise LookupError(reason)
+        if ticket.requester_user_id != requester_user_id:
+            raise PermissionError("relay_ticket_foreign")
+        if ticket.claimed:
+            raise LookupError("relay_ticket_consumed")
+        if ticket.payload_bytes != payload_bytes:
+            raise ValueError("relay_payload_size_mismatch")
+        ticket.claimed = True
+        ticket.expires_at = self._now() + self.claim_ttl_seconds
+        return ticket
+
+    def complete(self, token: str, *, requester_user_id: int, payload_bytes: int) -> None:
+        self._prune()
+        ticket = self._tickets.get(token)
+        if ticket is None:
+            raise LookupError("relay_ticket_not_found")
+        if ticket.requester_user_id != requester_user_id:
+            raise PermissionError("relay_ticket_foreign")
+        if not ticket.claimed:
+            raise LookupError("relay_ticket_not_claimed")
+        self._tickets.pop(token, None)
+        self._metrics["relay_payload_bytes"] += payload_bytes
+
+    def authorize_dispatch(
+        self,
+        token: str,
+        *,
+        requester_user_id: int,
+        payload_bytes: int,
+        payload_sha256: str,
+    ) -> RelayTicket:
+        ticket = self.ticket(token, requester_user_id=requester_user_id)
+        if not ticket.claimed:
+            raise LookupError("relay_ticket_not_claimed")
+        if ticket.payload_bytes != payload_bytes:
+            raise ValueError("relay_payload_size_mismatch")
+        if ticket.payload_sha256 != payload_sha256:
+            raise ValueError("relay_payload_hash_mismatch")
+        return ticket
+
+    def cancel(self, token: str, *, requester_user_id: int) -> bool:
+        self._prune()
+        ticket = self._tickets.get(token)
+        if ticket is None:
+            return False
+        if ticket.requester_user_id != requester_user_id:
+            raise PermissionError("relay_ticket_foreign")
+        if ticket.claimed:
+            return False
+        self._tickets.pop(token, None)
+        self._remove_budget_event(token)
+        return True
+
+    def abort(self, token: str, *, requester_user_id: int) -> bool:
+        """Release a claimed ticket after the trusted API stopped before dispatch."""
+        self._prune()
+        ticket = self._tickets.get(token)
+        if ticket is None:
+            return False
+        if ticket.requester_user_id != requester_user_id:
+            raise PermissionError("relay_ticket_foreign")
+        self._tickets.pop(token, None)
+        if not ticket.claimed:
+            self._remove_budget_event(token)
+        return True
+
+    def ticket(self, token: str, *, requester_user_id: int) -> RelayTicket:
+        self._prune()
+        ticket = self._tickets.get(token)
+        if ticket is None:
+            raise LookupError("relay_ticket_not_found")
+        if ticket.requester_user_id != requester_user_id:
+            raise PermissionError("relay_ticket_foreign")
+        return ticket
+
+    def status(self) -> dict[str, int]:
+        self._prune()
+        reserved = sum(item[2] for item in self._budget_events)
+        return {
+            **self._metrics,
+            "relay_active": len(self._tickets),
+            "relay_budget_limit_bytes": self.budget_bytes_per_minute,
+            "relay_budget_reserved_bytes": reserved,
+            "relay_budget_remaining_bytes": max(0, self.budget_bytes_per_minute - reserved),
+        }
 
 
 @dataclass
@@ -24,6 +239,11 @@ class ComputeChannel:
     capacity: int = 1
     inflight: int = 0
     reported_active_jobs: int = 0
+    corporate_read_capacity: int = 0
+    corporate_write_capacity: int = 0
+    reported_corporate_active_jobs: int = 0
+    reported_corporate_active_writes: int = 0
+    corporate_inventory_status: str = "unverified_host_acl"
     cpu_percent: float | None = None
     memory_percent: float | None = None
     thermal_state: str = "normal"
@@ -62,6 +282,8 @@ class ComputeLease:
     deadline_monotonic: float
     started_at: float
     future: asyncio.Future
+    routing_key: str = ""
+    health_recorded: bool = False
     direct: bool = False
     token: str | None = None
     direct_payload_size: int = 0
@@ -85,6 +307,8 @@ class ComputeRegistry:
         self.channels: dict[str, ComputeChannel] = {}
         self.pending: dict[tuple[str, str, str, str], ComputeLease] = {}
         self.pending_payload_bytes = 0
+        self.relay_admission = RelayAdmissionPool()
+        self.routing_health = RoutingHealth()
         self.metrics = {
             "direct_input_bytes": 0,
             "direct_output_bytes": 0,
@@ -113,11 +337,26 @@ class ComputeRegistry:
     def _fail_channel(self, channel: ComputeChannel, reason: str) -> None:
         for lease in list(self.pending.values()):
             if lease.device_id == channel.device_id and lease.generation == channel.generation:
+                self.record_outcome(channel, lease, ok=False, error=reason)
                 self.finish(channel, lease)
                 if not lease.future.done():
                     lease.future.set_exception(ConnectionError(reason))
 
-    def effective_capacity(self, channel: ComputeChannel) -> int:
+    def effective_capacity(
+        self, channel: ComputeChannel, operation: str = "image_resize_v1"
+    ) -> int:
+        if operation in {corporate_gateway_contract.OPERATION, corporate_write_contract.OPERATION}:
+            if (
+                channel.paused
+                or channel.thermal_state == "critical"
+                or (channel.memory_percent is not None and channel.memory_percent >= 90)
+            ):
+                return 0
+            return (
+                min(2, max(0, channel.corporate_read_capacity))
+                if operation == corporate_gateway_contract.OPERATION
+                else min(1, max(0, channel.corporate_write_capacity))
+            )
         if (
             channel.paused
             or channel.thermal_state in {"serious", "critical"}
@@ -128,12 +367,46 @@ class ComputeRegistry:
             return 0
         return min(2, max(0, channel.capacity))
 
+    def active_jobs(self, channel: ComputeChannel, operation: str = "image_resize_v1") -> int:
+        corporate = {corporate_gateway_contract.OPERATION, corporate_write_contract.OPERATION}
+        leases = [
+            item
+            for item in self.pending.values()
+            if item.device_id == channel.device_id and item.generation == channel.generation
+        ]
+        if operation in corporate:
+            reported = (
+                channel.reported_corporate_active_jobs
+                if operation == corporate_gateway_contract.OPERATION
+                else channel.reported_corporate_active_writes
+            )
+            return max(reported, sum(item.operation == operation for item in leases))
+        return max(
+            channel.reported_active_jobs,
+            max(0, channel.inflight - sum(item.operation in corporate for item in leases)),
+        )
+
+    def record_outcome(self, channel: ComputeChannel, lease: ComputeLease, *, ok: bool, error=None):
+        if lease.health_recorded:
+            return
+        lease.health_recorded = True
+        self.routing_health.observe(
+            channel.device_id,
+            lease.routing_key or lease.operation,
+            ok=ok,
+            elapsed=max(0, time.monotonic() - lease.started_at),
+            payload_bytes=lease.direct_payload_size if lease.direct else lease.payload_size,
+            error=error,
+        )
+
     def choose(
         self,
         operation: str,
         *,
         excluded: set[str] | None = None,
         required_supports: set[str] | None = None,
+        eligible_owner_ids: set[int] | frozenset[int] | None = None,
+        routing_key: str | None = None,
     ) -> ComputeChannel | None:
         now = time.monotonic()
         excluded = excluded or set()
@@ -141,24 +414,36 @@ class ComputeRegistry:
             item
             for item in self.channels.values()
             if item.device_id not in excluded
+            and (eligible_owner_ids is None or item.owner_user_id in eligible_owner_ids)
             and item.ready
             and operation in item.supports
             and (required_supports or set()).issubset(item.supports)
+            and (
+                "corporate_inventory_read_v1" not in (required_supports or set())
+                or item.corporate_inventory_status in {"ready", "unverified_host_acl"}
+            )
+            and self.routing_health.available(item.device_id, routing_key or operation)
             and now - item.last_heartbeat <= self.readiness_timeout_seconds
-            and max(item.inflight, item.reported_active_jobs) < self.effective_capacity(item)
+            and self.active_jobs(item, operation) < self.effective_capacity(item, operation)
         ]
         if not candidates:
             return None
 
-        def score(item: ComputeChannel) -> tuple[float, float, float, str]:
-            capacity = self.effective_capacity(item)
-            occupancy = max(item.inflight, item.reported_active_jobs) / capacity
+        def score(item: ComputeChannel) -> tuple[float, float, float, float, str]:
+            capacity = self.effective_capacity(item, operation)
+            occupancy = self.active_jobs(item, operation) / capacity
             cpu_pressure = 0.75 if item.cpu_percent is None else min(1.0, item.cpu_percent / 70)
             memory_pressure = (
                 0.75 if item.memory_percent is None else min(1.0, item.memory_percent / 80)
             )
             resource_pressure = max(cpu_pressure, memory_pressure)
-            return occupancy, resource_pressure, item.last_selected, item.device_id
+            return (
+                occupancy,
+                resource_pressure,
+                self.routing_health.latency(item.device_id, routing_key or operation),
+                item.last_selected,
+                item.device_id,
+            )
 
         return min(candidates, key=score)
 
@@ -170,6 +455,7 @@ class ComputeRegistry:
         payload_bytes: bytes,
         requester_user_id: int,
         deadline_monotonic: float,
+        routing_key: str | None = None,
     ) -> ComputeLease:
         if operation not in OPERATIONS:
             raise ValueError("unsupported_operation")
@@ -194,6 +480,7 @@ class ComputeRegistry:
             deadline_monotonic=deadline_monotonic,
             started_at=time.monotonic(),
             future=asyncio.get_running_loop().create_future(),
+            routing_key=routing_key or operation,
         )
         self.pending[(lease.device_id, lease.generation, lease.job_id, lease.attempt_id)] = lease
         self.pending_payload_bytes += lease.payload_size
@@ -271,6 +558,11 @@ class ComputeRegistry:
         )
         if lease is None or lease.payload_sha256 != payload_sha256 or lease.future.done():
             return False
+        channel = self.channels.get(device_id)
+        if channel is not None and channel.generation == generation:
+            self.record_outcome(
+                channel, lease, ok=result.get("ok") is True, error=result.get("error")
+            )
         lease.future.set_result(result)
         return True
 
@@ -282,7 +574,7 @@ class ComputeRegistry:
                 continue
             fresh = now - item.last_heartbeat <= self.readiness_timeout_seconds
             capacity = self.effective_capacity(item) if fresh else 0
-            active_jobs = max(item.inflight, item.reported_active_jobs)
+            active_jobs = self.active_jobs(item)
             ready = bool(fresh and item.ready and active_jobs < capacity)
             status = (
                 "offline"
@@ -302,13 +594,25 @@ class ComputeRegistry:
                     "connected": True,
                     "ready": ready,
                     "capacity": capacity,
-                    "inflight": item.inflight,
+                    "inflight": active_jobs,
                     "active_jobs": active_jobs,
                     "cpu_percent": item.cpu_percent if fresh else None,
                     "memory_percent": item.memory_percent if fresh else None,
                     "thermal_state": item.thermal_state if fresh else None,
                     "power": item.power,
                     "supports": sorted(item.supports),
+                    "corporate_read_capacity": self.effective_capacity(
+                        item, corporate_gateway_contract.OPERATION
+                    )
+                    if fresh
+                    else 0,
+                    "corporate_write_capacity": self.effective_capacity(
+                        item, corporate_write_contract.OPERATION
+                    )
+                    if fresh
+                    else 0,
+                    "corporate_inventory_status": item.corporate_inventory_status,
+                    "route_health": self.routing_health.snapshot(item.device_id),
                     "version": item.version,
                     "completed": item.completed,
                     "failed": item.failed,
@@ -347,6 +651,16 @@ class ComputeRegistry:
 def validate_result(operation: str, result: object) -> dict | None:
     if operation not in OPERATIONS or not isinstance(result, dict):
         return None
+    if operation == corporate_gateway_contract.OPERATION:
+        try:
+            return corporate_gateway_contract.validate_result_shape(result)
+        except corporate_gateway_contract.ContractError:
+            return None
+    if operation == corporate_write_contract.OPERATION:
+        try:
+            return corporate_write_contract.validate_result_shape(result)
+        except corporate_write_contract.ContractError:
+            return None
     data_base64 = result.get("data_base64")
     digest = result.get("sha256")
     mime_type = result.get("mime_type")

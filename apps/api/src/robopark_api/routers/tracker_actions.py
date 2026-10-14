@@ -42,6 +42,7 @@ from robopark_api.services import (
     task_lifecycle,
     tracker_cache,
     tracker_client,
+    tracker_gateway_transport,
 )
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import tracker_signatures as sig_svc
@@ -76,8 +77,14 @@ def _ensure_tracker_user(user: User, db: Session) -> None:
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
 
-def _require_token(db: Session) -> str:
-    token = settings_svc.get_tracker_token(db)
+def _require_token(db: Session, user: User | None = None) -> str:
+    if user is None and tracker_gateway_transport.enabled():
+        raise HTTPException(503, "corporate_gateway_context_required")
+    token = (
+        tracker_gateway_transport.credential(db, user)
+        if user is not None
+        else settings_svc.get_tracker_token(db)
+    )
     if not token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -217,7 +224,7 @@ def _mutation_lease(
         raise HTTPException(status_code=404)
     if action == "close" and user.role == RoleSlug.MECHANIC:
         raise HTTPException(403, "task_review_operator_required")
-    issue = _get_issue_or_404(_require_token(db), key)
+    issue = _get_issue_or_404(_require_token(db, user), key)
     _authorize(db, user, issue, "attach" if action == "attachments" else action, request)
     with submissions.task_mutation_lease(db, key):
         yield
@@ -235,7 +242,7 @@ def _lifecycle_issue(
     _ensure_tracker_user(user, db)
     if task_lifecycle.is_hidden(db, key):
         raise HTTPException(status_code=404)
-    issue = _get_issue_or_404(_require_token(db), key, fresh=fresh)
+    issue = _get_issue_or_404(_require_token(db, user), key, fresh=fresh)
     from robopark_api.services.tracker_policy import enforce_issue_scope
 
     enforce_issue_scope(db, user, issue)
@@ -253,7 +260,7 @@ def get_repair_options(
     db: Session = Depends(get_db),
 ) -> RepairOptionsOut:
     issue = _lifecycle_issue(db, user, key, request=request, fresh=True)
-    components = _repair_components(_require_token(db), issue)
+    components = _repair_components(_require_token(db, user), issue)
     return RepairOptionsOut(**repair_fields.options(issue, components))
 
 
@@ -346,7 +353,7 @@ def submit_task_review(
         if not isinstance(raw_fields, dict):
             raise HTTPException(422, "repair_fields_invalid")
         structured = {**raw_fields, "defect_code": defect_code}
-        components = _repair_components(_require_token(db), issue)
+        components = _repair_components(_require_token(db, user), issue)
     with submissions.task_mutation_lease(db, key):
         reviewer = task_lifecycle.reviewer_for_review_replay(
             db,
@@ -559,7 +566,7 @@ def add_comment(
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
     _ensure_tracker_user(user, db)
-    token = _require_token(db)
+    token = _require_token(db, user)
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "comment", request)
 
@@ -605,7 +612,10 @@ def add_comment(
         return saved
 
     try:
-        tracker_client.add_comment(token=token, key=key, text=signed_text)
+        write_token = tracker_gateway_transport.write_credential(
+            db, user, resource=key, command_id=submission.id if submission is not None else None
+        )
+        tracker_client.add_comment(token=write_token, key=key, text=signed_text)
     except tracker_client.TrackerError as exc:
         submissions.uncertain(db, submission)
         raise _upstream_error(db, user, "comment", key, exc, request) from exc
@@ -659,7 +669,7 @@ def attach_file(
     db: Session = Depends(get_db),
 ) -> TrackerActionOut:
     _ensure_tracker_user(user, db)
-    token = _require_token(db)
+    token = _require_token(db, user)
     issue = _get_issue_or_404(token, key)
     _authorize(db, user, issue, "attach", request)
 
@@ -705,15 +715,23 @@ def attach_file(
         return saved
 
     try:
+        write_token = tracker_gateway_transport.write_credential(
+            db,
+            user,
+            resource=key,
+            command_id=submission.id if submission is not None else None,
+            action="attachment_upload",
+            force_server=len(content) > 4 * 1024 * 1024,
+        )
         temp_id = tracker_client.upload_temp_attachment(
-            token=token,
+            token=write_token,
             filename=filename,
             content=content,
             content_type=content_type,
         )
         signed_text = _signed_tracker_text(db, user, issue, PHOTO_COMMENT_BODY)
         tracker_client.add_comment(
-            token=token,
+            token=write_token,
             key=key,
             text=signed_text,
             attachment_ids=[temp_id],

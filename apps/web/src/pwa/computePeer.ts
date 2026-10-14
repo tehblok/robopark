@@ -94,11 +94,11 @@ function base64(bytes: Uint8Array): string {
 }
 
 /** Only SDP, IDs and hashes pass through the server. Payload/result use DTLS DataChannel. */
-export async function requestPeerJob(operation: string, payload: Record<string, unknown>, validate: (result: Record<string, unknown>) => Promise<boolean> = async () => true): Promise<Record<string, unknown> | null> {
+export type PeerJobOptions = { signal?: AbortSignal, timeoutMs?: number, onFailure?: (reason: 'unauthorized' | 'cancelled') => void }
+export async function requestPeerJob(operation: string, payload: Record<string, unknown>, validate: (result: Record<string, unknown>) => Promise<boolean> = async () => true, options: PeerJobOptions = {}): Promise<Record<string, unknown> | null> {
   if (operation !== 'image_resize_v1' || navigator.onLine === false || typeof RTCPeerConnection === 'undefined') return null
   const input = new TextEncoder().encode(JSON.stringify(payload))
   if (input.length > 6 * 1024 * 1024) return null
-  const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', input)), byte => byte.toString(16).padStart(2, '0')).join('')
   const controller = new AbortController()
   let peer: RTCPeerConnection | undefined
   let channel: RTCDataChannel | undefined
@@ -106,21 +106,29 @@ export async function requestPeerJob(operation: string, payload: Record<string, 
   let completed = false
   let cancelled = false
   let timer: ReturnType<typeof setTimeout> | undefined
-  const sessionChanged = () => { cancelled = true; controller.abort(); channel?.close(); peer?.close() }
+  const sessionChanged = () => { cancelled = true; options.onFailure?.('cancelled'); controller.abort(); channel?.close(); peer?.close() }
   window.addEventListener('robopark:compute-cancel', sessionChanged)
+  window.addEventListener('offline', sessionChanged)
+  options.signal?.addEventListener('abort', sessionChanged, { once: true })
   try {
+    if (options.signal?.aborted) { sessionChanged(); return null }
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', input)), byte => byte.toString(16).padStart(2, '0')).join('')
+    if (controller.signal.aborted) return null
     return await Promise.race([
-      new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); peer?.close(); resolve(null) }, 30_000) }),
+      new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); peer?.close(); resolve(null) }, Math.max(1, Math.min(options.timeoutMs ?? 30_000, 30_000))) }),
       (async () => {
         peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }] })
         channel = peer.createDataChannel('robopark-compute-v1', { ordered: true })
         const offer = await gatheredOffer(peer, controller.signal)
+        if (controller.signal.aborted) return null
         const response = await fetch('/api/compute/direct', {
           method: 'POST', credentials: 'include', cache: 'no-store', signal: controller.signal,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ operation, payload_sha256: digest, payload_bytes: input.length, offer }),
         })
+        if (response.status === 401 || response.status === 403) options.onFailure?.('unauthorized')
         const lease = await signalResponse(response)
+        if (controller.signal.aborted) return null
         if (typeof lease.job_id !== 'string' || !UUID.test(lease.job_id)) throw new Error('peer_lease_invalid')
         jobID = lease.job_id
         const answer = lease.answer as RTCSessionDescriptionInit | undefined
@@ -145,6 +153,7 @@ export async function requestPeerJob(operation: string, payload: Record<string, 
           method: 'POST', credentials: 'include', cache: 'no-store', signal: controller.signal,
           headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ outcome: 'completed' }),
         })
+        if (accepted.status === 401 || accepted.status === 403) options.onFailure?.('unauthorized')
         if (!accepted.ok || controller.signal.aborted) return null
         channel.send(JSON.stringify({ type: 'ack', job_id: jobID, attempt_id: lease.attempt_id,
           payload_sha256: digest, outcome: 'completed' }))
@@ -158,10 +167,12 @@ export async function requestPeerJob(operation: string, payload: Record<string, 
   } catch { return null }
   finally {
     window.removeEventListener('robopark:compute-cancel', sessionChanged)
+    window.removeEventListener('offline', sessionChanged)
+    options.signal?.removeEventListener('abort', sessionChanged)
     clearTimeout(timer); controller.abort(); channel?.close(); peer?.close()
-    if (jobID && !completed) {
+    if (jobID && !completed && !cancelled) {
       const cancel = new AbortController(); const timeout = setTimeout(() => cancel.abort(), 2000)
-      void fetch(`/api/compute/direct/${encodeURIComponent(jobID)}/finish`, { method: 'POST', credentials: 'include', cache: 'no-store', signal: cancel.signal,
+      await fetch(`/api/compute/direct/${encodeURIComponent(jobID)}/finish`, { method: 'POST', credentials: 'include', cache: 'no-store', signal: cancel.signal,
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ outcome: cancelled ? 'cancelled' : 'fallback' }) })
         .catch(() => undefined).finally(() => clearTimeout(timeout))
     }

@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from robopark_api.services import compute_broker
 from robopark_api.services.compute_broker import (
     ComputeChannel,
     ComputeRegistry,
@@ -18,6 +19,201 @@ class Socket:
 
     async def send_json(self, value):
         self.sent.append(value)
+
+
+def test_relay_admission_is_one_use_owner_scoped_and_expires_without_leaking_capacity():
+    now = [100.0]
+    pool = compute_broker.RelayAdmissionPool(
+        now=lambda: now[0],
+        token_factory=lambda: "relay-ticket",
+    )
+
+    ticket = pool.admit(
+        requester_user_id=7,
+        payload_bytes=400_000,
+        payload_sha256="a" * 64,
+        worker_available=True,
+    )
+    assert ticket.token == "relay-ticket"
+    assert pool.status()["relay_active"] == 1
+
+    with pytest.raises(PermissionError, match="relay_ticket_foreign"):
+        pool.claim("relay-ticket", requester_user_id=8, payload_bytes=400_000)
+    claimed = pool.claim("relay-ticket", requester_user_id=7, payload_bytes=400_000)
+    assert claimed.payload_sha256 == "a" * 64
+    assert (
+        pool.authorize_dispatch(
+            "relay-ticket",
+            requester_user_id=7,
+            payload_bytes=400_000,
+            payload_sha256="a" * 64,
+        )
+        is claimed
+    )
+    with pytest.raises(ValueError, match="relay_payload_hash_mismatch"):
+        pool.authorize_dispatch(
+            "relay-ticket",
+            requester_user_id=7,
+            payload_bytes=400_000,
+            payload_sha256="0" * 64,
+        )
+    with pytest.raises(LookupError, match="relay_ticket_consumed"):
+        pool.claim("relay-ticket", requester_user_id=7, payload_bytes=400_000)
+
+    pool.complete("relay-ticket", requester_user_id=7, payload_bytes=400_000)
+    assert pool.status()["relay_active"] == 0
+    assert pool.status()["relay_payload_bytes"] == 400_000
+
+    second = pool.admit(
+        requester_user_id=7,
+        payload_bytes=400_000,
+        payload_sha256="b" * 64,
+        worker_available=True,
+    )
+    now[0] += 31
+    with pytest.raises(LookupError, match="relay_ticket_expired"):
+        pool.claim(second.token, requester_user_id=7, payload_bytes=400_000)
+    assert pool.status()["relay_active"] == 0
+
+
+def test_relay_admission_enforces_worker_global_requester_and_rolling_traffic_budget():
+    now = [100.0]
+    tokens = iter(("one", "two", "three", "four"))
+    pool = compute_broker.RelayAdmissionPool(
+        max_active=2,
+        max_requester_active=1,
+        budget_bytes_per_minute=12_000_000,
+        now=lambda: now[0],
+        token_factory=lambda: next(tokens),
+    )
+
+    with pytest.raises(OverflowError, match="relay_unavailable"):
+        pool.admit(
+            requester_user_id=1,
+            payload_bytes=300_000,
+            payload_sha256="a" * 64,
+            worker_available=False,
+        )
+    first = pool.admit(
+        requester_user_id=1,
+        payload_bytes=300_000,
+        payload_sha256="a" * 64,
+        worker_available=True,
+    )
+    with pytest.raises(OverflowError, match="relay_requester_busy"):
+        pool.admit(
+            requester_user_id=1,
+            payload_bytes=300_000,
+            payload_sha256="b" * 64,
+            worker_available=True,
+        )
+    second = pool.admit(
+        requester_user_id=2,
+        payload_bytes=300_000,
+        payload_sha256="b" * 64,
+        worker_available=True,
+    )
+    with pytest.raises(OverflowError, match="relay_busy"):
+        pool.admit(
+            requester_user_id=3,
+            payload_bytes=300_000,
+            payload_sha256="c" * 64,
+            worker_available=True,
+        )
+
+    pool.cancel(first.token, requester_user_id=1)
+    pool.claim(second.token, requester_user_id=2, payload_bytes=300_000)
+    pool.complete(second.token, requester_user_id=2, payload_bytes=300_000)
+    with pytest.raises(OverflowError, match="relay_budget_exhausted"):
+        pool.admit(
+            requester_user_id=3,
+            payload_bytes=900_000,
+            payload_sha256="c" * 64,
+            worker_available=True,
+        )
+    assert pool.status()["relay_rejected"] == 4
+    assert pool.status()["relay_budget_reserved_bytes"] > 0
+
+    now[0] += 61
+    admitted = pool.admit(
+        requester_user_id=3,
+        payload_bytes=900_000,
+        payload_sha256="c" * 64,
+        worker_available=True,
+    )
+    assert admitted.token == "three"
+
+
+def test_claimed_relay_ignores_client_cancel_and_survives_admission_expiry():
+    now = [100.0]
+    tokens = iter(("one", "two"))
+    pool = compute_broker.RelayAdmissionPool(
+        now=lambda: now[0],
+        token_factory=lambda: next(tokens),
+    )
+    ticket = pool.admit(
+        requester_user_id=1,
+        payload_bytes=300_000,
+        payload_sha256="a" * 64,
+        worker_available=True,
+    )
+    pool.claim(ticket.token, requester_user_id=1, payload_bytes=300_000)
+
+    assert pool.cancel(ticket.token, requester_user_id=1) is False
+    now[0] += 31
+    assert (
+        pool.authorize_dispatch(
+            ticket.token,
+            requester_user_id=1,
+            payload_bytes=300_000,
+            payload_sha256="a" * 64,
+        )
+        is ticket
+    )
+    with pytest.raises(OverflowError, match="relay_requester_busy"):
+        pool.admit(
+            requester_user_id=1,
+            payload_bytes=300_000,
+            payload_sha256="b" * 64,
+            worker_available=True,
+        )
+
+    pool.complete(ticket.token, requester_user_id=1, payload_bytes=300_000)
+    assert pool.status()["relay_active"] == 0
+
+
+def test_server_abort_releases_claimed_relay_and_claim_timeout_bounds_orphans():
+    now = [100.0]
+    tokens = iter(("one", "two", "three"))
+    pool = compute_broker.RelayAdmissionPool(
+        now=lambda: now[0],
+        token_factory=lambda: next(tokens),
+    )
+    ticket = pool.admit(
+        requester_user_id=1,
+        payload_bytes=300_000,
+        payload_sha256="a" * 64,
+        worker_available=True,
+    )
+    pool.claim(ticket.token, requester_user_id=1, payload_bytes=300_000)
+    assert pool.abort(ticket.token, requester_user_id=1) is True
+    assert pool.status()["relay_active"] == 0
+
+    orphan = pool.admit(
+        requester_user_id=1,
+        payload_bytes=300_000,
+        payload_sha256="b" * 64,
+        worker_available=True,
+    )
+    pool.claim(orphan.token, requester_user_id=1, payload_bytes=300_000)
+    now[0] += compute_broker.RELAY_CLAIM_TTL_SECONDS + 1
+    replacement = pool.admit(
+        requester_user_id=1,
+        payload_bytes=300_000,
+        payload_sha256="c" * 64,
+        worker_available=True,
+    )
+    assert replacement.token == "three"
 
 
 def channel(device_id: str, *, generation: str | None = None) -> ComputeChannel:
@@ -56,6 +252,91 @@ def test_scheduler_handles_zero_two_and_one_hundred_devices():
 
     for size in (2, 100):
         asyncio.run(scenario(size))
+
+
+def test_corporate_scheduler_requires_owner_and_service_capability():
+    registry = ComputeRegistry()
+    inventory = channel("inventory")
+    inventory.owner_user_id = 7
+    inventory.supports.update({"corporate_read_v1", "corporate_inventory_read_v1"})
+    wrong_owner = channel("wrong-owner")
+    wrong_owner.owner_user_id = 8
+    wrong_owner.supports.update({"corporate_read_v1", "corporate_inventory_read_v1"})
+    missing_service = channel("missing-service")
+    missing_service.owner_user_id = 7
+    missing_service.supports.add("corporate_read_v1")
+    for item in (wrong_owner, missing_service, inventory):
+        item.corporate_read_capacity = 2
+        registry.replace(item)
+
+    chosen = registry.choose(
+        "corporate_read_v1",
+        required_supports={"corporate_inventory_read_v1"},
+        eligible_owner_ids=frozenset({7}),
+    )
+
+    assert chosen is inventory
+    assert (
+        registry.choose(
+            "corporate_read_v1",
+            required_supports={"corporate_tracker_read_v1"},
+            eligible_owner_ids=frozenset({7}),
+        )
+        is None
+    )
+
+
+def test_io_lanes_are_independent_of_cpu_and_of_each_other():
+    registry = ComputeRegistry()
+    node = channel("busy-cpu")
+    node.capacity = 0
+    node.cpu_percent = 95
+    node.corporate_read_capacity = 2
+    node.corporate_write_capacity = 1
+    node.supports.update({"corporate_read_v1", "corporate_write_v1"})
+    registry.replace(node)
+    assert registry.choose("image_resize_v1") is None
+    assert registry.choose("corporate_read_v1") is node
+    assert registry.choose("corporate_write_v1") is node
+    node.reported_corporate_active_jobs = 2
+    assert registry.choose("corporate_read_v1") is None
+    assert registry.choose("corporate_write_v1") is node
+    node.paused = True
+    assert registry.choose("corporate_write_v1") is None
+
+
+def test_route_history_and_inventory_denial_do_not_poison_other_operations():
+    registry = ComputeRegistry()
+    first, second = channel("first"), channel("second")
+    for node in (first, second):
+        node.corporate_read_capacity = 2
+        node.supports.update(
+            {"corporate_read_v1", "corporate_inventory_read_v1", "corporate_tracker_read_v1"}
+        )
+        registry.replace(node)
+    registry.routing_health.observe("first", "tracker:issue_read", ok=True, elapsed=1)
+    registry.routing_health.observe("second", "tracker:issue_read", ok=True, elapsed=0.1)
+    assert registry.choose("corporate_read_v1", routing_key="tracker:issue_read") is second
+    second.corporate_inventory_status = "denied"
+    assert (
+        registry.choose(
+            "corporate_read_v1",
+            routing_key="inventory:rover_card",
+            required_supports={"corporate_inventory_read_v1"},
+        )
+        is first
+    )
+    assert registry.choose("corporate_read_v1", routing_key="tracker:issue_read") is second
+    registry.routing_health.observe(
+        "second", "tracker:issue_read", ok=False, elapsed=1, error="timeout"
+    )
+    assert registry.choose("corporate_read_v1", routing_key="tracker:issue_read") is first
+    assert (
+        registry.choose(
+            "corporate_read_v1", routing_key="tracker:comments_read", excluded={"first"}
+        )
+        is second
+    )
 
 
 def test_scheduler_enforces_queue_memory_and_per_requester_bounds():

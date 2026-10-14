@@ -42,3 +42,24 @@ it('keeps one request in flight and stops polling after unmount', async () => {
   await act(async () => { resolve(status); await vi.advanceTimersByTimeAsync(60_000) })
   expect(load).toHaveBeenCalledTimes(1)
 })
+
+it('shows operation-specific latency without treating one unavailable service as a lost Mac', async () => {
+  const device: PoolStatus['devices'][number] = {
+    id: 'mac-1', label: 'Mac оператора', owner_user_id: 1, owner_username: 'operator', owner_display_name: null,
+    status: 'ready', connected: true, ready: true, capacity: 1, inflight: 0, active_jobs: 0,
+    cpu_percent: 10, memory_percent: 20, thermal_state: 'normal', power: 'ac', version: 'test',
+    completed: 4, failed: 1, supports: ['corporate_tracker_read_v1'], corporate_read_capacity: 2,
+    corporate_inventory_status: 'denied',
+    direct_input_bytes: 0, direct_output_bytes: 0, signaling_bytes: 0, direct_completed: 0, direct_failed: 0,
+    direct_cancelled: 0, direct_retries: 0, direct_fallback: 0,
+    route_health: {
+      'tracker:issue_read': { completed: 4, transport_failures: 0, latency_ms: 120, throughput_bytes_per_second: 10000, retry_after_seconds: 0 },
+      'inventory:rover_card': { completed: 0, transport_failures: 1, latency_ms: null, throughput_bytes_per_second: null, retry_after_seconds: 10 },
+    },
+  }
+  render(<ComputePoolStatus load={async () => ({ ...status, devices: [device] })} />)
+  expect(await screen.findByText(/Tracker: личный вход подтверждён/)).toBeVisible()
+  expect(screen.getByText('Задачи Tracker: 120 мс')).toBeVisible()
+  expect(screen.getByText(/Карточки Inventory: время ответа ещё не измерено/)).toBeVisible()
+  expect(screen.getByText(/доступ сервера к каждой системе проверяется/)).toBeVisible()
+})

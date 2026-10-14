@@ -1,4 +1,4 @@
-import { requestPeerJob } from './computePeer'
+import { requestHybridJob, type ComputeRoute } from './computeHybrid'
 
 export function bytesBase64(bytes: Uint8Array): string {
   let text = ''
@@ -54,12 +54,12 @@ async function decodedDimensions(blob: Blob): Promise<[number, number]> {
   }
 }
 
-export async function transformOnMac(source: File, maxEdge: number, quality: number): Promise<Blob | null> {
+export async function transformOnMac(source: File, maxEdge: number, quality: number, route: ComputeRoute = 'auto'): Promise<Blob | null> {
   if (navigator.onLine === false || source.size < 256 * 1024 || source.size > 4 * 1024 * 1024
     || !['image/jpeg', 'image/png', 'image/webp'].includes(source.type)) return null
   let output: Blob | null = null
   try {
-    const reply = await requestPeerJob('image_resize_v1', {
+    const reply = await requestHybridJob('image_resize_v1', {
       data_base64: bytesBase64(new Uint8Array(await source.arrayBuffer())),
       mime_type: source.type, max_edge: maxEdge, quality: Math.round(quality * 100),
     }, async candidate => {
@@ -78,7 +78,7 @@ export async function transformOnMac(source: File, maxEdge: number, quality: num
       if (decoded[0] !== size[0] || decoded[1] !== size[1]) return false
       output = blob
       return true
-    })
+    }, route)
     return reply ? output : null
   } catch { return null }
 }

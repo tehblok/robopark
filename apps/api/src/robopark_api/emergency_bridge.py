@@ -27,7 +27,7 @@ from robopark_api.compute_bridge import create_compute_router
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import SessionLocal
 from robopark_api.models import AccessStatus, AgentDevice, TelegramAccount, User
-from robopark_api.services import audit, emergency_scope, rbac
+from robopark_api.services import audit, emergency_scope, gateway_policy, rbac
 from robopark_api.services.emergency_bridge_auth import verify_body_signature
 from robopark_api.services.emergency_bridge_broker import BrokerRegistry, Channel
 
@@ -206,14 +206,10 @@ def _candidate_device_ids(
         if requester is None or not requester.is_active:
             return set()
         try:
-            requester_allowed = (
-                requester.access_status == AccessStatus.approved.value
-                and rbac.has_permission(db, requester, rbac.PERMISSION_NAV_EMERGENCY)
-                and emergency_scope.vin_allowed_for_user(db, requester, vin)
-            )
+            owner_ids = _gateway_owner_scope_for_user(db, requester, vin)
         except Exception:
             return set()
-        if not requester_allowed:
+        if not owner_ids:
             return set()
         eligible: set[str] = set()
         devices = db.scalars(
@@ -224,27 +220,37 @@ def _candidate_device_ids(
                 AgentDevice.instance_id == str(settings.robopark_instance_id),
             )
         ).all()
-        # Several Macs can belong to one account. Resolve that account's role
-        # and VIN scope once per request, never once per device and never across
-        # requests (revocation must still take effect immediately).
-        owner_authority: dict[int, bool] = {requester.id: True}
         for device in devices:
-            owner_id = device.owner_user_id
-            if owner_id not in owner_authority:
-                owner = db.get(User, owner_id)
-                try:
-                    owner_authority[owner_id] = bool(
-                        owner is not None
-                        and owner.is_active
-                        and owner.access_status == AccessStatus.approved.value
-                        and rbac.has_permission(db, owner, rbac.PERMISSION_NAV_EMERGENCY)
-                        and emergency_scope.vin_allowed_for_user(db, owner, vin)
-                    )
-                except Exception:
-                    owner_authority[owner_id] = False
-            if owner_authority[owner_id]:
+            if device.owner_user_id in owner_ids:
                 eligible.add(device.id)
         return eligible
+
+
+def _gateway_owner_scope_for_user(db: Session, requester: User, vin: str) -> tuple[int, ...]:
+    if not emergency_scope.vin_allowed_for_user(db, requester, vin):
+        return ()
+    owner_ids = gateway_policy.eligible_gateway_owner_ids(db, requester, "emergency")
+    allowed: list[int] = []
+    for owner_id in sorted(owner_ids):
+        owner = db.get(User, owner_id)
+        if owner is not None and emergency_scope.vin_allowed_for_user(db, owner, vin):
+            allowed.append(owner_id)
+    return tuple(allowed)
+
+
+def _gateway_owner_scope(
+    session_factory: sessionmaker,
+    requester_user_id: int,
+    vin: str,
+) -> tuple[int, ...]:
+    with session_factory() as db:
+        requester = db.get(User, requester_user_id)
+        if requester is None:
+            return ()
+        try:
+            return _gateway_owner_scope_for_user(db, requester, vin)
+        except Exception:
+            return ()
 
 
 def _result_authority_valid(
@@ -275,12 +281,7 @@ def _job_authority_valid(
             return False
         _, owner = pair
         try:
-            return (
-                requester.access_status == AccessStatus.approved.value
-                and rbac.has_permission(db, requester, rbac.PERMISSION_NAV_EMERGENCY)
-                and emergency_scope.vin_allowed_for_user(db, requester, vin)
-                and emergency_scope.vin_allowed_for_user(db, owner, vin)
-            )
+            return owner.id in _gateway_owner_scope_for_user(db, requester, vin)
         except Exception:
             return False
 
@@ -343,7 +344,7 @@ def _authenticate_device(
     device_id: str,
     signature_base64: str,
     signed: bytes,
-) -> tuple[str, int]:
+) -> tuple[str, int, str | None]:
     with session_factory() as db:
         pair = _device_valid(db, device_id, settings)
         if pair is None:
@@ -373,7 +374,7 @@ def _authenticate_device(
                     sort_keys=True,
                 ),
             )
-        return device.id, owner.id
+        return device.id, owner.id, (owner.tracker_login or "").strip() or None
 
 
 async def _receive_json(websocket: WebSocket) -> dict[str, Any]:
@@ -532,7 +533,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                 + "\n"
                 + nonce
             ).encode("utf-8")
-            device_id, owner_user_id = await bounded_authority_call(
+            device_id, owner_user_id, owner_tracker_login = await bounded_authority_call(
                 time.monotonic() + 10,
                 _authenticate_device,
                 session_factory,
@@ -548,6 +549,8 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
             await websocket.send_json(
                 {
                     "type": "ready",
+                    "owner_user_id": owner_user_id,
+                    "owner_tracker_login": owner_tracker_login,
                     "generation": channel.generation,
                     "heartbeat_interval_ms": 10_000,
                     "readiness_timeout_ms": 30_000,
@@ -726,7 +729,10 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                 registry.remove(channel)
 
     async def dispatch_attempts(
-        payload: RpcRequest, candidates: set[str], deadline: float
+        payload: RpcRequest,
+        candidates: set[str],
+        owner_scope: tuple[int, ...],
+        deadline: float,
     ) -> tuple[dict | None, int, str, str | None]:
         async def final_authority(channel: Channel) -> bool:
             if time.monotonic() >= deadline:
@@ -747,6 +753,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
         excluded: set[str] = set()
         attempts = 0
         source_checks = 0
+        terminal_detail = "upstream_failed"
         max_source_checks = min(len(candidates), max(2, payload.attempt_budget * 2))
         while attempts < payload.attempt_budget and source_checks < max_source_checks:
             channel = registry.choose(candidates, excluded=excluded)
@@ -770,10 +777,11 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                 try:
                     source_allowed = await bounded_authority_call(
                         deadline,
-                        _result_authority_valid,
+                        _job_authority_valid,
                         session_factory,
                         settings,
                         channel.device_id,
+                        payload.requester_user_id,
                         payload.vin,
                     )
                 except TimeoutError:
@@ -835,6 +843,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                 result = await asyncio.wait_for(job.future, timeout=remaining_ms / 1000)
                 if result.get("ok") is True and isinstance(result.get("payload"), dict):
                     registry.shared_cache_put(
+                        owner_scope,
                         payload.vin,
                         result["payload"],
                         source_device_id=channel.device_id,
@@ -845,6 +854,9 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                     return result["payload"], attempts, "", channel.device_id
                 if result.get("error") == "auth":
                     channel.ready = False
+                    terminal_detail = "upstream_auth_denied"
+                elif result.get("error") == "invalid":
+                    terminal_detail = "upstream_invalid_response"
                 channel.failure_penalty = min(10, channel.failure_penalty + 1)
             except (TimeoutError, ConnectionError, WebSocketDisconnect):
                 channel.failure_penalty = min(10, channel.failure_penalty + 1)
@@ -855,11 +867,23 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                     registry.finish_load(channel, payload.vin, error=load_error)
             if time.monotonic() >= deadline:
                 break
-        return None, attempts, "upstream_failed", None
+        return None, attempts, terminal_detail, None
 
     async def dispatch(payload: RpcRequest) -> tuple[dict | None, int, str, str | None]:
         deadline = time.monotonic() + payload.deadline_ms / 1000
-        shared, is_leader = registry.begin_request(payload.vin)
+        try:
+            owner_scope = await bounded_authority_call(
+                deadline,
+                _gateway_owner_scope,
+                session_factory,
+                payload.requester_user_id,
+                payload.vin,
+            )
+        except TimeoutError:
+            return None, 0, "upstream_failed", None
+        if not owner_scope:
+            return None, 0, "no_eligible_agent", None
+        shared, is_leader = registry.begin_request(owner_scope, payload.vin)
         if not is_leader:
             try:
                 result, device_id = await asyncio.wait_for(
@@ -882,7 +906,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
 
         outcome: tuple[dict | None, int, str, str | None]
         try:
-            cached = registry.shared_cache_get(payload.vin)
+            cached = registry.shared_cache_get(owner_scope, payload.vin)
             if cached is not None:
                 cached_payload, source_device_id = cached
                 try:
@@ -900,7 +924,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                 if still_allowed:
                     outcome = (cached_payload, 0, "", source_device_id)
                 else:
-                    registry.shared_cache_remove(payload.vin)
+                    registry.shared_cache_remove(owner_scope, payload.vin)
                     cached = None
             if cached is None:
                 try:
@@ -917,18 +941,19 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                     outcome = (None, 0, "upstream_failed", None)
                 else:
                     outcome = (
-                        await dispatch_attempts(payload, candidates, deadline)
+                        await dispatch_attempts(payload, candidates, owner_scope, deadline)
                         if candidates
                         else (None, 0, "no_eligible_agent", None)
                     )
         except BaseException as exc:
-            registry.finish_request(payload.vin, error=ConnectionError(str(exc)))
+            registry.finish_request(owner_scope, payload.vin, error=ConnectionError(str(exc)))
             raise
         result, _, _, device_id = outcome
         if result is not None and device_id is not None:
-            registry.finish_request(payload.vin, result=(result, device_id))
+            registry.finish_request(owner_scope, payload.vin, result=(result, device_id))
         else:
             registry.finish_request(
+                owner_scope,
                 payload.vin,
                 error=ConnectionError(outcome[2]),
             )

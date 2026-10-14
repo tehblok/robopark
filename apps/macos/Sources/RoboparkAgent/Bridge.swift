@@ -9,7 +9,13 @@ import IOKit.ps
     private(set) var state = "Не зарегистрирован"
     private(set) var upstreamState = "Ожидание проверочного робота"
     var needsCorporateLogin: Bool {
-        registration != nil && ((registration?.cookie.isEmpty ?? true) || upstreamState == "Требуется вход в Emergency")
+        guard let value = registration else { return false }
+        return value.cookie.isEmpty || value.corporateCookieVerifiedAt == nil
+            || CorporateAuthPolicy.normalizedLogin(value.corporateLogin) != CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin)
+            || value.corporateIdentityStatus != CorporateIdentityStatus.ready.rawValue
+            || value.trackerOAuthToken?.isEmpty != false
+            || (value.trackerOAuthExpiresAt?.timeIntervalSinceNow ?? 0) <= 60
+            || value.trackerOAuthVerifiedAt == nil
     }
     private(set) var completed = 0
     private(set) var payloadBytes = 0
@@ -34,7 +40,11 @@ import IOKit.ps
         do {
             if let stored = try SecureStore.load(), TestDeploymentAssignment.matches(
                 origin: stored.origin, instanceID: stored.instanceID, environment: stored.environment
-            ) { registration = stored }
+            ) {
+                var value = stored
+                if Self.sanitizeCorporateCredentials(&value) { try SecureStore.save(value) }
+                registration = value
+            }
         }
         catch { state = "Разблокируйте Keychain и откройте панель повторно" }
     }
@@ -42,12 +52,65 @@ import IOKit.ps
         guard registration == nil else { return }
         if let stored = try SecureStore.load(), TestDeploymentAssignment.matches(
             origin: stored.origin, instanceID: stored.instanceID, environment: stored.environment
-        ) { registration = stored }
+        ) {
+            var value = stored
+            if Self.sanitizeCorporateCredentials(&value) { try SecureStore.save(value) }
+            registration = value
+        }
         onChange?()
     }
     func persist() throws {
         if let registration { try SecureStore.save(registration) }
         onChange?()
+    }
+    @discardableResult private static func sanitizeCorporateCredentials(_ value: inout Registration,
+                                                                         now: Date = Date()) -> Bool {
+        var changed = false
+        let owner = CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin)
+        let credentialOwner = CorporateAuthPolicy.normalizedLogin(value.corporateLogin)
+        if value.trackerOAuthExpiresAt.map({ $0.timeIntervalSince(now) <= 60 }) ?? false {
+            value.trackerOAuthToken = nil; value.trackerOAuthExpiresAt = nil
+            value.trackerOAuthVerifiedAt = nil; changed = true
+            value.inventoryOAuthVerifiedAt = nil; value.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+        }
+        if owner == nil || credentialOwner != owner {
+            if !value.cookie.isEmpty || value.corporateCookieVerifiedAt != nil || value.corporateLogin != nil {
+                value.cookie = ""; value.corporateCookieVerifiedAt = nil; value.corporateLogin = nil; changed = true
+            }
+            if value.corporateIdentityStatus != CorporateIdentityStatus.reauthRequired.rawValue {
+                value.corporateIdentityStatus = CorporateIdentityStatus.reauthRequired.rawValue; changed = true
+            }
+            if value.trackerOAuthToken != nil || value.trackerOAuthExpiresAt != nil || value.trackerOAuthVerifiedAt != nil {
+                value.trackerOAuthToken = nil; value.trackerOAuthExpiresAt = nil
+                value.trackerOAuthVerifiedAt = nil; changed = true
+            }
+            if value.inventoryOAuthVerifiedAt != nil
+                || value.inventoryOAuthStatus != CorporateInventoryStatus.unverifiedHostACL.rawValue {
+                value.inventoryOAuthVerifiedAt = nil
+                value.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+                changed = true
+            }
+        } else if value.corporateCookieVerifiedAt == nil, !value.cookie.isEmpty {
+            value.cookie = ""; value.corporateIdentityStatus = CorporateIdentityStatus.reauthRequired.rawValue
+            changed = true
+        }
+        return changed
+    }
+    private func bindTrackerLogin(_ rawLogin: String?) throws {
+        guard var value = registration else { throw AgentError.ownerMismatch }
+        let incoming = CorporateAuthPolicy.normalizedLogin(rawLogin)
+        let previous = CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin)
+        if previous != incoming {
+            value.cookie = ""; value.corporateCookieVerifiedAt = nil
+            value.trackerOAuthToken = nil; value.trackerOAuthExpiresAt = nil
+            value.trackerOAuthVerifiedAt = nil
+            value.inventoryOAuthVerifiedAt = nil; value.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+            value.corporateLogin = nil
+            value.corporateIdentityStatus = CorporateIdentityStatus.reauthRequired.rawValue
+            readyUntil = .distantPast
+        }
+        value.ownerTrackerLogin = incoming
+        registration = value
     }
     func stop() {
         runID = UUID()
@@ -106,10 +169,8 @@ import IOKit.ps
     }
     func disconnect() throws {
         stop()
-        registration = nil
-        state = "Не зарегистрирован"; upstreamState = "Ожидание проверочного робота"
+        state = "Отключён"; upstreamState = "Ожидание проверочного робота"
         onChange?()
-        try SecureStore.remove()
     }
     func enroll(origin: String, code: String, label: String) async throws {
         guard registration == nil else { throw AgentError.wrongServer }
@@ -136,10 +197,13 @@ import IOKit.ps
         guard claimed.statusCode == 201,
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let id = object["device_id"] as? String, UUID(uuidString: id) != nil,
+              let ownerUserID = object["owner_user_id"] as? Int, ownerUserID > 0,
               object["instance_id"] as? String == info.instance_id,
               object["environment"] as? String == info.environment else { throw AgentError.wrongServer }
         var value = Registration(origin: server.url.absoluteString, deviceID: id, instanceID: info.instance_id,
                                  environment: info.environment, label: label, privateKey: key.rawRepresentation)
+        value.ownerUserID = ownerUserID
+        value.ownerTrackerLogin = CorporateAuthPolicy.normalizedLogin(object["owner_tracker_login"] as? String)
         value.signedProfile = info.signed_profile
         value.channel = trusted.channel
         value.catalogURL = server.api("distribution/v1/macos/catalog.json").absoluteString
@@ -149,7 +213,8 @@ import IOKit.ps
         try? SecureStore.deleteData(pendingAccount)
         start()
     }
-    func claimAuthenticated(origin: String, label: String, startEmergency: Bool = true,
+    func claimAuthenticated(origin: String, label: String, expectedOwnerUserID: Int,
+                            startEmergency: Bool = true,
                             claim: ([String: Any]) async throws -> (Data, HTTPURLResponse)) async throws {
         let run = runID
         let server = try ServerOrigin(origin)
@@ -171,20 +236,35 @@ import IOKit.ps
             "instance_id": info.instance_id, "public_key": key.publicKey.x963Representation.base64EncodedString()
         ])
         guard run == runID, !Task.isCancelled else { throw CancellationError() }
-        guard [200, 201].contains(claimed.statusCode),
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let id = object["device_id"] as? String, UUID(uuidString: id) != nil,
-              object["status"] as? String == "approved",
-              object["instance_id"] as? String == info.instance_id,
-              object["environment"] as? String == info.environment,
-              existing == nil || existing?.deviceID == id else { throw AgentError.wrongServer }
-        var value = Registration(origin: server.url.absoluteString, deviceID: id, instanceID: info.instance_id,
+        guard [200, 201].contains(claimed.statusCode) else { throw AgentError.ownerMismatch }
+        let authoritative = try JSONDecoder().decode(AuthenticatedDeviceClaim.self, from: data)
+        try authoritative.validate(expectedOwnerUserID: expectedOwnerUserID,
+                                   existingDeviceID: existing?.deviceID)
+        guard authoritative.instanceID == info.instance_id,
+              authoritative.environment == info.environment else { throw AgentError.wrongServer }
+        var value = Registration(origin: server.url.absoluteString, deviceID: authoritative.deviceID,
+                                 instanceID: info.instance_id,
                                  environment: info.environment, label: label, privateKey: key.rawRepresentation)
+        value.ownerUserID = authoritative.ownerUserID
+        value.ownerTrackerLogin = CorporateAuthPolicy.normalizedLogin(authoritative.ownerTrackerLogin)
         value.signedProfile = info.signed_profile
         value.channel = trusted.channel
         value.catalogURL = server.api("distribution/v1/macos/catalog.json").absoluteString
         if let existing {
-            value.cookie = existing.cookie
+            guard existing.ownerUserID == nil || existing.ownerUserID == authoritative.ownerUserID else {
+                throw AgentError.ownerMismatch
+            }
+            if CorporateAuthPolicy.normalizedLogin(existing.ownerTrackerLogin) == value.ownerTrackerLogin {
+                value.cookie = existing.cookie
+                value.corporateLogin = existing.corporateLogin
+                value.corporateCookieVerifiedAt = existing.corporateCookieVerifiedAt
+                value.trackerOAuthToken = existing.trackerOAuthToken
+                value.trackerOAuthExpiresAt = existing.trackerOAuthExpiresAt
+                value.trackerOAuthVerifiedAt = existing.trackerOAuthVerifiedAt
+                value.inventoryOAuthVerifiedAt = existing.inventoryOAuthVerifiedAt
+                value.inventoryOAuthStatus = existing.inventoryOAuthStatus
+                value.corporateIdentityStatus = existing.corporateIdentityStatus
+            }
             value.probeVIN = existing.probeVIN
             value.minimumGeneration = existing.minimumGeneration
             value.paused = existing.paused
@@ -195,23 +275,140 @@ import IOKit.ps
         try? SecureStore.deleteData(pendingAccount)
         if startEmergency { start() }
     }
-    func updateCookie(_ value: String) throws {
-        guard registration != nil, value.utf8.count <= 32 * 1024,
-              !value.contains("\r"), !value.contains("\n") else { throw NetworkFailure.invalid }
+    func storeVerifiedOAuth(_ credential: CorporateOAuthCredential, login: String) throws {
+        guard credential.isUsable(), let owner = CorporateAuthPolicy.normalizedLogin(registration?.ownerTrackerLogin),
+              CorporateAuthPolicy.normalizedLogin(login) == owner else { throw AgentError.ownerMismatch }
         try requireTrust()
-        registration?.cookie = value
+        registration?.trackerOAuthToken = credential.token
+        registration?.trackerOAuthExpiresAt = credential.expiresAt
+        registration?.trackerOAuthVerifiedAt = Date()
+        registration?.corporateLogin = owner
+        registration?.inventoryOAuthVerifiedAt = nil
+        registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+        try persist()
+    }
+    var hasVerifiedCorporateOAuth: Bool {
+        guard let value = registration, let token = value.trackerOAuthToken, !token.isEmpty,
+              let expiry = value.trackerOAuthExpiresAt, expiry.timeIntervalSinceNow > 60,
+              let checked = value.trackerOAuthVerifiedAt, Date().timeIntervalSince(checked) < 15 * 60,
+              let owner = CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin),
+              CorporateAuthPolicy.normalizedLogin(value.corporateLogin) == owner else { return false }
+        return true
+    }
+    func verifiedCorporateOAuth(force: Bool = false, now: Date = Date()) async -> (token: String, login: String)? {
+        guard let value = registration, let token = value.trackerOAuthToken,
+              let expiry = value.trackerOAuthExpiresAt, expiry.timeIntervalSince(now) > 60,
+              let owner = CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin),
+              CorporateAuthPolicy.normalizedLogin(value.corporateLogin) == owner else { return nil }
+        if !force, let checked = value.trackerOAuthVerifiedAt, now.timeIntervalSince(checked) < 15 * 60 {
+            return (token, owner)
+        }
+        do {
+            let (body, response) = try await Network.corporateIdentity(authorization: "OAuth \(token)")
+            guard CorporateAuthPolicy.identityStatus(httpStatus: response.statusCode, body: body,
+                                                      expectedLogin: owner) == .ready else {
+                registration?.trackerOAuthToken = nil; registration?.trackerOAuthExpiresAt = nil
+                registration?.trackerOAuthVerifiedAt = nil; readyUntil = .distantPast
+                registration?.inventoryOAuthVerifiedAt = nil
+                registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+                try? persist(); return nil
+            }
+            registration?.trackerOAuthVerifiedAt = now; try? persist()
+            return (token, owner)
+        } catch { return nil }
+    }
+    var inventoryReadiness: CorporateInventoryStatus {
+        CorporateInventoryStatus(rawValue: registration?.inventoryOAuthStatus ?? "") ?? .unverifiedHostACL
+    }
+    func verifyInventoryReadiness(force: Bool = false, now: Date = Date()) async -> CorporateInventoryStatus {
+        guard let credential = await verifiedCorporateOAuth(), let vin = registration?.probeVIN, !vin.isEmpty else {
+            if registration?.inventoryOAuthVerifiedAt != nil || inventoryReadiness != .unverifiedHostACL {
+                registration?.inventoryOAuthVerifiedAt = nil
+                registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+                try? persist()
+            }
+            return .unverifiedHostACL
+        }
+        let ttl: TimeInterval = inventoryReadiness == .unreachable ? 60 : 15 * 60
+        if !force, let checked = registration?.inventoryOAuthVerifiedAt,
+           now.timeIntervalSince(checked) < ttl { return inventoryReadiness }
+        let status = await Network.corporateInventoryReadiness(serverAuthorizedVIN: vin,
+                                                               oauthToken: credential.token)
+        guard registration?.trackerOAuthToken == credential.token,
+              registration?.probeVIN == vin else { return .unverifiedHostACL }
+        registration?.inventoryOAuthStatus = status.rawValue
+        registration?.inventoryOAuthVerifiedAt = now
+        try? persist()
+        return status
+    }
+    func acceptServerOwner(ownerUserID: Int, trackerLogin: String?) throws {
+        guard ownerUserID == registration?.ownerUserID else { throw AgentError.ownerMismatch }
+        try bindTrackerLogin(trackerLogin)
+        try persist()
+    }
+    func invalidateCorporateOAuth() {
+        registration?.trackerOAuthToken = nil
+        registration?.trackerOAuthExpiresAt = nil
+        registration?.trackerOAuthVerifiedAt = nil
+        registration?.inventoryOAuthVerifiedAt = nil
+        registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+        try? persist()
+    }
+    func storeVerifiedSession(_ cookie: String, login: String, verifiedAt: Date = Date()) throws {
+        guard registration?.ownerUserID != nil,
+              let owner = CorporateAuthPolicy.normalizedLogin(registration?.ownerTrackerLogin),
+              CorporateAuthPolicy.normalizedLogin(login) == owner,
+              cookie.hasPrefix("Session_id="), cookie.utf8.count > "Session_id=".utf8.count,
+              cookie.utf8.count <= 8192,
+              !cookie.contains(";"), !cookie.contains("\r"), !cookie.contains("\n") else {
+            throw AgentError.ownerMismatch
+        }
+        try requireTrust()
+        registration?.cookie = cookie
+        registration?.corporateLogin = owner
+        registration?.corporateCookieVerifiedAt = verifiedAt
+        registration?.corporateIdentityStatus = CorporateIdentityStatus.ready.rawValue
         readyUntil = .distantPast; lastProbe = .distantPast
         try persist()
+    }
+    @discardableResult func verifyCorporateSession(force: Bool = false, now: Date = Date()) async -> CorporateIdentityStatus {
+        guard let value = registration,
+              let owner = CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin),
+              CorporateAuthPolicy.normalizedLogin(value.corporateLogin) == owner,
+              !value.cookie.isEmpty else { return .reauthRequired }
+        if !force, let checked = value.corporateCookieVerifiedAt, now.timeIntervalSince(checked) < 15 * 60,
+           value.corporateIdentityStatus == CorporateIdentityStatus.ready.rawValue { return .ready }
+        let status: CorporateIdentityStatus
+        do {
+            let (body, response) = try await Network.corporateIdentity(authorization: value.cookie)
+            status = CorporateAuthPolicy.identityStatus(httpStatus: response.statusCode, body: body, expectedLogin: owner)
+        } catch { status = .networkUnavailable }
+        guard registration?.cookie == value.cookie,
+              CorporateAuthPolicy.normalizedLogin(registration?.ownerTrackerLogin) == owner else { return .ownerMismatch }
+        registration?.corporateIdentityStatus = status.rawValue
+        if status == .ready { registration?.corporateCookieVerifiedAt = now }
+        else {
+            readyUntil = .distantPast
+            if status == .reauthRequired || status == .ownerMismatch {
+                registration?.cookie = ""; registration?.corporateCookieVerifiedAt = nil
+            }
+        }
+        try? persist()
+        return status
     }
     func setProbe(_ value: String) throws {
         let normalized = try EmergencyTarget.normalizeRobot(value)
         guard registration?.probeVIN != normalized else { return }
         registration?.probeVIN = normalized
+        registration?.inventoryOAuthVerifiedAt = nil
+        registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
         readyUntil = .distantPast; lastProbe = .distantPast
         try persist()
     }
     func clearProbe() throws {
         registration?.probeVIN = ""
+        registration?.inventoryOAuthVerifiedAt = nil
+        registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
         readyUntil = .distantPast; lastProbe = .distantPast
         upstreamState = "Ожидание проверочного робота"
         try persist()
@@ -252,8 +449,13 @@ import IOKit.ps
         let signature = try challenge.sign(key: key, environment: profile.environment, instanceID: profile.instanceID)
         try await send(["type": "auth", "device_id": profile.deviceID, "signature": signature.base64EncodedString()], through: channel)
         guard let accepted = try JSONSerialization.jsonObject(with: await receive(channel)) as? [String: Any],
-              accepted["type"] as? String == "ready", let nextGeneration = accepted["generation"] as? String else { throw AgentError.wrongServer }
+              accepted["type"] as? String == "ready", let nextGeneration = accepted["generation"] as? String,
+              let readyOwnerID = accepted["owner_user_id"] as? Int,
+              readyOwnerID == profile.ownerUserID else { throw AgentError.ownerMismatch }
         guard runID == run, !Task.isCancelled else { throw CancellationError() }
+        try bindTrackerLogin(accepted["owner_tracker_login"] as? String)
+        try persist()
+        _ = await verifyCorporateSession(force: true)
         generation = nextGeneration
         let capabilities = accepted["supports"] as? [String] ?? []
         managedProbes = capabilities.contains("managed_probes")
@@ -295,6 +497,7 @@ import IOKit.ps
                         "thermal_state": resources.thermalState,
                         "power": power, "supports": ["raw_deflate", "managed_probes"],
                         "probe_available": registration?.paused == false && !thermallyPaused
+                            && registration?.corporateIdentityStatus == CorporateIdentityStatus.ready.rawValue
                             && !(registration?.cookie.isEmpty ?? true) && !(registration?.probeVIN.isEmpty ?? true)])
     }
     private var thermallyPaused: Bool { ProcessInfo.processInfo.thermalState == .critical }
@@ -375,6 +578,12 @@ import IOKit.ps
         let started = Date()
         do {
             try requireTrust()
+            guard await verifyCorporateSession() == .ready else {
+                readyUntil = .distantPast
+                upstreamState = registration?.corporateIdentityStatus == CorporateIdentityStatus.accessDenied.rawValue
+                    ? "Корпоративный доступ запрещён" : "Требуется корпоративный вход"
+                return
+            }
             guard !profile.probeVIN.isEmpty else {
                 readyUntil = .distantPast
                 upstreamState = "Ожидание проверочного робота"

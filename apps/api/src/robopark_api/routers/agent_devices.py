@@ -374,6 +374,8 @@ def claim(
         db.commit()
         return {
             "device_id": existing.id,
+            "owner_user_id": existing.owner_user_id,
+            "owner_tracker_login": (owner.tracker_login or "").strip() or None,
             "environment": existing.environment,
             "instance_id": existing.instance_id,
             "protocol": PROTOCOL,
@@ -431,6 +433,8 @@ def claim(
         db.commit()
         return {
             "device_id": raced.id,
+            "owner_user_id": raced.owner_user_id,
+            "owner_tracker_login": (owner.tracker_login or "").strip() or None,
             "environment": raced.environment,
             "instance_id": raced.instance_id,
             "protocol": PROTOCOL,
@@ -454,6 +458,8 @@ def claim(
     )
     return {
         "device_id": device.id,
+        "owner_user_id": device.owner_user_id,
+        "owner_tracker_login": (owner.tracker_login or "").strip() or None,
         "environment": device.environment,
         "instance_id": device.instance_id,
         "protocol": PROTOCOL,
@@ -461,10 +467,11 @@ def claim(
     }
 
 
-def _authenticated_device_payload(device: AgentDevice) -> dict:
+def _authenticated_device_payload(device: AgentDevice, owner: User) -> dict:
     return {
         "device_id": device.id,
         "owner_user_id": device.owner_user_id,
+        "owner_tracker_login": (owner.tracker_login or "").strip() or None,
         "environment": device.environment,
         "instance_id": device.instance_id,
         "protocol": PROTOCOL,
@@ -511,7 +518,7 @@ def claim_authenticated(
         if existing.revoked_at is not None:
             raise HTTPException(409, "device_revoked")
         response.status_code = status.HTTP_200_OK
-        return _authenticated_device_payload(existing)
+        return _authenticated_device_payload(existing, owner)
 
     active_count = db.scalar(
         select(func.count())
@@ -549,7 +556,7 @@ def claim_authenticated(
         if raced.revoked_at is not None:
             raise HTTPException(409, "device_revoked") from None
         response.status_code = status.HTTP_200_OK
-        return _authenticated_device_payload(raced)
+        return _authenticated_device_payload(raced, owner)
     db.refresh(device)
     audit.record(
         db,
@@ -567,7 +574,7 @@ def claim_authenticated(
             sort_keys=True,
         ),
     )
-    return _authenticated_device_payload(device)
+    return _authenticated_device_payload(device, owner)
 
 
 def _device_json(

@@ -22,9 +22,26 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from robopark_api.config import Settings
-from robopark_api.models import AccessStatus, AgentDevice, User
-from robopark_api.services import rbac
+from robopark_api.models import (
+    AccessStatus,
+    AgentDevice,
+    CorporateWriteAuthority,
+    CorporateWriteReceipt,
+    User,
+)
+from robopark_api.routers.emergency import authorize_emergency_vin
+from robopark_api.services import (
+    corporate_gateway_contract,
+    corporate_write_contract,
+    corporate_write_service,
+    gateway_policy,
+    rbac,
+    sdc_inventory,
+    tracker_client,
+    tracker_policy,
+)
 from robopark_api.services.compute_broker import (
+    LOCAL_OPERATIONS,
     OPERATIONS,
     ComputeChannel,
     ComputeRegistry,
@@ -39,22 +56,93 @@ DIRECT_RECEIPT_TTL_SECONDS = 120.0
 DIRECT_RECEIPT_LIMIT = 256
 
 
+class CorporateDispatchError(RuntimeError):
+    def __init__(self, status_code: int, code: str) -> None:
+        super().__init__(code)
+        self.status_code = status_code
+        self.code = code
+
+
 class ComputeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     operation: str
     payload_base64: str = Field(max_length=8 * 1024 * 1024)
     payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     requester_user_id: int = Field(gt=0)
     deadline_ms: int = Field(default=20_000, ge=1, le=30_000)
+    relay_ticket: str | None = Field(default=None, min_length=20, max_length=128)
 
     @field_validator("operation")
     @classmethod
     def supported_operation(cls, value: str) -> str:
-        if value not in OPERATIONS:
+        if value not in LOCAL_OPERATIONS:
             raise ValueError("unsupported_operation")
         return value
 
 
+class CorporateReadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    service: Literal["inventory", "tracker"]
+    action: str = Field(min_length=1, max_length=64)
+    resource: str = Field(min_length=1, max_length=128)
+    params: dict
+    requester_user_id: int = Field(gt=0)
+    park_id: int | None = Field(default=None, gt=0)
+    deadline_ms: int = Field(default=15_000, ge=1, le=15_000)
+
+
+class CorporateWritePrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+    action: str = "comment_create"
+    resource: str = Field(min_length=1, max_length=128)
+    requester_user_id: int = Field(gt=0)
+    allow_server: bool = False
+    force_server: bool = False
+
+    @field_validator("action")
+    @classmethod
+    def supported_action(cls, value: str) -> str:
+        if value not in corporate_write_contract.ACTIONS:
+            raise ValueError("unsupported_action")
+        return value
+
+
+class CorporateWriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+    action: str = Field(min_length=1, max_length=32)
+    resource: str = Field(min_length=1, max_length=128)
+    params: dict
+    requester_user_id: int = Field(gt=0)
+    deadline_ms: int = Field(default=15_000, ge=1, le=15_000)
+
+
 class ComputeStatusRequest(BaseModel):
+    requester_user_id: int = Field(gt=0)
+
+
+class RelayAdmissionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["image_resize_v1"]
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    payload_bytes: int = Field(gt=0, le=MAX_PAYLOAD_BYTES)
+    requester_user_id: int = Field(gt=0)
+
+
+class RelayTicketRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticket: str = Field(min_length=20, max_length=128)
     requester_user_id: int = Field(gt=0)
 
 
@@ -150,7 +238,7 @@ def _authenticate_device(
     device_id: str,
     signature: str,
     signed: bytes,
-) -> tuple[str, int]:
+) -> tuple[str, int, str | None]:
     try:
         decoded_signature = base64.b64decode(signature, validate=True)
     except (TypeError, ValueError) as exc:
@@ -178,7 +266,7 @@ def _authenticate_device(
         public_key.verify(decoded_signature, signed, ec.ECDSA(hashes.SHA256()))
         device.last_seen_at = datetime.now(UTC)
         db.commit()
-        return device.id, owner.id
+        return device.id, owner.id, (owner.tracker_login or "").strip() or None
 
 
 def _device_still_valid(session_factory: sessionmaker, settings: Settings, device_id: str) -> bool:
@@ -226,6 +314,148 @@ def _requester_active(session_factory: sessionmaker, requester_user_id: int) -> 
             and user.is_active
             and user.access_status == AccessStatus.approved.value
         )
+
+
+def _completed_write_receipts(
+    session_factory: sessionmaker,
+    *,
+    device_id: str,
+    owner_user_id: int,
+) -> list[dict]:
+    """Return a bounded reconnect ACK replay for one immutable Mac binding."""
+    with session_factory() as db:
+        rows = db.execute(
+            select(CorporateWriteReceipt, CorporateWriteAuthority)
+            .join(
+                CorporateWriteAuthority,
+                CorporateWriteAuthority.id == CorporateWriteReceipt.command_id,
+            )
+            .where(
+                CorporateWriteReceipt.state == "completed",
+                CorporateWriteAuthority.mode == "mac",
+                CorporateWriteAuthority.device_id == device_id,
+                CorporateWriteAuthority.owner_user_id == owner_user_id,
+            )
+            .order_by(CorporateWriteReceipt.updated_at.desc())
+            .limit(256)
+        ).all()
+        return [
+            {
+                "type": "corporate_write_receipt_ack",
+                "command_id": receipt.command_id,
+                "step_id": receipt.step_id,
+                "owner_user_id": authority.owner_user_id,
+                "device_id": authority.device_id,
+            }
+            for receipt, authority in rows
+        ]
+
+
+def _corporate_owner_candidates(
+    session_factory: sessionmaker,
+    settings: Settings,
+    *,
+    requester_user_id: int,
+    service: str,
+    resource: str,
+    park_id: int | None,
+    device_id: str | None = None,
+    owner_user_id: int | None = None,
+) -> dict[int, str] | None:
+    """Refresh requester, park, owner and device authority for one attempt."""
+    capability = "inventory" if service == "inventory" else "tracker"
+    with session_factory() as db:
+        requester = db.get(User, requester_user_id)
+        if requester is None or not gateway_policy.requester_can_gateway(db, requester, capability):
+            return None
+        if service == "inventory":
+            try:
+                vin = authorize_emergency_vin(db, requester, resource, park_id=park_id)
+                if sdc_inventory.robot_name(vin) != resource:
+                    return {}
+            except (HTTPException, ValueError):
+                return None
+        elif not rbac.is_admin_or_royal(requester):
+            if "-" in resource:
+                queue = resource.rsplit("-", 1)[0]
+                if queue not in tracker_policy.allowed_queues_for_user(db, requester):
+                    return None
+            elif resource not in {"search", "count"} and resource not in set(
+                tracker_policy.allowed_queues_for_user(db, requester)
+            ):
+                return None
+        eligible = gateway_policy.eligible_gateway_owner_ids(db, requester, capability)
+        if owner_user_id is not None:
+            eligible = frozenset({owner_user_id}) if owner_user_id in eligible else frozenset()
+        if not eligible:
+            return {}
+        if device_id is not None:
+            device = db.get(AgentDevice, device_id)
+            if (
+                device is None
+                or device.owner_user_id not in eligible
+                or device.revoked_at is not None
+                or device.approved_at is None
+                or device.environment != settings.robopark_environment
+                or device.instance_id != str(settings.robopark_instance_id)
+            ):
+                return None
+            eligible = frozenset({device.owner_user_id})
+        owners = db.scalars(select(User).where(User.id.in_(eligible))).all()
+        return {
+            owner.id: login
+            for owner in owners
+            if owner.is_active
+            and owner.access_status == AccessStatus.approved.value
+            and (login := (owner.tracker_login or "").strip())
+        }
+
+
+def _authorize_tracker_result(
+    session_factory: sessionmaker,
+    *,
+    requester_user_id: int,
+    action: str,
+    resource: str,
+    payload: dict | list,
+) -> dict | list:
+    """Apply local issue scope without making any Tracker/network request."""
+    if action not in {"issue_read", "issues_search"}:
+        return payload
+    with session_factory() as db:
+        requester = db.get(User, requester_user_id)
+        if requester is None:
+            raise PermissionError("corporate_access_denied")
+        if action == "issue_read":
+            if not isinstance(payload, dict):
+                raise PermissionError("corporate_access_denied")
+            issue = tracker_client.issue_to_dict(payload)
+            if issue.get("key") != resource or not tracker_policy.is_issue_in_scope(
+                db, requester, issue
+            ):
+                raise PermissionError("corporate_access_denied")
+            return payload
+
+        scope = tracker_policy.load_issue_scope(db, requester)
+
+        def allowed(raw: object) -> bool:
+            return bool(
+                isinstance(raw, dict)
+                and tracker_policy.is_issue_in_scope(
+                    db,
+                    requester,
+                    tracker_client.issue_to_dict(raw),
+                    scope=scope,
+                )
+            )
+
+        if isinstance(payload, list):
+            return [item for item in payload if allowed(item)]
+        for key in ("issues", "values", "results"):
+            rows = payload.get(key) if isinstance(payload, dict) else None
+            if isinstance(rows, list):
+                return {**payload, key: [item for item in rows if allowed(item)]}
+        raise PermissionError("corporate_access_denied")
 
 
 def _valid_typed_payload(operation: str, raw_payload: bytes) -> bool:
@@ -334,6 +564,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
     used_nonces: dict[str, float] = {}
     direct_timeout_tasks: dict[str, asyncio.Task] = {}
     direct_receipts: dict[str, DirectReceipt] = {}
+    write_receipts_replayed: set[str] = set()
 
     def prune_direct_receipts() -> None:
         now = time.monotonic()
@@ -440,7 +671,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                 + "\n"
                 + nonce
             ).encode()
-            device_id, owner_user_id = await asyncio.to_thread(
+            device_id, owner_user_id, owner_tracker_login = await asyncio.to_thread(
                 _authenticate_device,
                 session_factory,
                 settings,
@@ -457,11 +688,19 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
             await websocket.send_json(
                 {
                     "type": "ready",
+                    "owner_user_id": owner_user_id,
+                    "owner_tracker_login": owner_tracker_login,
                     "generation": channel.generation,
                     "heartbeat_interval_ms": 10_000,
                     "readiness_timeout_ms": 30_000,
                     "max_inflight": 2,
-                    "supports": sorted(OPERATIONS),
+                    "supports": sorted(
+                        {
+                            *OPERATIONS,
+                            *corporate_gateway_contract.SERVICE_CAPABILITY.values(),
+                            corporate_write_contract.SERVICE_CAPABILITY,
+                        }
+                    ),
                 }
             )
             while True:
@@ -490,7 +729,27 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         continue
                     channel.capacity = capacity
                     channel.reported_active_jobs = active_jobs
-                    channel.paused = capacity == 0
+                    paused = message.get("paused")
+                    channel.paused = paused if type(paused) is bool else capacity == 0
+                    corporate_read_capacity = message.get("corporate_read_capacity")
+                    corporate_write_capacity = message.get("corporate_write_capacity")
+                    corporate_active_jobs = message.get("corporate_active_jobs")
+                    corporate_active_writes = message.get("corporate_active_writes")
+                    if type(corporate_read_capacity) is int and 0 <= corporate_read_capacity <= 2:
+                        channel.corporate_read_capacity = corporate_read_capacity
+                    if type(corporate_write_capacity) is int and 0 <= corporate_write_capacity <= 1:
+                        channel.corporate_write_capacity = corporate_write_capacity
+                    if type(corporate_active_jobs) is int and 0 <= corporate_active_jobs <= 2:
+                        channel.reported_corporate_active_jobs = corporate_active_jobs
+                    if type(corporate_active_writes) is int and 0 <= corporate_active_writes <= 1:
+                        channel.reported_corporate_active_writes = corporate_active_writes
+                    if message.get("corporate_inventory_status") in {
+                        "ready",
+                        "denied",
+                        "unreachable",
+                        "unverified_host_acl",
+                    }:
+                        channel.corporate_inventory_status = message["corporate_inventory_status"]
                     for name in ("cpu_percent", "memory_percent"):
                         value = message.get(name)
                         if (
@@ -510,7 +769,12 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                     if message.get("power") in {"ac", "battery", "low_power", "unknown"}:
                         channel.power = message["power"]
                     supports = message.get("supports")
-                    allowed_supports = {*OPERATIONS, "webrtc_datachannel_v1"}
+                    allowed_supports = {
+                        *OPERATIONS,
+                        *corporate_gateway_contract.SERVICE_CAPABILITY.values(),
+                        corporate_write_contract.SERVICE_CAPABILITY,
+                        "webrtc_datachannel_v1",
+                    }
                     if isinstance(supports, list) and len(supports) <= len(allowed_supports):
                         channel.supports = {
                             item
@@ -522,6 +786,18 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         channel.version = version
                     channel.ready = True
                     channel.last_heartbeat = time.monotonic()
+                    if channel.generation not in write_receipts_replayed:
+                        write_receipts_replayed.add(channel.generation)
+                        acknowledgements = await asyncio.to_thread(
+                            _completed_write_receipts,
+                            session_factory,
+                            device_id=channel.device_id,
+                            owner_user_id=channel.owner_user_id,
+                        )
+                        for acknowledgement in acknowledgements:
+                            await channel.send_json(
+                                {**acknowledgement, "generation": channel.generation}
+                            )
                 elif message.get("type") == "compute_result":
                     lease = registry.pending_lease(
                         device_id=channel.device_id,
@@ -544,6 +820,15 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         "unavailable",
                         "worker_failed",
                         "invalid_job",
+                        "not_found",
+                        "auth",
+                        "access_denied",
+                        "rate_limited",
+                        "network",
+                        "outcome_unknown",
+                        "conflict",
+                        "receipt_storage",
+                        "busy",
                     }:
                         continue
                     if not await asyncio.to_thread(
@@ -714,6 +999,182 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                     lease.future.cancel()
         raise RuntimeError("no_compute_device" if attempts == 0 else "compute_failed")
 
+    async def dispatch_corporate(
+        payload: CorporateReadRequest,
+    ) -> tuple[corporate_gateway_contract.CorporateReadResponse, str, int]:
+        deadline = time.monotonic() + payload.deadline_ms / 1000
+        excluded: set[str] = set()
+        attempts = 0
+        last_error = "corporate_unavailable"
+        while attempts < 2 and time.monotonic() < deadline:
+            owners = await asyncio.to_thread(
+                _corporate_owner_candidates,
+                session_factory,
+                settings,
+                requester_user_id=payload.requester_user_id,
+                service=payload.service,
+                resource=payload.resource,
+                park_id=payload.park_id,
+            )
+            if owners is None:
+                raise CorporateDispatchError(403, "corporate_access_denied")
+            if not owners:
+                break
+            routing_key = f"{payload.service}:{payload.action}"
+            channel = registry.choose(
+                corporate_gateway_contract.OPERATION,
+                excluded=excluded,
+                required_supports={corporate_gateway_contract.SERVICE_CAPABILITY[payload.service]},
+                eligible_owner_ids=frozenset(owners),
+                routing_key=routing_key,
+            )
+            if channel is None:
+                break
+            excluded.add(channel.device_id)
+            attempts += 1
+            exact = await asyncio.to_thread(
+                _corporate_owner_candidates,
+                session_factory,
+                settings,
+                requester_user_id=payload.requester_user_id,
+                service=payload.service,
+                resource=payload.resource,
+                park_id=payload.park_id,
+                device_id=channel.device_id,
+                owner_user_id=channel.owner_user_id,
+            )
+            owner_tracker_login = exact.get(channel.owner_user_id) if exact is not None else None
+            if owner_tracker_login is None:
+                continue
+            job_payload = {
+                "service": payload.service,
+                "action": payload.action,
+                "resource": payload.resource,
+                "params": payload.params,
+                "owner_user_id": channel.owner_user_id,
+                "owner_tracker_login": owner_tracker_login,
+                "requester_user_id": payload.requester_user_id,
+            }
+            raw_payload = json.dumps(
+                job_payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+            if len(raw_payload) > corporate_gateway_contract.MAX_REQUEST_BYTES:
+                raise CorporateDispatchError(422, "corporate_request_too_large")
+            lease = registry.new_lease(
+                channel,
+                operation=corporate_gateway_contract.OPERATION,
+                payload_bytes=raw_payload,
+                requester_user_id=payload.requester_user_id,
+                deadline_monotonic=deadline,
+                routing_key=routing_key,
+            )
+            try:
+                timeout = max(0.001, (deadline - time.monotonic()) / (3 - attempts))
+                await channel.send_json(
+                    {
+                        "type": "compute_job",
+                        "generation": channel.generation,
+                        "job_id": lease.job_id,
+                        "attempt_id": lease.attempt_id,
+                        "operation": corporate_gateway_contract.OPERATION,
+                        "payload_base64": base64.b64encode(raw_payload).decode(),
+                        "payload_sha256": lease.payload_sha256,
+                        "timeout_ms": max(1, int(timeout * 1000)),
+                    }
+                )
+                outcome = await asyncio.wait_for(asyncio.shield(lease.future), timeout=timeout)
+                if outcome.get("ok") is not True:
+                    error = outcome.get("error")
+                    last_error = {
+                        "not_found": "corporate_not_found",
+                        "auth": "corporate_authentication",
+                        "access_denied": "corporate_access_denied",
+                        "rate_limited": "corporate_rate_limited",
+                    }.get(error, "corporate_unavailable")
+                    continue
+                exact = await asyncio.to_thread(
+                    _corporate_owner_candidates,
+                    session_factory,
+                    settings,
+                    requester_user_id=payload.requester_user_id,
+                    service=payload.service,
+                    resource=payload.resource,
+                    park_id=payload.park_id,
+                    device_id=channel.device_id,
+                    owner_user_id=channel.owner_user_id,
+                )
+                if exact is None or exact.get(channel.owner_user_id) != owner_tracker_login:
+                    last_error = "corporate_access_denied"
+                    continue
+                try:
+                    response = corporate_gateway_contract.validate_result(
+                        outcome.get("result"),
+                        service=payload.service,
+                        action=payload.action,
+                        resource=payload.resource,
+                        owner_user_id=channel.owner_user_id,
+                        owner_tracker_login=owner_tracker_login,
+                    )
+                    if payload.service == "tracker":
+                        scoped_payload = await asyncio.to_thread(
+                            _authorize_tracker_result,
+                            session_factory,
+                            requester_user_id=payload.requester_user_id,
+                            action=payload.action,
+                            resource=payload.resource,
+                            payload=response.payload,
+                        )
+                        response = corporate_gateway_contract.CorporateReadResponse(
+                            response.status_code, response.headers, scoped_payload
+                        )
+                except (corporate_gateway_contract.ContractError, PermissionError):
+                    channel.failed += 1
+                    last_error = "corporate_access_denied"
+                    continue
+                return response, channel.device_id, attempts
+            except (TimeoutError, ConnectionError, WebSocketDisconnect) as exc:
+                channel.failed += 1
+                registry.record_outcome(
+                    channel,
+                    lease,
+                    ok=False,
+                    error="timeout" if isinstance(exc, TimeoutError) else "connection",
+                )
+                with suppress(RuntimeError, WebSocketDisconnect):
+                    await channel.send_json(
+                        {
+                            "type": "cancel",
+                            "generation": channel.generation,
+                            "job_id": lease.job_id,
+                            "attempt_id": lease.attempt_id,
+                        }
+                    )
+            except asyncio.CancelledError:
+                with suppress(RuntimeError, WebSocketDisconnect):
+                    await channel.send_json(
+                        {
+                            "type": "cancel",
+                            "generation": channel.generation,
+                            "job_id": lease.job_id,
+                            "attempt_id": lease.attempt_id,
+                        }
+                    )
+                raise
+            finally:
+                registry.finish(channel, lease)
+                if not lease.future.done():
+                    lease.future.cancel()
+        status_code = {
+            "corporate_not_found": 404,
+            "corporate_authentication": 401,
+            "corporate_access_denied": 403,
+            "corporate_rate_limited": 429,
+        }.get(last_error, 503)
+        raise CorporateDispatchError(status_code, last_error)
+
     async def expire_direct(channel: ComputeChannel, job_id: str, timeout: float) -> None:
         try:
             await asyncio.sleep(timeout)
@@ -867,6 +1328,22 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
             _requester_active, session_factory, payload.requester_user_id
         ):
             raise HTTPException(403, "forbidden")
+        relay_authorized = False
+        if payload.relay_ticket is not None:
+            try:
+                registry.relay_admission.authorize_dispatch(
+                    payload.relay_ticket,
+                    requester_user_id=payload.requester_user_id,
+                    payload_bytes=len(raw_payload),
+                    payload_sha256=payload.payload_sha256,
+                )
+                relay_authorized = True
+            except PermissionError as exc:
+                raise HTTPException(403, str(exc)) from exc
+            except LookupError as exc:
+                raise HTTPException(410, str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
         try:
             result, device_id, attempts = await dispatch(payload, raw_payload)
         except (RuntimeError, OverflowError) as exc:
@@ -874,11 +1351,347 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                 status_code=503,
                 content={"detail": str(exc), "attempts_used": 0},
             )
+        finally:
+            if relay_authorized and payload.relay_ticket is not None:
+                with suppress(LookupError, PermissionError):
+                    registry.relay_admission.complete(
+                        payload.relay_ticket,
+                        requester_user_id=payload.requester_user_id,
+                        payload_bytes=len(raw_payload),
+                    )
         return {
             "result": result,
             "device_id": device_id,
             "attempts_used": attempts,
         }
+
+    @router.post("/internal/v1/corporate-read")
+    async def corporate_read(request: Request):
+        body = await _bounded_request_body(
+            request,
+            corporate_gateway_contract.MAX_REQUEST_BYTES,
+            "corporate_request_too_large",
+        )
+        authenticate_internal(request, body)
+        if not (
+            settings.mac_corporate_gateway_enabled
+            and settings.robopark_environment == "test"
+            and settings.emergency_bridge_enabled
+        ):
+            raise HTTPException(503, "corporate_gateway_disabled")
+        try:
+            payload = CorporateReadRequest.model_validate_json(body)
+            payload.params = corporate_gateway_contract.validate_request(
+                payload.service,
+                payload.action,
+                payload.resource,
+                payload.params,
+            )
+        except (ValidationError, corporate_gateway_contract.ContractError) as exc:
+            raise HTTPException(422, "corporate_request_invalid") from exc
+        try:
+            response, _device_id, _attempts = await dispatch_corporate(payload)
+        except CorporateDispatchError as exc:
+            raise HTTPException(exc.status_code, exc.code) from exc
+        return {
+            "status_code": response.status_code,
+            "headers": response.headers,
+            "payload": response.payload,
+        }
+
+    def authority_payload(authority: CorporateWriteAuthority) -> dict:
+        return {
+            "command_id": authority.id,
+            "mode": authority.mode,
+            "device_id": authority.device_id,
+            "owner_user_id": authority.owner_user_id,
+            "owner_tracker_login": authority.owner_tracker_login,
+            "resource": authority.resource,
+        }
+
+    @router.post("/internal/v1/corporate-write/prepare")
+    async def corporate_write_prepare(request: Request):
+        body = await _bounded_request_body(request, 4096, "corporate_request_too_large")
+        authenticate_internal(request, body)
+        try:
+            payload = CorporateWritePrepareRequest.model_validate_json(body)
+            corporate_write_contract.validate_request(
+                "comment_create", payload.resource, {"text": "authority-check"}
+            )
+        except (ValidationError, corporate_write_contract.ContractError) as exc:
+            raise HTTPException(422, "corporate_request_invalid") from exc
+        with session_factory() as db:
+            existing = db.get(CorporateWriteAuthority, payload.command_id)
+            if existing is not None:
+                if (
+                    existing.requester_user_id != payload.requester_user_id
+                    or existing.resource != payload.resource
+                ):
+                    raise HTTPException(409, "corporate_write_conflict")
+                return authority_payload(existing)
+        owners = await asyncio.to_thread(
+            _corporate_owner_candidates,
+            session_factory,
+            settings,
+            requester_user_id=payload.requester_user_id,
+            service="tracker",
+            resource=payload.resource,
+            park_id=None,
+        )
+        if owners is None:
+            raise HTTPException(403, "corporate_access_denied")
+        channel = None
+        if not payload.force_server and owners:
+            channel = registry.choose(
+                corporate_write_contract.OPERATION,
+                required_supports={corporate_write_contract.SERVICE_CAPABILITY},
+                eligible_owner_ids=frozenset(owners),
+                routing_key=f"tracker:{payload.action}",
+            )
+        if channel is None and not payload.allow_server:
+            raise HTTPException(503, "corporate_write_unavailable")
+        with session_factory() as db:
+            try:
+                authority = corporate_write_service.pin_authority(
+                    db,
+                    command_id=payload.command_id,
+                    requester_user_id=payload.requester_user_id,
+                    resource=payload.resource,
+                    mode="mac" if channel is not None else "server",
+                    device_id=channel.device_id if channel is not None else None,
+                    owner_user_id=channel.owner_user_id if channel is not None else None,
+                    owner_tracker_login=(
+                        owners.get(channel.owner_user_id) if channel is not None else None
+                    ),
+                )
+                db.commit()
+            except corporate_write_service.CorporateWriteError as exc:
+                raise HTTPException(exc.status_code, exc.code) from exc
+            return authority_payload(authority)
+
+    @router.post("/internal/v1/corporate-write/execute")
+    async def corporate_write_execute(request: Request):
+        body = await _bounded_request_body(
+            request, corporate_write_contract.MAX_REQUEST_BYTES, "corporate_request_too_large"
+        )
+        authenticate_internal(request, body)
+        try:
+            payload = CorporateWriteRequest.model_validate_json(body)
+            params = corporate_write_contract.validate_request(
+                payload.action, payload.resource, payload.params
+            )
+        except (ValidationError, corporate_write_contract.ContractError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        with session_factory() as db:
+            authority = db.get(CorporateWriteAuthority, payload.command_id)
+            if authority is None:
+                raise HTTPException(404, "corporate_write_not_prepared")
+            if (
+                authority.requester_user_id != payload.requester_user_id
+                or authority.resource != payload.resource
+            ):
+                raise HTTPException(409, "corporate_write_conflict")
+            if authority.mode != "mac":
+                raise HTTPException(409, "corporate_write_server_authority")
+            existing = db.get(
+                CorporateWriteReceipt,
+                (authority.id, corporate_write_service.step_id(payload.action, params)),
+            )
+            if existing is not None:
+                try:
+                    replay = corporate_write_service.begin_step(
+                        db, authority=authority, action=payload.action, params=params
+                    )
+                except corporate_write_service.CorporateWriteError as exc:
+                    raise HTTPException(exc.status_code, exc.code) from exc
+                if replay.response is not None:
+                    if replay.error_code:
+                        raise HTTPException(replay.response.status_code, replay.error_code)
+                    return {
+                        "status_code": replay.response.status_code,
+                        "payload": replay.response.payload,
+                    }
+                raise HTTPException(409, replay.error_code or "corporate_write_outcome_unknown")
+            authority_snapshot = authority_payload(authority)
+        exact = await asyncio.to_thread(
+            _corporate_owner_candidates,
+            session_factory,
+            settings,
+            requester_user_id=payload.requester_user_id,
+            service="tracker",
+            resource=payload.resource,
+            park_id=None,
+            device_id=authority_snapshot["device_id"],
+            owner_user_id=authority_snapshot["owner_user_id"],
+        )
+        if (
+            exact is None
+            or exact.get(authority_snapshot["owner_user_id"])
+            != authority_snapshot["owner_tracker_login"]
+        ):
+            raise HTTPException(403, "corporate_access_denied")
+        channel = registry.channels.get(authority_snapshot["device_id"])
+        if (
+            channel is None
+            or channel.owner_user_id != authority_snapshot["owner_user_id"]
+            or not channel.ready
+            or corporate_write_contract.OPERATION not in channel.supports
+            or corporate_write_contract.SERVICE_CAPABILITY not in channel.supports
+            or time.monotonic() - channel.last_heartbeat > registry.readiness_timeout_seconds
+            or registry.active_jobs(channel, corporate_write_contract.OPERATION)
+            >= registry.effective_capacity(channel, corporate_write_contract.OPERATION)
+        ):
+            raise HTTPException(503, "corporate_write_pinned_unavailable")
+        if any(
+            lease.device_id == channel.device_id
+            and lease.operation == corporate_write_contract.OPERATION
+            for lease in registry.pending.values()
+        ):
+            raise HTTPException(503, "corporate_write_busy")
+        with session_factory() as db:
+            authority = db.get(CorporateWriteAuthority, payload.command_id)
+            started = corporate_write_service.begin_step(
+                db, authority=authority, action=payload.action, params=params
+            )
+            db.commit()
+            step_id = started.receipt.step_id
+        job_payload = {
+            "service": "tracker",
+            "action": payload.action,
+            "resource": payload.resource,
+            "params": params,
+            "owner_user_id": authority_snapshot["owner_user_id"],
+            "owner_tracker_login": authority_snapshot["owner_tracker_login"],
+            "requester_user_id": payload.requester_user_id,
+            "command_id": payload.command_id,
+            "step_id": step_id,
+        }
+        raw_payload = json.dumps(
+            job_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode()
+        lease = registry.new_lease(
+            channel,
+            operation=corporate_write_contract.OPERATION,
+            payload_bytes=raw_payload,
+            requester_user_id=payload.requester_user_id,
+            deadline_monotonic=time.monotonic() + payload.deadline_ms / 1000,
+            routing_key=f"tracker:{payload.action}",
+        )
+        try:
+            await channel.send_json(
+                {
+                    "type": "compute_job",
+                    "generation": channel.generation,
+                    "job_id": lease.job_id,
+                    "attempt_id": lease.attempt_id,
+                    "operation": corporate_write_contract.OPERATION,
+                    "payload_base64": base64.b64encode(raw_payload).decode(),
+                    "payload_sha256": lease.payload_sha256,
+                    "timeout_ms": payload.deadline_ms,
+                }
+            )
+            outcome = await asyncio.wait_for(
+                asyncio.shield(lease.future), timeout=payload.deadline_ms / 1000
+            )
+            if outcome.get("ok") is not True:
+                error = str(outcome.get("error") or "outcome_unknown")
+                definite = {
+                    "auth": (401, "corporate_authentication"),
+                    "access_denied": (403, "corporate_access_denied"),
+                    "not_found": (404, "corporate_not_found"),
+                    "rate_limited": (429, "corporate_rate_limited"),
+                    "conflict": (409, "corporate_write_conflict"),
+                }.get(error)
+                with session_factory() as db:
+                    receipt = db.get(CorporateWriteReceipt, (payload.command_id, step_id))
+                    if definite is None:
+                        corporate_write_service.mark_unknown(db, receipt)
+                    else:
+                        corporate_write_service.complete_step(
+                            db, receipt, status_code=definite[0], payload={}, error_code=definite[1]
+                        )
+                    db.commit()
+                if definite is None:
+                    raise HTTPException(409, "corporate_write_outcome_unknown")
+                with suppress(RuntimeError, WebSocketDisconnect):
+                    await channel.send_json(
+                        {
+                            "type": "corporate_write_receipt_ack",
+                            "generation": channel.generation,
+                            "command_id": payload.command_id,
+                            "step_id": step_id,
+                            "owner_user_id": authority_snapshot["owner_user_id"],
+                            "device_id": authority_snapshot["device_id"],
+                        }
+                    )
+                raise HTTPException(*definite)
+            response = corporate_write_contract.validate_result(
+                outcome.get("result"),
+                command_id=payload.command_id,
+                step_id=step_id,
+                action=payload.action,
+                resource=payload.resource,
+                owner_user_id=authority_snapshot["owner_user_id"],
+                owner_tracker_login=authority_snapshot["owner_tracker_login"],
+            )
+            exact = await asyncio.to_thread(
+                _corporate_owner_candidates,
+                session_factory,
+                settings,
+                requester_user_id=payload.requester_user_id,
+                service="tracker",
+                resource=payload.resource,
+                park_id=None,
+                device_id=authority_snapshot["device_id"],
+                owner_user_id=authority_snapshot["owner_user_id"],
+            )
+            if (
+                exact is None
+                or exact.get(authority_snapshot["owner_user_id"])
+                != authority_snapshot["owner_tracker_login"]
+            ):
+                raise HTTPException(403, "corporate_access_denied")
+            with session_factory() as db:
+                receipt = db.get(CorporateWriteReceipt, (payload.command_id, step_id))
+                corporate_write_service.complete_step(
+                    db, receipt, status_code=response.status_code, payload=response.payload
+                )
+                db.commit()
+            with suppress(RuntimeError, WebSocketDisconnect):
+                await channel.send_json(
+                    {
+                        "type": "corporate_write_receipt_ack",
+                        "generation": channel.generation,
+                        "command_id": payload.command_id,
+                        "step_id": step_id,
+                        "owner_user_id": authority_snapshot["owner_user_id"],
+                        "device_id": authority_snapshot["device_id"],
+                    }
+                )
+            return {"status_code": response.status_code, "payload": response.payload}
+        except HTTPException:
+            raise
+        except (
+            TimeoutError,
+            ConnectionError,
+            WebSocketDisconnect,
+            corporate_write_contract.ContractError,
+        ) as exc:
+            registry.record_outcome(
+                channel,
+                lease,
+                ok=False,
+                error="timeout" if isinstance(exc, TimeoutError) else "write_unknown",
+            )
+            with session_factory() as db:
+                receipt = db.get(CorporateWriteReceipt, (payload.command_id, step_id))
+                corporate_write_service.mark_unknown(db, receipt)
+                db.commit()
+            raise HTTPException(409, "corporate_write_outcome_unknown") from exc
+        finally:
+            registry.finish(channel, lease)
+            if not lease.future.done():
+                lease.future.cancel()
 
     @router.post("/internal/v1/compute-status")
     async def compute_status(request: Request):
@@ -948,6 +1761,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
             "direct_cancelled": sum(item["direct_cancelled"] for item in devices),
             "direct_retries": sum(item["direct_retries"] for item in devices),
             "direct_fallback": sum(item["direct_fallback"] for item in devices),
+            **registry.relay_admission.status(),
         }
         return {
             "enabled": settings.emergency_bridge_enabled,
@@ -955,6 +1769,117 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
             "summary": summary,
             "devices": devices,
         }
+
+    def relay_ticket_error(exc: Exception) -> HTTPException:
+        if isinstance(exc, PermissionError):
+            return HTTPException(403, str(exc))
+        if isinstance(exc, LookupError):
+            status = 410 if "expired" in str(exc) else 409
+            return HTTPException(status, str(exc))
+        if isinstance(exc, ValueError):
+            return HTTPException(409, str(exc))
+        return HTTPException(503, str(exc))
+
+    @router.post("/internal/v1/compute-relay-admit")
+    async def compute_relay_admit(request: Request):
+        body = await _bounded_request_body(request, 4096, "relay_admission_too_large")
+        authenticate_internal(request, body)
+        try:
+            payload = RelayAdmissionRequest.model_validate_json(body)
+        except ValidationError as exc:
+            raise HTTPException(422, exc.errors(include_input=False)) from exc
+        if not await asyncio.to_thread(
+            _requester_active, session_factory, payload.requester_user_id
+        ):
+            raise HTTPException(403, "forbidden")
+        try:
+            ticket = registry.relay_admission.admit(
+                requester_user_id=payload.requester_user_id,
+                payload_bytes=payload.payload_bytes,
+                payload_sha256=payload.payload_sha256,
+                worker_available=registry.choose(payload.operation) is not None,
+            )
+        except OverflowError as exc:
+            retry_after_ms = 60_000 if str(exc) == "relay_budget_exhausted" else 1000
+            return JSONResponse(
+                status_code=503,
+                content={"detail": str(exc), "retry_after_ms": retry_after_ms},
+            )
+        return {
+            "ticket": ticket.token,
+            "expires_in_ms": max(1, int((ticket.expires_at - time.monotonic()) * 1000)),
+            "retry_after_ms": 0,
+        }
+
+    @router.post("/internal/v1/compute-relay-claim")
+    async def compute_relay_claim(request: Request):
+        body = await _bounded_request_body(request, 4096, "relay_claim_too_large")
+        authenticate_internal(request, body)
+        try:
+            payload = RelayTicketRequest.model_validate_json(body)
+        except ValidationError as exc:
+            raise HTTPException(422, exc.errors(include_input=False)) from exc
+        if not await asyncio.to_thread(
+            _requester_active, session_factory, payload.requester_user_id
+        ):
+            raise HTTPException(403, "forbidden")
+        try:
+            current = registry.relay_admission.ticket(
+                payload.ticket, requester_user_id=payload.requester_user_id
+            )
+            ticket = registry.relay_admission.claim(
+                payload.ticket,
+                requester_user_id=payload.requester_user_id,
+                payload_bytes=current.payload_bytes,
+            )
+        except (PermissionError, LookupError, ValueError) as exc:
+            raise relay_ticket_error(exc) from exc
+        return {
+            "ticket": ticket.token,
+            "payload_bytes": ticket.payload_bytes,
+            "payload_sha256": ticket.payload_sha256,
+            "expires_in_ms": max(1, int((ticket.expires_at - time.monotonic()) * 1000)),
+        }
+
+    @router.post("/internal/v1/compute-relay-cancel")
+    async def compute_relay_cancel(request: Request):
+        body = await _bounded_request_body(request, 4096, "relay_cancel_too_large")
+        authenticate_internal(request, body)
+        try:
+            payload = RelayTicketRequest.model_validate_json(body)
+        except ValidationError as exc:
+            raise HTTPException(422, exc.errors(include_input=False)) from exc
+        if not await asyncio.to_thread(
+            _requester_active, session_factory, payload.requester_user_id
+        ):
+            raise HTTPException(403, "forbidden")
+        try:
+            released = registry.relay_admission.cancel(
+                payload.ticket, requester_user_id=payload.requester_user_id
+            )
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        return {"status": "cancelled", "released": released}
+
+    @router.post("/internal/v1/compute-relay-abort")
+    async def compute_relay_abort(request: Request):
+        body = await _bounded_request_body(request, 4096, "relay_abort_too_large")
+        authenticate_internal(request, body)
+        try:
+            payload = RelayTicketRequest.model_validate_json(body)
+        except ValidationError as exc:
+            raise HTTPException(422, exc.errors(include_input=False)) from exc
+        if not await asyncio.to_thread(
+            _requester_active, session_factory, payload.requester_user_id
+        ):
+            raise HTTPException(403, "forbidden")
+        try:
+            released = registry.relay_admission.abort(
+                payload.ticket, requester_user_id=payload.requester_user_id
+            )
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        return {"status": "aborted", "released": released}
 
     @router.post("/internal/v1/compute-direct")
     async def compute_direct(request: Request):

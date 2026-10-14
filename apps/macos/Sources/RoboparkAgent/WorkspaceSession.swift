@@ -7,6 +7,7 @@ struct WorkspaceProfile: Codable {
     let environment: String
     var signedProfile: SignedCatalog?
     var cookies: [WorkspaceCookie] = []
+    var ownerUserID: Int? = nil
     var accountID: Int?
 }
 
@@ -57,15 +58,26 @@ struct WorkspaceProfile: Codable {
                                                instanceID: registration.instanceID,
                                                environment: registration.environment) else { throw AgentError.wrongServer }
         if profile?.origin == registration.origin, profile?.instanceID == registration.instanceID {
+            var changed = false
+            if let ownerUserID = registration.ownerUserID {
+                let binding = try DeviceOwnerBinding(ownerUserID: profile?.ownerUserID,
+                                                     activeUserID: profile?.accountID)
+                    .bindingAuthoritativeOwner(ownerUserID)
+                changed = profile?.ownerUserID != binding.ownerUserID || profile?.accountID != binding.activeUserID
+                profile?.ownerUserID = binding.ownerUserID
+                profile?.accountID = binding.activeUserID
+            }
             if profile?.signedProfile?.payload != registration.signedProfile?.payload {
                 profile?.signedProfile = registration.signedProfile
-                try persist()
+                changed = true
             }
+            if changed { try persist() }
             return
         }
         guard profile == nil else { return }
         profile = WorkspaceProfile(origin: registration.origin, instanceID: registration.instanceID,
-                                   environment: registration.environment, signedProfile: registration.signedProfile)
+                                   environment: registration.environment, signedProfile: registration.signedProfile,
+                                   ownerUserID: registration.ownerUserID)
         try persist()
     }
     func clear() throws {
@@ -75,6 +87,25 @@ struct WorkspaceProfile: Codable {
     }
     private func persist() throws {
         if let profile { try SecureStore.writeData(JSONEncoder().encode(profile), account: "workspace-profile-v1") }
+    }
+    private func acceptIdentity(_ user: [String: Any], previousAccountID: Int? = nil) throws -> Int {
+        guard let userID = user["id"] as? Int else { throw NetworkFailure.invalid }
+        if let previousAccountID, previousAccountID != userID { throw AgentError.ownerMismatch }
+        let binding = try DeviceOwnerBinding(ownerUserID: profile?.ownerUserID,
+                                             activeUserID: profile?.accountID)
+            .acceptingAuthenticatedUser(userID)
+        profile?.ownerUserID = binding.ownerUserID
+        profile?.accountID = binding.activeUserID
+        try persist()
+        return userID
+    }
+    private func rejectIdentity() async {
+        SecureStore.markSignedOut("workspace", true)
+        generation = UUID()
+        profile?.cookies = []
+        profile?.accountID = nil
+        try? persist()
+        await onLogout?()
     }
     func call(path: String, method: String = "GET", object: [String: Any]? = nil,
               headers additionalHeaders: [String: String] = [:], timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
@@ -90,18 +121,14 @@ struct WorkspaceProfile: Codable {
         do {
             let (bytes, response) = try await call(path: "/api/auth/me", timeout: 10)
             guard response.statusCode == 200,
-                  let user = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-                  let accountID = user["id"] as? Int,
-                  current.accountID == nil || current.accountID == accountID else {
+                  let user = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] else {
                 if [401, 403].contains(response.statusCode) || response.statusCode == 200 {
-                    SecureStore.markSignedOut("workspace", true)
-                    generation = UUID(); profile?.cookies = []; profile?.accountID = nil
-                    try persist(); await onLogout?()
+                    await rejectIdentity()
                 }
                 return false
             }
-            profile?.accountID = accountID
-            try persist()
+            do { _ = try acceptIdentity(user, previousAccountID: current.accountID) }
+            catch { await rejectIdentity(); return false }
             await onIdentity?(user)
             return true
         } catch is CancellationError {
@@ -152,6 +179,12 @@ struct WorkspaceProfile: Codable {
         guard !transitioning else { return .json(["detail": "account_transition_in_progress"], status: 503) }
         let login = local.path == "/api/auth/login" && local.method == "POST"
         let logout = local.path == "/api/auth/logout" && local.method == "POST"
+        let identity = local.path == "/api/auth/me" && local.method == "GET"
+        let ownerVerified = profile?.ownerUserID != nil && profile?.ownerUserID == profile?.accountID
+        let hasPendingIdentity = profile?.cookies.isEmpty == false || profile?.accountID != nil
+        if hasPendingIdentity, !ownerVerified, !login, !logout, !identity {
+            return .json(["detail": "device_owner_verification_required"], status: 403)
+        }
         if login || logout {
             transitioning = true; generation = UUID()
             SecureStore.markSignedOut("workspace", true)
@@ -170,12 +203,14 @@ struct WorkspaceProfile: Codable {
             if local.path == "/api/auth/logout", local.method == "POST" {
                 generation = UUID(); profile?.cookies = []; profile?.accountID = nil; try persist()
             }
-            if local.path == "/api/auth/me", response.statusCode == 200,
+            if identity, response.statusCode == 200,
                let user = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] {
-                // Keep the response prompt; enrollment is a separate bounded task.
+                do { _ = try acceptIdentity(user) }
+                catch {
+                    await rejectIdentity()
+                    return .json(["detail": "device_owner_mismatch"], status: 403)
+                }
                 await onIdentity?(user)
-                profile?.accountID = user["id"] as? Int
-                try persist()
             }
             var original: [String: String] = [:]
             for (key, value) in response.allHeaderFields {

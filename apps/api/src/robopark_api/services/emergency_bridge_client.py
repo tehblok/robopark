@@ -14,6 +14,14 @@ class BridgeError(RuntimeError):
     pass
 
 
+class BridgeRequestError(BridgeError):
+    def __init__(self, status_code: int, code: str, *, availability: bool) -> None:
+        super().__init__(code)
+        self.status_code = status_code
+        self.code = code
+        self.availability = availability
+
+
 def _signed_post(path: str, body: bytes, *, settings: Settings, timeout_seconds: float):
     timestamp = str(int(time.time()))
     nonce = secrets.token_urlsafe(24)
@@ -60,7 +68,20 @@ def fetch_robot_payload(
         timeout_seconds=(deadline_ms / 1000) + 1,
     )
     if response.status_code != 200:
-        raise BridgeError("bridge_request_failed")
+        try:
+            detail = response.json().get("detail")
+        except (ValueError, AttributeError):
+            detail = None
+        safe_detail = detail if isinstance(detail, str) else "bridge_request_failed"
+        availability = safe_detail in {
+            "bridge_disabled",
+            "broker_busy",
+            "no_eligible_agent",
+            "all_agents_busy",
+            "upstream_busy",
+            "upstream_failed",
+        }
+        raise BridgeRequestError(response.status_code, safe_detail, availability=availability)
     try:
         payload = response.json()["payload"]
     except (ValueError, KeyError, TypeError) as exc:

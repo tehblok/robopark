@@ -106,6 +106,12 @@ def _evidence(name):
 def fetch_card(token, name):
     name = robot_name(name)
     payload = _get(token, f"/rovers/{name}/")
+    return project_card(payload, name)
+
+
+def project_card(payload, name):
+    """Project an owner-Mac or direct upstream response into the public schema."""
+    name = robot_name(name)
     if not isinstance(payload, dict) or str(payload.get("name", "")).lower() != name:
         raise InventoryError("sdc_inventory_response_invalid")
     return {
@@ -120,6 +126,12 @@ def fetch_installations(token, name, *, offset=0, limit=50, slot=None):
     if slot:
         params["slot"] = slot
     payload = _get(token, "/installations/", params)
+    return project_installations(payload, name, offset=offset, limit=limit, slot=slot)
+
+
+def project_installations(payload, name, *, offset=0, limit=50, slot=None):
+    """Filter and project a bounded installations page returned by an owner Mac."""
+    name = robot_name(name)
     total = None
     if isinstance(payload, dict):
         rows = payload.get("results")

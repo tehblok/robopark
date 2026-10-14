@@ -1,5 +1,5 @@
 {
-  "migration_head": "0064_agent_device_identity",
+  "migration_head": "0065_corporate_write_receipts",
   "migration_compatibility": {
     "from_heads": [
       "0055_media_upload_park",
@@ -11,7 +11,8 @@
       "0061_telegram_account_metadata",
       "0062_notification_retention_idx",
       "0063_agent_devices",
-      "0064_agent_device_identity"
+      "0064_agent_device_identity",
+      "0065_corporate_write_receipts"
     ],
     "reversible": false
   },
@@ -46,7 +47,9 @@
     "0.2.0-rc.44.dev7114536505405942335",
     "0.2.0",
     "0.2.1",
-    "0.2.2"
+    "0.2.2",
+    "0.2.3-rc.1",
+    "0.2.3-rc.2"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -64,5 +67,5 @@
       65536
     ]
   },
-  "update_notes": "Тестовая линия на базе 0.2.2: восстановление сети/Tuna, Mac workspace, распределение Emergency, отдельный test origin. Production не переключается."
+  "update_notes": "Test: owner-bound corporate gateways, operation-aware Mac scheduling, pinned write receipts, offline clients and bounded direct/relay photo processing."
 }

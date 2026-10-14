@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+from contextlib import suppress
 from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from robopark_api.deps import require_approved
@@ -17,9 +19,12 @@ from robopark_api.services.image_bounds import image_dimensions, jpeg_dimensions
 
 router = APIRouter(prefix="/compute", tags=["compute"])
 IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+RELAY_BODY_TIMEOUT_SECONDS = 30.0
 
 
 class ImageComputeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     data_base64: str = Field(max_length=5_600_000)
     mime_type: str
     max_edge: int = Field(ge=64, le=4096)
@@ -67,6 +72,14 @@ class DirectFinishIn(BaseModel):
     outcome: Literal["completed", "fallback", "cancelled"]
 
 
+class RelayAdmitIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["image_resize_v1"]
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    payload_bytes: int = Field(gt=0, le=6 * 1024 * 1024)
+
+
 async def _bounded_body(request: Request, limit: int) -> bytes:
     try:
         content_length = int(request.headers.get("content-length", "0"))
@@ -97,17 +110,130 @@ def _decode_image(value: str, mime_type: str) -> tuple[bytes, int, int]:
     return raw, *dimensions
 
 
-@router.post("/image")
-def resize_image(
-    payload: ImageComputeIn,
+@router.post("/relay/admit")
+async def admit_relay(
+    request: Request,
     response: Response,
     user: User = Depends(require_approved),
 ) -> dict:
     response.headers["Cache-Control"] = "no-store"
-    source, source_width, source_height = _decode_image(payload.data_base64, payload.mime_type)
     try:
-        result = compute_client.dispatch_compute(
-            "image_resize_v1", payload.model_dump(), user.id, deadline_ms=20_000
+        payload = RelayAdmitIn.model_validate_json(await _bounded_body(request, 4096))
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_input=False)) from exc
+    try:
+        return await asyncio.to_thread(
+            compute_client.admit_relay,
+            operation=payload.operation,
+            payload_bytes=payload.payload_bytes,
+            payload_sha256=payload.payload_sha256,
+            requester_user_id=user.id,
+        )
+    except compute_client.RelayAdmissionError as exc:
+        response.headers["Retry-After"] = str(max(1, (exc.retry_after_ms + 999) // 1000))
+        return JSONResponse(
+            status_code=503,
+            content={"detail": exc.detail, "retry_after_ms": exc.retry_after_ms},
+            headers={
+                "Cache-Control": "no-store",
+                "Retry-After": str(max(1, (exc.retry_after_ms + 999) // 1000)),
+            },
+        )
+    except BridgeError as exc:
+        raise HTTPException(503, "compute_unavailable") from exc
+
+
+@router.delete("/relay/{ticket}", status_code=204)
+def cancel_relay(
+    ticket: str,
+    user: User = Depends(require_approved),
+) -> Response:
+    if not 20 <= len(ticket) <= 128:
+        raise HTTPException(404, "relay_ticket_not_found")
+    try:
+        compute_client.cancel_relay(ticket=ticket, requester_user_id=user.id)
+    except compute_client.RelayTicketError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    except BridgeError as exc:
+        raise HTTPException(503, "compute_unavailable") from exc
+    return Response(status_code=204)
+
+
+@router.post("/image")
+async def resize_image(
+    request: Request,
+    response: Response,
+    user: User = Depends(require_approved),
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    ticket = request.headers.get("X-Robopark-Relay-Ticket", "")
+    if not ticket:
+        raise HTTPException(428, "relay_ticket_required")
+    if not 20 <= len(ticket) <= 128:
+        raise HTTPException(409, "relay_ticket_invalid")
+
+    async def abort_ticket() -> None:
+        with suppress(BridgeError):
+            await asyncio.to_thread(
+                compute_client.abort_relay, ticket=ticket, requester_user_id=user.id
+            )
+
+    try:
+        claim = await asyncio.to_thread(
+            compute_client.claim_relay, ticket=ticket, requester_user_id=user.id
+        )
+    except asyncio.CancelledError:
+        await abort_ticket()
+        raise
+    except compute_client.RelayTicketError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    except BridgeError as exc:
+        await abort_ticket()
+        raise HTTPException(503, "compute_unavailable") from exc
+    expected_bytes = claim["payload_bytes"]
+
+    try:
+        content_length_header = request.headers.get("content-length")
+        if content_length_header is not None:
+            try:
+                content_length = int(content_length_header)
+            except ValueError as exc:
+                raise HTTPException(409, "relay_payload_size_mismatch") from exc
+            if content_length != expected_bytes:
+                raise HTTPException(409, "relay_payload_size_mismatch")
+        async with asyncio.timeout(RELAY_BODY_TIMEOUT_SECONDS):
+            body = await _bounded_body(request, expected_bytes)
+        if len(body) != expected_bytes:
+            raise HTTPException(409, "relay_payload_size_mismatch")
+        if hashlib.sha256(body).hexdigest() != claim["payload_sha256"]:
+            raise HTTPException(409, "relay_payload_hash_mismatch")
+        try:
+            payload = ImageComputeIn.model_validate_json(body)
+        except ValidationError as exc:
+            raise HTTPException(422, exc.errors(include_input=False)) from exc
+    except asyncio.CancelledError:
+        await abort_ticket()
+        raise
+    except TimeoutError as exc:
+        await abort_ticket()
+        raise HTTPException(408, "relay_payload_timeout") from exc
+    except Exception:
+        await abort_ticket()
+        raise
+    try:
+        source, source_width, source_height = _decode_image(payload.data_base64, payload.mime_type)
+    except HTTPException:
+        await abort_ticket()
+        raise
+    try:
+        result = await asyncio.to_thread(
+            compute_client.dispatch_compute,
+            "image_resize_v1",
+            payload.model_dump(),
+            user.id,
+            20_000,
+            relay_ticket=ticket,
+            raw_payload=body,
         )
         output = base64.b64decode(result.get("data_base64", ""), validate=True)
     except (BridgeError, TypeError, ValueError) as exc:

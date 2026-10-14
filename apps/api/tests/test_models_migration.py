@@ -72,6 +72,8 @@ def test_metadata_has_required_tables():
         "ai_runs",
         "agent_devices",
         "agent_enrollments",
+        "corporate_write_authorities",
+        "corporate_write_receipts",
         "users",
         "sessions",
         "parks",
@@ -191,7 +193,7 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
 def test_alembic_head_includes_agent_device_registry():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0064_agent_device_identity"]
+    assert script.get_heads() == ["0065_corporate_write_receipts"]
 
 
 def test_agent_identity_migration_fails_closed_without_deleting_legacy_duplicates(
@@ -527,7 +529,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
     with engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0064_agent_device_identity"
+            == "0065_corporate_write_receipts"
         )
 
 

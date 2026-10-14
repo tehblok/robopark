@@ -11,6 +11,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -23,6 +24,8 @@ from robopark_api.services import (
     repair_fields,
     tracker_cache,
     tracker_client,
+    tracker_gateway_transport,
+    tracker_policy,
     tracker_signatures,
 )
 from robopark_api.services import platform_settings as settings_svc
@@ -201,6 +204,9 @@ def _exact_remote_comment_id(action: ReliableAction, *, token: str, signed_text:
 
 
 def _set_issue_field(*, token: str, key: str, field_id: str, value: object) -> None:
+    if isinstance(token, tracker_gateway_transport.GatewayCredential):
+        tracker_client.patch_issue_fields(token=token, key=key, fields={field_id: value})
+        return
     client = tracker_client._client(token)  # noqa: SLF001 - SDK write facade is private today.
 
     def update_field() -> None:
@@ -345,7 +351,16 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
             # The operator returned or closed the result before the delayed send.
             return {"transition_state": "cancelled"}
 
-    token = settings_svc.get_tracker_token(db)
+    use_gateway = tracker_gateway_transport.enabled()
+    if use_gateway:
+        try:
+            token = tracker_gateway_transport.credential(db, actor)
+        except HTTPException as exc:
+            raise DeliveryError(
+                "authentication" if exc.status_code == 503 else "forbidden"
+            ) from exc
+    else:
+        token = settings_svc.get_tracker_token(db)
     if not token:
         raise DeliveryError("authentication")
 
@@ -404,6 +419,14 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
     issue = tracker_client.get_issue(token=token, key=action.resource_id)
     if issue is None:
         raise DeliveryError("invalid_payload")
+    if use_gateway:
+        # Local task actions already carry their application authorization;
+        # recheck the live issue scope and account before external execution.
+        # Mechanics' local workflow is not the raw Tracker editor permission.
+        try:
+            tracker_policy.enforce_issue_scope(db, actor, issue)
+        except HTTPException as exc:
+            raise DeliveryError("forbidden") from exc
     closed_issue = tracker_issue_is_closed(issue)
     if closed_issue and action.action in {
         "comment",
@@ -413,6 +436,30 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
         "set_repair_fields",
     }:
         raise DeliveryError("task_already_closed")
+
+    if use_gateway:
+        attachment = db.get(TaskAttachment, action.id) if action.action == "attach" else None
+        operation = (
+            "attachment_upload"
+            if action.action == "attach" and _attachment_temp_id(action) is None
+            else "transition_execute"
+            if action.action in _TRANSITION_ACTIONS or action.action == "campaign_review"
+            else "comment_create"
+            if action.action in {"comment", "attach"}
+            else "issue_patch"
+        )
+        token = tracker_gateway_transport.write_credential(
+            db,
+            actor,
+            resource=action.resource_id,
+            command_id=action.id,
+            action=operation,
+            force_server=(
+                action.attempts > 0
+                or _attachment_temp_id(action) is not None
+                or (attachment is not None and attachment.size_bytes > 4 * 1024 * 1024)
+            ),
+        )
 
     if action.action == "comment":
         body = str(payload.get("text") or "").strip()
@@ -581,6 +628,17 @@ def _deliver_action(db: Session, action: ReliableAction) -> dict[str, Any]:
 
 
 def _tracker_error_code(exc: tracker_client.TrackerError) -> str:
+    gateway_code = getattr(exc, "gateway_code", None)
+    if gateway_code:
+        # Only a rejection proven to precede execution is retryable. Timeout
+        # after dispatch is an unknown outcome, never a new worker attempt.
+        if gateway_code in {
+            "corporate_write_unavailable",
+            "corporate_write_pinned_unavailable",
+            "corporate_write_busy",
+        }:
+            return "network"
+        return gateway_code
     text = str(exc).casefold()
     if "temporary_component_version_conflict" in text:
         return "temporary_component_version_conflict"
@@ -810,7 +868,15 @@ def _process_batch(session_factory) -> int:
                 if action.action == "close":
                     # Acceptance is only local until a fresh authoritative read
                     # confirms the terminal Tracker state.
-                    token = settings_svc.get_tracker_token(db)
+                    try:
+                        actor = db.get(User, action.actor_user_id)
+                        token = (
+                            tracker_gateway_transport.credential(db, actor)
+                            if tracker_gateway_transport.enabled() and actor is not None
+                            else settings_svc.get_tracker_token(db)
+                        )
+                    except HTTPException:
+                        token = None
                     if token:
                         try:
                             fresh = tracker_client.get_issue(token=token, key=action.resource_id)

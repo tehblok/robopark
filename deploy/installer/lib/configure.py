@@ -27,6 +27,8 @@ HOST_DEFAULTS = {
     'EMERGENCY_BRIDGE_ENABLED': 'false',
     'EMERGENCY_BRIDGE_URL': 'http://emergency-bridge:8091',
     'EMERGENCY_DIRECT_FALLBACK_ENABLED': 'false',
+    'MAC_CORPORATE_GATEWAY_ENABLED': 'false',
+    'MAC_CORPORATE_SERVER_FALLBACK_ENABLED': 'true',
     'SECRET_KEY': '', 'SEED_PASSWORD': '', 'CORS_ORIGINS': '',
 }
 TUNA_DEFAULTS = {'TUNA_TOKEN': '', 'TUNA_LOCATION': 'ru', 'TUNA_SUBDOMAIN': '', 'TUNA_DOMAIN': '', 'TUNA_BIND': '127.0.0.1:8080'}
@@ -377,7 +379,13 @@ def validate(values):
         values['EMERGENCY_BRIDGE_ENABLED']
         != ('true' if values['ROBOPARK_ENVIRONMENT'] == 'test' else 'false')
         or values['EMERGENCY_BRIDGE_URL'] != 'http://emergency-bridge:8091'
-        or values['EMERGENCY_DIRECT_FALLBACK_ENABLED'] != 'false'
+        or values['EMERGENCY_DIRECT_FALLBACK_ENABLED'] not in ('true', 'false')
+        or (values['ROBOPARK_ENVIRONMENT'] != 'test'
+            and values['EMERGENCY_DIRECT_FALLBACK_ENABLED'] != 'false')
+        or values['MAC_CORPORATE_GATEWAY_ENABLED'] not in ('true', 'false')
+        or (values['ROBOPARK_ENVIRONMENT'] != 'test'
+            and values['MAC_CORPORATE_GATEWAY_ENABLED'] != 'false')
+        or values['MAC_CORPORATE_SERVER_FALLBACK_ENABLED'] not in ('true', 'false')
     ):
         raise ValueError('unsafe_emergency_bridge_setting')
     if values['IP_GEO_PROVIDER'] not in ('off', 'ipwhois'):

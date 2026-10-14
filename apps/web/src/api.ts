@@ -509,6 +509,9 @@ export type ComputePoolStatus = {
   devices: Array<Pick<AgentPoolDevice, 'id' | 'label' | 'status' | 'owner_user_id' | 'owner_username' | 'owner_display_name' | 'cpu_percent' | 'memory_percent' | 'thermal_state' | 'power'> & {
     capacity: number; inflight: number; active_jobs: number; completed: number; failed: number
     connected: boolean; ready: boolean; supports: string[]; version: string | null
+    corporate_read_capacity?: number; corporate_write_capacity?: number
+    corporate_inventory_status?: string
+    route_health?: Record<string, { completed: number; transport_failures: number; latency_ms: number | null; throughput_bytes_per_second: number | null; retry_after_seconds: number }>
     direct_input_bytes: number; direct_output_bytes: number; signaling_bytes: number
     direct_completed: number; direct_failed: number; direct_cancelled: number; direct_retries: number; direct_fallback: number
   }>
@@ -2074,7 +2077,8 @@ export const api = {
     const form = new FormData(); form.append('message_id', messageId); form.append('file', file, file.name)
     return requestForm<TaskAttachmentStaged>(`/tracker/issues/${encodeURIComponent(key)}/message-attachments`, form, { 'Idempotency-Key': idempotencyKey })
   },
-  taskPhoto: (key: string, file: File, idempotencyKey: string, expectedAccountId?: number) => {
+  taskPhoto: async (key: string, file: File, idempotencyKey: string, expectedAccountId?: number) => {
+    file = await preparedAccountPhoto(file)
     const form = new FormData(); form.append('file', file, file.name)
     return requestForm<TaskAttachmentStaged>(`/tracker/issues/${encodeURIComponent(key)}/photos`, form, {
       'Idempotency-Key': idempotencyKey,
@@ -2086,8 +2090,9 @@ export const api = {
     ...(componentIds ? { body: JSON.stringify({ component_ids: componentIds }) } : {}),
   }),
   taskHandoff: (key: string, value: { assignee: string; reason: string; done?: string; remaining?: string; obstacles?: string }, idempotencyKey: string) => request<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/handoff`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(value) }),
-  taskSubmitReview: (key: string, value: { defectCode: string; photo: File; comment?: string; repairFields?: TaskRepairFields }, idempotencyKey: string) => {
-    const form = new FormData(); form.append('defect_code', value.defectCode); form.append('photo', value.photo, value.photo.name); if (value.comment?.trim()) form.append('comment', value.comment.trim())
+  taskSubmitReview: async (key: string, value: { defectCode: string; photo: File; comment?: string; repairFields?: TaskRepairFields }, idempotencyKey: string) => {
+    const photo = await preparedAccountPhoto(value.photo)
+    const form = new FormData(); form.append('defect_code', value.defectCode); form.append('photo', photo, photo.name); if (value.comment?.trim()) form.append('comment', value.comment.trim())
     if (value.repairFields) form.append('repair_fields', JSON.stringify(repairFieldsPayload(value.repairFields)))
     return requestForm<TaskActionResult>(`/tracker/issues/${encodeURIComponent(key)}/submit-review`, form, { 'Idempotency-Key': idempotencyKey })
   },

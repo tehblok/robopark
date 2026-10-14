@@ -114,7 +114,9 @@ def test_clean_install_persists_role_identity_and_safe_bridge_defaults(
     assert values["ROBOPARK_INSTANCE_ID"] == "50b4ae12-c0d8-4c76-9639-2984f164408b"
     assert values["EMERGENCY_BRIDGE_ENABLED"] == bridge_enabled
     assert values["EMERGENCY_BRIDGE_URL"] == "http://emergency-bridge:8091"
-    assert values["EMERGENCY_DIRECT_FALLBACK_ENABLED"] == "false"
+    assert values["EMERGENCY_DIRECT_FALLBACK_ENABLED"] == bridge_enabled
+    assert values["MAC_CORPORATE_GATEWAY_ENABLED"] == bridge_enabled
+    assert values["MAC_CORPORATE_SERVER_FALLBACK_ENABLED"] == "true"
 
 
 def test_generated_instance_identity_is_a_canonical_uuid(tmp_path: Path):

@@ -32,6 +32,38 @@ enum SecureStore {
         let status = SecItemDelete(query(account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw NSError(domain: "RoboparkKeychain", code: Int(status)) }
     }
+    static func reserveCorporateWriteReceipt(_ account: String) throws {
+        let indexAccount = "corporate-write-receipt-index-v1"
+        var index: CorporateWriteReceiptIndex
+        do {
+            if let bytes = try readData(indexAccount) {
+                index = try JSONDecoder().decode(CorporateWriteReceiptIndex.self, from: bytes)
+            } else { index = CorporateWriteReceiptIndex() }
+            try index.reserve(account)
+            try writeData(JSONEncoder().encode(index), account: indexAccount)
+        } catch let error as CorporateWriteError { throw error }
+        catch { throw CorporateWriteError.receiptStorage }
+    }
+    static func acknowledgeCorporateWriteReceipt(_ account: String, ownerUserID: Int,
+                                                 deviceID: String, commandID: String,
+                                                 stepID: String) throws {
+        let indexAccount = "corporate-write-receipt-index-v1"
+        do {
+            if let bytes = try readData(account) {
+                let receipt = try JSONDecoder().decode(CorporateWriteReceipt.self, from: bytes)
+                guard receipt.permitsAcknowledgement(ownerUserID: ownerUserID, deviceID: deviceID,
+                    commandID: commandID, stepID: stepID) else { return }
+                // The authenticated server has committed the result. Delete the
+                // data before freeing its slot; a crash is recovered by the next ACK.
+                try deleteData(account)
+            }
+            if let bytes = try readData(indexAccount) {
+                var index = try JSONDecoder().decode(CorporateWriteReceiptIndex.self, from: bytes)
+                index.releaseAcknowledged(account)
+                try writeData(JSONEncoder().encode(index), account: indexAccount)
+            }
+        } catch { throw CorporateWriteError.receiptStorage }
+    }
     static func load() throws -> Registration? {
         guard !isSignedOut("registration") else { return nil }
         var request = query("registration")

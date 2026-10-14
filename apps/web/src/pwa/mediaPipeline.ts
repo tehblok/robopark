@@ -32,13 +32,13 @@ async function transformPhoto(source: File, maxEdge: number, quality: number): P
   const peerFirst = constrained && source.size >= 1024 * 1024 && !connection?.saveData
     && !['slow-2g', '2g'].includes(connection?.effectiveType ?? '')
   if (peerFirst) {
-    const peer = await transformOnMac(source, maxEdge, quality)
+    const peer = await transformOnMac(source, maxEdge, quality, 'direct')
     if (usefulPhoto(peer, source)) return peer
   }
   const local = await transformOffThread(source, maxEdge, quality).catch(() => source)
   if (usefulPhoto(local, source)) return local
-  if (!peerFirst && source.size >= 256 * 1024) {
-    const peer = await transformOnMac(source, maxEdge, quality)
+  if (source.size >= 256 * 1024) {
+    const peer = await transformOnMac(source, maxEdge, quality, peerFirst ? 'relay' : 'auto')
     if (usefulPhoto(peer, source)) return peer
   }
   return source

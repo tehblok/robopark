@@ -8,6 +8,7 @@ Uses the declared ``yandex-tracker-client`` package:
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import logging
@@ -23,7 +24,7 @@ from zoneinfo import ZoneInfoNotFoundError
 
 import httpx
 
-from robopark_api.services import sla_clock
+from robopark_api.services import sla_clock, tracker_gateway_transport
 from robopark_api.services.repair_fields import MAX_COMPONENTS
 from robopark_api.services.response_cache import ResponseCache
 from robopark_api.services.tracker_api import (
@@ -32,6 +33,7 @@ from robopark_api.services.tracker_api import (
     NOTIFICATION_SEARCH_OPERATION_TIMEOUT_SEC,
     call_with_retry,
 )
+from robopark_api.services.tracker_gateway_transport import GatewayCredential
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,15 @@ def clear_tracker_clients() -> None:
 
 
 def _client(token: str):
+    if isinstance(token, GatewayCredential):
+        from robopark_api.services.tracker_gateway_transport import connection
+
+        # Request context can contain a rotated server fallback credential.
+        # Never cache it under the stable owner id and retain an old token.
+        client = _import_startrek()(connection=connection(token))
+        client.issues._fields = {}
+        weakref.finalize(client, client._connection.session.close)
+        return client
     with _CLIENTS_LOCK:
         cached = _CLIENTS.get(token)
         if cached is not None:
@@ -836,6 +847,8 @@ def _run_mutation(fn):
     try:
         with tracker_slot():
             return fn()
+    except TrackerError:
+        raise
     except Exception as exc:
         raise TrackerError(str(exc)) from exc
 
@@ -1138,6 +1151,8 @@ def _issue_history_cache_key(key: str, issue: dict[str, Any]) -> str:
 
 def get_issue_status_history(*, token: str, key: str, issue: dict[str, Any]) -> list[Any]:
     try:
+        if isinstance(token, GatewayCredential):
+            return _fetch_issue_status_history(token=token, key=key, issue=issue, tracked=True)
         return _issue_status_history_cache.get_or_load(
             _issue_history_cache_key(key, issue),
             lambda: _fetch_issue_status_history(
@@ -1164,6 +1179,8 @@ def _load_work_status_history(*, token: str, key: str, issue: dict[str, Any]) ->
     it cannot poison the general Tracker semaphore or grow its retry queue.
     """
     try:
+        if isinstance(token, GatewayCredential):
+            return _fetch_issue_status_history(token=token, key=key, issue=issue, tracked=False)
         return _issue_status_history_cache.get_or_load(
             _issue_history_cache_key(key, issue),
             lambda: _fetch_issue_status_history(
@@ -1192,7 +1209,11 @@ def schedule_issue_status_history(
     value or an already-running single flight.
     """
     history_key = _issue_history_cache_key(key, issue)
-    found, cached = _issue_status_history_cache.get_if_fresh(history_key)
+    found, cached = (
+        (False, None)
+        if isinstance(token, GatewayCredential)
+        else _issue_status_history_cache.get_if_fresh(history_key)
+    )
     if found:
         ready: Future[list[Any]] = Future()
         ready.set_result(cached or [])
@@ -1273,6 +1294,16 @@ def add_comment(
     text: str,
     attachment_ids: list[str] | None = None,
 ) -> dict[str, Any]:
+    if isinstance(token, GatewayCredential):
+        params = {"text": text}
+        if attachment_ids:
+            params["attachment_ids"] = attachment_ids
+        result = _run_mutation(
+            lambda: tracker_gateway_transport.write(
+                token, action="comment_create", resource=key, params=params
+            )
+        )
+        return {"id": str(result.get("id") or ""), "text": text}
     if attachment_ids:
         url = f"{API_BASE.rstrip('/')}/v2/issues/{key}/comments"
         headers = {
@@ -1320,6 +1351,25 @@ def upload_temp_attachment(
     content_type: str,
 ) -> str:
     """Upload a file to Tracker temp storage; returns id for attachmentIds."""
+    if isinstance(token, GatewayCredential):
+        if not isinstance(token, tracker_gateway_transport.GatewayWriteCredential):
+            raise TrackerError("corporate_write_context_required")
+        result = _run_mutation(
+            lambda: tracker_gateway_transport.write(
+                token,
+                action="attachment_upload",
+                resource=token.resource,
+                params={
+                    "filename": filename,
+                    "content_type": content_type,
+                    "data_base64": base64.b64encode(content).decode("ascii"),
+                },
+            )
+        )
+        attachment_id = str(result.get("id") or "").strip()
+        if not attachment_id:
+            raise TrackerError("corporate_write_outcome_unknown")
+        return attachment_id
     url = f"{API_BASE.rstrip('/')}/v2/attachments/"
     headers = {"Authorization": f"OAuth {token}", "User-Agent": USER_AGENT}
     files = {"file": (filename, content, content_type)}
@@ -1380,6 +1430,11 @@ def add_attachment(
     content: bytes,
     content_type: str,
 ) -> dict[str, Any]:
+    if isinstance(token, GatewayCredential):
+        # Application uploads use the explicit temp-upload + signed-comment
+        # sequence. Do not turn this legacy arbitrary attachment path into an
+        # unreceipted request or send the context string as an OAuth token.
+        raise TrackerError("corporate_write_context_required")
     url = f"{API_BASE.rstrip('/')}/v2/issues/{key}/attachments"
     headers = {"Authorization": f"OAuth {token}", "User-Agent": USER_AGENT}
     files = {"file": (filename, content, content_type)}
@@ -1409,7 +1464,30 @@ def add_attachment(
     return _run_mutation(_run)
 
 
+def patch_issue_fields(*, token: str, key: str, fields: dict, issue_resource=None) -> None:
+    if isinstance(token, GatewayCredential):
+        if not isinstance(token, tracker_gateway_transport.GatewayWriteCredential):
+            raise TrackerError("corporate_write_context_required")
+
+        def patch():
+            resource = issue_resource or _client(token).issues[key]
+            version = getattr(resource, "_version", None)
+            params = {"fields": fields}
+            if version is not None:
+                params["version"] = str(version)
+            return tracker_gateway_transport.write(
+                token, action="issue_patch", resource=key, params=params
+            )
+
+        _run_mutation(patch)
+        return
+    client = _client(token)
+    _run_mutation(lambda: (issue_resource or client.issues[key]).update(**fields))
+
+
 def assign_issue(*, token: str, key: str, assignee: str) -> None:
+    if isinstance(token, GatewayCredential):
+        return patch_issue_fields(token=token, key=key, fields={"assignee": assignee})
     client = _client(token)
 
     def _run() -> None:
@@ -1419,6 +1497,8 @@ def assign_issue(*, token: str, key: str, assignee: str) -> None:
 
 
 def set_issue_tags(*, token: str, key: str, tags: list[str]) -> None:
+    if isinstance(token, GatewayCredential):
+        return patch_issue_fields(token=token, key=key, fields={"tags": tags})
     client = _client(token)
 
     def _run() -> None:
@@ -1430,6 +1510,10 @@ def set_issue_tags(*, token: str, key: str, tags: list[str]) -> None:
 def set_issue_components(
     *, token: str, key: str, components: list[str], issue_resource: Any | None = None
 ) -> None:
+    if isinstance(token, GatewayCredential):
+        return patch_issue_fields(
+            token=token, key=key, fields={"components": components}, issue_resource=issue_resource
+        )
     client = _client(token)
 
     def _run() -> None:
@@ -1470,6 +1554,17 @@ def set_repair_fields(
     solution_method: str,
     issue_resource: Any | None = None,
 ) -> None:
+    if isinstance(token, GatewayCredential):
+        return patch_issue_fields(
+            token=token,
+            key=key,
+            fields={
+                "components": component_ids,
+                "60df26695151a36df681d67b--theDefectCode": defect_code,
+                "solutionMethod": solution_method,
+            },
+            issue_resource=issue_resource,
+        )
     client = _client(token)
 
     def _run() -> None:
@@ -1486,6 +1581,8 @@ def set_repair_fields(
 
 
 def unassign_issue(*, token: str, key: str) -> None:
+    if isinstance(token, GatewayCredential):
+        return patch_issue_fields(token=token, key=key, fields={"assignee": None})
     client = _client(token)
 
     def _run() -> None:
@@ -1533,6 +1630,16 @@ def list_transitions(*, token: str, key: str) -> list[dict[str, Any]]:
 def transition_issue(
     *, token: str, key: str, transition: str, resolution: str | None = None
 ) -> None:
+    if isinstance(token, GatewayCredential):
+        params = {"transition": transition}
+        if resolution:
+            params["resolution"] = resolution
+        _run_mutation(
+            lambda: tracker_gateway_transport.write(
+                token, action="transition_execute", resource=key, params=params
+            )
+        )
+        return
     client = _client(token)
 
     def _run() -> None:

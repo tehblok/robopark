@@ -66,6 +66,8 @@ def test_info_exposes_only_bounded_signed_deployment_profile(client, tmp_path, m
 def test_enrollment_claim_is_one_use_auto_approved_and_private_key_never_enters_api(
     client, db_session, seed_admin
 ):
+    seed_admin.tracker_login = "admin.tracker"
+    db_session.commit()
     assert login_as(client, "admin", "secret").status_code == 204
     issued = client.post("/agent-devices/enrollments", json={"label": "Test Mac"})
     assert issued.status_code == 201
@@ -84,6 +86,8 @@ def test_enrollment_claim_is_one_use_auto_approved_and_private_key_never_enters_
 
     assert first.status_code == 201
     assert first.json()["protocol"] == 1
+    assert first.json()["owner_user_id"] == seed_admin.id
+    assert first.json()["owner_tracker_login"] == "admin.tracker"
     assert second.status_code == 409
     device = db_session.get(AgentDevice, first.json()["device_id"])
     assert device is not None
@@ -105,6 +109,8 @@ def test_enrollment_claim_is_one_use_auto_approved_and_private_key_never_enters_
 def test_authenticated_first_login_claims_device_without_manual_code_and_is_idempotent(
     client, db_session, seed_admin
 ):
+    seed_admin.tracker_login = "admin.tracker"
+    db_session.commit()
     login_as(client, "admin", "secret")
     payload = {
         "label": "Desk Mac",
@@ -120,6 +126,8 @@ def test_authenticated_first_login_claims_device_without_manual_code_and_is_idem
     assert repeated.status_code == 200
     assert repeated.json()["device_id"] == first.json()["device_id"]
     assert repeated.json()["owner_user_id"] == seed_admin.id
+    assert first.json()["owner_tracker_login"] == "admin.tracker"
+    assert repeated.json()["owner_tracker_login"] == "admin.tracker"
     device = db_session.get(AgentDevice, first.json()["device_id"])
     assert device is not None
     assert device.owner_user_id == seed_admin.id
@@ -325,6 +333,7 @@ def test_new_code_recovers_active_device_with_same_key_at_owner_limit(
     assert original.status_code == 201
     assert recovered.status_code == 201
     assert recovered.json()["device_id"] == original.json()["device_id"]
+    assert recovered.json()["owner_user_id"] == seed_admin.id
     assert db_session.scalar(select(func.count()).select_from(AgentDevice)) == 1
     enrollments = list(db_session.scalars(select(AgentEnrollment)).all())
     assert len(enrollments) == 2

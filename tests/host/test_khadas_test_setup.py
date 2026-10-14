@@ -570,7 +570,9 @@ def test_apply_orders_isolation_before_env_and_ota_then_enables_test_tuna(
     assert f"CORS_ORIGINS={setup.TEST_ORIGIN}" in host
     assert "SESSION_COOKIE_NAME=robopark_test_session" in host
     assert "EMERGENCY_BRIDGE_ENABLED=true" in host
-    assert "EMERGENCY_DIRECT_FALLBACK_ENABLED=false" in host
+    assert "EMERGENCY_DIRECT_FALLBACK_ENABLED=true" in host
+    assert "MAC_CORPORATE_GATEWAY_ENABLED=true" in host
+    assert "MAC_CORPORATE_SERVER_FALLBACK_ENABLED=true" in host
     assert "TUNA_TOKEN=keep-secret" in tuna
     assert "TUNA_SUBDOMAIN=roboparktest" in tuna
     assert "TUNA_DOMAIN=" in tuna and "TUNA_LOCATION=ru" in tuna

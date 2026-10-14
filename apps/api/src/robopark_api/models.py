@@ -1264,6 +1264,60 @@ class AgentDevice(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CorporateWriteAuthority(Base):
+    """Immutable routing decision for one durable corporate mutation command."""
+
+    __tablename__ = "corporate_write_authorities"
+    __table_args__ = (
+        CheckConstraint("mode IN ('mac', 'server')", name="ck_corporate_write_authority_mode"),
+        CheckConstraint(
+            "(mode = 'server' AND device_id IS NULL AND owner_user_id IS NULL "
+            "AND owner_tracker_login IS NULL) OR "
+            "(mode = 'mac' AND device_id IS NOT NULL AND owner_user_id IS NOT NULL "
+            "AND owner_tracker_login IS NOT NULL)",
+            name="ck_corporate_write_authority_binding",
+        ),
+        Index("ix_corporate_write_authority_actor_created", "requester_user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    requester_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    service: Mapped[str] = mapped_column(String(16), default="tracker", server_default="tracker")
+    resource: Mapped[str] = mapped_column(String(128))
+    mode: Mapped[str] = mapped_column(String(16))
+    device_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    owner_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    owner_tracker_login: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CorporateWriteReceipt(Base):
+    """Fail-closed durable fence for one step of a corporate mutation command."""
+
+    __tablename__ = "corporate_write_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('executing', 'completed', 'unknown')",
+            name="ck_corporate_write_receipt_state",
+        ),
+    )
+
+    command_id: Mapped[str] = mapped_column(
+        ForeignKey("corporate_write_authorities.id", ondelete="CASCADE"), primary_key=True
+    )
+    step_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    action: Mapped[str] = mapped_column(String(32))
+    payload_sha256: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(16), default="executing", server_default="executing")
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class AuditLog(Base):
     """Append-only record of security- and Tracker-relevant actions.
 

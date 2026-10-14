@@ -36,13 +36,13 @@ from robopark_api.schemas import (
     TrackerTransitionOut,
     TrackerUserOut,
 )
-from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import (
     rbac,
     task_lifecycle,
     tracker_cache,
     tracker_client,
     tracker_filters,
+    tracker_gateway_transport,
     tracker_history,
     tracker_robot_search,
 )
@@ -483,7 +483,7 @@ def list_issues(
             detail="tracker_robot_exact_required",
         )
 
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -761,7 +761,7 @@ def get_issue(
         raise HTTPException(status_code=403, detail="task_hidden_manager_required")
     if task_lifecycle.is_hidden(db, key) and not include_hidden:
         raise HTTPException(status_code=404)
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -801,7 +801,7 @@ def get_comments(
     _ensure_tracker_user(user, db)
     if task_lifecycle.is_hidden(db, key):
         raise HTTPException(status_code=404)
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -849,7 +849,7 @@ def get_transitions(
     _ensure_tracker_user(user, db)
     if task_lifecycle.is_hidden(db, key):
         raise HTTPException(status_code=404)
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -909,7 +909,7 @@ def robot_tickets(
             detail="no_tracker_parks",
         )
 
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

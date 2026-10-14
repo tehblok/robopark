@@ -25,7 +25,15 @@ from robopark_api.emergency_bridge import (
     _validated_robot_payload_size,
     create_broker_app,
 )
-from robopark_api.models import AccessStatus, AgentDevice, AuditLog, TelegramAccount, User
+from robopark_api.models import (
+    AccessStatus,
+    AgentDevice,
+    AuditLog,
+    Park,
+    TelegramAccount,
+    User,
+    UserPark,
+)
 from robopark_api.security import hash_password
 from robopark_api.services import emergency_scope
 from robopark_api.services.emergency_bridge_auth import body_signature
@@ -309,8 +317,8 @@ def test_success_observes_response_latency_throughput_and_compression_savings(mo
     assert channel.compression_saved_bytes == 750_000
 
 
-def test_candidate_filter_keeps_later_device_after_multiple_vin_denials(
-    db_engine, db_session, seed_admin, monkeypatch
+def test_candidate_filter_keeps_only_same_park_operator_allowed_for_mechanic(
+    db_engine, db_session, monkeypatch
 ):
     settings = Settings(
         _env_file=None,
@@ -344,23 +352,52 @@ def test_candidate_filter_keeps_later_device_after_multiple_vin_denials(
         db_session.add(device)
         owners.append(owner)
         devices.append(device)
+    mechanic = User(
+        username="gateway-candidate-mechanic",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "mechanic"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    shared_park = Park(name="Candidate shared", tag="Candidate-shared", is_active=True)
+    db_session.add_all([mechanic, shared_park])
+    db_session.flush()
+    db_session.add_all(
+        [
+            UserPark(user_id=mechanic.id, park_id=shared_park.id),
+            UserPark(user_id=owners[-1].id, park_id=shared_park.id),
+        ]
+    )
     db_session.commit()
     allowed_owner_id = owners[-1].id
     monkeypatch.setattr(
         emergency_scope,
         "vin_allowed_for_user",
-        lambda _db, user, _vin: user.id in {seed_admin.id, allowed_owner_id},
+        lambda _db, user, _vin: user.id in {mechanic.id, allowed_owner_id},
     )
 
     eligible = _candidate_device_ids(
         sessionmaker(bind=db_engine, future=True),
         settings,
-        seed_admin.id,
+        mechanic.id,
         "YASADR00000000447",
         {device.id for device in devices},
     )
 
     assert eligible == {devices[-1].id}
+
+    devices[-1].revoked_at = datetime.now(UTC)
+    db_session.commit()
+    assert (
+        _candidate_device_ids(
+            sessionmaker(bind=db_engine, future=True),
+            settings,
+            mechanic.id,
+            "YASADR00000000447",
+            {device.id for device in devices},
+        )
+        == set()
+    )
 
 
 def test_managed_probe_budget_is_global_bounded_and_success_postpones_probe(monkeypatch):
@@ -511,29 +548,32 @@ def test_same_device_generation_and_vin_share_one_inflight_load():
     asyncio.run(scenario())
 
 
-def test_global_singleflight_shares_same_vin_across_requesters():
+def test_singleflight_shares_only_the_same_gateway_owner_scope():
     async def scenario():
         registry = BrokerRegistry(max_connections=100)
-        leader, is_leader = registry.begin_request("VIN1")
-        follower, is_follower_leader = registry.begin_request("VIN1")
-        other, is_other_leader = registry.begin_request("VIN1")
+        leader, is_leader = registry.begin_request((11,), "VIN1")
+        follower, is_follower_leader = registry.begin_request((11,), "VIN1")
+        other, is_other_leader = registry.begin_request((12,), "VIN1")
         assert is_leader is True
         assert is_follower_leader is False
         assert follower is leader
-        assert is_other_leader is False
-        assert other is leader
-        registry.finish_request("VIN1", result=({"value": 1}, "mac"))
+        assert is_other_leader is True
+        assert other is not leader
+        registry.finish_request((11,), "VIN1", result=({"value": 1}, "mac"))
         assert await follower == ({"value": 1}, "mac")
+        registry.finish_request((12,), "VIN1", result=({"value": 2}, "other-mac"))
+        assert await other == ({"value": 2}, "other-mac")
 
     asyncio.run(scenario())
 
 
 def test_shared_vin_cache_keeps_source_for_authority_recheck():
     registry = BrokerRegistry(max_connections=100, cache_ttl_seconds=3)
-    registry.shared_cache_put("VIN1", {"value": 1}, source_device_id="source-mac")
+    registry.shared_cache_put((11,), "VIN1", {"value": 1}, source_device_id="source-mac")
 
-    assert registry.shared_cache_get("VIN1") == ({"value": 1}, "source-mac")
-    assert registry.shared_cache_get("VIN2") is None
+    assert registry.shared_cache_get((11,), "VIN1") == ({"value": 1}, "source-mac")
+    assert registry.shared_cache_get((12,), "VIN1") is None
+    assert registry.shared_cache_get((11,), "VIN2") is None
 
 
 def test_cache_evicts_by_serialized_byte_budget():
@@ -709,7 +749,7 @@ def test_silent_first_agent_reserves_time_for_second_attempt(db_engine, db_sessi
 
 
 def test_device_singleflight_denial_does_not_send_replacement_job(
-    db_engine, db_session, seed_admin, seed_royal
+    db_engine, db_session, monkeypatch
 ):
     settings = Settings(
         _env_file=None,
@@ -718,18 +758,50 @@ def test_device_singleflight_denial_does_not_send_replacement_job(
         emergency_bridge_enabled=True,
         robopark_instance_id="11111111-1111-1111-1111-111111111111",
     )
+    owner = User(
+        username="singleflight-owner",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    leader_user = User(
+        username="singleflight-leader",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "mechanic"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    follower_user = User(
+        username="singleflight-follower",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "mechanic"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    park = Park(name="Singleflight", tag="Singleflight", is_active=True)
+    db_session.add_all([owner, leader_user, follower_user, park])
+    db_session.flush()
+    db_session.add_all(
+        [
+            UserPark(user_id=owner.id, park_id=park.id),
+            UserPark(user_id=leader_user.id, park_id=park.id),
+            UserPark(user_id=follower_user.id, park_id=park.id),
+        ]
+    )
     device = AgentDevice(
         id=str(uuid4()),
-        owner_user_id=seed_admin.id,
+        owner_user_id=owner.id,
         label="Shared Mac",
         public_key_x963=b"\x04" + b"x" * 64,
         environment="production",
         instance_id=str(settings.robopark_instance_id),
         approved_at=datetime.now(UTC),
-        approved_by_user_id=seed_admin.id,
+        approved_by_user_id=owner.id,
     )
     db_session.add(device)
     db_session.commit()
+    monkeypatch.setattr(emergency_scope, "vin_allowed_for_user", lambda *_args: True)
     app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
     registry = app.state.registry
     channel = _channel(device.id, 1)
@@ -766,8 +838,8 @@ def test_device_singleflight_denial_does_not_send_replacement_job(
             "Content-Type": "application/json",
         }
 
-    first_body, first_headers = signed_request(seed_admin.id, "singleflight-leader")
-    second_body, second_headers = signed_request(seed_royal.id, "singleflight-follower")
+    first_body, first_headers = signed_request(leader_user.id, "singleflight-leader")
+    second_body, second_headers = signed_request(follower_user.id, "singleflight-follower")
     with TestClient(app) as client, concurrent.futures.ThreadPoolExecutor() as pool:
         first = pool.submit(
             client.post,
@@ -784,7 +856,7 @@ def test_device_singleflight_denial_does_not_send_replacement_job(
             headers=second_headers,
         )
         assert follower_waiting.wait(1)
-        seed_royal.access_status = "rejected"
+        follower_user.access_status = "rejected"
         db_session.commit()
         socket.release.set()
         first_response = first.result(timeout=2)
@@ -797,6 +869,8 @@ def test_device_singleflight_denial_does_not_send_replacement_job(
 
 
 def test_websocket_authenticates_registered_p256_device(db_engine, db_session, seed_admin):
+    seed_admin.tracker_login = "admin.tracker"
+    db_session.commit()
     private_key = ec.generate_private_key(ec.SECP256R1())
     device = AgentDevice(
         id=str(uuid4()),
@@ -842,6 +916,8 @@ def test_websocket_authenticates_registered_p256_device(db_engine, db_session, s
         )
         ready = ws.receive_json()
         assert ready["type"] == "ready"
+        assert ready["owner_user_id"] == seed_admin.id
+        assert ready["owner_tracker_login"] == "admin.tracker"
         assert ready["max_inflight"] == 2
         assert ready["supports"] == ["raw_deflate", "managed_probes"]
         ws.send_json(
@@ -1186,11 +1262,14 @@ def test_result_authority_rechecks_requester_and_source(
     )
     factory = sessionmaker(bind=db_engine, future=True)
     monkeypatch.setattr(emergency_scope, "vin_allowed_for_user", lambda *_args: True)
-    assert _job_authority_valid(factory, settings, device.id, seed_royal.id, "YASADR00000000447")
+    assert not _job_authority_valid(
+        factory, settings, device.id, seed_royal.id, "YASADR00000000447"
+    )
+    assert _job_authority_valid(factory, settings, device.id, seed_admin.id, "YASADR00000000447")
 
-    seed_royal.access_status = "rejected"
+    seed_admin.access_status = "rejected"
     db_session.commit()
 
     assert not _job_authority_valid(
-        factory, settings, device.id, seed_royal.id, "YASADR00000000447"
+        factory, settings, device.id, seed_admin.id, "YASADR00000000447"
     )

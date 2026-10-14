@@ -18,6 +18,7 @@ from robopark_api.config import Settings
 from robopark_api.emergency_bridge import create_broker_app
 from robopark_api.models import AccessStatus, AgentDevice, User
 from robopark_api.security import hash_password
+from robopark_api.services.compute_broker import ComputeChannel
 from robopark_api.services.emergency_bridge_auth import body_signature
 
 
@@ -156,6 +157,236 @@ def test_compute_ws_uses_distinct_domain_and_dispatches_hashed_typed_job(db_engi
         assert response.json()["result"]["sha256"] == hashlib.sha256(output).hexdigest()
 
 
+def test_corporate_read_selects_owner_mac_and_rejects_identity_mismatch(db_engine, db_session):
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="compute-secret",
+        emergency_bridge_enabled=True,
+        mac_corporate_gateway_enabled=True,
+        robopark_environment="test",
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    private_key, owner, device = _device(db_session, settings, suffix="-corporate")
+    owner.role_id = role_id_for(db_session, "admin")
+    owner.tracker_login = "owner.tracker"
+    db_session.commit()
+    app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
+
+    def post(client, value):
+        body = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+        return client.post(
+            "/internal/v1/corporate-read",
+            content=body,
+            headers=_signed_headers(settings, body),
+        )
+
+    with (
+        TestClient(app) as client,
+        client.websocket_connect("/emergency/bridge/compute/ws") as websocket,
+    ):
+        challenge = websocket.receive_json()
+        signed = (
+            f"robopark-compute-v1\n{settings.robopark_instance_id}\n"
+            f"{settings.robopark_environment}\n{challenge['nonce']}"
+        ).encode()
+        signature = base64.b64encode(private_key.sign(signed, ec.ECDSA(hashes.SHA256()))).decode()
+        websocket.send_json({"type": "auth", "device_id": device.id, "signature": signature})
+        ready = websocket.receive_json()
+        assert ready["owner_user_id"] == owner.id
+        assert ready["owner_tracker_login"] == "owner.tracker"
+        websocket.send_json(
+            {
+                "type": "heartbeat",
+                "generation": ready["generation"],
+                "capacity": 1,
+                "active_jobs": 0,
+                "cpu_percent": 10,
+                "memory_percent": 20,
+                "thermal_state": "normal",
+                "power": "ac",
+                "supports": ["corporate_read_v1", "corporate_inventory_read_v1"],
+                "corporate_read_capacity": 2,
+                "corporate_write_capacity": 0,
+                "corporate_active_jobs": 0,
+                "corporate_active_writes": 0,
+                "corporate_inventory_status": "ready",
+                "version": "0.2.3-rc.2",
+            }
+        )
+        request = {
+            "service": "inventory",
+            "action": "rover_card",
+            "resource": "a664",
+            "params": {},
+            "requester_user_id": owner.id,
+            "park_id": None,
+            "deadline_ms": 1_000,
+        }
+        holder = {}
+
+        def send_request():
+            holder["response"] = post(client, request)
+
+        thread = threading.Thread(target=send_request)
+        thread.start()
+        job = websocket.receive_json()
+        assert job["operation"] == "corporate_read_v1"
+        envelope = json.loads(base64.b64decode(job["payload_base64"], validate=True))
+        assert envelope == {
+            "action": "rover_card",
+            "owner_tracker_login": "owner.tracker",
+            "owner_user_id": owner.id,
+            "params": {},
+            "requester_user_id": owner.id,
+            "resource": "a664",
+            "service": "inventory",
+        }
+        websocket.send_json(
+            {
+                "type": "compute_result",
+                "generation": ready["generation"],
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "payload_sha256": job["payload_sha256"],
+                "ok": True,
+                "result": {
+                    "service": "inventory",
+                    "action": "rover_card",
+                    "resource": "a664",
+                    "owner_user_id": owner.id,
+                    "identity_login": "owner.tracker",
+                    "status_code": 200,
+                    "headers": {},
+                    "payload": {"name": "a664"},
+                },
+            }
+        )
+        thread.join(2)
+        assert holder["response"].status_code == 200
+        assert holder["response"].json()["payload"] == {"name": "a664"}
+
+        thread = threading.Thread(target=send_request)
+        thread.start()
+        job = websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "compute_result",
+                "generation": ready["generation"],
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "payload_sha256": job["payload_sha256"],
+                "ok": True,
+                "result": {
+                    "service": "inventory",
+                    "action": "rover_card",
+                    "resource": "a664",
+                    "owner_user_id": owner.id + 1,
+                    "identity_login": "owner.tracker",
+                    "status_code": 200,
+                    "headers": {},
+                    "payload": {"name": "a664"},
+                },
+            }
+        )
+        thread.join(2)
+        assert holder["response"].status_code == 403
+        assert holder["response"].json()["detail"] == "corporate_access_denied"
+
+
+@pytest.mark.parametrize("revoked", ["account", "device"])
+def test_corporate_read_rechecks_revocation_before_return(db_engine, db_session, revoked):
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="compute-secret",
+        emergency_bridge_enabled=True,
+        mac_corporate_gateway_enabled=True,
+        robopark_environment="test",
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    private_key, owner, device = _device(db_session, settings, suffix=f"-revoked-{revoked}")
+    owner.role_id = role_id_for(db_session, "admin")
+    owner.tracker_login = "owner.tracker"
+    db_session.commit()
+    app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
+
+    with (
+        TestClient(app) as client,
+        client.websocket_connect("/emergency/bridge/compute/ws") as websocket,
+    ):
+        challenge = websocket.receive_json()
+        signed = (
+            f"robopark-compute-v1\n{settings.robopark_instance_id}\n"
+            f"{settings.robopark_environment}\n{challenge['nonce']}"
+        ).encode()
+        signature = base64.b64encode(private_key.sign(signed, ec.ECDSA(hashes.SHA256()))).decode()
+        websocket.send_json({"type": "auth", "device_id": device.id, "signature": signature})
+        ready = websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "heartbeat",
+                "generation": ready["generation"],
+                "capacity": 1,
+                "active_jobs": 0,
+                "supports": ["corporate_read_v1", "corporate_inventory_read_v1"],
+                "corporate_read_capacity": 2,
+                "corporate_write_capacity": 0,
+                "corporate_active_jobs": 0,
+                "corporate_active_writes": 0,
+                "corporate_inventory_status": "ready",
+            }
+        )
+        value = {
+            "service": "inventory",
+            "action": "rover_card",
+            "resource": "a664",
+            "params": {},
+            "requester_user_id": owner.id,
+            "deadline_ms": 1_000,
+        }
+        holder = {}
+
+        def request():
+            body = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+            holder["response"] = client.post(
+                "/internal/v1/corporate-read",
+                content=body,
+                headers=_signed_headers(settings, body),
+            )
+
+        thread = threading.Thread(target=request)
+        thread.start()
+        job = websocket.receive_json()
+        if revoked == "account":
+            owner.is_active = False
+        else:
+            device.revoked_at = datetime.now(UTC)
+        db_session.commit()
+        websocket.send_json(
+            {
+                "type": "compute_result",
+                "generation": ready["generation"],
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "payload_sha256": job["payload_sha256"],
+                "ok": True,
+                "result": {
+                    "service": "inventory",
+                    "action": "rover_card",
+                    "resource": "a664",
+                    "owner_user_id": owner.id,
+                    "identity_login": "owner.tracker",
+                    "status_code": 200,
+                    "headers": {},
+                    "payload": {"name": "a664"},
+                },
+            }
+        )
+        thread.join(2)
+        assert holder["response"].status_code in {403, 503}
+
+
 def test_internal_compute_rejects_bad_hash_and_returns_prompt_503_without_devices(
     db_engine, seed_admin
 ):
@@ -185,7 +416,6 @@ def test_internal_compute_rejects_bad_hash_and_returns_prompt_503_without_device
         )
         assert response.status_code == 422
         assert time.monotonic() - started < 1
-
         image = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
         raw_payload = json.dumps(
             {
@@ -208,6 +438,199 @@ def test_internal_compute_rejects_bad_hash_and_returns_prompt_503_without_device
         assert response.status_code == 503
         assert response.json()["detail"] == "no_compute_device"
         assert time.monotonic() - started < 1
+
+
+def test_relay_admission_rejects_without_worker_before_any_payload_upload(db_engine, seed_admin):
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="compute-secret",
+        emergency_bridge_enabled=True,
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
+    body = json.dumps(
+        {
+            "operation": "image_resize_v1",
+            "payload_bytes": 400_000,
+            "payload_sha256": "a" * 64,
+            "requester_user_id": seed_admin.id,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+
+    with TestClient(app) as client:
+        started = time.monotonic()
+        response = client.post(
+            "/internal/v1/compute-relay-admit",
+            content=body,
+            headers=_signed_headers(settings, body),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "relay_unavailable", "retry_after_ms": 1000}
+    assert time.monotonic() - started < 1
+    assert app.state.compute_registry.relay_admission.status()["relay_rejected"] == 1
+
+
+def test_corporate_read_without_ready_mac_is_typed_availability(db_engine, db_session, seed_admin):
+    seed_admin.tracker_login = "admin.tracker"
+    db_session.commit()
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="compute-secret",
+        emergency_bridge_enabled=True,
+        mac_corporate_gateway_enabled=True,
+        robopark_environment="test",
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
+    value = {
+        "service": "inventory",
+        "action": "rover_card",
+        "resource": "a664",
+        "params": {},
+        "requester_user_id": seed_admin.id,
+        "deadline_ms": 100,
+    }
+    body = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/v1/corporate-read",
+            content=body,
+            headers=_signed_headers(settings, body),
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "corporate_unavailable"
+
+
+def test_relay_ticket_is_claimed_once_and_released_after_worker_disconnect(db_engine, seed_admin):
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="compute-secret",
+        emergency_bridge_enabled=True,
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
+    registry = app.state.compute_registry
+    channel = ComputeChannel(
+        device_id="relay-worker",
+        owner_user_id=seed_admin.id,
+        websocket=object(),
+        ready=True,
+        supports={"image_resize_v1"},
+    )
+    registry.replace(channel)
+    image = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    raw_payload = json.dumps(
+        {
+            "data_base64": base64.b64encode(image).decode(),
+            "mime_type": "image/png",
+            "max_edge": 1024,
+            "quality": 80,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+
+    def post(client, path, value):
+        body = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+        return client.post(path, content=body, headers=_signed_headers(settings, body))
+
+    with TestClient(app) as client:
+        admitted = post(
+            client,
+            "/internal/v1/compute-relay-admit",
+            {
+                "operation": "image_resize_v1",
+                "payload_bytes": len(raw_payload),
+                "payload_sha256": hashlib.sha256(raw_payload).hexdigest(),
+                "requester_user_id": seed_admin.id,
+            },
+        )
+        assert admitted.status_code == 200, admitted.text
+        ticket = admitted.json()["ticket"]
+        claim_payload = {"requester_user_id": seed_admin.id, "ticket": ticket}
+        claimed = post(client, "/internal/v1/compute-relay-claim", claim_payload)
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["payload_bytes"] == len(raw_payload)
+        assert post(client, "/internal/v1/compute-relay-claim", claim_payload).status_code == 409
+
+        registry.remove(channel)
+        compute = post(
+            client,
+            "/internal/v1/compute",
+            {
+                "deadline_ms": 20_000,
+                "operation": "image_resize_v1",
+                "payload_base64": base64.b64encode(raw_payload).decode(),
+                "payload_sha256": hashlib.sha256(raw_payload).hexdigest(),
+                "relay_ticket": ticket,
+                "requester_user_id": seed_admin.id,
+            },
+        )
+
+    assert compute.status_code == 503
+    assert compute.json()["detail"] == "no_compute_device"
+    status = registry.relay_admission.status()
+    assert status["relay_active"] == 0
+    assert status["relay_payload_bytes"] == len(raw_payload)
+
+
+def test_claimed_relay_cannot_be_released_by_client_cancel_but_server_abort_can(
+    db_engine, seed_admin
+):
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="compute-secret",
+        emergency_bridge_enabled=True,
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
+    registry = app.state.compute_registry
+    registry.replace(
+        ComputeChannel(
+            device_id="relay-worker",
+            owner_user_id=seed_admin.id,
+            websocket=object(),
+            ready=True,
+            supports={"image_resize_v1"},
+        )
+    )
+
+    def post(client, path, value):
+        body = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+        return client.post(path, content=body, headers=_signed_headers(settings, body))
+
+    admission = {
+        "operation": "image_resize_v1",
+        "payload_bytes": 400_000,
+        "payload_sha256": "a" * 64,
+        "requester_user_id": seed_admin.id,
+    }
+    with TestClient(app) as client:
+        admitted = post(client, "/internal/v1/compute-relay-admit", admission)
+        ticket = admitted.json()["ticket"]
+        request = {"requester_user_id": seed_admin.id, "ticket": ticket}
+        assert post(client, "/internal/v1/compute-relay-claim", request).status_code == 200
+
+        cancelled = post(client, "/internal/v1/compute-relay-cancel", request)
+        assert cancelled.status_code == 200
+        assert cancelled.json() == {"status": "cancelled", "released": False}
+        busy = post(client, "/internal/v1/compute-relay-admit", admission)
+        assert busy.status_code == 503
+        assert busy.json()["detail"] == "relay_requester_busy"
+
+        aborted = post(client, "/internal/v1/compute-relay-abort", request)
+        assert aborted.status_code == 200
+        assert aborted.json() == {"status": "aborted", "released": True}
+        assert post(client, "/internal/v1/compute-relay-admit", admission).status_code == 200
 
 
 def test_direct_signaling_reserves_normal_lease_and_releases_on_peer_done(db_engine, db_session):

@@ -1,28 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { transformOnMac } from './computeImage'
-import { requestPeerJob } from './computePeer'
+import { requestHybridJob } from './computeHybrid'
 import { jpegBase64 } from './__fixtures__/photo'
-vi.mock('./computePeer', () => ({ requestPeerJob: vi.fn() }))
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.mocked(requestPeerJob).mockReset() })
+vi.mock('./computeHybrid', () => ({ requestHybridJob: vi.fn() }))
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.mocked(requestHybridJob).mockReset() })
 const photo = () => new File([new Uint8Array(300_000)], 'photo.png', { type: 'image/png' })
 async function result() {
   const bytes = Uint8Array.from(atob(jpegBase64), c => c.charCodeAt(0))
   const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), x => x.toString(16).padStart(2, '0')).join('')
   return { data_base64: btoa(String.fromCharCode(...bytes)), sha256: hash, mime_type: 'image/jpeg', width: 2, height: 2 }
 }
-describe('direct cross-Mac photo processing', () => {
+describe('validated cross-Mac photo processing', () => {
   beforeEach(() => {
     vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue({ width: 2, height: 2, close: vi.fn() }))
   })
   function respond(reply: Record<string, unknown> | null) {
-    vi.mocked(requestPeerJob).mockImplementation(async (_operation, _payload, validate) => reply && await validate!(reply) ? reply : null)
+    vi.mocked(requestHybridJob).mockImplementation(async (_operation, _payload, validate) => reply && await validate!(reply) ? reply : null)
   }
   it('uses a hash-validated image received directly from a free Mac', async () => {
     respond(await result())
     const output = await transformOnMac(photo(), 1920, 0.82)
     expect(output?.type).toBe('image/jpeg')
     expect(output?.size).toBe(atob(jpegBase64).length)
-    expect(requestPeerJob).toHaveBeenCalledWith('image_resize_v1', expect.objectContaining({ mime_type: 'image/png', max_edge: 1920, quality: 82 }), expect.any(Function))
+    expect(requestHybridJob).toHaveBeenCalledWith('image_resize_v1', expect.objectContaining({ mime_type: 'image/png', max_edge: 1920, quality: 82 }), expect.any(Function), 'auto')
   })
   it.each(['bad_hash', 'oversize_dimension', 'wrong_type', 'bad_magic', 'no_worker', 'lying_dimensions', 'decode_failure', 'decoded_mismatch'])('preserves original on %s', async reason => {
     const reply = await result()
@@ -41,11 +41,11 @@ describe('direct cross-Mac photo processing', () => {
     expect(await transformOnMac(new File([new Uint8Array(4 * 1024 * 1024 + 1)], 'a.jpg', { type: 'image/jpeg' }), 1920, 0.82)).toBeNull()
     vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
     expect(await transformOnMac(photo(), 1920, 0.82)).toBeNull()
-    expect(requestPeerJob).not.toHaveBeenCalled()
+    expect(requestHybridJob).not.toHaveBeenCalled()
   })
-  it('keeps the original on direct channel failure without sending it through server Wi-Fi', async () => {
+  it('keeps the original on final routing failure', async () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
-    vi.mocked(requestPeerJob).mockRejectedValue(new Error('NAT traversal failed'))
+    vi.mocked(requestHybridJob).mockRejectedValue(new Error('NAT traversal failed'))
     expect(await transformOnMac(photo(), 1920, 0.82)).toBeNull()
     expect(fetch).not.toHaveBeenCalled()
   })
