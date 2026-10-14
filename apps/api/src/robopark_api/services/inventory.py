@@ -29,9 +29,12 @@ from robopark_api.services import (
     inventory_access,
     inventory_catalog,
     inventory_stock,
-    platform_settings,
+    # Kept as a module attribute for established integration-test overrides.
+    # The personal request path resolves through tracker_gateway_transport.
+    platform_settings,  # noqa: F401
     tracker_cache,
     tracker_client,
+    tracker_gateway_transport,
     tracker_signatures,
 )
 from robopark_api.services.inventory_identity import resolve_catalog_part, resolve_legacy_part
@@ -576,7 +579,7 @@ def task_writeoff(
         ):
             raise inventory_stock.InventoryConflict("inventory_idempotency_conflict")
         return existing
-    token = platform_settings.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise RuntimeError("tracker_token_not_configured")
     try:

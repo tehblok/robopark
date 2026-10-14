@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from alembic import command
@@ -16,9 +17,11 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from robopark_api import models, notification_delivery_models, schedule_models  # noqa: F401
+from robopark_api.config import Settings
 from robopark_api.models import (
     AuthSession,
     Base,
+    CorporateWriteAuthority,
     InventoryCatalogComponent,
     InventoryCatalogPart,
     InventoryCount,
@@ -29,6 +32,7 @@ from robopark_api.models import (
     InventoryReceiptLine,
     User,
 )
+from robopark_api.services import corporate_write_client
 from robopark_api.task_workflow_models import ReliableAction
 
 
@@ -194,6 +198,85 @@ def test_alembic_head_includes_agent_device_registry():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
     assert script.get_heads() == ["0065_corporate_write_receipts"]
+
+
+def test_corporate_write_migration_keeps_legacy_pending_action_on_server(
+    sqlite_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0064_agent_device_identity")
+    engine = create_engine(sqlite_database_url, future=True)
+    command_id = str(uuid4())
+    device_id = str(uuid4())
+    instance_id = str(uuid4())
+    with engine.begin() as connection:
+        role_id = connection.execute(text("SELECT id FROM roles ORDER BY id LIMIT 1")).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, password_hash, role_id, access_status, "
+                "must_change_password, is_active, tracker_login) "
+                "VALUES (1, 'legacy-writer', 'hash', :role_id, 'approved', 0, 1, "
+                "'legacy.writer')"
+            ),
+            {"role_id": role_id},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO agent_devices "
+                "(id, owner_user_id, label, public_key_x963, environment, instance_id, "
+                "approved_at, approved_by_user_id) "
+                "VALUES (:id, 1, 'Ready legacy Mac', :public_key, 'test', :instance_id, "
+                "CURRENT_TIMESTAMP, 1)"
+            ),
+            {
+                "id": device_id,
+                "public_key": b"\x04" + b"m" * 64,
+                "instance_id": instance_id,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reliable_actions "
+                "(id, actor_user_id, resource_type, resource_id, action, idempotency_key, "
+                "payload_hash, payload_json, state, attempts, next_attempt_at, created_at, "
+                "updated_at) VALUES (:id, 1, 'tracker_issue', 'ROBOPARK-42', "
+                "'comment', 'legacy-request', :payload_hash, '{\"text\":\"pending\"}', "
+                "'pending', 0, 0, 1, 1)"
+            ),
+            {"id": command_id, "payload_hash": "a" * 64},
+        )
+
+    command.upgrade(config, "0065_corporate_write_receipts")
+    with Session(engine) as session:
+        authority = session.get(CorporateWriteAuthority, command_id)
+        assert authority is not None
+        assert authority.mode == "server"
+        assert authority.requester_user_id == 1
+        assert authority.resource == "ROBOPARK-42"
+        assert authority.device_id is None
+
+        def unexpected_bridge(*_args, **_kwargs):
+            raise AssertionError("legacy authority must not be re-routed through the bridge")
+
+        monkeypatch.setattr(corporate_write_client, "_signed_post", unexpected_bridge)
+        prepared = corporate_write_client.prepare(
+            session,
+            requester_user_id=1,
+            command_id=command_id,
+            resource="ROBOPARK-42",
+            action="comment_create",
+            allow_server=True,
+            settings=Settings(
+                _env_file=None,
+                database_url=sqlite_database_url,
+                secret_key="migration-test",
+                robopark_environment="test",
+                mac_corporate_gateway_enabled=True,
+            ),
+        )
+        assert prepared.mode == "server"
+        assert prepared.id == command_id
 
 
 def test_agent_identity_migration_fails_closed_without_deleting_legacy_duplicates(

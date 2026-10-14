@@ -89,6 +89,39 @@ def test_personal_read_never_uses_cached_service_account_data(monkeypatch):
     assert len(calls) == 2
 
 
+def test_personal_blockers_ignore_cache_only_options(monkeypatch):
+    from robopark_api.services import tracker_cache, tracker_client
+
+    context = GatewayCredential(7)
+
+    def fetch(*, token, queue, park_tag):
+        assert token is context
+        return [{"key": "TEST-1"}]
+
+    monkeypatch.setattr(tracker_client, "fetch_park_blockers", fetch)
+    assert tracker_cache.fetch_park_blockers(
+        token=context, queue="TEST", park_tag="park", max_age_seconds=0, allow_stale=False
+    ) == [{"key": "TEST-1"}]
+
+
+def test_personal_metrics_never_consume_or_publish_service_cache(monkeypatch):
+    from robopark_api.services import tracker_cache, tracker_metrics
+
+    tracker_cache.clear_all_for_tests()
+    calls = []
+
+    def collect(*, token, **kwargs):
+        calls.append(token)
+        return {"total": 1 if isinstance(token, GatewayCredential) else 99}
+
+    monkeypatch.setattr(tracker_metrics, "collect_park_metrics", collect)
+    scope = {"queue": "TEST", "tag": "park"}
+    assert tracker_cache.collect_park_metrics(token="service", **scope) == {"total": 99}
+    assert tracker_cache.collect_park_metrics(token=GatewayCredential(7), **scope) == {"total": 1}
+    assert tracker_cache.collect_park_metrics(token="service", **scope) == {"total": 99}
+    assert len(calls) == 2
+
+
 def test_sdk_uses_native_context_for_search_and_resources(monkeypatch):
     from robopark_api.services import corporate_gateway_client, tracker_client
     from robopark_api.services.corporate_gateway_contract import CorporateReadResponse

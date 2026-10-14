@@ -124,3 +124,103 @@ def test_web_comment_without_macs_pins_available_server_and_never_replays_unknow
         assert authority.mode == "server"
         assert authority.requester_user_id == actor.id
         assert receipt.state == ("unknown" if server_access == "unknown" else "completed")
+
+
+@pytest.mark.parametrize(
+    "role,path",
+    [
+        ("operator", "/operator/blockers?park_id={park}"),
+        ("operator", "/operator/robots/447/tickets"),
+        ("operator", "/operator/now-report?park_id={park}"),
+        ("operator", "/dashboard/summary?park_id={park}"),
+        ("operator", "/tracker/issues/ROBOPARK-1/timeline"),
+        ("mechanic", "/mechanic/tasks?park_id={park}"),
+        ("mechanic", "/mechanic/robots/447/tickets"),
+    ],
+)
+def test_interactive_views_use_owner_gateway_without_server_tracker_token(
+    client,
+    db_session,
+    test_settings,
+    seed_park_with_tracker,
+    seed_mechanic,
+    monkeypatch,
+    role,
+    path,
+):
+    from robopark_api.services import tracker_cache, tracker_metrics
+
+    operator = User(
+        username="mac-only-operator",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status="approved",
+        is_active=True,
+        tracker_login="operator.login",
+    )
+    db_session.add(operator)
+    db_session.flush()
+    park = seed_park_with_tracker
+    park.feature_reports = True
+    db_session.add(UserPark(user_id=operator.id, park_id=park.id))
+    db_session.commit()
+    actor = operator if role == "operator" else seed_mechanic
+    settings = test_settings.model_copy(
+        update={
+            "robopark_environment": "test",
+            "mac_corporate_gateway_enabled": True,
+            "emergency_bridge_enabled": True,
+        }
+    )
+    monkeypatch.setattr(tracker_gateway_transport, "get_settings", lambda: settings)
+    calls = []
+
+    def read(value):
+        def invoke(*, token, **kwargs):
+            assert isinstance(token, tracker_gateway_transport.GatewayCredential)
+            assert token.requester_user_id == actor.id
+            assert token.server_token is None
+            calls.append(kwargs)
+            return value
+
+        return invoke
+
+    for name in ("fetch_park_blockers", "search_robot_tickets", "list_comments"):
+        monkeypatch.setattr(tracker_cache, name, read([]))
+    monkeypatch.setattr(tracker_cache, "collect_park_metrics", read({}))
+    monkeypatch.setattr(
+        tracker_cache,
+        "get_issue",
+        read(
+            {
+                "key": "ROBOPARK-1",
+                "summary": "blocker [447]",
+                "queue": "ROBOPARK",
+                "status": "Open",
+                "status_key": "open",
+                "tags": ["Alpha"],
+                "assignee": {"login": "mech1"},
+            }
+        ),
+    )
+    # An old service-account aggregate must not bypass fresh owner access.
+    monkeypatch.setattr(
+        tracker_metrics,
+        "get_cached_now_report",
+        lambda *args: pytest.fail("service aggregate cache used for owner read"),
+    )
+    monkeypatch.setattr(
+        tracker_metrics,
+        "set_cached_now_report",
+        lambda *args: pytest.fail("owner data stored in service aggregate cache"),
+    )
+    assert platform_settings.get_tracker_token(db_session) is None
+    assert (
+        client.post(
+            "/auth/login", json={"username": actor.username, "password": "secret"}
+        ).status_code
+        == 204
+    )
+    response = client.get(path.format(park=park.id))
+    assert response.status_code == 200, response.text
+    assert calls

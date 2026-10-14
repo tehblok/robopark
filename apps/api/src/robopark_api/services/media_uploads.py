@@ -17,10 +17,10 @@ from robopark_api.collaboration_models import TrackerClaim
 from robopark_api.media_schemas import MediaUploadCreateIn
 from robopark_api.models import Park, User, UserPark
 from robopark_api.services import (
-    platform_settings,
     rbac,
     tracker_cache,
     tracker_client,
+    tracker_gateway_transport,
     tracker_policy,
 )
 from robopark_api.services.database_locks import database_idempotency_lock
@@ -89,7 +89,7 @@ def _validate_name(value: str) -> str:
 
 def _authorize_start(db: Session, actor: User, issue_key: str) -> int:
     _assert_upload_capability(db, actor)
-    token = platform_settings.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, actor)
     if not token:
         raise HTTPException(503, "tracker_token_not_configured")
     try:

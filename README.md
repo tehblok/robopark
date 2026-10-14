@@ -382,8 +382,10 @@ background job.
 
 ### Audit trail
 
-All Tracker writes go through one service token, so Tracker itself cannot tell
-users apart. Every action is therefore recorded in `audit_log` — actor, role,
+Production 0.2.2 uses a configured service token for Tracker writes. The test
+0.2.3-rc.3 gateway can instead pin a write to the permitted Mac owner's personal
+corporate identity; server and bot integrations retain their service tokens.
+Every action is recorded in `audit_log` — actor, role,
 target issue, outcome (`success` / `failure` / `denied`), and address — and
 comments written through the platform are signed with the real author.
 
@@ -453,8 +455,10 @@ Not included:
 - Standalone copies of the legacy Telegram server or its host updater.
 - VPS / WireGuard remote access (replaced by Tuna HTTPS tunnel).
 - Importing an old production SQLite database; clean hosts start with PostgreSQL 17.
-- Per-user Tracker credentials — the platform uses one service token and
-  attributes actions through `audit_log` and comment signatures.
+- Per-user Tracker credentials on the server. The test-only Mac gateway keeps
+  the owner's OAuth credential in Keychain and sends typed results, not tokens.
+  See [execution modes](docs/architecture/2026-10-15-execution-modes.md) for
+  owner/park restrictions, server fallback and write receipts.
 
 ## Локальный помощник на AGX Orin
 

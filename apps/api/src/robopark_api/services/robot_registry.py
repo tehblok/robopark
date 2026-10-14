@@ -10,7 +10,13 @@ from sqlalchemy.orm import Session
 
 from robopark_api.deps import get_user_parks
 from robopark_api.models import Park, User
-from robopark_api.services import emergency_cache, rbac, tracker_cache, tracker_client
+from robopark_api.services import (
+    emergency_cache,
+    rbac,
+    tracker_cache,
+    tracker_client,
+    tracker_gateway_transport,
+)
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.emergency_snapshot import parse_emergency_snapshot
 from robopark_api.services.tracker_policy import issue_authorization_status, issue_tags
@@ -100,7 +106,7 @@ def registry_rows(
     queues = sorted({queue for _, queue, _ in access.parks})
     issues = []
     if queues:
-        token = settings_svc.get_tracker_token(db)
+        token = tracker_gateway_transport.credential(db, user)
         if not token:
             raise HTTPException(503, detail="tracker_token_not_configured")
         # The existing client drains all upstream pages. Group/count/filter only

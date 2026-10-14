@@ -37,6 +37,10 @@ def _owner_gateway_read(function):
     @wraps(function)
     def read(*args, **kwargs):
         if isinstance(kwargs.get("token"), GatewayCredential):
+            # These govern the legacy shared cache, not the upstream request.
+            if function.__name__ == "fetch_park_blockers":
+                kwargs.pop("max_age_seconds", None)
+                kwargs.pop("allow_stale", None)
             return getattr(tracker_client, function.__name__)(*args, **kwargs)
         return function(*args, **kwargs)
 
@@ -421,6 +425,11 @@ def collect_park_metrics(
 ) -> dict[str, int]:
     """Park KPI bundle keyed by park query shape, never ``user_id``."""
     from robopark_api.services import tracker_metrics as metrics_svc
+
+    if isinstance(token, GatewayCredential):
+        return metrics_svc.collect_park_metrics(
+            token=token, queue=queue, tag=tag, priority=priority, issue_type=issue_type
+        )
 
     key = f"{queue}|{tag}|{priority}|{issue_type or ''}"
     return _metrics_cache.get_or_load(

@@ -12,8 +12,13 @@ from robopark_api.deps import (
 )
 from robopark_api.models import User
 from robopark_api.schemas import NowReportOut, ParkMetricsOut, SkippedParkOut
-from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_cache, tracker_client, tracker_filters, tracker_metrics
+from robopark_api.services import (
+    tracker_cache,
+    tracker_client,
+    tracker_filters,
+    tracker_gateway_transport,
+    tracker_metrics,
+)
 
 router = APIRouter(prefix="/operator", tags=["operator-report"])
 
@@ -75,14 +80,15 @@ def operator_now_report(
             detail="no_report_parks",
         )
 
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="tracker_token_not_configured",
         )
 
-    cached = tracker_metrics.get_cached_now_report(cache_key)
+    personal = isinstance(token, tracker_gateway_transport.GatewayCredential)
+    cached = None if personal else tracker_metrics.get_cached_now_report(cache_key)
     if cached is not None:
         return NowReportOut(**cached)
 
@@ -140,5 +146,6 @@ def operator_now_report(
         "parks": [p.model_dump() for p in park_rows],
         "skipped_parks": [s.model_dump() for s in skipped],
     }
-    tracker_metrics.set_cached_now_report(cache_key, payload)
+    if not personal:
+        tracker_metrics.set_cached_now_report(cache_key, payload)
     return NowReportOut(**payload)

@@ -23,12 +23,12 @@ from robopark_api.services import (
     inventory,
     inventory_stock,
     media_uploads,
-    platform_settings,
     rbac,
     schedules,
     task_lifecycle,
     tracker_cache,
     tracker_client,
+    tracker_gateway_transport,
     tracker_policy,
     tracker_signatures,
 )
@@ -76,7 +76,7 @@ def _park_allowed(db: Session, user: User, park_id: int | None) -> bool:
 
 
 def _issue(db: Session, user: User, item: SyncActionIn, *, fresh: bool = False) -> dict:
-    token = platform_settings.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(503, "tracker_token_not_configured")
     try:
@@ -196,7 +196,7 @@ def dispatch_action(
         try:
             components = (
                 tracker_client.list_queue_components(
-                    token=platform_settings.get_tracker_token(db) or "",
+                    token=tracker_gateway_transport.credential(db, user) or "",
                     queue=str(issue.get("queue") or ""),
                 )
                 if structured is not None

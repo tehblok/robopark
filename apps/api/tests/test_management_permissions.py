@@ -215,9 +215,9 @@ def test_rejected_admin_identity_preserves_operations_tracker_and_vin_park_scope
     assert tracker_denied.value.status_code == 403
 
     monkeypatch.setattr(
-        emergency_scope.settings_svc,
-        "get_tracker_token",
-        lambda _db: "fixture-token",
+        emergency_scope.tracker_gateway_transport,
+        "credential",
+        lambda _db, _user: "fixture-token",
     )
     monkeypatch.setattr(
         emergency_scope.tracker_cache,

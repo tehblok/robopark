@@ -30,12 +30,12 @@ from robopark_api.schemas import (
     TaskTimelineItemOut,
     TrackerCommentIn,
 )
-from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import (
     rbac,
     task_lifecycle,
     tracker_cache,
     tracker_client,
+    tracker_gateway_transport,
     tracker_robot_search,
     tracker_signatures,
 )
@@ -57,7 +57,7 @@ def _issue(db: Session, user: User, key: str, action: str | None, request: Reque
     rbac.assert_approved_or_staff(user)
     if task_lifecycle.is_hidden(db, key):
         raise HTTPException(status_code=404)
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(status_code=503, detail="tracker_token_not_configured")
     try:
@@ -105,7 +105,7 @@ def get_timeline(
     db: Session = Depends(get_db),
 ) -> list[TaskTimelineItemOut]:
     _issue(db, user, key, None, request)
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     try:
         comments = tracker_cache.list_comments(token=token, key=key)
     except tracker_client.TrackerError as exc:

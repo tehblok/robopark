@@ -6,13 +6,13 @@ from robopark_api.deps import get_operator_parks, require_approved_operator
 from robopark_api.models import User
 from robopark_api.routers._blockers import blocker_out as _blocker_out
 from robopark_api.schemas import RobotTicketsOut
-from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services import (
     rbac,
     task_lifecycle,
     tracker_cache,
     tracker_client,
     tracker_filters,
+    tracker_gateway_transport,
 )
 from robopark_api.services.tracker_policy import is_issue_in_scope, load_issue_scope
 
@@ -41,7 +41,7 @@ def operator_robot_tickets(
             detail="no_tracker_parks",
         )
 
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

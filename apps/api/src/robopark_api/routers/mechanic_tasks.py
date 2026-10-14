@@ -7,8 +7,13 @@ from robopark_api.deps import get_mechanic_park, require_approved_mechanic, requ
 from robopark_api.models import User
 from robopark_api.routers._blockers import blocker_out as _blocker_out
 from robopark_api.schemas import MechanicTasksOut
-from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import task_lifecycle, tracker_cache, tracker_client, tracker_filters
+from robopark_api.services import (
+    task_lifecycle,
+    tracker_cache,
+    tracker_client,
+    tracker_filters,
+    tracker_gateway_transport,
+)
 
 router = APIRouter(prefix="/mechanic", tags=["mechanic-tasks"])
 
@@ -42,7 +47,7 @@ def mechanic_tasks(
             detail="tasks_disabled_for_park",
         )
 
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,

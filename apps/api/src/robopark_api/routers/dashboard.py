@@ -13,8 +13,12 @@ from robopark_api.schemas import (
     DashboardMovingItemOut,
     DashboardSummaryOut,
 )
-from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import tracker_cache, tracker_client, tracker_filters
+from robopark_api.services import (
+    tracker_cache,
+    tracker_client,
+    tracker_filters,
+    tracker_gateway_transport,
+)
 from robopark_api.services.blocker_history import history_series
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -65,7 +69,7 @@ def dashboard_summary(
             moving=[],
         )
 
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -16,8 +16,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.deps import get_user_parks
 from robopark_api.models import Park, User
-from robopark_api.services import platform_settings as settings_svc
-from robopark_api.services import rbac, tracker_cache
+from robopark_api.services import rbac, tracker_cache, tracker_gateway_transport
 from robopark_api.services.rbac import RoleSlug
 from robopark_api.services.tracker_policy import is_issue_in_scope, issue_tags, park_tag_matches
 
@@ -52,7 +51,7 @@ def vin_allowed_for_user(db: Session, user: User, vin: str) -> bool:
     if not parks:
         return False
 
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         return False
 
@@ -81,7 +80,7 @@ def vin_allowed_for_park(db: Session, user: User, vin: str, park_id: int) -> boo
         allowed.id for allowed in get_user_parks(db, user)
     }:
         return False
-    token = settings_svc.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         return False
     issues = tracker_cache.search_robot_tickets(

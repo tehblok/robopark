@@ -23,11 +23,11 @@ from robopark_api.operations_schemas import (
 )
 from robopark_api.routers._blockers import blocker_out
 from robopark_api.services import (
-    platform_settings,
     rbac,
     sla_clock,
     tracker_cache,
     tracker_client,
+    tracker_gateway_transport,
     tracker_history,
 )
 from robopark_api.services.blocker_history import BUCKET_SECONDS, align_bucket_start
@@ -346,7 +346,7 @@ def build_overview(
         raise HTTPException(status_code=403, detail="operations_status_forbidden")
     if not park.feature_blockers or not park.tracker_queue or not park.tag:
         raise HTTPException(status_code=409, detail="blockers_disabled_for_park")
-    token = platform_settings.get_tracker_token(db)
+    token = tracker_gateway_transport.credential(db, user)
     if not token:
         raise HTTPException(status_code=503, detail="tracker_token_not_configured")
     priority, issue_type = park_priority_type(park)
