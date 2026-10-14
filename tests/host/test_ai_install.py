@@ -466,13 +466,29 @@ def test_boot_bridge_is_created_by_tmpfiles_and_broker_does_not_depend_on_core()
     assert "robopark.service" in broker["Unit"]["Before"]
 
 
-def test_broker_unit_self_provisions_private_state_before_namespace_setup():
-    from test_systemd_units import unit
+def test_broker_unit_prepares_missing_state_before_storage_check():
+    from test_systemd_units import REPO, unit
 
+    raw = (REPO / "deploy/systemd/robopark-ai-broker.service").read_text()
+    pre_commands = [
+        line.removeprefix("ExecStartPre=")
+        for line in raw.splitlines()
+        if line.startswith("ExecStartPre=")
+    ]
+    assert pre_commands == [
+        "+/usr/bin/systemd-tmpfiles --create --prefix=/var/lib/robopark/ai "
+        "/etc/tmpfiles.d/robopark.conf",
+        "+/usr/bin/python3 -I -c \"import os, stat; assert "
+        "stat.S_ISDIR(os.lstat('/var/lib/robopark/ai').st_mode), "
+        "'ai_state_invalid'\"",
+        "+/usr/bin/python3 -I /opt/robopark/host-tools/robopark-storage-reconcile "
+        "--check",
+    ]
+    assert "StateDirectory=" not in raw
+    assert "StateDirectoryMode=" not in raw
     service = unit("robopark-ai-broker.service")["Service"]
-    assert service["StateDirectory"] == "robopark/ai"
-    assert service["StateDirectoryMode"] == "0750"
-    assert "/var/lib/robopark/ai" in service["ReadWritePaths"].split()
+    assert "-/var/lib/robopark/ai" in service["ReadWritePaths"].split()
+    assert "/var/lib/robopark/ai" not in service["ReadWritePaths"].split()
 
 
 def test_production_config_projects_ai_into_api_and_worker(host_paths):

@@ -88,6 +88,7 @@ def test_boot_recreates_stable_lock_directory_before_sandboxed_units_start():
     assert tmpfiles.read_text() == (
         "d /run/lock/robopark 0700 root root -\n"
         "d /run/robopark-ai 0750 root 10001 -\n"
+        "d /var/lib/robopark/ai :0750 :root :root -\n"
     )
     installer = (REPO / "deploy/installer/lib/install-services.py").read_text()
     assert '"deploy/tmpfiles.d/robopark.conf"' in installer
@@ -95,6 +96,20 @@ def test_boot_recreates_stable_lock_directory_before_sandboxed_units_start():
     updater = (REPO / "deploy/host/robopark_host/updater.py").read_text()
     assert "deploy/tmpfiles.d/robopark.conf" in updater
     assert "etc/tmpfiles.d/robopark.conf" in updater
+
+
+def test_ai_state_tmpfiles_rule_preserves_existing_metadata():
+    tmpfiles = REPO / "deploy/tmpfiles.d/robopark.conf"
+    rules = [line.split() for line in tmpfiles.read_text().splitlines()]
+
+    assert [
+        "d",
+        "/var/lib/robopark/ai",
+        ":0750",
+        ":root",
+        ":root",
+        "-",
+    ] in rules
 
 
 @pytest.mark.parametrize(

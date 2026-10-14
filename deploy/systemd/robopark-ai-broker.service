@@ -9,8 +9,8 @@ StartLimitBurst=3
 [Service]
 Type=simple
 User=root
-StateDirectory=robopark/ai
-StateDirectoryMode=0750
+ExecStartPre=+/usr/bin/systemd-tmpfiles --create --prefix=/var/lib/robopark/ai /etc/tmpfiles.d/robopark.conf
+ExecStartPre=+/usr/bin/python3 -I -c "import os, stat; assert stat.S_ISDIR(os.lstat('/var/lib/robopark/ai').st_mode), 'ai_state_invalid'"
 ExecStartPre=+/usr/bin/python3 -I /opt/robopark/host-tools/robopark-storage-reconcile --check
 ExecStart=/usr/bin/python3 -I /opt/robopark/host-tools/robopark ai-broker
 Restart=on-failure
@@ -25,7 +25,7 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET
-ReadWritePaths=/var/lib/robopark/ai /var/lib/robopark/ops/public /run/robopark-ai /run/lock/robopark
+ReadWritePaths=-/var/lib/robopark/ai /var/lib/robopark/ops/public /run/robopark-ai /run/lock/robopark
 UMask=0077
 MemoryMax=256M
 TasksMax=64
