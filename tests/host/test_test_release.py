@@ -4,7 +4,9 @@ import base64
 import hashlib
 import json
 import re
+import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 from uuid import UUID
 
@@ -306,6 +308,83 @@ def test_mac_assets_are_added_only_inside_release_snapshot(tmp_path: Path):
         capture_output=True,
         text=True,
     ).stdout == ""
+
+
+def test_release_snapshot_preserves_tracked_ignored_sources_without_ignored_secrets(
+    tmp_path: Path,
+):
+    source_root = Path(__file__).resolve().parents[2]
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    required = [
+        "deploy/release-metadata.json",
+        "deploy/ota/__main__.py",
+        "deploy/ota/README.installed.md",
+        *(
+            str(path.relative_to(source_root))
+            for path in (source_root / "deploy/ota/robopark_ota").glob("*.py")
+        ),
+        *(
+            f"deploy/host/robopark_host/{name}.py"
+            for name in ("storage_layout", "storage_setup", "storage_watchdog")
+        ),
+    ]
+    for relative in required:
+        target = repository / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_root / relative, target)
+    (repository / "VERSION").write_text("1.2.3\n")
+    (repository / ".gitignore").write_text("data/\n.release-secrets/\n")
+    component = repository / "apps/web/src/design-system/data/EntityRow.tsx"
+    component.parent.mkdir(parents=True)
+    component.write_text("export const EntityRow = 'tracked source';\n")
+    secret = repository / ".release-secrets/update.key"
+    secret.parent.mkdir()
+    secret.write_text("untracked secret\n")
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "add", "-f", str(component.relative_to(repository))],
+        cwd=repository,
+        check=True,
+    )
+    source_inventory = set(
+        subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        ).stdout.split(b"\0")
+    )
+
+    snapshot = stage_release_source(
+        repository,
+        tmp_path / "snapshot",
+        macos_pkg=None,
+        version="1.2.3",
+    )
+    artifact = build_test_release.build_ota(
+        snapshot,
+        tmp_path / "out",
+        git_sha="a" * 40,
+    )
+
+    staged = set(
+        subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=snapshot,
+            check=True,
+            capture_output=True,
+        ).stdout.split(b"\0")
+    )
+    assert staged == source_inventory
+    assert b"apps/web/src/design-system/data/EntityRow.tsx" in staged
+    assert b".release-secrets/update.key" not in staged
+    assert not (snapshot / ".release-secrets/update.key").exists()
+    with zipfile.ZipFile(artifact) as archive:
+        payload = archive.read("release/apps/web/src/design-system/data/EntityRow.tsx")
+        assert payload == b"export const EntityRow = 'tracked source';\n"
+        assert all(".release-secrets" not in name for name in archive.namelist())
 
 
 def test_mac_release_requires_root_and_rejects_fake_signature(tmp_path: Path):

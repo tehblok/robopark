@@ -14,13 +14,15 @@ RemainAfterExit=yes
 Environment=HOST_ENV_FILE=/etc/robopark/host.env
 ExecStartPre=/usr/bin/python3 -I /opt/robopark/host-tools/robopark restore --boot-recover
 ExecStartPre=/usr/bin/python3 -I /opt/robopark/host-tools/robopark-storage-reconcile --check
-ExecStart=/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json up -d --no-build --wait --wait-timeout 180 db api web
-# A worker failure must not take the read-only site offline.
+ExecStartPre=/usr/bin/python3 -I /opt/robopark/host-tools/robopark-emergency-runtime
+ExecStart=/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json --file /var/lib/robopark/ops/state/emergency-compose-overlay.json up -d --no-build --wait --wait-timeout 180 db api web
+# Optional-service failures must not take the read-only site offline.
+ExecStartPost=-/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json --file /var/lib/robopark/ops/state/emergency-compose-overlay.json up -d --no-build --wait --wait-timeout 60 emergency-bridge
 ExecStartPost=-/usr/bin/python3 -I /opt/robopark/host-tools/robopark-bot-runtime reconcile
 ExecStartPost=-/usr/bin/python3 -I /opt/robopark/host-tools/robopark tuna-start
 ExecStartPost=-/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json up -d --no-build worker
-ExecStop=/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json stop --timeout 30 worker web api
-ExecStopPost=-/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json stop --timeout 30 emergency-bridge
+ExecStop=/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json --file /var/lib/robopark/ops/state/emergency-compose-overlay.json stop --timeout 30 worker web api
+ExecStopPost=-/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json --file /var/lib/robopark/ops/state/emergency-compose-overlay.json stop --timeout 30 emergency-bridge
 ExecStopPost=-/usr/bin/python3 -I /opt/robopark/host-tools/robopark-bot-runtime stop
 TimeoutStartSec=3600
 TimeoutStopSec=90

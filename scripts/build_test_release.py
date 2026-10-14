@@ -255,6 +255,12 @@ def stage_release_source(
     destination.mkdir(parents=True)
     prefix = os.fspath(destination) + os.sep
     try:
+        indexed_paths = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        ).stdout
         subprocess.run(
             ["git", "checkout-index", "--all", f"--prefix={prefix}"],
             cwd=repository,
@@ -262,7 +268,19 @@ def stage_release_source(
             capture_output=True,
         )
         subprocess.run(["git", "init", "-q"], cwd=destination, check=True)
-        subprocess.run(["git", "add", "--all"], cwd=destination, check=True)
+        subprocess.run(
+            [
+                "git",
+                "add",
+                "-f",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ],
+            cwd=destination,
+            check=True,
+            capture_output=True,
+            input=indexed_paths,
+        )
     except (OSError, subprocess.CalledProcessError) as error:
         raise ReleaseBuildError("snapshot_failed") from error
     if macos_pkg is None:

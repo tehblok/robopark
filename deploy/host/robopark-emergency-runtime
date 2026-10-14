@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Release-owned RC43-to-RC44 Emergency Compose compatibility helper."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+RELEASE = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(RELEASE / "deploy/host"))
+
+from robopark_host.emergency_runtime import reconcile_emergency_runtime
+from robopark_host.paths import paths_from_environment
+
+
+def main() -> int:
+    if len(sys.argv) != 1:
+        return 2
+    reconcile_emergency_runtime(paths_from_environment(), expected_release=RELEASE)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
