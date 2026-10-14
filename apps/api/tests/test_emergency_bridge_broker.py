@@ -25,7 +25,7 @@ from robopark_api.emergency_bridge import (
     _validated_robot_payload_size,
     create_broker_app,
 )
-from robopark_api.models import AccessStatus, AgentDevice, AuditLog, User
+from robopark_api.models import AccessStatus, AgentDevice, AuditLog, TelegramAccount, User
 from robopark_api.security import hash_password
 from robopark_api.services import emergency_scope
 from robopark_api.services.emergency_bridge_auth import body_signature
@@ -130,7 +130,7 @@ def test_selector_reports_zero_or_all_busy():
     assert registry.choose({"busy"}) is None
 
 
-def test_selector_distributes_equal_work_across_twelve_and_one_hundred_agents():
+def test_selector_distributes_equal_work_across_one_two_twelve_and_one_hundred_agents():
     async def scenario(size: int):
         registry = BrokerRegistry(max_connections=100)
         devices = [_channel(f"mac-{index:03d}", 20) for index in range(size)]
@@ -147,8 +147,8 @@ def test_selector_distributes_equal_work_across_twelve_and_one_hundred_agents():
         assert set(selected) == {item.device_id for item in devices}
         assert max(selected.count(item.device_id) for item in devices) <= 3
 
-    asyncio.run(scenario(12))
-    asyncio.run(scenario(100))
+    for size in (1, 2, 12, 100):
+        asyncio.run(scenario(size))
 
 
 def test_selector_respects_pause_capacity_load_and_aging():
@@ -177,6 +177,136 @@ def test_selector_respects_pause_capacity_load_and_aging():
         assert registry.choose({"loaded", "available"}) is loaded
 
     asyncio.run(scenario())
+
+
+def test_selector_rejects_critical_or_saturated_resource_hints_and_throttles_serious_heat():
+    registry = BrokerRegistry(max_connections=100)
+    critical = _channel("critical", 1)
+    critical.thermal_state = "critical"
+    saturated = _channel("saturated-resource", 1)
+    saturated.cpu_percent = 99.0
+    serious = _channel("serious", 1)
+    serious.capacity = 4
+    serious.thermal_state = "serious"
+    cool = _channel("cool", 20)
+    cool.capacity = 4
+    for channel in (critical, saturated, serious, cool):
+        registry.replace(channel)
+
+    assert registry.choose({"critical", "saturated-resource", "serious", "cool"}) is cool
+    cool.inflight = 2
+    assert registry.choose({"critical", "saturated-resource", "serious", "cool"}) is serious
+    serious.inflight = 1
+    assert registry.choose({"critical", "saturated-resource", "serious"}) is None
+
+
+def test_status_projects_bounded_resources_freshness_and_observed_response_speed(monkeypatch):
+    now = 500.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    registry = BrokerRegistry(max_connections=100)
+    channel = _channel("mac", 20)
+    channel.cpu_percent = 42.5
+    channel.memory_percent = 61.0
+    channel.thermal_state = "fair"
+    channel.response_latency_ms = 250.0
+    channel.response_throughput_mbps = 8.0
+    channel.last_upstream_success = now - 4
+    channel.last_heartbeat = now
+    registry.replace(channel)
+
+    projected = registry.status()["devices"][0]
+
+    assert projected["fresh"] is True
+    assert projected["cpu_percent"] == 42.5
+    assert projected["memory_percent"] == 61.0
+    assert projected["thermal_state"] == "fair"
+    assert projected["response_latency_ms"] == 250.0
+    assert projected["throughput_mbps"] == 8.0
+    assert projected["last_success_age_seconds"] == 4.0
+
+    now = 531.0
+    stale = registry.status()["devices"][0]
+    assert stale["fresh"] is False
+    assert stale["status"] == "offline"
+    assert stale["cpu_percent"] is None
+    assert stale["throughput_mbps"] is None
+
+    now = 565.0
+    channel.last_heartbeat = now
+    expired_measurement = registry.status()["devices"][0]
+    assert expired_measurement["fresh"] is True
+    assert expired_measurement["response_latency_ms"] is None
+    assert expired_measurement["throughput_mbps"] is None
+    assert expired_measurement["last_success_age_seconds"] == 69.0
+
+
+def test_status_distinguishes_saturated_zero_capacity_and_corporate_unavailable():
+    registry = BrokerRegistry(max_connections=100)
+    channel = _channel("mac", 20, inflight=2)
+    registry.replace(channel)
+    saturated = registry.status()["devices"][0]
+    assert saturated["status"] == "busy"
+    assert saturated["ready"] is False
+    channel.inflight = 0
+    channel.capacity = 0
+    assert registry.choose({"mac"}) is None
+    assert registry.reserve_queue_slot(channel) is False
+    overloaded = registry.status()["devices"][0]
+    assert overloaded["status"] == "busy"
+    assert overloaded["ready"] is False
+    channel.ready = False
+    channel.supports = {"managed_probes"}
+    channel.probe_available = False
+    assert registry.status()["devices"][0]["status"] == "corporate_unavailable"
+    channel.capacity = 2
+    channel.ready = True
+    channel.probe_available = True
+    assert registry.status()["devices"][0]["status"] == "ready"
+    assert registry.status()["devices"][0]["ready"] is True
+
+
+def test_readiness_probe_does_not_count_as_an_actual_emergency_response(monkeypatch):
+    now = 1_000.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    registry = BrokerRegistry(max_connections=100)
+    channel = _channel("mac", 20)
+    channel.supports = {"managed_probes"}
+    channel.probe_available = True
+    channel.last_upstream_success = now - 90
+    registry.replace(channel)
+    assert registry.reserve_probe(channel, now=now) is True
+
+    assert (
+        registry.finish_probe(
+            channel,
+            probe_id=channel.probe_id or "",
+            ready=True,
+            latency_ms=12,
+            now=now + 1,
+        )
+        is True
+    )
+
+    assert channel.last_upstream_success == now - 90
+
+
+def test_success_observes_response_latency_throughput_and_compression_savings(monkeypatch):
+    now = 100.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    registry = BrokerRegistry(max_connections=100)
+    channel = _channel("mac", 20)
+
+    registry.record_success(
+        channel,
+        encoded_bytes=250_000,
+        decoded_bytes=1_000_000,
+        duration_seconds=0.25,
+        now=now,
+    )
+
+    assert channel.response_latency_ms == 250.0
+    assert channel.response_throughput_mbps == 8.0
+    assert channel.compression_saved_bytes == 750_000
 
 
 def test_candidate_filter_keeps_later_device_after_multiple_vin_denials(
@@ -526,12 +656,12 @@ def test_silent_first_agent_reserves_time_for_second_attempt(db_engine, db_sessi
         robopark_instance_id="11111111-1111-1111-1111-111111111111",
     )
     devices = []
-    for label in ("Silent", "Responsive"):
+    for index, label in enumerate(("Silent", "Responsive"), start=1):
         device = AgentDevice(
             id=str(uuid4()),
             owner_user_id=seed_admin.id,
             label=label,
-            public_key_x963=b"\x04" + b"x" * 64,
+            public_key_x963=b"\x04" + bytes([index]) * 64,
             environment="production",
             instance_id=str(settings.robopark_instance_id),
             approved_at=datetime.now(UTC),
@@ -727,12 +857,19 @@ def test_websocket_authenticates_registered_p256_device(db_engine, db_session, s
                 "power": "ac",
                 "supports": ["raw_deflate", "managed_probes"],
                 "probe_available": True,
+                "cpu_percent": 42.5,
+                "memory_percent": 61,
+                "thermal_state": "fair",
             }
         )
         probe = ws.receive_json()
         assert probe["type"] == "probe"
         assert probe["operation"] == "emergency_readiness"
         assert probe["timeout_ms"] == 10_000
+        channel = app.state.registry.channels[device.id]
+        assert channel.cpu_percent == 42.5
+        assert channel.memory_percent == 61.0
+        assert channel.thermal_state == "fair"
         ws.send_json(
             {
                 "type": "probe_result",
@@ -742,6 +879,25 @@ def test_websocket_authenticates_registered_p256_device(db_engine, db_session, s
                 "latency_ms": 18,
             }
         )
+        ws.send_json(
+            {
+                "type": "heartbeat",
+                "generation": ready["generation"],
+                "ready": True,
+                "capacity": 0,
+                "active_jobs": 1,
+                "cpu_percent": 96,
+                "load": 1.0,
+            }
+        )
+        deadline = time.monotonic() + 2
+        while channel.cpu_percent != 96 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert channel.cpu_percent == 96
+        assert channel.capacity == 0
+        assert channel.reported_active_jobs == 1  # Existing work drains at zero capacity.
+        assert app.state.registry.choose({device.id}) is None
+        assert app.state.registry.status()["devices"][0]["status"] == "busy"
 
 
 def test_legacy_pending_device_of_approved_account_is_trusted_on_bridge_login(
@@ -897,12 +1053,14 @@ def test_private_pool_status_is_filtered_for_owner_and_aggregates_without_payloa
         robopark_instance_id="11111111-1111-1111-1111-111111111111",
     )
     devices = []
-    for owner, label in ((seed_admin, "Admin Mac"), (seed_royal, "Royal Mac")):
+    for index, (owner, label) in enumerate(
+        ((seed_admin, "Admin Mac"), (seed_royal, "Royal Mac")), start=1
+    ):
         device = AgentDevice(
             id=str(uuid4()),
             owner_user_id=owner.id,
             label=label,
-            public_key_x963=b"\x04" + b"x" * 64,
+            public_key_x963=b"\x04" + bytes([index]) * 64,
             environment="production",
             instance_id=str(settings.robopark_instance_id),
             approved_at=datetime.now(UTC),
@@ -910,6 +1068,13 @@ def test_private_pool_status_is_filtered_for_owner_and_aggregates_without_payloa
         )
         db_session.add(device)
         devices.append(device)
+    db_session.add(
+        TelegramAccount(
+            user_id=seed_admin.id,
+            telegram_user_id=900001,
+            display_name="Admin Person",
+        )
+    )
     db_session.commit()
     app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
     channel = _channel(devices[0].id, 12)
@@ -945,6 +1110,9 @@ def test_private_pool_status_is_filtered_for_owner_and_aggregates_without_payloa
     assert result["summary"]["encoded_bytes"] == 100
     assert result["summary"]["upstream_dispatches"] == 3
     assert result["summary"]["upstream_backpressure"] == 1
+    admin_projection = next(item for item in result["devices"] if item["id"] == devices[0].id)
+    assert admin_projection["owner_username"] == seed_admin.username
+    assert admin_projection["owner_display_name"] == "Admin Person"
     assert "payload" not in json.dumps(result).lower()
 
     operator = User(
@@ -988,6 +1156,9 @@ def test_private_pool_status_is_filtered_for_owner_and_aggregates_without_payloa
     assert own_response.status_code == 200
     assert own_response.json()["scope"] == "own"
     assert [item["id"] for item in own_response.json()["devices"]] == [operator_device.id]
+    serialized = json.dumps(own_response.json())
+    assert seed_admin.username not in serialized
+    assert "Admin Person" not in serialized
 
 
 def test_result_authority_rechecks_requester_and_source(

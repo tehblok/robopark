@@ -60,6 +60,47 @@ describe('prepareImage', () => {
     expect(prepared.blob).toBe(source)
   })
 
+  it('keeps the original when conversion would increase upload traffic', async () => {
+    class WorkerStub {
+      onmessage?: (event: MessageEvent) => void
+      postMessage(request: { id: string }) {
+        this.onmessage?.({ data: { id: request.id, blob: new Blob(['larger converted image'], { type: 'image/webp' }) } } as MessageEvent)
+      }
+      terminate() {}
+    }
+    vi.stubGlobal('Worker', WorkerStub)
+    vi.stubGlobal('createImageBitmap', vi.fn())
+    vi.stubGlobal('OffscreenCanvas', class {})
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview')
+    const source = new File(['small'], 'robot.jpg', { type: 'image/jpeg' })
+    const prepared = await prepareImage(source)
+    expect(prepared.blob).toBe(source)
+    expect(prepared.sizeBytes).toBe(5)
+  })
+
+  it('falls back and terminates a stalled worker so offline photo queueing continues', async () => {
+    vi.useFakeTimers()
+    const terminate = vi.fn()
+    class WorkerStub {
+      postMessage() {}
+      terminate = terminate
+    }
+    vi.stubGlobal('Worker', WorkerStub)
+    vi.stubGlobal('createImageBitmap', vi.fn())
+    vi.stubGlobal('OffscreenCanvas', class {})
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview')
+    const source = new File(['image'], 'robot.jpg', { type: 'image/jpeg' })
+    try {
+      const pending = prepareImage(source)
+      await vi.advanceTimersByTimeAsync(10000)
+      const prepared = await pending
+      expect(prepared.blob).toBe(source)
+      expect(terminate).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('produces a stable checksum and revocable preview for accepted images', async () => {
     const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview')
     const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)

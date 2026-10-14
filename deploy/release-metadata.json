@@ -1,5 +1,5 @@
 {
-  "migration_head": "0063_agent_devices",
+  "migration_head": "0064_agent_device_identity",
   "migration_compatibility": {
     "from_heads": [
       "0055_media_upload_park",
@@ -10,7 +10,8 @@
       "0060_native_telegram",
       "0061_telegram_account_metadata",
       "0062_notification_retention_idx",
-      "0063_agent_devices"
+      "0063_agent_devices",
+      "0064_agent_device_identity"
     ],
     "reversible": false
   },

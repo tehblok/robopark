@@ -4,10 +4,14 @@ import PackageDescription
 let package = Package(
     name: "RoboparkAgent",
     platforms: [.macOS(.v13)],
-    products: [.executable(name: "RoboparkAgent", targets: ["RoboparkAgent"])],
+    products: [
+        .executable(name: "RoboparkAgent", targets: ["RoboparkAgent"]),
+        .executable(name: "RoboparkUpdater", targets: ["RoboparkUpdater"]),
+    ],
     targets: [
         .target(name: "AgentCore"),
         .executableTarget(name: "RoboparkAgent", dependencies: ["AgentCore"]),
+        .executableTarget(name: "RoboparkUpdater", dependencies: ["AgentCore"]),
         .executableTarget(name: "AgentCoreChecks", dependencies: ["AgentCore"], path: "Tests/AgentCoreChecks"),
         .executableTarget(name: "DesktopChecks", dependencies: ["AgentCore"], path: "Tests/DesktopChecks")
     ]

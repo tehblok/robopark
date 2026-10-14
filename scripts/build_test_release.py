@@ -379,7 +379,8 @@ def write_delivery_metadata(
             f"Robopark test release {version}\n\n"
             "Сервер: один OTA подходит для Khadas VIM4 и NVIDIA AGX Orin.\n"
             "Для нового тестового сервера: sudo python3 <файл.ota> install --environment test\n"
-            "Для нового production-сервера: sudo python3 <файл.ota> install --environment production\n"
+            "Это тестовый prerelease: не устанавливайте его на действующий production.\n"
+            "Бывший production Khadas RC43 переводится отдельным Robopark-Khadas-Test-<версия>.pyz; см. START-HERE.md.\n"
             "Каждому одновременно работающему серверу нужен отдельный HTTPS-адрес.\n"
             "Перед установкой проверьте SHA256SUMS. Этот пакет не выполняет SSH-развёртывание.\n"
         ),

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "target_head": "0063_agent_devices",
+  "target_head": "0064_agent_device_identity",
   "known_heads": [
     "0055_media_upload_park",
     "0056_host_terminal",
@@ -10,7 +10,8 @@
     "0060_native_telegram",
     "0061_telegram_account_metadata",
     "0062_notification_retention_idx",
-    "0063_agent_devices"
+    "0063_agent_devices",
+    "0064_agent_device_identity"
   ],
   "bridge_before": "0.2.0-rc.8",
   "bridge_version": "0.2.0-rc.8",

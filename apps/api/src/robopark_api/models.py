@@ -1239,7 +1239,15 @@ class AgentEnrollment(Base):
 
 class AgentDevice(Base):
     __tablename__ = "agent_devices"
-    __table_args__ = (Index("ix_agent_devices_owner_active", "owner_user_id", "revoked_at"),)
+    __table_args__ = (
+        Index("ix_agent_devices_owner_active", "owner_user_id", "revoked_at"),
+        UniqueConstraint(
+            "public_key_x963",
+            "environment",
+            "instance_id",
+            name="uq_agent_devices_installation_identity",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))

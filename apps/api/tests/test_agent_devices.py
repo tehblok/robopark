@@ -101,6 +101,67 @@ def test_enrollment_claim_is_one_use_auto_approved_and_private_key_never_enters_
     assert code not in (audit_entry.detail or "")
 
 
+def test_authenticated_first_login_claims_device_without_manual_code_and_is_idempotent(
+    client, db_session, seed_admin
+):
+    login_as(client, "admin", "secret")
+    payload = {
+        "label": "Desk Mac",
+        "public_key": _public_key(),
+        "environment": "production",
+        "instance_id": "00000000-0000-0000-0000-000000000000",
+    }
+
+    first = client.post("/agent-devices/claim-auth", json=payload)
+    repeated = client.post("/agent-devices/claim-auth", json=payload)
+
+    assert first.status_code == 201
+    assert repeated.status_code == 200
+    assert repeated.json()["device_id"] == first.json()["device_id"]
+    assert repeated.json()["owner_user_id"] == seed_admin.id
+    device = db_session.get(AgentDevice, first.json()["device_id"])
+    assert device is not None
+    assert device.owner_user_id == seed_admin.id
+    assert device.approved_by_user_id == seed_admin.id
+
+
+def test_authenticated_claim_cannot_move_key_to_another_account_or_restore_revocation(
+    client, db_session, seed_admin
+):
+    public_key = _public_key()
+    payload = {
+        "label": "Bound Mac",
+        "public_key": public_key,
+        "environment": "production",
+        "instance_id": "00000000-0000-0000-0000-000000000000",
+    }
+    login_as(client, "admin", "secret")
+    claimed = client.post("/agent-devices/claim-auth", json=payload)
+    assert claimed.status_code == 201
+
+    operator = User(
+        username="device-account-switch",
+        password_hash=hash_password("secret"),
+        role_id=role_id_for(db_session, "operator"),
+        access_status=AccessStatus.approved.value,
+        is_active=True,
+    )
+    db_session.add(operator)
+    db_session.commit()
+    login_as(client, operator.username, "secret")
+
+    switched = client.post("/agent-devices/claim-auth", json=payload)
+    assert switched.status_code == 409
+    assert switched.json()["detail"] == "device_owner_mismatch"
+    assert db_session.get(AgentDevice, claimed.json()["device_id"]).owner_user_id == seed_admin.id
+
+    login_as(client, "admin", "secret")
+    assert client.delete(f"/agent-devices/{claimed.json()['device_id']}").status_code == 204
+    revoked = client.post("/agent-devices/claim-auth", json=payload)
+    assert revoked.status_code == 409
+    assert revoked.json()["detail"] == "device_revoked"
+
+
 def test_claim_rejects_environment_or_instance_without_consuming_code(client, seed_admin):
     login_as(client, "admin", "secret")
     code = client.post("/agent-devices/enrollments", json={"label": "Mac"}).json()["code"]
@@ -250,7 +311,7 @@ def test_new_code_recovers_active_device_with_same_key_at_owner_limit(
     assert issue_and_claim(_public_key()).status_code == 409
 
 
-def test_recovery_does_not_restore_revoked_key_or_cross_owner_identity(
+def test_recovery_rejects_revoked_key_and_cross_owner_identity(
     client, db_session, seed_admin, test_settings
 ):
     test_settings.agent_device_max_per_user = 1
@@ -275,8 +336,8 @@ def test_recovery_does_not_restore_revoked_key_or_cross_owner_identity(
     assert client.delete(f"/agent-devices/{original.json()['device_id']}").status_code == 204
 
     after_revoke = issue_and_claim(public_key)
-    assert after_revoke.status_code == 201
-    assert after_revoke.json()["device_id"] != original.json()["device_id"]
+    assert after_revoke.status_code == 409
+    assert after_revoke.json()["detail"] == "invalid_code"
 
     operator = User(
         username="other-device-owner",
@@ -290,12 +351,9 @@ def test_recovery_does_not_restore_revoked_key_or_cross_owner_identity(
     assert login_as(client, "other-device-owner", "secret").status_code == 204
 
     other_owner = issue_and_claim(public_key)
-    assert other_owner.status_code == 201
-    assert other_owner.json()["device_id"] not in {
-        original.json()["device_id"],
-        after_revoke.json()["device_id"],
-    }
-    assert db_session.get(AgentDevice, other_owner.json()["device_id"]).owner_user_id == operator.id
+    assert other_owner.status_code == 409
+    assert other_owner.json()["detail"] == "invalid_code"
+    assert db_session.scalar(select(func.count()).select_from(AgentDevice)) == 1
 
 
 def test_public_claim_rate_limiter_is_bounded_per_client_and_memory():
@@ -384,3 +442,48 @@ def test_pool_status_disabled_is_local_and_does_not_call_broker(
     assert response.status_code == 200
     assert response.json()["enabled"] is False
     assert response.json()["devices"] == []
+
+
+def test_automatic_probe_target_uses_authorized_registry_without_emergency_calls(
+    client, db_session, seed_mechanic, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import emergency_client, platform_settings, tracker_client
+
+    assert client.get("/agent-devices/probe-target").status_code == 401
+    login_as(client, "mech1", "secret")
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda db: "fixture-token")
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **kwargs: [
+            {"key": "ROBOPARK-FOREIGN", "queue": "ROBOPARK", "tags": ["Foreign"], "robot": "1"},
+            {
+                "key": "ROBOPARK-OWN",
+                "queue": "ROBOPARK",
+                "tags": [seed_park_with_tracker.tag],
+                "robot": "447",
+            },
+        ],
+    )
+
+    def unexpected_read(**kwargs):
+        raise AssertionError("Probe discovery must not read Emergency on the server")
+
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", unexpected_read)
+    response = client.get("/agent-devices/probe-target")
+    assert response.status_code == 200
+    assert response.json() == {"vin": "YASADR00000000447"}
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_automatic_probe_target_has_no_guessed_robot_when_registry_empty(
+    client, seed_admin, seed_park_with_tracker, monkeypatch
+):
+    from robopark_api.services import platform_settings, tracker_client
+
+    login_as(client, "admin", "secret")
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda db: "fixture-token")
+    monkeypatch.setattr(tracker_client, "search_issues", lambda **kwargs: [])
+    response = client.get("/agent-devices/probe-target")
+    assert response.status_code == 200
+    assert response.json() == {"vin": None}

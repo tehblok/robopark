@@ -130,7 +130,7 @@ func check(_ value: @autoclosure () throws -> Bool, _ name: String) throws {
     guard try value() else { fatalError("FAIL: \(name)") }
     checks += 1
 }
-func info(_ instance: String, origin: String = "https://service.example") throws -> (ServerOrigin, ServerInfo) {
+func info(_ instance: String, origin: String = "https://roboparktest.ru.tuna.am") throws -> (ServerOrigin, ServerInfo) {
     let server = try ServerOrigin(origin)
     let value: [String: Any] = ["signed_profile": ["payload": "test", "signature": "test"],
         "environment": "test", "instance_id": instance, "protocol": 1]
@@ -149,7 +149,7 @@ func testTransport() -> URLSession {
 
 @main struct Run {
     static func main() async throws {
-        let instanceA = "11111111-1111-4111-8111-111111111111"
+        let instanceA = "d6ed3b43-c41b-4614-833e-c5ec30936ef3"
         let instanceB = "22222222-2222-4222-8222-222222222222"
         let (originA, infoA) = try info(instanceA)
         let (_, infoB) = try info(instanceB, origin: "https://second.example")
@@ -163,12 +163,18 @@ func testTransport() -> URLSession {
         _ = try await session.request(target: "/api/auth/me?scope=desktop", method: "GET",
                                       headers: ["authorization": "attacker", "cookie": "attacker=1"], body: Data())
         try check(session.profile?.cookies.count == 1 && session.profile?.cookies.first?.name == "native_session", "secure server cookie retained only in native profile")
-        try check(MockURLProtocol.seen.last?.url?.absoluteString == "https://service.example/api/auth/me?scope=desktop", "relative API path and query preserved")
+        try check(MockURLProtocol.seen.last?.url?.absoluteString == "https://roboparktest.ru.tuna.am/api/auth/me?scope=desktop", "relative API path and query preserved")
         try check(MockURLProtocol.seen.last?.value(forHTTPHeaderField: "Authorization") == nil && MockURLProtocol.seen.last?.value(forHTTPHeaderField: "Cookie") == nil, "browser supplied credentials are rejected")
-        try check(MockURLProtocol.seen.last?.value(forHTTPHeaderField: "Origin") == "https://service.example", "native origin is set")
+        try check(MockURLProtocol.seen.last?.value(forHTTPHeaderField: "Origin") == "https://roboparktest.ru.tuna.am", "native origin is set")
         try check(SecureStore.values["workspace-profile-v1"] != nil, "cookie profile persisted")
 
         let restored = try WorkspaceSession(transport: testTransport())
+        var restoredIdentity = 0
+        restored.onIdentity = { user in if user["id"] as? Int == 7 { restoredIdentity += 1 } }
+        MockURLProtocol.replies["GET /api/auth/me?"] = .init(status: 200, headers: [:],
+            body: Data("{\"id\":7,\"access_status\":\"approved\",\"permissions\":[\"nav.emergency\"]}".utf8), delay: 0)
+        let didRestoreIdentity = await restored.restoreIdentity()
+        try check(didRestoreIdentity && restoredIdentity == 1, "authenticated restart restores native identity before pool activation")
         MockURLProtocol.replies["GET /api/tasks?"] = .init(status: 200, headers: [:], body: Data("[]".utf8), delay: 0)
         _ = try await restored.request(target: "/api/tasks", method: "GET", headers: [:], body: Data())
         try check(MockURLProtocol.seen.last?.value(forHTTPHeaderField: "Cookie")?.hasPrefix("native_session=") == true, "persisted cookie restored natively")
@@ -183,6 +189,9 @@ func testTransport() -> URLSession {
         MockURLProtocol.replies["POST /api/auth/logout?"] = .init(status: 204, headers: [:], body: Data(), delay: 0)
         let logout = try await session.proxy(local("POST", "/api/auth/%6cogout", body: "{}"))
         try check(logout.status == 204 && session.profile?.cookies.isEmpty == true && SecureStore.isSignedOut("workspace"), "logout clears native session")
+        let signedOutRestart = try WorkspaceSession(transport: testTransport())
+        let didRestoreSignedOut = await signedOutRestart.restoreIdentity()
+        try check(!didRestoreSignedOut, "logout restart remains outside the worker pool")
 
         // A delayed pre-logout result must never write a cookie after clear().
         MockURLProtocol.replies["GET /api/slow?"] = .init(status: 200,
@@ -205,9 +214,20 @@ func testTransport() -> URLSession {
         let recovered = try WorkspaceSession(transport: testTransport())
         try check(recovered.profile?.cookies.isEmpty == true && recovered.profile?.accountID == nil, "tombstone suppresses stale Keychain session after deletion failure")
 
-        // Switching a trusted deployment is a hard generation and cookie boundary.
-        try recovered.configure(origin: try ServerOrigin("https://second.example"), info: infoB)
-        try check(recovered.profile?.origin == "https://second.example" && recovered.profile?.cookies.isEmpty == true, "server switch removes cookies")
+        // This test-only build must never reactivate a persisted production profile.
+        do { try recovered.configure(origin: try ServerOrigin("https://second.example"), info: infoB); fatalError("FAIL: production assignment accepted") }
+        catch { checks += 1 }
+        try check(recovered.profile?.origin != "https://second.example", "production assignment is quarantined before network use")
+        let persistedProduction = WorkspaceProfile(origin: "https://prod.example", instanceID: instanceB,
+            environment: "production", signedProfile: infoB.signed_profile,
+            cookies: [WorkspaceCookie(name: "session", value: "secret", path: "/", expires: nil)], accountID: 7)
+        SecureStore.values["workspace-profile-v1"] = try JSONEncoder().encode(persistedProduction)
+        SecureStore.markSignedOut("workspace", false)
+        let beforeQuarantine = MockURLProtocol.seen.count
+        let quarantined = try WorkspaceSession(transport: testTransport())
+        let restoredProduction = await quarantined.restoreIdentity()
+        try check(!restoredProduction && quarantined.profile == nil && MockURLProtocol.seen.count == beforeQuarantine,
+                  "persisted production profile cannot make a request in the test app")
         MockURLProtocol.replies["GET /api/oversize?"] = .init(status: 200,
             headers: ["Content-Length": "33554433"], body: Data(), delay: 0)
         do { _ = try await recovered.request(target: "/api/oversize", method: "GET", headers: [:], body: Data()); fatalError("FAIL: oversized response accepted") } catch { checks += 1 }

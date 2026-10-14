@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import hashlib
 import json
@@ -18,9 +19,9 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 if __package__:
-    from . import khadas_test_setup as setup
+    from .robopark_version import ReleaseVersion
 else:
-    import khadas_test_setup as setup
+    from robopark_version import ReleaseVersion
 
 ROOT = Path(__file__).resolve().parents[1]
 ORIGIN = "https://roboparktest.ru.tuna.am"
@@ -31,6 +32,8 @@ def verify_profile(profile: bytes, public: bytes, instance_id: str) -> None:
     if str(UUID(instance_id)) != instance_id or UUID(instance_id).int == 0:
         raise ValueError("invalid_instance_id")
     envelope = json.loads(profile)
+    if not isinstance(envelope, dict) or set(envelope) != {"payload", "signature"}:
+        raise ValueError("profile_schema_invalid")
     payload = base64.b64decode(envelope["payload"], validate=True)
     signature = base64.b64decode(envelope["signature"], validate=True)
     root = json.loads(public)
@@ -49,13 +52,44 @@ def verify_profile(profile: bytes, public: bytes, instance_id: str) -> None:
         "environment": "test",
         "channel": "rc",
     }
+    if not isinstance(assignment, dict) or set(assignment) != {*expected, "expires"}:
+        raise ValueError("profile_schema_invalid")
     if any(assignment.get(k) != v for k, v in expected.items()):
         raise ValueError("profile_assignment_mismatch")
     if (
-        not isinstance(assignment.get("expires"), int)
+        type(assignment.get("expires")) is not int
         or assignment["expires"] <= time.time()
     ):
         raise ValueError("profile_expired")
+
+
+def pinned_engine(target: dict) -> bytes:
+    """Render immutable release pins; runtime never trusts target.json for its pins."""
+    source = (ROOT / "scripts/khadas_test_setup.py").read_text()
+    pins = {
+        "EXPECTED_VERSION": target["version"],
+        "EXPECTED_OTA_NAME": target["ota_name"],
+        "EXPECTED_OTA_SHA256": target["ota_sha256"],
+        "EXPECTED_OTA_SIZE": target["ota_size"],
+        "PINNED_UPDATE_ROOT_B64": EXPECTED_UPDATE_ROOT,
+    }
+    lines = source.splitlines(keepends=True)
+    found = set()
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        name = node.targets[0]
+        if not isinstance(name, ast.Name) or name.id not in pins:
+            continue
+        if name.id in found or node.lineno != node.end_lineno:
+            raise ValueError("engine_pin_layout_invalid")
+        found.add(name.id)
+        lines[node.lineno - 1] = f"{name.id} = {pins[name.id]!r}\n"
+    if found != set(pins):
+        raise ValueError("engine_pin_layout_invalid")
+    rendered = "".join(lines)
+    compile(rendered, "khadas_test_setup.py", "exec")
+    return rendered.encode()
 
 
 def build_bundle(
@@ -66,6 +100,7 @@ def build_bundle(
     instance_id: str,
     *,
     verify=None,
+    version: str | None = None,
 ) -> dict:
     if output.exists() or output.is_symlink():
         raise FileExistsError(output)
@@ -74,12 +109,27 @@ def build_bundle(
         from robopark_ota.verify import verify_ota
 
         verify = verify_ota
+    selected_version = ReleaseVersion.parse(
+        version or (ROOT / "VERSION").read_text().strip()
+    )
     verified = verify(ota)
-    if not ota.name.endswith(".ota") or ota.name in {".", ".."}:
-        raise ValueError("invalid_ota_name")
+    if (
+        selected_version.stage != "rc"
+        or verified.manifest.app_version != selected_version.raw
+        or ota.name != f"robopark-{selected_version.raw}.ota"
+    ):
+        raise ValueError("target_ota_invalid")
     profile_raw, public_raw = profile.read_bytes(), update_root.read_bytes()
     verify_profile(profile_raw, public_raw, instance_id)
-    ota_raw = ota.read_bytes()
+    if not 0 < verified.size <= 512 * 1024 * 1024:
+        raise ValueError("target_ota_invalid")
+    with ota.open("rb") as stream:
+        ota_raw = stream.read(verified.size + 1)
+    if (
+        len(ota_raw) != verified.size
+        or hashlib.sha256(ota_raw).hexdigest() != verified.sha256
+    ):
+        raise ValueError("ota_changed_after_verification")
     target = {
         "version": verified.manifest.app_version,
         "ota_name": ota.name,
@@ -91,14 +141,13 @@ def build_bundle(
         "instance_id": instance_id,
         "profile_sha256": hashlib.sha256(profile_raw).hexdigest(),
     }
-    setup.validate_target(target)
     members = {
         "__main__.py": (
             b"from khadas_test_setup import main\n"
             b"from khadas_test_isolation import isolate\n"
             b"raise SystemExit(main(isolation_callback=isolate))\n"
         ),
-        "khadas_test_setup.py": (ROOT / "scripts/khadas_test_setup.py").read_bytes(),
+        "khadas_test_setup.py": pinned_engine(target),
         "khadas_test_isolation.py": (
             ROOT / "scripts/khadas_test_isolation.py"
         ).read_bytes(),
@@ -135,9 +184,17 @@ def main() -> None:
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--update-root", type=Path, required=True)
     parser.add_argument("--instance-id", required=True)
+    parser.add_argument(
+        "--version", help="Exact RC version (defaults to repository VERSION)"
+    )
     args = parser.parse_args()
     target = build_bundle(
-        args.output, args.ota, args.profile, args.update_root, args.instance_id
+        args.output,
+        args.ota,
+        args.profile,
+        args.update_root,
+        args.instance_id,
+        version=args.version,
     )
     print(
         json.dumps(

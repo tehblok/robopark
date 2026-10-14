@@ -451,14 +451,22 @@ export type MediaUploadComplete = { upload_id: string, media_id: string, complet
 export type AgentPoolDevice = {
   id: string
   label: string
-  status: 'ready' | 'busy' | 'paused' | 'stale' | 'offline'
+  status: 'online' | 'ready' | 'busy' | 'corporate_unavailable' | 'paused' | 'stale' | 'offline'
   connected: boolean
   ready: boolean
+  fresh?: boolean
+  busy?: boolean
   capacity: number
   inflight: number
   queued: number
   load: number
   latency_ms: number | null
+  response_latency_ms?: number | null
+  throughput_mbps?: number | null
+  last_success_age_seconds?: number | null
+  cpu_percent?: number | null
+  memory_percent?: number | null
+  thermal_state?: 'normal' | 'fair' | 'serious' | 'critical' | null
   power: 'ac' | 'battery' | 'low_power' | 'unknown'
   last_seen_at: string | null
   requests: number
@@ -468,7 +476,11 @@ export type AgentPoolDevice = {
   decoded_bytes: number
   upstream_dispatches: number
   upstream_backpressure: number
+  cache_hits?: number
+  compression_saved_bytes?: number
   owner_user_id?: number
+  owner_username?: string | null
+  owner_display_name?: string | null
   probes_sent?: number
   probes_failed?: number
 }
@@ -479,6 +491,7 @@ export type AgentPoolStatus = {
     connected: number; ready: number; busy: number; paused: number; capacity: number; inflight: number; queued: number
     requests: number; completed: number; failed: number; encoded_bytes: number; decoded_bytes: number
     probes_sent: number; probes_failed: number; upstream_dispatches: number; upstream_backpressure: number
+    cache_hits?: number; compression_saved_bytes?: number
   }
   devices: AgentPoolDevice[]
 }

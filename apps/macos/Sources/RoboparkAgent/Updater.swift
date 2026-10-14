@@ -1,79 +1,81 @@
 import Foundation
-import AppKit
 import AgentCore
 
 @MainActor final class Updater {
+    private struct PublicStatus: Codable {
+        let status: String
+        let message: String
+        let installed_version: String
+        let target_version: String
+        let checked_at: Int64
+    }
+
     let bridge: Bridge
-    private(set) var message = "Обновления ещё не проверялись"
-    private(set) var available: VerifiedUpdate?
+    private(set) var message = "Автообновление ещё не проверялось"
     private(set) var busy = false
-    var onOffer: ((ReleaseTarget) -> Void)?
+    private var catalogTarget = ""
     var onChange: (() -> Void)?
+
     init(bridge: Bridge) { self.bridge = bridge }
     var version: String { Bundle.main.object(forInfoDictionaryKey: "RoboparkReleaseVersion") as? String ?? "development" }
+
     func check(manual: Bool = false) async {
-        guard !busy, let profile = bridge.registration,
-              let url = URL(string: profile.catalogURL), url.scheme == "https" else { return }
+        guard !busy else { return }
         busy = true
         defer { busy = false; onChange?() }
+        refreshStatus(notify: false)
         do {
-            let (info, assignment) = try await bridge.verifiedInfo(ServerOrigin(profile.origin))
-            guard info.instance_id == profile.instanceID, info.environment == profile.environment,
-                  bridge.registration?.deviceID == profile.deviceID else { throw AgentError.wrongServer }
-            bridge.registration?.signedProfile = info.signed_profile
-            bridge.registration?.channel = assignment.channel
-            try bridge.persist()
-            let key = try EmbeddedTrust.publicKey()
-            let (bytes, response) = try await Network.request(url, limit: 256 * 1024)
+            let origin = try ServerOrigin("https://roboparktest.ru.tuna.am")
+            let (info, assignment) = try await bridge.verifiedInfo(origin)
+            guard info.environment == "test" else { throw AgentError.wrongServer }
+            let catalogURL = origin.api("distribution/v1/macos/catalog.json")
+            let (bytes, response) = try await Network.request(catalogURL, limit: 256 * 1024)
             guard response.statusCode == 200 else { throw NetworkFailure.network }
-            let update = try UpdateVerifier(publicKey: key).verify(bytes, now: Int64(Date().timeIntervalSince1970),
-                                     minimumGeneration: profile.minimumGeneration, channel: assignment.channel)
-            bridge.registration?.minimumGeneration = update.generation
-            try bridge.persist()
-            if update.target.version == version { available = nil; message = "Установлена актуальная версия"; return }
-            guard try ReleaseVersion(version) < ReleaseVersion(update.target.version) else { throw AgentError.rollback }
-            available = update
-            message = "Доступна версия \(update.target.version)"
-            if manual || profile.deferredVersion != update.target.version { onOffer?(update.target) }
+            let minimum = bridge.registration?.minimumGeneration ?? 0
+            let verified = try UpdateVerifier(publicKey: EmbeddedTrust.publicKey()).verify(bytes,
+                now: Int64(Date().timeIntervalSince1970), minimumGeneration: minimum,
+                channel: assignment.channel)
+            catalogTarget = verified.target.version
+            if let registration = bridge.registration,
+               registration.origin == origin.url.absoluteString,
+               registration.instanceID == info.instance_id {
+                bridge.registration?.signedProfile = info.signed_profile
+                bridge.registration?.channel = assignment.channel
+                bridge.registration?.minimumGeneration = max(minimum, verified.generation)
+                try bridge.persist()
+            }
+            if try ReleaseVersion(version) < ReleaseVersion(verified.target.version) {
+                message = "Доступна подписанная версия \(verified.target.version). Системная служба установит её автоматически в течение 15 минут."
+            } else if try ReleaseVersion(version) == ReleaseVersion(verified.target.version) {
+                message = "Установлена актуальная версия"
+            } else {
+                message = "Каталог не может понизить установленную версию"
+            }
         } catch {
-            available = nil
-            message = "Проверка обновлений недоступна или не прошла проверку подписи. Установленная версия сохранена."
+            if manual { message = "Проверка тестового сервера недоступна. Автообновление повторит попытку без изменения установленной версии." }
         }
     }
-    func reset() { available = nil; message = "Обновления ещё не проверялись"; onChange?() }
-    func deferUpdate() {
-        bridge.registration?.deferredVersion = available?.target.version ?? ""
-        try? bridge.persist()
-    }
-    func install() async {
-        guard let offered = available, !busy, let profile = bridge.registration,
-              let catalogURL = URL(string: profile.catalogURL), let origin = try? ServerOrigin(profile.origin) else { return }
-        busy = true; message = "Загрузка и проверка пакета…"; onChange?()
-        defer { busy = false; onChange?() }
+
+    func refreshStatus() { refreshStatus(notify: true) }
+
+    private func refreshStatus(notify: Bool) {
+        let url = URL(fileURLWithPath: "/Library/Application Support/RoboparkUpdater/status.json")
         do {
-            let assignment = try EmbeddedTrust.verify(profile.signedProfile, origin: origin,
-                                                      instanceID: profile.instanceID, environment: profile.environment)
-            let (catalog, catalogResponse) = try await Network.request(catalogURL, limit: 256 * 1024)
-            guard catalogResponse.statusCode == 200 else { throw NetworkFailure.network }
-            let fresh = try UpdateVerifier(publicKey: EmbeddedTrust.publicKey()).verify(catalog,
-                now: Int64(Date().timeIntervalSince1970), minimumGeneration: profile.minimumGeneration, channel: assignment.channel)
-            let release = fresh.target
-            guard fresh.generation == offered.generation, release.sha256 == offered.target.sha256,
-                  release.version == offered.target.version, try ReleaseVersion(version) < ReleaseVersion(release.version),
-                  bridge.registration?.deviceID == profile.deviceID else { throw AgentError.rollback }
-            let url = try release.artifactURL(origin: origin)
-            // Bounded before allocation. The catalog is authenticated by a root in the installed app.
-            let (data, response) = try await Network.request(url, limit: release.length, timeout: 120)
-            guard response.statusCode == 200 else { throw NetworkFailure.network }
-            try UpdateVerifier.checkArtifact(data, target: release)
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("robopark-update-" + UUID().uuidString)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
-                                                   attributes: [.posixPermissions: 0o700])
-            let target = directory.appendingPathComponent("Robopark.pkg")
-            try data.write(to: target, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
-            guard NSWorkspace.shared.open(target) else { throw NetworkFailure.invalid }
-            message = "Пакет проверен. Завершите установку в Installer macOS."
-        } catch { available = nil; message = "Обновление не установлено: загрузка или проверка пакета не завершилась." }
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  let size = values.fileSize, size > 0, size <= 64 * 1024 else { throw AgentError.invalidCatalog }
+            let status = try JSONDecoder().decode(PublicStatus.self, from: Data(contentsOf: url))
+            if !catalogTarget.isEmpty, status.target_version != catalogTarget,
+               status.installed_version != catalogTarget {
+                message = "Доступна подписанная версия \(catalogTarget). Системная служба установит её автоматически в течение 15 минут."
+            } else {
+                message = status.message
+            }
+        } catch {
+            message = "Ожидается первая автоматическая проверка обновлений."
+        }
+        if notify { onChange?() }
     }
+
+    func reset() { message = "Автообновление ещё не проверялось"; onChange?() }
 }

@@ -20,13 +20,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
 from robopark_api.deps import require_emergency_viewer
 from robopark_api.models import AccessStatus, AgentDevice, AgentEnrollment, User
-from robopark_api.services import audit, emergency_bridge_client, rbac
+from robopark_api.services import audit, emergency_bridge_client, rbac, robot_registry
 from robopark_api.services.login_throttle import client_ip
 
 router = APIRouter(prefix="/agent-devices", tags=["agent-devices"])
@@ -76,6 +77,13 @@ class EnrollmentIn(BaseModel):
 
 class ClaimIn(BaseModel):
     code: str = Field(min_length=8, max_length=32)
+    label: str = Field(min_length=1, max_length=96)
+    public_key: str = Field(min_length=80, max_length=128)
+    environment: Literal["test", "production"]
+    instance_id: UUID
+
+
+class AuthenticatedClaimIn(BaseModel):
     label: str = Field(min_length=1, max_length=96)
     public_key: str = Field(min_length=80, max_length=128)
     environment: Literal["test", "production"]
@@ -154,6 +162,34 @@ def info(response: Response, settings: Settings = Depends(get_settings)) -> dict
         "websocket_url": "/api/emergency/bridge/ws",
         "signed_profile": _signed_profile(),
     }
+
+
+@router.get("/probe-target")
+def probe_target(
+    response: Response,
+    user: User = Depends(require_emergency_viewer),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Choose a real authorized robot; the Mac performs the actual network probe.
+
+    Registry discovery shares Tracker's cache/singleflight and never reads
+    Emergency on the server. Missing configuration or an empty roster cannot
+    manufacture a healthy Mac or an arbitrary VIN.
+    """
+    _no_store(response)
+    roster = robot_registry.registry_rows(
+        db,
+        user,
+        park_id=None,
+        query="",
+        state="all",
+        active_errors=False,
+        open_tasks=False,
+        offset=0,
+        limit=1,
+    )
+    items = roster["items"]
+    return {"vin": items[0]["vin"] if items else None}
 
 
 @router.get("/setup", response_class=HTMLResponse)
@@ -305,7 +341,9 @@ def claim(
     )
     if enrollment is None or _aware(enrollment.expires_at) <= now:
         raise HTTPException(409, "invalid_code")
-    owner = db.scalar(select(User).where(User.id == enrollment.owner_user_id).with_for_update())
+    owner = db.scalar(
+        select(User).where(User.id == enrollment.owner_user_id).with_for_update(of=User)
+    )
     if (
         owner is None
         or not owner.is_active
@@ -323,14 +361,15 @@ def claim(
         raise HTTPException(409, "invalid_code")
     existing = db.scalar(
         select(AgentDevice).where(
-            AgentDevice.owner_user_id == enrollment.owner_user_id,
             AgentDevice.public_key_x963 == public_key,
             AgentDevice.environment == enrollment.environment,
             AgentDevice.instance_id == enrollment.instance_id,
-            AgentDevice.revoked_at.is_(None),
         )
     )
     if existing is not None:
+        if existing.owner_user_id != enrollment.owner_user_id or existing.revoked_at is not None:
+            db.rollback()
+            raise HTTPException(409, "invalid_code")
         db.commit()
         return {
             "device_id": existing.id,
@@ -360,7 +399,42 @@ def claim(
         approved_by_user_id=enrollment.owner_user_id,
     )
     db.add(device)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raced = db.scalar(
+            select(AgentDevice).where(
+                AgentDevice.public_key_x963 == public_key,
+                AgentDevice.environment == enrollment.environment,
+                AgentDevice.instance_id == enrollment.instance_id,
+            )
+        )
+        if (
+            raced is None
+            or raced.owner_user_id != enrollment.owner_user_id
+            or raced.revoked_at is not None
+        ):
+            raise HTTPException(409, "invalid_code") from None
+        consumed = db.execute(
+            update(AgentEnrollment)
+            .where(
+                AgentEnrollment.id == enrollment.id,
+                AgentEnrollment.consumed_at.is_(None),
+            )
+            .values(consumed_at=now)
+        )
+        if consumed.rowcount != 1:
+            db.rollback()
+            raise HTTPException(409, "invalid_code") from None
+        db.commit()
+        return {
+            "device_id": raced.id,
+            "environment": raced.environment,
+            "instance_id": raced.instance_id,
+            "protocol": PROTOCOL,
+            "status": "approved",
+        }
     db.refresh(device)
     audit.record(
         db,
@@ -384,6 +458,120 @@ def claim(
         "protocol": PROTOCOL,
         "status": "approved",
     }
+
+
+def _authenticated_device_payload(device: AgentDevice) -> dict:
+    return {
+        "device_id": device.id,
+        "owner_user_id": device.owner_user_id,
+        "environment": device.environment,
+        "instance_id": device.instance_id,
+        "protocol": PROTOCOL,
+        "status": "approved",
+    }
+
+
+@router.post("/claim-auth", status_code=status.HTTP_201_CREATED)
+def claim_authenticated(
+    payload: AuthenticatedClaimIn,
+    response: Response,
+    user: User = Depends(require_emergency_viewer),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Bind one installation key to the first approved account that presents it."""
+    _no_store(response)
+    if (
+        payload.environment != settings.robopark_environment
+        or payload.instance_id != settings.robopark_instance_id
+    ):
+        raise HTTPException(400, "environment_mismatch")
+    public_key = _parse_public_key(payload.public_key)
+    # Serialize the owner's count + insert across concurrent first logins and
+    # the code-based enrollment path. Re-read authorization under the lock.
+    owner = db.scalar(
+        select(User)
+        .where(User.id == user.id)
+        .with_for_update(of=User)
+        .execution_options(populate_existing=True)
+    )
+    if (
+        owner is None
+        or not owner.is_active
+        or owner.access_status != AccessStatus.approved.value
+        or not rbac.has_permission(db, owner, rbac.PERMISSION_NAV_EMERGENCY)
+    ):
+        raise HTTPException(403, "device_enrollment_forbidden")
+    existing = db.scalar(
+        select(AgentDevice).where(
+            AgentDevice.public_key_x963 == public_key,
+            AgentDevice.environment == payload.environment,
+            AgentDevice.instance_id == str(payload.instance_id),
+        )
+    )
+    if existing is not None:
+        if existing.owner_user_id != user.id:
+            raise HTTPException(409, "device_owner_mismatch")
+        if existing.revoked_at is not None:
+            raise HTTPException(409, "device_revoked")
+        response.status_code = status.HTTP_200_OK
+        return _authenticated_device_payload(existing)
+
+    active_count = db.scalar(
+        select(func.count())
+        .select_from(AgentDevice)
+        .where(AgentDevice.owner_user_id == user.id, AgentDevice.revoked_at.is_(None))
+    )
+    if int(active_count or 0) >= settings.agent_device_max_per_user:
+        raise HTTPException(409, "device_limit")
+    now = datetime.now(UTC)
+    device = AgentDevice(
+        owner_user_id=user.id,
+        label=payload.label.strip(),
+        public_key_x963=public_key,
+        environment=payload.environment,
+        instance_id=str(payload.instance_id),
+        approved_at=now,
+        approved_by_user_id=user.id,
+    )
+    db.add(device)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raced = db.scalar(
+            select(AgentDevice).where(
+                AgentDevice.public_key_x963 == public_key,
+                AgentDevice.environment == payload.environment,
+                AgentDevice.instance_id == str(payload.instance_id),
+            )
+        )
+        if raced is None:
+            raise HTTPException(409, "device_identity_conflict") from None
+        if raced.owner_user_id != user.id:
+            raise HTTPException(409, "device_owner_mismatch") from None
+        if raced.revoked_at is not None:
+            raise HTTPException(409, "device_revoked") from None
+        response.status_code = status.HTTP_200_OK
+        return _authenticated_device_payload(raced)
+    db.refresh(device)
+    audit.record(
+        db,
+        action=audit.ACTION_AGENT_DEVICE_ENROLLED,
+        actor=user,
+        target_type="agent_device",
+        target_id=device.id,
+        detail=json.dumps(
+            {
+                "environment": device.environment,
+                "instance_id": device.instance_id,
+                "label": device.label,
+                "method": "authenticated_first_login",
+            },
+            sort_keys=True,
+        ),
+    )
+    return _authenticated_device_payload(device)
 
 
 def _device_json(

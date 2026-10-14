@@ -5,20 +5,30 @@ import Security
 import AgentCore
 
 @MainActor final class AgentApplication: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
+    private let testOrigin = TestDeploymentAssignment.origin
     let bridge = Bridge()
     lazy var updater = Updater(bridge: bridge)
+    let autostart = AutostartController()
     var statusItem: NSStatusItem?
     var window: NSWindow?
     var panel: WKWebView?
     var loginWindow: NSWindow?
     var loginView: WKWebView?
     var updateTimer: Timer?
+    var updateStatusTimer: Timer?
+    var probeTimer: Timer?
     var workspace: WorkspaceServer?
     var workspaceWindow: NSWindow?
     var workspaceView: WKWebView?
     private var enrollmentTask: Task<Void, Never>?
+    private var probeRefreshTask: Task<Void, Never>?
+    private var identityRestoreTask: Task<Void, Never>?
     private var enrollmentRun = UUID()
+    private var accountActive = false
+    private var activeAccountID: Int?
+    private let accountPresentKey = "RoboparkServiceAccountPresent"
     var lastError = ""
+    var accountLabel = "Не выполнен вход"
     var working = false
     var panelURL: URL? { Bundle.main.url(forResource: "panel", withExtension: "html") }
 
@@ -28,6 +38,7 @@ import AgentCore
         statusItem?.button?.title = "RP"
         do { try initializeWorkspace() }
         catch { lastError = "Не удалось открыть защищённое хранилище рабочего интерфейса. Разблокируйте Keychain." }
+        if UserDefaults.standard.bool(forKey: accountPresentKey) { accountLabel = "Проверка аккаунта…" }
         let menu = NSMenu()
         menu.addItem(withTitle: "Открыть Robopark", action: #selector(showWorkspace), keyEquivalent: "")
         menu.addItem(withTitle: "Служба и подключение", action: #selector(showPanel), keyEquivalent: "")
@@ -41,16 +52,25 @@ import AgentCore
             self.render()
         }
         updater.onChange = { [weak self] in self?.render() }
-        updater.onOffer = { [weak self] release in self?.offer(release) }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(wake), name: NSWorkspace.didWakeNotification, object: nil)
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(showPanel), name: Notification.Name("ru.robopark.agent.open"), object: nil)
-        bridge.start()
         if !CommandLine.arguments.contains("--background") || bridge.registration == nil {
             if workspace?.session.profile != nil { showWorkspace() } else { showPanel() }
         }
+        restoreAccountSession()
         Task { await updater.check() }
         updateTimer = Timer.scheduledTimer(withTimeInterval: 4 * 60 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.updater.check() }
+        }
+        updateStatusTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updater.refreshStatus() }
+        }
+        probeTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.accountActive { self.refreshProbeTarget() }
+                else { self.restoreAccountSession() }
+            }
         }
     }
     private func initializeWorkspace() throws {
@@ -95,11 +115,23 @@ import AgentCore
             WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { continuation.resume() }
         }
     }
+    private func restoreAccountSession() {
+        guard identityRestoreTask == nil, let session = workspace?.session else { return }
+        identityRestoreTask = Task { [weak self] in
+            _ = await session.restoreIdentity()
+            self?.identityRestoreTask = nil
+        }
+    }
     private func accountVerified(_ user: [String: Any]) {
         guard enrollmentTask == nil, let session = workspace?.session,
-              let profile = session.profile, let userID = user["id"] as? Int else { return }
+              let profile = session.profile, let userID = user["id"] as? Int,
+              TestDeploymentAssignment.matches(origin: profile.origin, instanceID: profile.instanceID,
+                                               environment: profile.environment) else { return }
+        accountLabel = (user["display_name"] as? String) ?? (user["username"] as? String) ?? "Аккаунт Robopark"
         guard user["access_status"] as? String == "approved", user["must_change_password"] as? Bool != true,
               (user["permissions"] as? [String] ?? []).contains("nav.emergency") else {
+            accountActive = false
+            UserDefaults.standard.set(false, forKey: accountPresentKey)
             bridge.stop()
             return
         }
@@ -108,54 +140,57 @@ import AgentCore
             guard let self else { return }
             defer { if self.enrollmentRun == run { self.enrollmentTask = nil; self.render() } }
             do {
-                let (data, response) = try await session.call(path: "/api/agent-devices")
-                try Task.checkCancellation()
-                guard response.statusCode == 200 else { throw NetworkFailure.auth }
-                let raw = try JSONSerialization.jsonObject(with: data)
-                let rows = (raw as? [[String: Any]]) ?? ((raw as? [String: Any])?["devices"] as? [[String: Any]]) ?? []
-                let ownIDs = Set(rows.filter { ($0["owner_user_id"] as? Int ?? userID) == userID }
-                    .compactMap { $0["device_id"] as? String ?? $0["id"] as? String })
-                // Offline logout removes the local key immediately. Finish the
-                // server revocation with the next authenticated owner session
-                // before spending another enrollment slot.
-                for id in SecureStore.pendingRevocations(origin: profile.origin, instanceID: profile.instanceID).intersection(ownIDs) {
-                    let (_, revoked) = try await session.call(path: "/api/agent-devices/\(id)", method: "DELETE", timeout: 5)
-                    try Task.checkCancellation()
-                    guard [204, 404].contains(revoked.statusCode) else { throw NetworkFailure.auth }
-                    SecureStore.forgetRevocation(id, origin: profile.origin, instanceID: profile.instanceID)
-                }
-                if let existing = self.bridge.registration {
-                    let own = rows.contains { ($0["device_id"] as? String ?? $0["id"] as? String) == existing.deviceID && ($0["owner_user_id"] as? Int ?? userID) == userID && $0["revoked_at"] is NSNull }
-                    if existing.instanceID == profile.instanceID && existing.origin == profile.origin && own {
-                        self.bridge.startIfNeeded()
-                        return
-                    }
+                if let existing = self.bridge.registration,
+                   existing.instanceID != profile.instanceID || existing.origin != profile.origin {
                     try self.bridge.disconnect()
                 }
+                if !self.accountActive || self.activeAccountID != userID { try self.bridge.clearProbe() }
                 let label = String((Host.current().localizedName ?? "Mac").prefix(80))
-                let (enrollmentData, enrollmentResponse) = try await session.call(path: "/api/agent-devices/enrollments", method: "POST", object: ["label": label])
-                guard enrollmentResponse.statusCode == 201,
-                      let value = try JSONSerialization.jsonObject(with: enrollmentData) as? [String: Any],
-                      let code = value["code"] as? String else { throw NetworkFailure.auth }
-                try Task.checkCancellation()
-                guard self.enrollmentRun == run, session.profile?.instanceID == profile.instanceID else { throw CancellationError() }
-                try await self.bridge.enroll(origin: profile.origin, code: code, label: label)
+                try await self.bridge.claimAuthenticated(origin: profile.origin, label: label) { object in
+                    try await session.call(path: "/api/agent-devices/claim-auth", method: "POST", object: object)
+                }
+                self.accountActive = true
+                self.activeAccountID = userID
+                UserDefaults.standard.set(true, forKey: self.accountPresentKey)
+                self.refreshProbeTarget()
                 await self.updater.check()
             } catch is CancellationError { }
-            catch { if self.enrollmentRun == run { self.lastError = "Рабочий интерфейс доступен. Автоподключение к пулу не завершилось — проверьте состояние службы или повторите вход." } }
+            catch {
+                if self.enrollmentRun == run {
+                    self.accountActive = false
+                    self.bridge.stop()
+                    self.lastError = "Рабочий интерфейс доступен. Этот ключ Mac не закреплён за текущим аккаунтом или сервер недоступен."
+                }
+            }
         }
     }
     private func accountLogout() async {
+        accountLabel = "Не выполнен вход"
+        accountActive = false
+        activeAccountID = nil
+        UserDefaults.standard.set(false, forKey: accountPresentKey)
+        probeRefreshTask?.cancel(); probeRefreshTask = nil
+        identityRestoreTask?.cancel(); identityRestoreTask = nil
         enrollmentRun = UUID(); enrollmentTask?.cancel(); enrollmentTask = nil
-        let profile = bridge.registration
-        if let profile { SecureStore.queueRevocation(profile) }
-        try? bridge.disconnect()
-        if let profile, let session = workspace?.session {
-            if let (_, response) = try? await session.call(path: "/api/agent-devices/\(profile.deviceID)", method: "DELETE", timeout: 5), [204, 404].contains(response.statusCode) {
-                SecureStore.forgetRevocation(profile.deviceID, origin: profile.origin, instanceID: profile.instanceID)
-            }
-        }
+        // Signing out stops work but preserves the device key and owner binding.
+        // A different account cannot claim that key; the original owner can
+        // resume without creating a second Mac entry.
+        bridge.stop()
         updater.reset()
+    }
+    private func refreshProbeTarget() {
+        guard accountActive, probeRefreshTask == nil, let session = workspace?.session,
+              bridge.registration != nil else { return }
+        probeRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.probeRefreshTask = nil }
+            guard let (data, response) = try? await session.call(path: "/api/agent-devices/probe-target", timeout: 5),
+                  response.statusCode == 200,
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            guard !Task.isCancelled, self.accountActive else { return }
+            if let vin = object["vin"] as? String, !vin.isEmpty { try? self.bridge.setProbe(vin) }
+            else { try? self.bridge.clearProbe() }
+        }
     }
     @objc func showPanel() {
         if window == nil {
@@ -177,25 +212,21 @@ import AgentCore
         render()
     }
     @objc func checkUpdate() { Task { await updater.check(manual: true) } }
-    @objc func wake() { bridge.start(); Task { await updater.check() } }
-    @objc func quit() { enrollmentTask?.cancel(); workspace?.stop(); bridge.stop(); NSApp.terminate(nil) }
-    func offer(_ target: ReleaseTarget) {
-        let alert = NSAlert()
-        let size = ByteCountFormatter.string(fromByteCount: Int64(target.length), countStyle: .file)
-        alert.messageText = "Доступно обновление Robopark"
-        alert.informativeText = "\(updater.version) → \(target.version)\n\(target.notes)\nРазмер: \(size)"
-        alert.addButton(withTitle: "Обновить"); alert.addButton(withTitle: "Позже")
-        if alert.runModal() == .alertFirstButtonReturn { Task { await updater.install() } }
-        else { updater.deferUpdate() }
+    @objc func wake() {
+        if accountActive { bridge.start(); refreshProbeTarget() } else { restoreAccountSession() }
+        Task { await updater.check() }
     }
+    @objc func quit() { enrollmentTask?.cancel(); workspace?.stop(); bridge.stop(); NSApp.terminate(nil) }
     func render() {
         let profile = bridge.registration
         let object: [String: Any] = [
             "registered": profile != nil, "environment": profile?.environment ?? "",
             "label": profile?.label ?? "", "state": bridge.state, "upstream": bridge.upstreamState,
-            "version": updater.version, "updates": updater.message, "canUpdate": updater.available != nil,
+            "needsCorporateLogin": bridge.needsCorporateLogin,
+            "version": updater.version, "updates": updater.message,
             "paused": profile?.paused ?? false, "completed": bridge.completed,
-            "probe": profile?.probeVIN ?? "", "error": lastError, "busy": working || updater.busy
+            "account": accountLabel, "autostart": autostart.isEnabled(),
+            "error": lastError, "busy": working || updater.busy
         ]
         guard let bytes = try? JSONSerialization.data(withJSONObject: object), let json = String(data: bytes, encoding: .utf8) else { return }
         panel?.evaluateJavaScript("window.render(\(json))", completionHandler: nil)
@@ -210,7 +241,7 @@ import AgentCore
             do {
                 switch action {
                 case "workspaceSetup":
-                    let origin = try ServerOrigin(body["origin"] as? String ?? "")
+                    let origin = try ServerOrigin(testOrigin)
                     let (info, _) = try await bridge.verifiedInfo(origin)
                     guard let workspace else { throw NetworkFailure.invalid }
                     if let old = workspace.session.profile, old.origin != origin.url.absoluteString || old.instanceID != info.instance_id {
@@ -220,14 +251,6 @@ import AgentCore
                     }
                     try workspace.session.configure(origin: origin, info: info)
                     showWorkspace()
-                case "enroll":
-                    try await bridge.enroll(origin: body["origin"] as? String ?? "", code: body["code"] as? String ?? "",
-                                            label: body["label"] as? String ?? "Mac")
-                    await updater.check()
-                case "setup":
-                    let origin = try ServerOrigin(body["origin"] as? String ?? "")
-                    _ = try await bridge.verifiedInfo(origin)
-                    NSWorkspace.shared.open(origin.api("agent-devices/setup"))
                 case "emergencyLogin": try bridge.requireTrust(); openEmergencyLogin()
                 case "disconnect":
                     let alert = NSAlert()
@@ -242,16 +265,16 @@ import AgentCore
                         try bridge.disconnect(); loginWindow?.close(); loginWindow = nil; loginView = nil
                         updater.reset()
                     }
-                case "saveProbe": try bridge.setProbe(body["probe"] as? String ?? "")
                 case "pause": try bridge.pause(!(bridge.registration?.paused ?? false))
+                case "autostart":
+                    try autostart.setEnabled(body["enabled"] as? Bool ?? true)
                 case "open":
                     showWorkspace()
                 case "reloadKeychain":
                     try bridge.reloadRegistration()
                     try initializeWorkspace()
+                    if accountActive { bridge.start() }
                 case "check": await updater.check(manual: true)
-                case "update": await updater.install()
-                case "later": updater.deferUpdate()
                 case "ready": break
                 default: throw AgentError.invalidJob
                 }

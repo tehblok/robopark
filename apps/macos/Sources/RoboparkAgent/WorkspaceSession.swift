@@ -24,7 +24,9 @@ struct WorkspaceProfile: Codable {
     // policy and redirect-denying delegate.
     init(transport injectedTransport: URLSession? = nil) throws {
         if let data = try SecureStore.readData("workspace-profile-v1") {
-            profile = try JSONDecoder().decode(WorkspaceProfile.self, from: data)
+            let stored = try JSONDecoder().decode(WorkspaceProfile.self, from: data)
+            if TestDeploymentAssignment.matches(origin: stored.origin, instanceID: stored.instanceID,
+                                                environment: stored.environment) { profile = stored }
             if SecureStore.isSignedOut("workspace") { profile?.cookies = []; profile?.accountID = nil }
         }
         if let injectedTransport {
@@ -38,6 +40,9 @@ struct WorkspaceProfile: Codable {
         }
     }
     func configure(origin: ServerOrigin, info: ServerInfo) throws {
+        guard TestDeploymentAssignment.matches(origin: origin.url.absoluteString,
+                                               instanceID: info.instance_id,
+                                               environment: info.environment) else { throw AgentError.wrongServer }
         if profile?.origin == origin.url.absoluteString, profile?.instanceID == info.instance_id {
             profile?.signedProfile = info.signed_profile
         } else {
@@ -48,6 +53,9 @@ struct WorkspaceProfile: Codable {
         try persist()
     }
     func useRegistration(_ registration: Registration) throws {
+        guard TestDeploymentAssignment.matches(origin: registration.origin,
+                                               instanceID: registration.instanceID,
+                                               environment: registration.environment) else { throw AgentError.wrongServer }
         if profile?.origin == registration.origin, profile?.instanceID == registration.instanceID {
             if profile?.signedProfile?.payload != registration.signedProfile?.payload {
                 profile?.signedProfile = registration.signedProfile
@@ -74,8 +82,36 @@ struct WorkspaceProfile: Codable {
         if object != nil { headers["content-type"] = "application/json" }
         return try await request(target: path, method: method, headers: headers, body: body, timeout: timeout)
     }
+    func restoreIdentity() async -> Bool {
+        guard let current = profile, !current.cookies.isEmpty,
+              !SecureStore.isSignedOut("workspace") else { return false }
+        do {
+            let (bytes, response) = try await call(path: "/api/auth/me", timeout: 10)
+            guard response.statusCode == 200,
+                  let user = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                  let accountID = user["id"] as? Int,
+                  current.accountID == nil || current.accountID == accountID else {
+                if [401, 403].contains(response.statusCode) || response.statusCode == 200 {
+                    SecureStore.markSignedOut("workspace", true)
+                    generation = UUID(); profile?.cookies = []; profile?.accountID = nil
+                    try persist(); await onLogout?()
+                }
+                return false
+            }
+            profile?.accountID = accountID
+            try persist()
+            await onIdentity?(user)
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            return false
+        }
+    }
     func request(target: String, method: String, headers: [String: String], body: Data, timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
         guard let current = profile else { throw AgentError.wrongServer }
+        guard TestDeploymentAssignment.matches(origin: current.origin, instanceID: current.instanceID,
+                                               environment: current.environment) else { throw AgentError.wrongServer }
         let origin = try ServerOrigin(current.origin)
         _ = try EmbeddedTrust.verify(current.signedProfile, origin: origin, instanceID: current.instanceID, environment: current.environment)
         let run = generation

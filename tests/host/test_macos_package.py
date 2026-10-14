@@ -56,6 +56,92 @@ def test_installer_runs_as_user_and_does_not_embed_private_key(tmp_path):
     assert "private" not in plistlib.dumps(profile).decode()
 
 
+def test_automatic_updater_is_fixed_root_daemon_without_user_arguments():
+    module = builder()
+    daemon = module.update_daemon()
+    assert daemon["Label"] == "ru.robopark.update-helper"
+    assert daemon["UserName"] == "root"
+    assert daemon["RunAtLoad"] is True
+    assert 900 <= daemon["StartInterval"] <= 6 * 60 * 60
+    assert daemon["ProgramArguments"] == [
+        "/Library/PrivilegedHelperTools/RoboparkUpdater"
+    ]
+    assert "KeepAlive" not in daemon
+
+
+def test_installer_scripts_preserve_disabled_autostart_and_do_not_kill_running_app():
+    module = builder()
+    script = module.postinstall_script()
+    assert "print-disabled" in script
+    assert "ru.robopark.agent" in script
+    assert "bootout" not in script
+    assert "pkill" not in script
+    assert "killall" not in script
+    assert "kickstart" not in script
+    assert "update-helper" in script
+
+
+def test_update_configuration_accepts_only_signed_test_assignment(tmp_path):
+    import time
+
+    import pytest
+
+    from scripts.sign_macos_deployment import sign_profile
+
+    module = builder()
+    private = tmp_path / "private.key"
+    public = module.ensure_update_key(private)
+    instance = "d6ed3b43-c41b-4614-833e-c5ec30936ef3"
+    envelope = sign_profile(
+        origin="https://roboparktest.ru.tuna.am",
+        instance_id=instance,
+        environment="test",
+        channel="rc",
+        expires=int(time.time()) + 86400,
+        key=private,
+    )
+    config = module.automatic_update_config(envelope, public)
+    assert config == {
+        "schema": 1,
+        "origin": "https://roboparktest.ru.tuna.am",
+        "instance_id": instance,
+        "environment": "test",
+        "channel": "rc",
+    }
+    wrong_origin = sign_profile(
+        origin="https://production.example",
+        instance_id=instance,
+        environment="test",
+        channel="rc",
+        expires=int(time.time()) + 86400,
+        key=private,
+    )
+    with pytest.raises(ValueError, match="invalid_deployment_profile"):
+        module.automatic_update_config(wrong_origin, public)
+
+    production = sign_profile(
+        origin="https://roboparktest.ru.tuna.am",
+        instance_id=instance,
+        environment="production",
+        channel="rc",
+        expires=int(time.time()) + 86400,
+        key=private,
+    )
+    with pytest.raises(ValueError, match="invalid_deployment_profile"):
+        module.automatic_update_config(production, public)
+
+    wrong_instance = sign_profile(
+        origin="https://roboparktest.ru.tuna.am",
+        instance_id="50b4ae12-c0d8-4c76-9639-2984f164408b",
+        environment="test",
+        channel="rc",
+        expires=int(time.time()) + 86400,
+        key=private,
+    )
+    with pytest.raises(ValueError, match="invalid_deployment_profile"):
+        module.automatic_update_config(wrong_instance, public)
+
+
 def test_invalid_versions_are_not_used_as_package_paths():
     import pytest
 
@@ -67,26 +153,40 @@ def test_invalid_versions_are_not_used_as_package_paths():
 
 def test_bundle_versions_are_apple_numeric_and_keep_release_identity():
     import re
+
     module = builder()
     first = module.bundle_versions("0.2.0-rc.44.dev7114536505405942333", 1791900000)
     later = module.bundle_versions("0.2.0-rc.44.dev7114536505405942334", 1791986400)
     assert first["CFBundleShortVersionString"] == "0.2.0"
     assert first["RoboparkReleaseVersion"].endswith("2333")
-    assert re.fullmatch(r"[1-9][0-9]{0,3}\.[0-9]{1,2}\.[0-9]{1,2}", first["CFBundleVersion"])
-    assert tuple(map(int, later["CFBundleVersion"].split("."))) > tuple(map(int, first["CFBundleVersion"].split(".")))
+    assert re.fullmatch(
+        r"[1-9][0-9]{0,3}\.[0-9]{1,2}\.[0-9]{1,2}", first["CFBundleVersion"]
+    )
+    assert tuple(map(int, later["CFBundleVersion"].split("."))) > tuple(
+        map(int, first["CFBundleVersion"].split("."))
+    )
 
 
 def test_deployment_signature_binds_environment_instance_and_origin(tmp_path):
     import time
 
     from scripts.sign_macos_deployment import sign_profile
+
     module = builder()
     private = tmp_path / "private.key"
     public = module.ensure_update_key(private)
-    envelope = sign_profile(origin="https://TEST.example:443/", instance_id="50b4ae12-c0d8-4c76-9639-2984f164408b",
-                            environment="test", channel="rc", expires=int(time.time()) + 86400, key=private)
+    envelope = sign_profile(
+        origin="https://TEST.example:443/",
+        instance_id="50b4ae12-c0d8-4c76-9639-2984f164408b",
+        environment="test",
+        channel="rc",
+        expires=int(time.time()) + 86400,
+        key=private,
+    )
     data = base64.b64decode(envelope["payload"])
-    Ed25519PublicKey.from_public_bytes(base64.b64decode(public)).verify(base64.b64decode(envelope["signature"]), data)
+    Ed25519PublicKey.from_public_bytes(base64.b64decode(public)).verify(
+        base64.b64decode(envelope["signature"]), data
+    )
     profile = json.loads(data)
     assert profile["origin"] == "https://test.example"
     assert profile["environment"] == "test"
@@ -99,14 +199,21 @@ def test_workspace_bundle_contains_verified_assets_and_source_identity(tmp_path)
     module = builder()
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents=True)
-    (dist / "index.html").write_text('<head></head><script src="/assets/app.js"></script>')
+    (dist / "index.html").write_text(
+        '<head></head><script src="/assets/app.js"></script>'
+    )
     (dist / "assets/app.js").write_text('console.log("offline")')
     target = tmp_path / "workspace"
-    result = module.stage_workspace(dist, target, version="0.2.0-rc.44", commit="a" * 40)
+    result = module.stage_workspace(
+        dist, target, version="0.2.0-rc.44", commit="a" * 40
+    )
     assert result["version"] == "0.2.0-rc.44"
     assert result["source_commit"] == "a" * 40
     assert (target / "index.html").read_bytes() == (dist / "index.html").read_bytes()
-    assert result["files"]["assets/app.js"]["sha256"] == hashlib.sha256((target / "assets/app.js").read_bytes()).hexdigest()
+    assert (
+        result["files"]["assets/app.js"]["sha256"]
+        == hashlib.sha256((target / "assets/app.js").read_bytes()).hexdigest()
+    )
     assert json.loads((target / "workspace-manifest.json").read_text()) == result
 
 
@@ -118,8 +225,12 @@ def test_workspace_bundle_rejects_missing_assets_and_symlink(tmp_path):
     dist.mkdir()
     (dist / "index.html").write_text('<script src="/assets/missing.js"></script>')
     with pytest.raises(ValueError, match="workspace_entry_asset_missing"):
-        module.stage_workspace(dist, tmp_path / "first", version="1.0.0", commit="a" * 40)
-    (dist / "index.html").write_text('<head></head>')
+        module.stage_workspace(
+            dist, tmp_path / "first", version="1.0.0", commit="a" * 40
+        )
+    (dist / "index.html").write_text("<head></head>")
     (dist / "outside.js").symlink_to(tmp_path / "private.key")
     with pytest.raises(ValueError, match="workspace_symlink"):
-        module.stage_workspace(dist, tmp_path / "second", version="1.0.0", commit="a" * 40)
+        module.stage_workspace(
+            dist, tmp_path / "second", version="1.0.0", commit="a" * 40
+        )

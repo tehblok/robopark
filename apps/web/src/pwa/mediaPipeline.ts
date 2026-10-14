@@ -45,8 +45,10 @@ async function transformOffThread(source: File, maxEdge: number, quality: number
   }
   const worker = new Worker(new URL('./media.worker.ts', import.meta.url), { type: 'module' })
   const id = crypto.randomUUID()
+  let deadline: ReturnType<typeof setTimeout> | undefined
   try {
     return await new Promise<Blob>((resolve, reject) => {
+      deadline = setTimeout(() => reject(new Error('media_processing_timeout')), 10000)
       worker.onmessage = (event: MessageEvent<{ id: string, blob?: Blob, error?: string }>) => {
         if (event.data.id !== id) return
         if (event.data.blob) resolve(event.data.blob)
@@ -56,6 +58,7 @@ async function transformOffThread(source: File, maxEdge: number, quality: number
       worker.postMessage({ id, file: source, maxEdge, quality })
     })
   } finally {
+    clearTimeout(deadline)
     worker.terminate()
   }
 }
@@ -65,9 +68,12 @@ export async function prepareImage(source: File, options: PrepareImageOptions = 
   if (kind === 'document' ? !ACCEPTED_IMAGE_TYPES.has(source.type) && source.type !== 'application/pdf' : !ACCEPTED_IMAGE_TYPES.has(source.type)) throw new Error('media_invalid_type')
   if (source.size <= 0) throw new Error('media_empty')
   if (source.size > (options.maxSourceBytes ?? 15 * 1024 * 1024)) throw new Error('media_too_large')
-  const blob = kind === 'photo'
+  const converted = kind === 'photo'
     ? await transformOffThread(source, options.maxEdge ?? 1920, options.quality ?? 0.82).catch(() => source)
     : source
+  // A local optimization must never enlarge uploads or discard a usable original.
+  const blob = converted.size > 0 && converted.size < source.size && ACCEPTED_IMAGE_TYPES.has(converted.type)
+    ? converted : source
   const checksum = await sha256(blob)
   const previewUrl = URL.createObjectURL(blob)
   let released = false

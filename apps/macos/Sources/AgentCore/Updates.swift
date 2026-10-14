@@ -19,6 +19,13 @@ public struct ReleaseTarget: Codable {
               parts.user == nil, parts.password == nil, parts.fragment == nil, let result = parts.url else { throw AgentError.invalidCatalog }
         return result
     }
+    public func fixedArtifactURL(origin: ServerOrigin) throws -> URL {
+        let result = try artifactURL(origin: origin)
+        guard result.scheme == origin.url.scheme, result.host?.lowercased() == origin.url.host?.lowercased(),
+              result.port == origin.url.port, result.user == nil, result.password == nil,
+              result.fragment == nil else { throw AgentError.invalidCatalog }
+        return result
+    }
 }
 
 public struct UpdateCatalog: Codable {

@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import SessionLocal
-from robopark_api.models import AccessStatus, AgentDevice, User
+from robopark_api.models import AccessStatus, AgentDevice, TelegramAccount, User
 from robopark_api.services import audit, emergency_scope, rbac
 from robopark_api.services.emergency_bridge_auth import verify_body_signature
 from robopark_api.services.emergency_bridge_broker import BrokerRegistry, Channel
@@ -312,11 +312,21 @@ def _pool_devices(
         for device in db.scalars(query.order_by(AgentDevice.created_at, AgentDevice.id)).all():
             if _device_valid(db, device.id, settings) is None:
                 continue
+            owner = db.get(User, device.owner_user_id)
+            telegram = db.get(TelegramAccount, device.owner_user_id)
             devices.append(
                 {
                     "id": device.id,
                     "label": device.label,
                     "owner_user_id": device.owner_user_id,
+                    "owner_username": owner.username if owner is not None else None,
+                    "owner_display_name": (
+                        telegram.display_name
+                        if telegram is not None and (telegram.display_name or "").strip()
+                        else owner.username
+                        if owner is not None
+                        else None
+                    ),
                     "last_seen_at": (
                         device.last_seen_at.isoformat() if device.last_seen_at is not None else None
                     ),
@@ -560,10 +570,11 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                     if isinstance(latency, (int, float)) and 0 <= latency <= 120_000:
                         channel.latency_ms = float(latency)
                     capacity = message.get("capacity")
-                    if type(capacity) is int and 1 <= capacity <= 8:
+                    if type(capacity) is int and 0 <= capacity <= 8:
                         channel.capacity = capacity
                     active_jobs = message.get("active_jobs")
-                    if type(active_jobs) is int and 0 <= active_jobs <= channel.capacity:
+                    # Lower capacity stops new work; existing jobs may still be draining.
+                    if type(active_jobs) is int and 0 <= active_jobs <= 8:
                         channel.reported_active_jobs = active_jobs
                     load = message.get("load")
                     if (
@@ -577,6 +588,22 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                         channel.paused = message["paused"]
                     if message.get("power") in {"ac", "battery", "low_power", "unknown"}:
                         channel.power = message["power"]
+                    for field_name in ("cpu_percent", "memory_percent"):
+                        measured = message.get(field_name)
+                        if (
+                            isinstance(measured, (int, float))
+                            and not isinstance(measured, bool)
+                            and math.isfinite(measured)
+                            and 0 <= measured <= 100
+                        ):
+                            setattr(channel, field_name, float(measured))
+                    if message.get("thermal_state") in {
+                        "normal",
+                        "fair",
+                        "serious",
+                        "critical",
+                    }:
+                        channel.thermal_state = message["thermal_state"]
                     supports = message.get("supports")
                     if isinstance(supports, list) and len(supports) <= 8:
                         channel.supports = {
@@ -680,6 +707,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                                 channel,
                                 encoded_bytes=encoded_size,
                                 decoded_bytes=payload_size,
+                                duration_seconds=max(0.001, time.monotonic() - pending.started_at),
                             )
                         else:
                             registry.record_failure(channel)
@@ -960,12 +988,20 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                 "status": "offline",
                 "connected": False,
                 "ready": False,
+                "fresh": False,
+                "busy": False,
                 "capacity": 0,
                 "inflight": 0,
                 "queued": 0,
                 "load": 0.0,
                 "latency_ms": None,
+                "response_latency_ms": None,
+                "throughput_mbps": None,
+                "last_success_age_seconds": None,
                 "power": "unknown",
+                "cpu_percent": None,
+                "memory_percent": None,
+                "thermal_state": None,
                 "requests": 0,
                 "completed": 0,
                 "failed": 0,
@@ -975,6 +1011,8 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                 "probes_failed": 0,
                 "upstream_dispatches": 0,
                 "upstream_backpressure": 0,
+                "cache_hits": 0,
+                "compression_saved_bytes": 0,
             }
             if live is not None:
                 item.update(live)
@@ -995,13 +1033,15 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
             "probes_failed",
             "upstream_dispatches",
             "upstream_backpressure",
+            "cache_hits",
+            "compression_saved_bytes",
         )
         summary = {key: sum(int(item[key]) for item in result_devices) for key in summary_keys}
         summary.update(
             {
                 "connected": sum(bool(item["connected"]) for item in result_devices),
                 "ready": sum(bool(item["ready"]) for item in result_devices),
-                "busy": sum(item["status"] == "busy" for item in result_devices),
+                "busy": sum(bool(item["busy"]) for item in result_devices),
                 "paused": sum(item["status"] == "paused" for item in result_devices),
             }
         )

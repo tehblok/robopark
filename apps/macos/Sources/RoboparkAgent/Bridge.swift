@@ -7,7 +7,10 @@ import IOKit.ps
     var registration: Registration?
     var onChange: (() -> Void)?
     private(set) var state = "Не зарегистрирован"
-    private(set) var upstreamState = "Войдите в Emergency и укажите проверочный робот"
+    private(set) var upstreamState = "Ожидание проверочного робота"
+    var needsCorporateLogin: Bool {
+        registration != nil && ((registration?.cookie.isEmpty ?? true) || upstreamState == "Требуется вход в Emergency")
+    }
     private(set) var completed = 0
     private(set) var payloadBytes = 0
     private(set) var transmittedBytes = 0
@@ -24,15 +27,21 @@ import IOKit.ps
     private var managedProbes = false
     private var compressedResults = false
     private var runID = UUID()
+    private var previousCPUTicks: [UInt64]?
 
     init() {
-        do { registration = try SecureStore.load() }
+        do {
+            if let stored = try SecureStore.load(), TestDeploymentAssignment.matches(
+                origin: stored.origin, instanceID: stored.instanceID, environment: stored.environment
+            ) { registration = stored }
+        }
         catch { state = "Разблокируйте Keychain и откройте панель повторно" }
     }
     func reloadRegistration() throws {
         guard registration == nil else { return }
-        registration = try SecureStore.load()
-        if registration != nil { start() }
+        if let stored = try SecureStore.load(), TestDeploymentAssignment.matches(
+            origin: stored.origin, instanceID: stored.instanceID, environment: stored.environment
+        ) { registration = stored }
         onChange?()
     }
     func persist() throws {
@@ -76,23 +85,28 @@ import IOKit.ps
     }
     func startIfNeeded() { if loop == nil { start() } }
     func verifiedInfo(_ server: ServerOrigin) async throws -> (ServerInfo, DeploymentProfile) {
+        guard server.url.absoluteString == TestDeploymentAssignment.origin else { throw AgentError.wrongServer }
         let (bytes, response) = try await Network.request(server.api("agent-devices/info"))
         guard response.statusCode == 200 else { throw NetworkFailure.network }
         let info = try JSONDecoder().decode(ServerInfo.self, from: bytes)
-        guard info.protocolVersion == 1 else { throw AgentError.wrongServer }
+        guard info.protocolVersion == 1, TestDeploymentAssignment.matches(
+            origin: server.url.absoluteString, instanceID: info.instance_id, environment: info.environment
+        ) else { throw AgentError.wrongServer }
         let trusted = try EmbeddedTrust.verify(info.signed_profile, origin: server,
                                               instanceID: info.instance_id, environment: info.environment)
         return (info, trusted)
     }
     func requireTrust() throws {
-        guard let profile = registration else { throw AgentError.wrongServer }
+        guard let profile = registration, TestDeploymentAssignment.matches(
+            origin: profile.origin, instanceID: profile.instanceID, environment: profile.environment
+        ) else { throw AgentError.wrongServer }
         _ = try EmbeddedTrust.verify(profile.signedProfile, origin: ServerOrigin(profile.origin),
                                      instanceID: profile.instanceID, environment: profile.environment)
     }
     func disconnect() throws {
         stop()
         registration = nil
-        state = "Не зарегистрирован"; upstreamState = "Войдите в Emergency и укажите проверочный робот"
+        state = "Не зарегистрирован"; upstreamState = "Ожидание проверочного робота"
         onChange?()
         try SecureStore.remove()
     }
@@ -134,6 +148,52 @@ import IOKit.ps
         try? SecureStore.deleteData(pendingAccount)
         start()
     }
+    func claimAuthenticated(origin: String, label: String,
+                            claim: ([String: Any]) async throws -> (Data, HTTPURLResponse)) async throws {
+        let run = runID
+        let server = try ServerOrigin(origin)
+        let (info, trusted) = try await verifiedInfo(server)
+        guard run == runID, !Task.isCancelled else { throw CancellationError() }
+        let pendingAccount = "account-claim-key-v1-" + SHA256.hash(data: Data((server.url.absoluteString + info.instance_id).utf8)).map { String(format: "%02x", $0) }.joined()
+        let key: P256.Signing.PrivateKey
+        let existing = registration
+        if let existing, existing.origin == server.url.absoluteString, existing.instanceID == info.instance_id {
+            key = try P256.Signing.PrivateKey(rawRepresentation: existing.privateKey)
+        } else if let data = try SecureStore.readData(pendingAccount) {
+            key = try P256.Signing.PrivateKey(rawRepresentation: data)
+        } else {
+            key = P256.Signing.PrivateKey()
+            try SecureStore.writeData(key.rawRepresentation, account: pendingAccount)
+        }
+        let (data, claimed) = try await claim([
+            "label": String(label.prefix(80)), "environment": info.environment,
+            "instance_id": info.instance_id, "public_key": key.publicKey.x963Representation.base64EncodedString()
+        ])
+        guard run == runID, !Task.isCancelled else { throw CancellationError() }
+        guard [200, 201].contains(claimed.statusCode),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = object["device_id"] as? String, UUID(uuidString: id) != nil,
+              object["status"] as? String == "approved",
+              object["instance_id"] as? String == info.instance_id,
+              object["environment"] as? String == info.environment,
+              existing == nil || existing?.deviceID == id else { throw AgentError.wrongServer }
+        var value = Registration(origin: server.url.absoluteString, deviceID: id, instanceID: info.instance_id,
+                                 environment: info.environment, label: label, privateKey: key.rawRepresentation)
+        value.signedProfile = info.signed_profile
+        value.channel = trusted.channel
+        value.catalogURL = server.api("distribution/v1/macos/catalog.json").absoluteString
+        if let existing {
+            value.cookie = existing.cookie
+            value.probeVIN = existing.probeVIN
+            value.minimumGeneration = existing.minimumGeneration
+            value.paused = existing.paused
+        }
+        registration = value
+        do { try persist() }
+        catch { registration = nil; throw error }
+        try? SecureStore.deleteData(pendingAccount)
+        start()
+    }
     func updateCookie(_ value: String) throws {
         guard registration != nil, value.utf8.count <= 32 * 1024,
               !value.contains("\r"), !value.contains("\n") else { throw NetworkFailure.invalid }
@@ -143,8 +203,16 @@ import IOKit.ps
         try persist()
     }
     func setProbe(_ value: String) throws {
-        registration?.probeVIN = try EmergencyTarget.normalizeRobot(value)
+        let normalized = try EmergencyTarget.normalizeRobot(value)
+        guard registration?.probeVIN != normalized else { return }
+        registration?.probeVIN = normalized
         readyUntil = .distantPast; lastProbe = .distantPast
+        try persist()
+    }
+    func clearProbe() throws {
+        registration?.probeVIN = ""
+        readyUntil = .distantPast; lastProbe = .distantPast
+        upstreamState = "Ожидание проверочного робота"
         try persist()
     }
     func pause(_ value: Bool) throws {
@@ -213,19 +281,64 @@ import IOKit.ps
     }
     private func sendHeartbeat() async throws {
         let power = powerState
+        let resources = resourceTelemetry()
+        let ready = registration?.paused == false && !thermallyPaused && Date() < readyUntil
+        let baseCapacity = power == "ac" ? 2 : 1
         try await send(["type": "heartbeat", "generation": generation,
-                        "ready": registration?.paused == false && !thermallyPaused && Date() < readyUntil,
+                        "ready": ready,
                         "latency_ms": latency, "inflight": jobs.count, "active_jobs": jobs.count,
-                        "capacity": power == "ac" && ProcessInfo.processInfo.thermalState == .nominal ? 2 : 1,
+                        "capacity": resources.capacity(base: baseCapacity, activeJobs: jobs.count, ready: ready,
+                                                       paused: registration?.paused == true),
                         "load": localLoad, "paused": registration?.paused == true || thermallyPaused,
+                        "cpu_percent": resources.cpuPercent, "memory_percent": resources.memoryPercent,
+                        "thermal_state": resources.thermalState,
                         "power": power, "supports": ["raw_deflate", "managed_probes"],
-                        "probe_available": registration?.paused == false && !thermallyPaused && !(registration?.cookie.isEmpty ?? true) && !(registration?.probeVIN.isEmpty ?? true)])
+                        "probe_available": registration?.paused == false && !thermallyPaused
+                            && !(registration?.cookie.isEmpty ?? true) && !(registration?.probeVIN.isEmpty ?? true)])
     }
     private var thermallyPaused: Bool { ProcessInfo.processInfo.thermalState == .critical }
     private var localLoad: Double {
         var load = [Double](repeating: 0, count: 3)
         guard getloadavg(&load, 3) == 3 else { return 0 }
         return min(1, max(0, load[0] / Double(max(1, ProcessInfo.processInfo.activeProcessorCount))))
+    }
+    private func resourceTelemetry() -> ResourceTelemetry {
+        let thermal: String
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: thermal = "normal"
+        case .fair: thermal = "fair"
+        case .serious: thermal = "serious"
+        case .critical: thermal = "critical"
+        @unknown default: thermal = "serious"
+        }
+        var cpuInfo = host_cpu_load_info()
+        var cpuCount = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let cpuResult = withUnsafeMutablePointer(to: &cpuInfo) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(cpuCount)) {
+                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &cpuCount)
+            }
+        }
+        let ticks = [UInt64(cpuInfo.cpu_ticks.0), UInt64(cpuInfo.cpu_ticks.1),
+                     UInt64(cpuInfo.cpu_ticks.2), UInt64(cpuInfo.cpu_ticks.3)]
+        var cpu = 0.0
+        if cpuResult == KERN_SUCCESS, let previous = previousCPUTicks, previous.count == ticks.count {
+            let delta = zip(ticks, previous).map { $0 >= $1 ? $0 - $1 : 0 }
+            let total = delta.reduce(0, +)
+            if total > 0 { cpu = Double(delta[0] + delta[1] + delta[3]) * 100 / Double(total) }
+        }
+        if cpuResult == KERN_SUCCESS { previousCPUTicks = ticks }
+
+        var vmInfo = vm_statistics64()
+        var vmCount = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
+        let vmResult = withUnsafeMutablePointer(to: &vmInfo) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(vmCount)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &vmCount)
+            }
+        }
+        let usedPages = UInt64(vmInfo.active_count) + UInt64(vmInfo.wire_count) + UInt64(vmInfo.compressor_page_count)
+        let memory = vmResult == KERN_SUCCESS && ProcessInfo.processInfo.physicalMemory > 0
+            ? Double(usedPages) * Double(vm_kernel_page_size) * 100 / Double(ProcessInfo.processInfo.physicalMemory) : 100
+        return ResourceTelemetry(cpuPercent: cpu, memoryPercent: memory, thermalState: thermal)
     }
     private var powerState: String {
         if ProcessInfo.processInfo.isLowPowerModeEnabled { return "low_power" }
@@ -251,7 +364,7 @@ import IOKit.ps
     }
     private func probeIfNeeded(granted: Bool = false, timeout: Double = 8) async {
         guard !probing, let profile = registration, !profile.paused, !thermallyPaused,
-              !profile.probeVIN.isEmpty, !profile.cookie.isEmpty,
+              !profile.cookie.isEmpty,
               granted || Date().timeIntervalSince(lastProbe) >= 20 else { return }
         let currentRun = runID
         probing = true; lastProbe = Date()
@@ -259,6 +372,11 @@ import IOKit.ps
         let started = Date()
         do {
             try requireTrust()
+            guard !profile.probeVIN.isEmpty else {
+                readyUntil = .distantPast
+                upstreamState = "Ожидание проверочного робота"
+                return
+            }
             _ = try await Network.emergency(vin: profile.probeVIN, cookie: profile.cookie, timeout: timeout)
             guard !Task.isCancelled, runID == currentRun, registration?.cookie == profile.cookie, registration?.probeVIN == profile.probeVIN, registration?.paused == false else { return }
             latency = latency * 0.7 + max(1, Date().timeIntervalSince(started) * 1000) * 0.3

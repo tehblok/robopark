@@ -25,6 +25,9 @@ class Channel:
     reported_load: float = 0.0
     paused: bool = False
     power: str = "unknown"
+    cpu_percent: float | None = None
+    memory_percent: float | None = None
+    thermal_state: str | None = None
     supports: set[str] = field(default_factory=set)
     probe_available: bool = False
     probe_inflight: bool = False
@@ -43,6 +46,10 @@ class Channel:
     probes_failed: int = 0
     upstream_dispatches: int = 0
     upstream_backpressure: int = 0
+    cache_hits: int = 0
+    compression_saved_bytes: int = 0
+    response_latency_ms: float | None = None
+    response_throughput_mbps: float | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     async def send_json(self, value: dict) -> None:
@@ -59,6 +66,7 @@ class PendingJob:
     vin: str
     requester_user_id: int | None
     deadline_monotonic: float | None
+    started_at: float
     future: asyncio.Future
 
 
@@ -103,6 +111,8 @@ class BrokerRegistry:
             "probes_failed": 0,
             "upstream_dispatches": 0,
             "upstream_backpressure": 0,
+            "cache_hits": 0,
+            "compression_saved_bytes": 0,
         }
         self._probe_tokens = 2.0
         self._probe_refilled_at = time.monotonic()
@@ -216,8 +226,10 @@ class BrokerRegistry:
             and device_id not in excluded
             and channel.ready
             and not channel.paused
-            and channel.inflight + channel.queued
-            < min(self.max_inflight_per_device, channel.capacity)
+            and channel.thermal_state != "critical"
+            and (channel.cpu_percent is None or channel.cpu_percent < 98.0)
+            and (channel.memory_percent is None or channel.memory_percent < 98.0)
+            and channel.inflight + channel.queued < self.effective_capacity(channel)
             and now - channel.last_heartbeat <= self.readiness_timeout_seconds
         ]
         if not candidates:
@@ -230,22 +242,46 @@ class BrokerRegistry:
             aging_credit = min(waiting, 120.0) * 20.0
             latency_cost = min(item.latency_ms, 2_000.0) * 0.1
             power_cost = 200.0 if item.power in {"battery", "low_power"} else 0.0
+            thermal_cost = (
+                250.0
+                if item.thermal_state == "serious"
+                else 50.0
+                if item.thermal_state == "fair"
+                else 0.0
+            )
+            cpu_cost = max(0.0, (item.cpu_percent or 0.0) - 70.0) * 15.0
+            memory_cost = max(0.0, (item.memory_percent or 0.0) - 80.0) * 10.0
             total = (
                 item.virtual_finish
                 + observed_load * 750.0
                 + latency_cost
                 + item.failure_penalty * 1_000.0
                 + power_cost
+                + thermal_cost
+                + cpu_cost
+                + memory_cost
                 - aging_credit
             )
             return total, item.device_id
 
         return min(candidates, key=score)
 
+    def effective_capacity(self, channel: Channel) -> int:
+        if (
+            channel.thermal_state == "critical"
+            or (channel.cpu_percent is not None and channel.cpu_percent >= 98.0)
+            or (channel.memory_percent is not None and channel.memory_percent >= 98.0)
+        ):
+            return 0
+        capacity = min(self.max_inflight_per_device, channel.capacity)
+        if channel.thermal_state == "serious":
+            return min(capacity, 1)
+        return capacity
+
     def reserve_queue_slot(self, channel: Channel) -> bool:
         if self.channels.get(channel.device_id) is not channel:
             return False
-        if channel.inflight + channel.queued >= min(self.max_inflight_per_device, channel.capacity):
+        if channel.inflight + channel.queued >= self.effective_capacity(channel):
             return False
         channel.queued += 1
         return True
@@ -259,6 +295,7 @@ class BrokerRegistry:
             self.channels.get(channel.device_id) is channel
             and channel.ready
             and not channel.paused
+            and self.effective_capacity(channel) > channel.inflight + channel.queued
             and now - channel.last_heartbeat <= self.readiness_timeout_seconds
         )
 
@@ -281,6 +318,7 @@ class BrokerRegistry:
             vin=vin,
             requester_user_id=requester_user_id,
             deadline_monotonic=deadline_monotonic,
+            started_at=time.monotonic(),
             future=loop.create_future(),
         )
         self.pending[(job.device_id, job.generation, job.job_id, job.attempt_id)] = job
@@ -301,12 +339,25 @@ class BrokerRegistry:
         *,
         encoded_bytes: int,
         decoded_bytes: int,
+        duration_seconds: float | None = None,
         now: float | None = None,
     ) -> None:
         now = time.monotonic() if now is None else now
         channel.completed += 1
         channel.encoded_bytes += encoded_bytes
         channel.decoded_bytes += decoded_bytes
+        channel.compression_saved_bytes += max(0, decoded_bytes - encoded_bytes)
+        self.metrics["compression_saved_bytes"] += max(0, decoded_bytes - encoded_bytes)
+        if duration_seconds is not None and 0.001 <= duration_seconds <= 120.0:
+            latency_ms = duration_seconds * 1_000.0
+            throughput_mbps = min(10_000.0, encoded_bytes * 8.0 / duration_seconds / 1_000_000.0)
+            if channel.response_latency_ms is None:
+                channel.response_latency_ms = latency_ms
+                channel.response_throughput_mbps = throughput_mbps
+            else:
+                channel.response_latency_ms = channel.response_latency_ms * 0.7 + latency_ms * 0.3
+                prior = channel.response_throughput_mbps or 0.0
+                channel.response_throughput_mbps = prior * 0.7 + throughput_mbps * 0.3
         channel.last_upstream_success = now
         channel.last_probe_at = now
         channel.probe_inflight = False
@@ -386,9 +437,7 @@ class BrokerRegistry:
         channel.last_heartbeat = now
         if latency_ms is not None and 0 <= latency_ms <= 120_000:
             channel.latency_ms = latency_ms
-        if ready:
-            channel.last_upstream_success = now
-        else:
+        if not ready:
             channel.probes_failed += 1
             self.metrics["probes_failed"] += 1
         return True
@@ -403,30 +452,53 @@ class BrokerRegistry:
         devices = []
         for item in sorted(channels, key=lambda value: value.device_id):
             stale = now - item.last_heartbeat > self.readiness_timeout_seconds
-            busy = item.inflight + item.queued >= min(self.max_inflight_per_device, item.capacity)
+            response_measurement_fresh = (
+                not stale
+                and item.last_upstream_success > 0
+                and now - item.last_upstream_success <= 60.0
+            )
+            busy = item.inflight + item.queued >= self.effective_capacity(item)
             status = (
-                "stale"
+                "offline"
                 if stale
                 else "paused"
                 if item.paused
                 else "busy"
-                if busy
+                if item.ready and busy
                 else "ready"
                 if item.ready
-                else "offline"
+                else "corporate_unavailable"
+                if "managed_probes" in item.supports and not item.probe_available
+                else "online"
             )
             devices.append(
                 {
                     "id": item.device_id,
                     "status": status,
                     "connected": True,
-                    "ready": bool(item.ready and not stale and not item.paused),
+                    "ready": bool(item.ready and not stale and not item.paused and not busy),
+                    "fresh": not stale,
+                    "busy": busy,
                     "capacity": item.capacity,
                     "inflight": item.inflight,
                     "queued": item.queued,
-                    "load": item.reported_load,
-                    "latency_ms": item.latency_ms,
+                    "load": item.reported_load if not stale else 0.0,
+                    "latency_ms": item.latency_ms if not stale else None,
+                    "response_latency_ms": (
+                        item.response_latency_ms if response_measurement_fresh else None
+                    ),
+                    "throughput_mbps": (
+                        item.response_throughput_mbps if response_measurement_fresh else None
+                    ),
+                    "last_success_age_seconds": (
+                        max(0.0, now - item.last_upstream_success)
+                        if not stale and item.last_upstream_success > 0
+                        else None
+                    ),
                     "power": item.power,
+                    "cpu_percent": item.cpu_percent if not stale else None,
+                    "memory_percent": item.memory_percent if not stale else None,
+                    "thermal_state": item.thermal_state if not stale else None,
                     "requests": item.requests,
                     "completed": item.completed,
                     "failed": item.failed,
@@ -436,6 +508,8 @@ class BrokerRegistry:
                     "probes_failed": item.probes_failed,
                     "upstream_dispatches": item.upstream_dispatches,
                     "upstream_backpressure": item.upstream_backpressure,
+                    "cache_hits": item.cache_hits,
+                    "compression_saved_bytes": item.compression_saved_bytes,
                 }
             )
         return {"devices": devices}
@@ -501,6 +575,10 @@ class BrokerRegistry:
             self.shared_cache.pop(vin, None)
             self.shared_cache_bytes = max(0, self.shared_cache_bytes - size_bytes)
             return None
+        channel = self.channels.get(source_device_id)
+        if channel is not None:
+            channel.cache_hits += 1
+        self.metrics["cache_hits"] += 1
         return payload, source_device_id
 
     def shared_cache_put(self, vin: str, payload: dict, *, source_device_id: str) -> None:

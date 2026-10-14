@@ -18,7 +18,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
     NoEncryption,
@@ -91,13 +95,17 @@ def sign_catalog(
 
 def bundle_versions(version: str, now: int) -> dict[str, str]:
     package_name(version)
-    date = datetime.fromtimestamp(now, timezone.utc)
-    days = (date.date() - datetime(2020, 1, 1, tzinfo=timezone.utc).date()).days + 1
+    date = datetime.fromtimestamp(now, timezone.utc)  # noqa: UP017 -- Python 3.9
+    days = (
+        date.date() - datetime(2020, 1, 1, tzinfo=timezone.utc).date()  # noqa: UP017 -- Python 3.9
+    ).days + 1
     if not 0 < days <= 9999:
         raise ValueError("bundle_build_date_out_of_range")
-    return {"CFBundleShortVersionString": version.split("-")[0].split("+")[0],
-            "CFBundleVersion": f"{days}.{date.hour}.{date.minute}",
-            "RoboparkReleaseVersion": version}
+    return {
+        "CFBundleShortVersionString": version.split("-")[0].split("+")[0],
+        "CFBundleVersion": f"{days}.{date.hour}.{date.minute}",
+        "RoboparkReleaseVersion": version,
+    }
 
 
 def launch_agent() -> dict:
@@ -115,6 +123,92 @@ def launch_agent() -> dict:
     }
 
 
+def update_daemon() -> dict:
+    return {
+        "Label": "ru.robopark.update-helper",
+        "ProgramArguments": ["/Library/PrivilegedHelperTools/RoboparkUpdater"],
+        "UserName": "root",
+        "RunAtLoad": True,
+        "StartInterval": 15 * 60,
+        "ProcessType": "Background",
+        "LowPriorityIO": True,
+        "StandardOutPath": "/dev/null",
+        "StandardErrorPath": "/dev/null",
+    }
+
+
+def automatic_update_config(envelope: dict, public_key: str) -> dict:
+    try:
+        if set(envelope) != {"payload", "signature"}:
+            raise ValueError
+        payload = base64.b64decode(envelope["payload"], validate=True)
+        signature = base64.b64decode(envelope["signature"], validate=True)
+        Ed25519PublicKey.from_public_bytes(
+            base64.b64decode(public_key, validate=True)
+        ).verify(signature, payload)
+        profile = json.loads(payload)
+        if (
+            profile.get("purpose") != "robopark-deployment-v1"
+            or profile.get("origin") != "https://roboparktest.ru.tuna.am"
+            or profile.get("instance_id") != "d6ed3b43-c41b-4614-833e-c5ec30936ef3"
+            or profile.get("environment") != "test"
+            or profile.get("channel") != "rc"
+            or not re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+                profile.get("instance_id", ""),
+                re.IGNORECASE,
+            )
+            or type(profile.get("expires")) is not int
+            or profile["expires"] <= int(time.time())
+        ):
+            raise ValueError
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        InvalidSignature,
+        json.JSONDecodeError,
+    ) as error:
+        raise ValueError("invalid_deployment_profile") from error
+    return {
+        "schema": 1,
+        "origin": profile["origin"],
+        "instance_id": profile["instance_id"],
+        "environment": profile["environment"],
+        "channel": profile["channel"],
+    }
+
+
+def postinstall_script() -> str:
+    return """#!/bin/sh
+set -eu
+chown -R root:wheel /Applications/Robopark.app
+chmod -R go-w /Applications/Robopark.app
+chown root:wheel /Library/LaunchAgents/ru.robopark.agent.plist
+chmod 644 /Library/LaunchAgents/ru.robopark.agent.plist
+chown root:wheel /Library/LaunchDaemons/ru.robopark.update-helper.plist
+chmod 644 /Library/LaunchDaemons/ru.robopark.update-helper.plist
+chown root:wheel /Library/PrivilegedHelperTools/RoboparkUpdater
+chmod 755 /Library/PrivilegedHelperTools/RoboparkUpdater
+chown root:wheel '/Library/Application Support/RoboparkUpdater'
+chmod 755 '/Library/Application Support/RoboparkUpdater'
+chown root:wheel '/Library/Application Support/RoboparkUpdater/config.json' '/Library/Application Support/RoboparkUpdater/update-root.json'
+chmod 644 '/Library/Application Support/RoboparkUpdater/config.json' '/Library/Application Support/RoboparkUpdater/update-root.json'
+/bin/launchctl bootstrap system /Library/LaunchDaemons/ru.robopark.update-helper.plist 2>/dev/null || true
+session_uid=$(/usr/bin/stat -f %u /dev/console)
+case "$session_uid" in ''|*[!0-9]*) exit 0;; esac
+if [ "$session_uid" -ge 501 ]; then
+  disabled=$(/bin/launchctl print-disabled "gui/$session_uid" 2>/dev/null || true)
+  if ! /usr/bin/grep -q '"ru.robopark.agent" => true' <<EOF
+$disabled
+EOF
+  then
+    /bin/launchctl bootstrap "gui/$session_uid" /Library/LaunchAgents/ru.robopark.agent.plist 2>/dev/null || true
+  fi
+fi
+"""
+
+
 def stage_workspace(dist: Path, target: Path, *, version: str, commit: str) -> dict:
     """Copy only the bounded public web build; private source/config never enters pkg."""
     if not dist.is_dir() or dist.is_symlink():
@@ -130,11 +224,33 @@ def stage_workspace(dist: Path, target: Path, *, version: str, commit: str) -> d
         parts = Path(entry.removeprefix("/")).parts
         if ".." in parts or not (dist / entry.removeprefix("/")).is_file():
             raise ValueError("workspace_entry_asset_missing")
-    allowed = {".html", ".js", ".css", ".json", ".svg", ".png", ".jpg", ".jpeg",
-               ".webp", ".ico", ".woff", ".woff2", ".webmanifest", ".wasm"}
-    assets = [path for path in files if path.is_file() and path.suffix in allowed
-              and not any(part.startswith(".") for part in path.relative_to(dist).parts)]
-    if len(assets) > 4096 or sum(path.stat().st_size for path in assets) > 128 * 1024 * 1024:
+    allowed = {
+        ".html",
+        ".js",
+        ".css",
+        ".json",
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".ico",
+        ".woff",
+        ".woff2",
+        ".webmanifest",
+        ".wasm",
+    }
+    assets = [
+        path
+        for path in files
+        if path.is_file()
+        and path.suffix in allowed
+        and not any(part.startswith(".") for part in path.relative_to(dist).parts)
+    ]
+    if (
+        len(assets) > 4096
+        or sum(path.stat().st_size for path in assets) > 128 * 1024 * 1024
+    ):
         raise ValueError("workspace_build_too_large")
     manifest = {"version": version, "source_commit": commit, "files": {}}
     target.mkdir(parents=True)
@@ -146,8 +262,13 @@ def stage_workspace(dist: Path, target: Path, *, version: str, commit: str) -> d
         destination.parent.mkdir(parents=True, exist_ok=True)
         data = path.read_bytes()
         destination.write_bytes(data)
-        manifest["files"][relative.as_posix()] = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-    (target / "workspace-manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+        manifest["files"][relative.as_posix()] = {
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+    (target / "workspace-manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True, indent=2) + "\n"
+    )
     return manifest
 
 
@@ -155,20 +276,32 @@ def build(
     output: Path,
     *,
     key: Path,
+    deployment_profile: Path,
     sign_application: str | None = None,
     sign_installer: str | None = None,
     notary_profile: str | None = None,
 ) -> dict:
     version = (ROOT / "VERSION").read_text().strip()
     filename = package_name(version)
-    source_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    source_clean = not subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=ROOT, text=True).strip()
+    source_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    source_clean = not subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        cwd=ROOT,
+        text=True,
+    ).strip()
     if bool(sign_application) != bool(sign_installer) or (
         notary_profile and not sign_installer
     ):
         raise ValueError("provide_both_developer_id_identities")
     output.mkdir(parents=True, exist_ok=True)
     public = ensure_update_key(key)
+    try:
+        profile_envelope = json.loads(deployment_profile.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("invalid_deployment_profile") from error
+    updater_config = automatic_update_config(profile_envelope, public)
     web = ROOT / "apps/web"
     if json.loads((web / "package.json").read_text())["version"] != version:
         raise ValueError("workspace_version_mismatch")
@@ -201,6 +334,11 @@ def build(
         env=env,
         check=True,
     )
+    subprocess.run(
+        ["swift", "build", *swift_options, "--product", "RoboparkUpdater"],
+        env=env,
+        check=True,
+    )
     bin_path = Path(
         subprocess.check_output(
             ["swift", "build", *swift_options, "--show-bin-path"], env=env, text=True
@@ -216,12 +354,16 @@ def build(
         resources.mkdir()
         shutil.copy2(bin_path / "RoboparkAgent", executable)
         executable.chmod(0o755)
-        architecture = subprocess.check_output(["lipo", "-archs", str(executable)], text=True).strip()
+        architecture = subprocess.check_output(
+            ["lipo", "-archs", str(executable)], text=True
+        ).strip()
         if architecture != "arm64":
             raise ValueError("unexpected_binary_architecture")
         subprocess.run(["strip", "-S", str(executable)], check=True)
         shutil.copy2(ROOT / "apps/macos/Resources/panel.html", resources / "panel.html")
-        workspace = stage_workspace(web / "dist", resources / "workspace", version=version, commit=source_commit)
+        workspace = stage_workspace(
+            web / "dist", resources / "workspace", version=version, commit=source_commit
+        )
         (resources / "update-root.json").write_text(
             json.dumps({"ed25519": public}) + "\n"
         )
@@ -264,33 +406,6 @@ def build(
         (launch_dir / "ru.robopark.agent.plist").write_bytes(
             plistlib.dumps(launch_agent())
         )
-        scripts = work / "scripts"
-        scripts.mkdir()
-        (scripts / "preinstall").write_text("""#!/bin/sh
-set -eu
-if [ -L /Applications/Robopark.app ]; then
-  echo 'Refusing a symbolic-link application destination.' >&2
-  exit 1
-fi
-""")
-        (scripts / "postinstall").write_text("""#!/bin/sh
-set -eu
-# Installer owns these exact paths; no recursive access to user data or Keychain.
-chown -R root:wheel /Applications/Robopark.app
-chmod -R go-w /Applications/Robopark.app
-chown root:wheel /Library/LaunchAgents/ru.robopark.agent.plist
-chmod 644 /Library/LaunchAgents/ru.robopark.agent.plist
-session_uid=$(/usr/bin/stat -f %u /dev/console)
-case "$session_uid" in ''|*[!0-9]*) exit 0;; esac
-if [ "$session_uid" -ge 501 ]; then
-  /bin/launchctl bootout "gui/$session_uid/ru.robopark.agent" 2>/dev/null || true
-  /bin/launchctl bootstrap "gui/$session_uid" /Library/LaunchAgents/ru.robopark.agent.plist
-  /bin/launchctl kickstart "gui/$session_uid/ru.robopark.agent"
-fi
-""")
-        for script in scripts.iterdir():
-            script.chmod(0o755)
-            subprocess.run(["sh", "-n", str(script)], check=True)
         signing = [
             "codesign",
             "--force",
@@ -301,6 +416,40 @@ fi
         ]
         if sign_application:
             signing.append("--timestamp")
+        helper_dir = payload / "Library/PrivilegedHelperTools"
+        helper_dir.mkdir(parents=True)
+        helper = helper_dir / "RoboparkUpdater"
+        shutil.copy2(bin_path / "RoboparkUpdater", helper)
+        helper.chmod(0o755)
+        subprocess.run(["strip", "-S", str(helper)], check=True)
+        subprocess.run([*signing, str(helper)], check=True)
+        subprocess.run(["codesign", "--verify", "--strict", str(helper)], check=True)
+        daemon_dir = payload / "Library/LaunchDaemons"
+        daemon_dir.mkdir(parents=True)
+        (daemon_dir / "ru.robopark.update-helper.plist").write_bytes(
+            plistlib.dumps(update_daemon())
+        )
+        helper_support = payload / "Library/Application Support/RoboparkUpdater"
+        helper_support.mkdir(parents=True)
+        (helper_support / "config.json").write_text(
+            json.dumps(updater_config, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        (helper_support / "update-root.json").write_text(
+            json.dumps({"ed25519": public}) + "\n"
+        )
+        scripts = work / "scripts"
+        scripts.mkdir()
+        (scripts / "preinstall").write_text("""#!/bin/sh
+set -eu
+if [ -L /Applications/Robopark.app ]; then
+  echo 'Refusing a symbolic-link application destination.' >&2
+  exit 1
+fi
+""")
+        (scripts / "postinstall").write_text(postinstall_script())
+        for script in scripts.iterdir():
+            script.chmod(0o755)
+            subprocess.run(["sh", "-n", str(script)], check=True)
         subprocess.run([*signing, str(app)], check=True)
         subprocess.run(
             ["codesign", "--verify", "--deep", "--strict", str(app)], check=True
@@ -361,8 +510,14 @@ fi
         "workspace_assets": len(workspace["files"]),
         "workspace_bytes": sum(row["size"] for row in workspace["files"].values()),
     }
-    final_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    final_clean = not subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=ROOT, text=True).strip()
+    final_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    final_clean = not subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        cwd=ROOT,
+        text=True,
+    ).strip()
     if final_commit != source_commit or (source_clean and not final_clean):
         package.unlink(missing_ok=True)
         (output / "catalog.json").unlink(missing_ok=True)
@@ -377,6 +532,7 @@ def main() -> int:
     parser.add_argument(
         "--update-key", type=Path, default=ROOT / ".release-secrets/macos-update.key"
     )
+    parser.add_argument("--deployment-profile", type=Path, required=True)
     parser.add_argument("--sign-application")
     parser.add_argument("--sign-installer")
     parser.add_argument("--notary-profile")
@@ -384,6 +540,7 @@ def main() -> int:
     report = build(
         args.output.resolve(),
         key=args.update_key.resolve(),
+        deployment_profile=args.deployment_profile.resolve(),
         sign_application=args.sign_application,
         sign_installer=args.sign_installer,
         notary_profile=args.notary_profile,

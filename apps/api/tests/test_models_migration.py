@@ -169,7 +169,46 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
 def test_alembic_head_includes_agent_device_registry():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0063_agent_devices"]
+    assert script.get_heads() == ["0064_agent_device_identity"]
+
+
+def test_agent_identity_migration_fails_closed_without_deleting_legacy_duplicates(
+    sqlite_database_url, monkeypatch
+):
+    monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
+    config = Config(Path(__file__).parents[1] / "alembic.ini")
+    command.upgrade(config, "0063_agent_devices")
+    engine = create_engine(sqlite_database_url, future=True)
+    with engine.begin() as connection:
+        for index in (1, 2):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO agent_devices (
+                        id, owner_user_id, label, public_key_x963, environment, instance_id
+                    ) VALUES (
+                        :id, :owner, :label, :public_key, 'test', :instance_id
+                    )
+                    """
+                ),
+                {
+                    "id": f"00000000-0000-0000-0000-00000000000{index}",
+                    "owner": index,
+                    "label": f"Legacy Mac {index}",
+                    "public_key": b"\x04" + b"x" * 64,
+                    "instance_id": "11111111-1111-1111-1111-111111111111",
+                },
+            )
+
+    with pytest.raises(RuntimeError, match="agent_device_identity_conflict"):
+        command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT COUNT(*) FROM agent_devices")) == 2
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0063_agent_devices"
+        )
 
 
 def test_notification_retention_index_migrates_from_previous_head(sqlite_database_url, monkeypatch):
@@ -191,6 +230,16 @@ def test_host_terminal_migration_builds_bounded_session_schema(sqlite_database_u
     monkeypatch.setenv("DATABASE_URL", sqlite_database_url)
     command.upgrade(Config(Path(__file__).parents[1] / "alembic.ini"), "head")
     inspector = inspect(create_engine(sqlite_database_url, future=True))
+
+    agent_identity_constraints = {
+        constraint["name"]: constraint["column_names"]
+        for constraint in inspector.get_unique_constraints("agent_devices")
+    }
+    assert agent_identity_constraints["uq_agent_devices_installation_identity"] == [
+        "public_key_x963",
+        "environment",
+        "instance_id",
+    ]
 
     assert {
         "terminal_sessions",
@@ -456,7 +505,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
     with engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0063_agent_devices"
+            == "0064_agent_device_identity"
         )
 
 

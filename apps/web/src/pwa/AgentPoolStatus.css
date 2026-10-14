@@ -1,0 +1,65 @@
+.rp-agent-graph-viewport {
+  max-height: 24rem;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.rp-agent-graph {
+  display: block;
+  width: 100%;
+  min-width: 36rem;
+  min-height: 16rem;
+  color: var(--rp-color-text, currentColor);
+  overflow: visible;
+}
+
+.rp-agent-graph line {
+  stroke: color-mix(in srgb, currentColor 32%, transparent);
+  stroke-width: 1.5;
+}
+
+.rp-agent-graph text {
+  fill: currentColor;
+  font-size: 12px;
+}
+
+.rp-agent-graph__server,
+.rp-agent-graph__owner {
+  fill: color-mix(in srgb, var(--rp-color-accent, #5268d9) 14%, transparent);
+  stroke: color-mix(in srgb, var(--rp-color-accent, #5268d9) 65%, transparent);
+}
+
+.rp-agent-graph__muted { opacity: .7; }
+.rp-agent-graph__device { fill: #76839b; }
+.rp-agent-graph__device--ready { fill: #2d9b68; }
+.rp-agent-graph__device--paused { fill: #d18b24; }
+.rp-agent-graph__device--corporate_unavailable { fill: #c35353; }
+.rp-agent-graph__device--offline,
+.rp-agent-graph__device--stale { fill: #76839b; opacity: .58; }
+
+.rp-agent-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: .5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.rp-agent-list li {
+  display: grid;
+  gap: .2rem;
+  padding: .65rem;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: .65rem;
+}
+
+.rp-agent-list li > span,
+.rp-agent-list li > span > small { display: block; }
+
+@media (max-width: 44rem) {
+  .rp-agent-graph-viewport { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rp-agent-graph * { transition: none; }
+}

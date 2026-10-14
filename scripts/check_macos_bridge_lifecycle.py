@@ -45,12 +45,12 @@ actor Claims {
   return try await withCheckedThrowingContinuation { reply=$0 }
  }
  func wait(for expected:Int) async { if calls.count >= expected { return }; await withCheckedContinuation { waiter=$0 } }
- func succeed(_ id:String) { let body=try! JSONSerialization.data(withJSONObject:["device_id":id,"instance_id":"11111111-1111-4111-8111-111111111111","environment":"test"]); reply?.resume(returning:(body, response(201))); reply=nil }
+ func succeed(_ id:String) { let body=try! JSONSerialization.data(withJSONObject:["device_id":id,"instance_id":"d6ed3b43-c41b-4614-833e-c5ec30936ef3","environment":"test"]); reply?.resume(returning:(body, response(201))); reply=nil }
  func fail(){ reply?.resume(throwing:NetworkFailure.network); reply=nil }
  func keys() -> [String] { calls.compactMap { $0["public_key"] } }
- func response(_ status:Int) -> HTTPURLResponse { HTTPURLResponse(url:URL(string:"https://service.example/api/agent-devices/claim")!,statusCode:status,httpVersion:"HTTP/1.1",headerFields:[:])! }
+ func response(_ status:Int) -> HTTPURLResponse { HTTPURLResponse(url:URL(string:"https://roboparktest.ru.tuna.am/api/agent-devices/claim")!,statusCode:status,httpVersion:"HTTP/1.1",headerFields:[:])! }
 }
-func response(_ status:Int)->HTTPURLResponse { HTTPURLResponse(url:URL(string:"https://service.example/api/agent-devices/info")!,statusCode:status,httpVersion:"HTTP/1.1",headerFields:[:])! }
+func response(_ status:Int)->HTTPURLResponse { HTTPURLResponse(url:URL(string:"https://roboparktest.ru.tuna.am/api/agent-devices/info")!,statusCode:status,httpVersion:"HTTP/1.1",headerFields:[:])! }
 enum Network {
  static var infoCalls=0
  static let session=URLSession(configuration:.ephemeral)
@@ -58,7 +58,7 @@ enum Network {
   if url.path.hasSuffix("/claim") { return try await Claims.shared.begin(object ?? [:]) }
   infoCalls += 1
   guard infoCalls == 1 else { throw NetworkFailure.network }
-  let info:[String:Any] = ["signed_profile":["payload":"x","signature":"x"],"environment":"test","instance_id":"11111111-1111-4111-8111-111111111111","protocol":1]
+  let info:[String:Any] = ["signed_profile":["payload":"x","signature":"x"],"environment":"test","instance_id":"d6ed3b43-c41b-4614-833e-c5ec30936ef3","protocol":1]
   return (try JSONSerialization.data(withJSONObject:info), response(200))
  }
  static func emergency(vin:String,cookie:String,timeout:Double=10) async throws -> [String:Any] { throw NetworkFailure.network }
@@ -69,7 +69,7 @@ import AgentCore
 var checks=0
 func check(_ v:@autoclosure() throws -> Bool,_ n:String)throws { guard try v() else { fatalError("FAIL: \(n)") }; checks+=1 }
 func reset() async { SecureStore.reset(); Network.infoCalls=0; await Claims.shared.reset() }
-func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"https://service.example",code:"code",label:"Mac") }
+func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"https://roboparktest.ru.tuna.am",code:"code",label:"Mac") }
 @main struct Run { static func main() async throws {
  let id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
  await reset(); let wake=Bridge(); let first=Task { try await enroll(wake) }; await Claims.shared.wait(for: 1); wake.start(); await Claims.shared.succeed(id); try await first.value
@@ -82,12 +82,65 @@ func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"http
  SecureStore.failSave=true; await Claims.shared.succeed(id); do { try await again.value; fatalError("FAIL: persist failure accepted") } catch { checks+=1 }; try check(retry.registration == nil,"persist failure does not retain registration")
  SecureStore.failSave=false; Network.infoCalls=0; let recovered=Task { try await enroll(retry) }; await Claims.shared.wait(for: 3); let recoveredKeys=await Claims.shared.keys(); try check(recoveredKeys.last == keys[0],"persist failure retains retry key")
  await Claims.shared.succeed(id); try await recovered.value; retry.stop()
+ await reset(); SecureStore.registration = Registration(origin:"https://prod.example",deviceID:id,instanceID:"22222222-2222-4222-8222-222222222222",environment:"production",label:"old",privateKey:Data(repeating:1,count:32))
+ let quarantined=Bridge(); quarantined.start(); try await Task.sleep(nanoseconds:20_000_000)
+ try check(quarantined.registration == nil && Network.infoCalls == 0,"persisted production registration is quarantined before network use")
+ await reset(); let authenticated=Bridge(); var claimKeys:[String]=[]
+ func accountClaim(_ object:[String:Any]) async throws -> (Data,HTTPURLResponse) {
+  claimKeys.append(object["public_key"] as? String ?? "")
+  let reply:[String:Any] = ["device_id":id,"owner_user_id":7,"environment":"test","instance_id":"d6ed3b43-c41b-4614-833e-c5ec30936ef3","protocol":1,"status":"approved"]
+  return (try JSONSerialization.data(withJSONObject:reply), response(claimKeys.count == 1 ? 201 : 200))
+ }
+ try await authenticated.claimAuthenticated(origin:"https://roboparktest.ru.tuna.am",label:"Mac",claim:accountClaim)
+ try check(authenticated.registration?.deviceID == id,"authenticated account claims device without enrollment code")
+ try check(authenticated.needsCorporateLogin,"first login exposes corporate SSO without waiting for an impossible cookie-free probe")
+ try authenticated.updateCookie("session=present")
+ try check(!authenticated.needsCorporateLogin,"present corporate cookie does not force another SSO login")
+ try authenticated.updateCookie("")
+ try check(authenticated.needsCorporateLogin,"cleared corporate cookie exposes SSO recovery")
+ authenticated.stop(); Network.infoCalls=0
+ try await authenticated.claimAuthenticated(origin:"https://roboparktest.ru.tuna.am",label:"Mac",claim:accountClaim)
+ try check(claimKeys.count == 2 && claimKeys[0] == claimKeys[1],"authenticated retry preserves immutable device key")
+ authenticated.stop()
  print("PASS: \(checks) production Bridge enrollment wake, disconnect and retry lifecycle checks")
 } }
 """
 
 
 def main() -> int:
+    application = (MACOS / "Sources/RoboparkAgent/Application.swift").read_text()
+    launch = application.split("func applicationDidFinishLaunching", 1)[1].split(
+        "private func initializeWorkspace", 1
+    )[0]
+    logout = application.split("private func accountLogout", 1)[1].split(
+        "private func refreshProbeTarget", 1
+    )[0]
+    wake = application.split("@objc func wake", 1)[1].split("@objc func quit", 1)[0]
+    probe_timer = application.split("probeTimer = Timer.scheduledTimer", 1)[1].split(
+        "private func initializeWorkspace", 1
+    )[0]
+    refresh_probe = application.split("private func refreshProbeTarget", 1)[1].split(
+        "@objc func showPanel", 1
+    )[0]
+    bridge_source = (MACOS / "Sources/RoboparkAgent/Bridge.swift").read_text()
+    if "bridge.start()" in launch:
+        raise SystemExit(
+            "FAIL: launch starts the pool before account identity is restored"
+        )
+    if (
+        "UserDefaults.standard.set(false" not in logout
+        or "bridge.stop()" not in logout
+        or "if accountActive { bridge.start()" not in wake
+    ):
+        raise SystemExit("FAIL: logout/wake account activation gate regressed")
+    if "if granted && managedProbes" in bridge_source:
+        raise SystemExit("FAIL: managed readiness bypasses the real Emergency request")
+    if "else { self.restoreAccountSession() }" not in probe_timer:
+        raise SystemExit(
+            "FAIL: a transient reboot outage cannot recover the account session"
+        )
+    if "else { try? self.bridge.clearProbe() }" not in refresh_probe:
+        raise SystemExit("FAIL: a null managed probe target retains stale readiness")
     with tempfile.TemporaryDirectory(prefix="robopark-bridge-lifecycle-") as raw:
         root = Path(raw)
         (root / "Sources/BridgeLifecycleChecks").mkdir(parents=True)

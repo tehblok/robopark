@@ -78,6 +78,54 @@ try check(try decodedTarget.artifactURL(origin: origin).absoluteString == "https
 relativeTarget["url"] = "/api/distribution/v1/macos/../../evil.pkg"
 let badTarget = try JSONDecoder().decode(ReleaseTarget.self, from: JSONSerialization.data(withJSONObject: relativeTarget))
 rejects("artifact path traversal") { _ = try badTarget.artifactURL(origin: origin) }
+var foreignTarget = target
+foreignTarget["url"] = "https://attacker.example/Robopark.pkg"
+let decodedForeignTarget = try JSONDecoder().decode(ReleaseTarget.self, from: JSONSerialization.data(withJSONObject: foreignTarget))
+rejects("automatic update cannot leave fixed origin") { _ = try decodedForeignTarget.fixedArtifactURL(origin: origin) }
+try check(try decodedTarget.fixedArtifactURL(origin: origin).host == "example.com", "automatic update remains on fixed origin")
+let nominal = ResourceTelemetry(cpuPercent: 32, memoryPercent: 41, thermalState: "normal")
+try check(nominal.capacity(base: 2, activeJobs: 0, ready: true, paused: false) == 2, "nominal Mac exposes bounded capacity")
+let warm = ResourceTelemetry(cpuPercent: 70, memoryPercent: 65, thermalState: "fair")
+try check(warm.capacity(base: 2, activeJobs: 0, ready: true, paused: false) == 1, "fair thermal state throttles capacity")
+for overloaded in [
+    ResourceTelemetry(cpuPercent: 96, memoryPercent: 40, thermalState: "normal"),
+    ResourceTelemetry(cpuPercent: 40, memoryPercent: 91, thermalState: "normal"),
+    ResourceTelemetry(cpuPercent: 40, memoryPercent: 40, thermalState: "serious"),
+] {
+    try check(overloaded.capacity(base: 2, activeJobs: 0, ready: true, paused: false) == 0, "saturated Mac leaves scheduling pool")
+}
+let bounded = ResourceTelemetry(cpuPercent: -10, memoryPercent: 400, thermalState: "unknown")
+try check(bounded.cpuPercent == 0 && bounded.memoryPercent == 100 && bounded.thermalState == "normal", "telemetry is bounded before heartbeat")
+try check(nominal.capacity(base: 2, activeJobs: 2, ready: true, paused: false) == 2, "capacity reports total slots while inflight is separate")
+try check(nominal.capacity(base: 2, activeJobs: 0, ready: false, paused: false) == 0, "unready Mac exposes no capacity")
+let storageParent = FileManager.default.temporaryDirectory.appendingPathComponent("robopark-update-storage-\(UUID().uuidString)")
+let storageURL = storageParent.appendingPathComponent("support")
+try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true,
+    attributes: [.posixPermissions: 0o700])
+defer { try? FileManager.default.removeItem(at: storageParent) }
+let storage = SecureUpdateStorage(root: storageURL, expectedOwner: getuid(), trustedAncestors: [storageParent])
+try check(try storage.loadState() == nil, "absent private update state starts empty")
+try Data("corrupt".utf8).write(to: storageURL.appendingPathComponent("state.json"))
+rejects("corrupt antirollback state fails closed") { _ = try storage.loadState() }
+try FileManager.default.removeItem(at: storageURL.appendingPathComponent("state.json"))
+let staged = storageURL.appendingPathComponent("verified-update.pkg")
+try FileManager.default.createSymbolicLink(at: staged, withDestinationURL: storageParent.appendingPathComponent("attacker.pkg"))
+rejects("staging symlink is never followed") { try storage.stagePackage(Data("pkg".utf8)) }
+try FileManager.default.removeItem(at: staged)
+try Data("crash leftover".utf8).write(to: staged)
+try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
+try storage.stagePackage(Data("verified pkg".utf8))
+try check(try Data(contentsOf: staged) == Data("verified pkg".utf8), "root-owned crash leftover is safely replaced")
+let installer = try VerifiedInstaller.command(package: staged, supportRoot: storageURL)
+try check(installer.executable == "/usr/sbin/installer" && installer.arguments == ["-pkg", staged.path, "-target", "/"], "installer command accepts only fixed staged package")
+rejects("installer cannot execute arbitrary package path") {
+    _ = try VerifiedInstaller.command(package: storageParent.appendingPathComponent("attacker.pkg"), supportRoot: storageURL)
+}
+let firstLock = try storage.acquireLock()
+rejects("concurrent root updater is serialized") { _ = try storage.acquireLock() }
+try firstLock.close()
+let recoveredLock = try storage.acquireLock()
+try recoveredLock.close()
 try check(LoginPolicy.allows(URL(string: "https://passport.yandex-team.ru/auth?retpath=test")!), "corporate SSO allowed")
 for address in ["https://attacker.example", "https://passport.yandex-team.ru.attacker.example", "http://passport.yandex-team.ru", "https://u:p@passport.yandex-team.ru", "https://passport.yandex-team.ru:8443"] {
     try check(!LoginPolicy.allows(URL(string: address)!), "login phishing navigation blocked")
