@@ -58,6 +58,7 @@ _WORKSPACE_INSTALL_EXCLUDED = {
 _INSTALL_FILES = (
     ("INSTALL.sh", Path("deploy/install-archive/INSTALL.sh")),
     ("INSTALL-AGX.sh", Path("deploy/install-archive/INSTALL-AGX.sh")),
+    ("nvidia-bootfw-guard.sh", Path("deploy/install-archive/nvidia-bootfw-guard.sh")),
     ("robopark-agx.py", Path("deploy/host/robopark_host/agx_preflight.py")),
     ("README-RU.md", Path("docs/runbooks/usb-clean-install.md")),
     ("AGX-README-RU.md", Path("docs/runbooks/agx-test-install.md")),

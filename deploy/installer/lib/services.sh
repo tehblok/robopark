@@ -9,6 +9,8 @@ install_services() {
     fi
     if [ -f "$ROBOPARK_OPT/current/deploy/systemd/robopark-ai-setup.service" ]; then
         python3 -I "$INSTALLER_DIR/lib/install-services.py" "$ROBOPARK_ROOT" || die unit_install_failed
+        systemd-tmpfiles --create --prefix=/run/robopark-ai "$ROBOPARK_ROOT/etc/tmpfiles.d/robopark.conf" \
+            || die ai_bridge_prepare_failed
         # Optional and deliberately asynchronous: core availability never waits
         # for a CUDA build or a multi-gigabyte model download.
         python3 -I "$ROBOPARK_OPT/host-tools/robopark" ai-prepare || true

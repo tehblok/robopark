@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "target_version": "0.2.0-rc.44.dev7114536505405942332",
+  "target_version": "0.2.0",
   "migration_head": "0062_notification_retention_idx",
   "known_heads": [
     "0055_media_upload_park",
@@ -16,6 +16,7 @@
   "bridge_version": "0.2.0-rc.8",
   "recovery": "snapshot",
   "eligible_channels": [
-    "rc"
+    "rc",
+    "stable"
   ]
 }

@@ -2,83 +2,41 @@
 
 ## Установка и обновление
 
-Текущие исходники готовят помощник под обученную Gemma 4 E4B на AGX Orin
-без встроенного корпуса знаний. До получения модели генерация выключена,
-базовые веса автоматически не скачиваются. Профиль параллельной работы,
-подключение GGUF и состояние варианта TensorRT: [локальный ИИ](docs/runbooks/local-ai.md).
-В rc.36 Telegram стал встроенным сервисом с общей БД парков и правами доступа.
-Отчёты используют оформление отдельного бота; поддерживаются расписания, Zoom,
-одобрение доступа, поиск и история роботов. [Текущий выпуск rc.43](docs/releases/0.2.0-rc.43.md).
+Текущий production-выпуск — [Robopark 0.2.0 для AGX](https://github.com/tehblok/robopark/releases/tag/v0.2.0).
+Он основан на AGX RC44 и исправляет подготовку NVIDIA-пакетов, группы
+accelerator и runtime-каталог AI перед запуском Docker.
+[Изменения, совместимость и границы проверки](docs/releases/0.2.0.md).
 
-На новом Ubuntu/Armbian-хосте с Python 3.10+, `curl` и `sudo` одна команда
-скачивает rc.43, сверяет SHA-256 и запускает преднастроенную установку владельца:
+В GitHub Release находятся `robopark-0.2.0-install.tar.gz`,
+`robopark-0.2.0.ota` и `SHA256SUMS`. Распакуйте установочный архив,
+сверьте `sha256sum -c SHA256SUMS` и следуйте [инструкции AGX](docs/runbooks/agx-test-install.md).
+Для уже подтверждённого оператором AGX на L4T 39.2.1 предусмотрен
+`./INSTALL-AGX.sh --operator-confirmed-platform install`.
+На работающем хосте используйте штатное OTA-обновление, не clean install.
+OTA обновляет приложение. Для исправления отдельно установленного accelerator
+после обновления распакуйте комплект 0.2.0 и выполните
+`./INSTALL-AGX.sh --operator-confirmed-platform setup`.
 
-```sh
-d=$(mktemp -d) && curl -fL --retry 3 --connect-timeout 20 --proto '=https' --tlsv1.2 'https://github.com/tehblok/robopark/releases/download/v0.2.0-rc.43/robopark-0.2.0-rc.43.ota' -o "$d/robopark.ota" && (cd "$d" && printf '%s\n' 'eabeba6cd12fe79b7202bd44fc26b31ad27ca6447f6fb10cea53032359d7714c  robopark.ota' | sha256sum -c - && sudo python3 robopark.ota install --preset robopark)
-```
+Публичный комплект не содержит резервных копий, паролей, доменных токенов
+и приватных ключей. Закрытый перенос Khadas выполняется отдельным комплектом;
+исходный Khadas должен оставаться выключенным. Модели ИИ не включены,
+генерация выключена до подключения модели и отдельной приёмки.
 
-Профиль задаёт `robopark.ru.tuna.am`, владельца `tehblokdan` и SSH через `ssh`.
-Потребуются отдельный ключ `robopark-install-preset.key`, Tuna token и новый
-пароль владельца. Восстановятся 11 парков, 11 чатов и 74 задания из сохранённой
-конфигурации бота. Задания выключены до проверки адресатов и расписаний.
-Прежних пользователей, cookies и полной конфигурации выключенного хоста
-в этом наборе нет: [что входит в профиль](docs/runbooks/owner-install-preset.md).
+- [Хранилище GEACX1 и NVMe](docs/runbooks/geacx1-storage.md)
+- [Восстановление Khadas](docs/runbooks/khadas-cms-restore.md)
+- [SSH и переезд на AGX](docs/runbooks/support-ssh.md)
+- [Локальный ИИ](docs/runbooks/local-ai.md) и [TensorRT/DLA accelerator](docs/runbooks/agx-acceleration.md)
+- [Встроенный Telegram](docs/runbooks/telegram.md)
 
-Для обычного меню запускайте скачанный пакет без `install --preset robopark`.
-При найденных данных Robopark чистая установка откажет; для работающего хоста
-используйте OTA-обновление. Поддерживаемые исходные версии указаны в manifest.
-Требования к ОС, памяти и дискам: [установка](docs/runbooks/usb-clean-install.md).
-Проверки и их границы: [отчёт rc.36](docs/verification/2026-10-07-native-bot-parity.md).
-
-Чистая установка rc.36 автоматически включает SSH для владельца через
-алиас Tuna `ssh` с прежним публичным ключом:
-[установка, ключ и переезд на AGX](docs/runbooks/support-ssh.md).
-Преднастроенный профиль восстанавливает доступную конфигурацию старого бота:
-[состав, запуск и отдельный ключ](docs/runbooks/owner-install-preset.md).
-В Git находятся публичный SSH-ключ и зашифрованные архивы; закрытые значения
-в установочную команду не входят.
-
-> **GEACX1 и NVMe:** rc.25 поддерживает NVMe с ОС и eMMC с ОС + NVMe для данных.
-> Порядок выбора и проверки описан в
-> [инструкции по хранилищу GEACX1](docs/runbooks/geacx1-storage.md).
-> ИИ устанавливается только на подтверждённый AGX Orin. Физическая проверка
-> GEACX1/JetPack 7.2 пока не выполнена; скорость и качество ответов не измерены.
-> Диагностика AGX, кэширование и короткие проверки описаны в
-> [руководстве по производительности](docs/runbooks/geacx1-performance.md).
-
-Перенос стабильного RC43 на GEACX1 после восстановления: [проверка платформы,
-подготовка CUDA и перенос резервной копии](docs/runbooks/geacx1-rc43-migration.md).
-
-[Дополнение для TensorRT/DLA, JPEG и экспериментов со сменными моделями](docs/runbooks/agx-acceleration.md)
-с отдельным установщиком и проверками на целевом AGX.
-Companion запускается отдельно от установленного приложения; опубликованный
-пакет RC43 остаётся неизменным.
-
-Для новой установки подготовлена [чистая тестовая сборка AGX](docs/runbooks/agx-test-install.md)
-с отдельным `INSTALL-AGX.sh`, тем же модулем ускорения и
-[восстановлением CMS-копии Khadas от 13 октября](docs/runbooks/khadas-cms-restore.md).
-Сборщик присваивает ей отдельную версию `0.2.0-rc.44.dev…`; данные, ключи
-и веса моделей в установочный архив не входят.
-
-Каноническая поставка — один файл `robopark-<версия>.ota`. Сборка:
+Версия исходников задаётся в [VERSION](VERSION). Production использует
+PostgreSQL 17. Сборка публичного AGX-комплекта из чистого stable-коммита:
 
 ```sh
-./scripts/build-ota.sh /absolute/output/directory
+python3 scripts/build_agx_release.py /absolute/output/directory
 ```
 
-USB: `sudo python3 robopark-<версия>.ota`. Royal обновляет систему на странице
-«Система → Обновление» с resumable-загрузкой и автоматическим rollback.
-См. [runbooks](docs/runbooks/build-ota.md). SHA-256 обеспечивает целостность,
-но не аутентифицирует издателя.
-
-Версия исходников задаётся в [VERSION](VERSION). Production-профиль и чистый
-установщик используют **PostgreSQL 17**. Для Armbian/Ubuntu смотрите
-[руководство оператора](deploy/INSTALL-ARMBIAN-RU.md) и
-[приёмку 200 пользователей](deploy/CAPACITY-RU.md). Результаты подготовки
-версии 0.2.0 и оставшиеся проверки приведены в
-[релизном отчёте](docs/reviews/2026-10-01-production-readiness.md).
-Готовность к выпуску определяется проверками конкретного пакета; старые
-release-evidence не подтверждают готовность изменённых исходников.
+Архив включает SHA исходного коммита и контрольные суммы. Общий OTA-сборщик
+и порядок обновления описаны в [runbook](docs/runbooks/build-ota.md).
 
 Web-first fleet operations system (admin / operator / mechanic).
 

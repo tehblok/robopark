@@ -12,6 +12,7 @@ TasksMax=4096
 Type=oneshot
 RemainAfterExit=yes
 Environment=HOST_ENV_FILE=/etc/robopark/host.env
+ExecStartPre=+/usr/bin/systemd-tmpfiles --create --prefix=/run/robopark-ai /etc/tmpfiles.d/robopark.conf
 ExecStartPre=/usr/bin/python3 -I /opt/robopark/host-tools/robopark restore --boot-recover
 ExecStartPre=/usr/bin/python3 -I /opt/robopark/host-tools/robopark-storage-reconcile --check
 ExecStart=/usr/bin/docker compose --project-name robopark --file /var/lib/robopark/ops/state/current-compose.json up -d --no-build --wait --wait-timeout 180 db api web

@@ -1,5 +1,6 @@
 """Admission checks for the supplied GEACX1 recovery image and apt plans."""
 
+import json
 import subprocess
 
 import pytest
@@ -165,6 +166,42 @@ def test_prepare_refuses_platform_mismatch_before_apt(monkeypatch):
         agx.prepare(apply=True)
 
 
+def test_operator_confirmation_bypasses_admission_but_preserves_observed_platform(monkeypatch):
+    observed = {
+        "platform_ready": False,
+        "native_ai_ready": False,
+        "blockers": ["recovery_identity_mismatch"],
+    }
+    monkeypatch.setattr(agx, "inspect", lambda: observed)
+    monkeypatch.setattr(agx, "package_state", lambda: dict.fromkeys(agx.BUILD_PACKAGES, "1"))
+
+    result = agx.prepare(apply=False, operator_confirmed_platform=True)
+
+    assert result["state"] == "unchanged"
+    assert result["operator_confirmed_platform"] is True
+    assert result["observed_platform"] is observed
+    assert result["observed_platform"]["platform_ready"] is False
+    assert result["observed_platform"]["blockers"] == ["recovery_identity_mismatch"]
+
+
+def test_check_operator_confirmation_changes_exit_only(monkeypatch, capsys):
+    observed = {
+        "platform_ready": False,
+        "native_ai_ready": False,
+        "blockers": ["recovery_identity_mismatch"],
+    }
+    monkeypatch.setattr(agx, "inspect", lambda: observed)
+
+    assert agx.main(["check"]) == 2
+    strict = json.loads(capsys.readouterr().out)
+    assert agx.main(["check", "--operator-confirmed-platform"]) == 0
+    confirmed = json.loads(capsys.readouterr().out)
+
+    assert strict["platform_ready"] is False
+    assert confirmed["platform_ready"] is False
+    assert confirmed["operator_confirmed_platform"] is True
+
+
 def test_prepare_apply_pins_dependencies_and_preserves_bsp(monkeypatch):
     monkeypatch.setattr(agx, "inspect", lambda: {"platform_ready": True})
     monkeypatch.setattr(agx.os, "geteuid", lambda: 0)
@@ -218,7 +255,8 @@ def test_acceleration_does_not_replace_jp72_compute_stack(version):
         agx.validate_acceleration_versions({"libnvinfer10:arm64": version})
 
 
-def test_acceleration_plan_adds_runtime_dependencies_and_rejects_newer_candidate(monkeypatch):
+@pytest.mark.parametrize("operator_confirmed", [False, True])
+def test_acceleration_plan_adds_runtime_dependencies_and_rejects_newer_candidate(monkeypatch, operator_confirmed):
     monkeypatch.setattr(agx, "inspect", lambda: {"platform_ready": True})
     monkeypatch.setattr(agx, "package_state", lambda: dict.fromkeys(agx.BUILD_PACKAGES, "1"))
     calls = []
@@ -232,7 +270,7 @@ def test_acceleration_plan_adds_runtime_dependencies_and_rejects_newer_candidate
 
     monkeypatch.setattr(agx, "command", command)
     with pytest.raises(ValueError, match="acceleration_tensorrt_stack_mismatch"):
-        agx.prepare(apply=False, acceleration=True)
+        agx.prepare(apply=False, acceleration=True, operator_confirmed_platform=operator_confirmed)
     assert len(calls) == 1
     assert "python3-onnx" in calls[0]
     assert "python3-libnvinfer" in calls[0]
@@ -308,3 +346,15 @@ def test_readiness_requires_driver_and_vendor_cooling(
     assert report["platform_ready"] is fan_ok
     assert report["storage"]["managed_layout_verified"] is False
     assert report["reference_recovery_commit"] == agx.RECOVERY_COMMIT
+
+
+@pytest.mark.parametrize("installed,cuda,reason", [
+    ({"libnvinfer10": "10.3.0-1"}, None, "acceleration_tensorrt_stack_mismatch"),
+    ({}, "cuda-toolkit-12-6=12.6.1-1", "acceleration_cuda_stack_mismatch"),
+])
+def test_operator_confirmation_preserves_compute_stack_validation(monkeypatch, installed, cuda, reason):
+    monkeypatch.setattr(agx, "inspect", lambda: {"platform_ready": False, "blockers": ["recovery_identity_mismatch"]})
+    monkeypatch.setattr(agx, "package_state", lambda: installed)
+    monkeypatch.setattr(agx, "command", lambda *args, **kwargs: pytest.fail("unsafe APT plan must not run"))
+    with pytest.raises(ValueError, match=reason):
+        agx.prepare(apply=False, acceleration=True, cuda_toolkit=cuda, operator_confirmed_platform=True)

@@ -103,6 +103,33 @@ def test_preflight_failure_stops_before_storage_or_filesystem_changes(tmp_path):
     assert not root.exists()
 
 
+def test_operator_confirmation_bypasses_identity_only_and_reports_observation(
+    tmp_path, monkeypatch, capsys
+):
+    from deploy.accelerator import install
+
+    observed = {
+        "identity": {"matches_recovery": False, "machine": "aarch64"},
+        "platform_ready": False,
+        "blockers": ["recovery_identity_mismatch"],
+    }
+    monkeypatch.setattr(install, "inspect_platform", lambda _root: observed)
+    monkeypatch.setattr(install, "require_storage", _ready_storage)
+    monkeypatch.setattr(install, "probe_dependencies", lambda: _dependencies())
+
+    assert install.main([
+        "--root",
+        str(tmp_path / "target"),
+        "--source",
+        str(_source(tmp_path)),
+        "--operator-confirmed-platform",
+    ]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["state"] == "planned"
+    assert report["operator_confirmed_platform"] is True
+    assert report["observed_platform"] == observed
+
+
 def test_apply_requires_root_before_creating_any_destination(tmp_path, monkeypatch):
     from deploy.accelerator import install
 
@@ -285,22 +312,35 @@ def test_dependency_probe_requires_pillow_for_hardware_media_and_real_smoke(
     assert report["acceptance_required"] is True
 
 
-def test_existing_root_service_account_is_rejected():
+def test_existing_root_service_account_is_rejected(monkeypatch):
     from deploy.accelerator import install
 
-    original = install.pwd.getpwnam
-    install.pwd.getpwnam = lambda _name: SimpleNamespace(pw_uid=0)
-    try:
-        with pytest.raises(install.InstallError, match="service_account_must_be_nonroot"):
-            install._account_ids(lambda _argv: pytest.fail("must not create another account"))
-    finally:
-        install.pwd.getpwnam = original
+    monkeypatch.setattr(
+        install.pwd, "getpwnam", lambda _name: SimpleNamespace(pw_uid=0)
+    )
+    monkeypatch.setattr(
+        install.grp,
+        "getgrgid",
+        lambda _gid: SimpleNamespace(gr_gid=10001, gr_name="robopark-accel"),
+    )
+    monkeypatch.setattr(
+        install.grp,
+        "getgrnam",
+        lambda name: SimpleNamespace(gr_gid=44, gr_name=name),
+    )
+
+    with pytest.raises(install.InstallError, match="service_account_must_be_nonroot"):
+        install._account_ids(
+            lambda _argv: pytest.fail("must not create another account or group")
+        )
 
 
 def test_new_service_account_gets_video_and_render_groups(monkeypatch):
     from deploy.accelerator import install
 
     answers = iter((KeyError(), SimpleNamespace(pw_uid=2345)))
+    groups_by_gid = {}
+    groups_by_name = {}
 
     def account(_name):
         value = next(answers)
@@ -309,10 +349,159 @@ def test_new_service_account_gets_video_and_render_groups(monkeypatch):
         return value
 
     calls = []
-    monkeypatch.setattr(install.pwd, "getpwnam", account)
 
-    assert install._account_ids(lambda argv: calls.append(argv)) == (2345, 10001)
-    assert calls[0][calls[0].index("--groups") + 1] == "video,render"
+    def group_by_gid(gid):
+        try:
+            return groups_by_gid[gid]
+        except KeyError as error:
+            raise KeyError(gid) from error
+
+    def group_by_name(name):
+        try:
+            return groups_by_name[name]
+        except KeyError as error:
+            raise KeyError(name) from error
+
+    def runner(argv):
+        calls.append(argv)
+        if argv[0] != "groupadd":
+            return
+        name = argv[-1]
+        gid = (
+            int(argv[argv.index("--gid") + 1])
+            if "--gid" in argv
+            else len(groups_by_gid) + 200
+        )
+        group = SimpleNamespace(gr_gid=gid, gr_name=name)
+        groups_by_gid[gid] = group
+        groups_by_name[name] = group
+
+    monkeypatch.setattr(install.pwd, "getpwnam", account)
+    monkeypatch.setattr(install.grp, "getgrgid", group_by_gid)
+    monkeypatch.setattr(install.grp, "getgrnam", group_by_name)
+
+    assert install._account_ids(runner) == (2345, 10001)
+    assert calls[:3] == [
+        ["groupadd", "--system", "--gid", "10001", "robopark-runtime"],
+        ["groupadd", "--system", "video"],
+        ["groupadd", "--system", "render"],
+    ]
+    useradd = calls[3]
+    assert useradd[0] == "useradd"
+    assert useradd[useradd.index("--gid") + 1] == "10001"
+    assert useradd[useradd.index("--groups") + 1] == "video,render"
+    assert "--user-group" not in useradd
+
+
+def test_existing_service_account_and_groups_are_preserved(monkeypatch):
+    from deploy.accelerator import install
+
+    runtime_group = SimpleNamespace(gr_gid=10001, gr_name="existing-runtime")
+    named_groups = {
+        "video": SimpleNamespace(gr_gid=44, gr_name="video"),
+        "render": SimpleNamespace(gr_gid=109, gr_name="render"),
+    }
+    monkeypatch.setattr(
+        install.pwd, "getpwnam", lambda _name: SimpleNamespace(pw_uid=2345)
+    )
+    monkeypatch.setattr(install.grp, "getgrgid", lambda _gid: runtime_group)
+    monkeypatch.setattr(install.grp, "getgrnam", named_groups.__getitem__)
+
+    assert install._account_ids(
+        lambda _argv: pytest.fail("existing accounts and groups must not be changed")
+    ) == (2345, 10001)
+
+
+def test_existing_rc44_account_group_name_does_not_collide_and_retry_is_idempotent(
+    monkeypatch,
+):
+    from deploy.accelerator import install
+
+    account = SimpleNamespace(pw_uid=995)
+    groups_by_gid = {
+        995: SimpleNamespace(gr_gid=995, gr_name="robopark-accel"),
+        44: SimpleNamespace(gr_gid=44, gr_name="video"),
+        109: SimpleNamespace(gr_gid=109, gr_name="render"),
+    }
+    groups_by_name = {group.gr_name: group for group in groups_by_gid.values()}
+    calls = []
+
+    def group_by_gid(gid):
+        if gid not in groups_by_gid:
+            raise KeyError(gid)
+        return groups_by_gid[gid]
+
+    def group_by_name(name):
+        if name not in groups_by_name:
+            raise KeyError(name)
+        return groups_by_name[name]
+
+    def runner(argv):
+        calls.append(argv)
+        assert argv == [
+            "groupadd",
+            "--system",
+            "--gid",
+            "10001",
+            "robopark-runtime",
+        ]
+        runtime = SimpleNamespace(gr_gid=10001, gr_name="robopark-runtime")
+        groups_by_gid[10001] = runtime
+        groups_by_name["robopark-runtime"] = runtime
+
+    monkeypatch.setattr(install.pwd, "getpwnam", lambda _name: account)
+    monkeypatch.setattr(install.grp, "getgrgid", group_by_gid)
+    monkeypatch.setattr(install.grp, "getgrnam", group_by_name)
+
+    assert install._account_ids(runner) == (995, 10001)
+    assert install._account_ids(runner) == (995, 10001)
+    assert calls == [
+        ["groupadd", "--system", "--gid", "10001", "robopark-runtime"]
+    ]
+    assert groups_by_name["robopark-accel"].gr_gid == 995
+
+
+def test_existing_runtime_group_with_wrong_gid_is_preserved_and_rejected(monkeypatch):
+    from deploy.accelerator import install
+
+    def missing_gid(gid):
+        raise KeyError(gid)
+
+    monkeypatch.setattr(
+        install.pwd, "getpwnam", lambda _name: SimpleNamespace(pw_uid=995)
+    )
+    monkeypatch.setattr(install.grp, "getgrgid", missing_gid)
+    monkeypatch.setattr(
+        install.grp,
+        "getgrnam",
+        lambda name: SimpleNamespace(gr_gid=996, gr_name=name),
+    )
+
+    with pytest.raises(install.InstallError, match="service_group_name_conflict"):
+        install._account_ids(
+            lambda _argv: pytest.fail("the conflicting group must not be modified")
+        )
+
+
+def test_release_parent_directories_are_traversable_under_restrictive_umask(tmp_path):
+    from deploy.accelerator import install
+
+    root = tmp_path / "target"
+    (root / "opt").mkdir(parents=True)
+    source = _source(tmp_path)
+    payload = install._payload(source)
+    release_id, files = install._manifest(payload)
+
+    previous_umask = install.os.umask(0o077)
+    try:
+        install._write_release(root, source, payload, release_id, files)
+    finally:
+        install.os.umask(previous_umask)
+
+    accelerator_root = root / "opt/robopark-accelerator"
+    releases = accelerator_root / "releases"
+    assert accelerator_root.stat().st_mode & 0o777 == 0o755
+    assert releases.stat().st_mode & 0o777 == 0o755
 
 
 def test_apply_rejects_symlinked_destination_ancestor_before_account_mutation(

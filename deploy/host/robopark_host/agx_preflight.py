@@ -316,9 +316,15 @@ def validate_acceleration_versions(packages: dict[str, str]) -> None:
             raise ValueError("acceleration_tensorrt_stack_mismatch")
 
 
-def prepare(*, apply: bool, cuda_toolkit: str | None = None, acceleration: bool = False) -> dict:
+def prepare(
+    *,
+    apply: bool,
+    cuda_toolkit: str | None = None,
+    acceleration: bool = False,
+    operator_confirmed_platform: bool = False,
+) -> dict:
     facts = inspect()
-    if not facts["platform_ready"]:
+    if not facts["platform_ready"] and not operator_confirmed_platform:
         raise ValueError("platform_preflight_failed:" + ",".join(facts["blockers"]))
     if apply and os.geteuid() != 0:
         raise ValueError("root_required_for_apply")
@@ -339,7 +345,13 @@ def prepare(*, apply: bool, cuda_toolkit: str | None = None, acceleration: bool 
         if PROTECTED.match(name.split(":", 1)[0])
     )
     if not requested:
-        return {"state": "unchanged", "packages": [], "applied": False}
+        return {
+            "state": "unchanged",
+            "operator_confirmed_platform": operator_confirmed_platform,
+            "observed_platform": facts,
+            "packages": [],
+            "applied": False,
+        }
     ok, output = command(
         ["apt-get", "--simulate", *APT_OPTIONS, "install", *requested, *protected], timeout=120
     )
@@ -353,6 +365,8 @@ def prepare(*, apply: bool, cuda_toolkit: str | None = None, acceleration: bool 
         raise ValueError("apt_plan_incomplete")
     result = {
         "state": "planned",
+        "operator_confirmed_platform": operator_confirmed_platform,
+        "observed_platform": facts,
         "packages": planned,
         "applied": False,
         "cuda_toolkit": cuda_toolkit,
@@ -381,10 +395,12 @@ def main(argv=None) -> int:
     commands = parser.add_subparsers(dest="action", required=True)
     check = commands.add_parser("check", help="Read-only GEACX1 platform and CUDA check")
     check.add_argument("--require-ai", action="store_true")
+    check.add_argument("--operator-confirmed-platform", action="store_true")
     preparation = commands.add_parser(
         "prepare", help="Plan native build dependencies; apply explicitly"
     )
     preparation.add_argument("--apply", action="store_true")
+    preparation.add_argument("--operator-confirmed-platform", action="store_true")
     preparation.add_argument(
         "--acceleration", action="store_true", help="Add JP7.2 TensorRT/Python/JPEG dependencies"
     )
@@ -398,13 +414,20 @@ def main(argv=None) -> int:
             report = cuda_probe()
         elif args.action == "prepare":
             report = prepare(
-                apply=args.apply, cuda_toolkit=args.cuda_toolkit, acceleration=args.acceleration
+                apply=args.apply,
+                cuda_toolkit=args.cuda_toolkit,
+                acceleration=args.acceleration,
+                operator_confirmed_platform=args.operator_confirmed_platform,
             )
         else:
             report = inspect()
+            if args.operator_confirmed_platform:
+                report = {**report, "operator_confirmed_platform": True}
         print(json.dumps(report, ensure_ascii=False, indent=2))
         if args.action == "check":
-            return 0 if report["native_ai_ready" if args.require_ai else "platform_ready"] else 2
+            ready = report["native_ai_ready" if args.require_ai else "platform_ready"]
+            confirmed_platform = args.operator_confirmed_platform and not args.require_ai
+            return 0 if ready or confirmed_platform else 2
         return 0
     except (OSError, ValueError) as error:
         # Only controlled codes; never echo arbitrary OS errors (paths may be private).
