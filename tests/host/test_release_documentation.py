@@ -1,8 +1,22 @@
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_current_candidate_accepts_previous_documented_candidates():
+    version = (ROOT / "VERSION").read_text().strip()
+    match = re.fullmatch(r"(\d+\.\d+\.\d+)-rc\.(\d+)", version)
+    if match is None:
+        return
+    metadata = json.loads((ROOT / "deploy/release-metadata.json").read_text())
+    compatible = set(metadata["compatible_from_versions"])
+    for note in (ROOT / "docs/releases").glob(f"{match[1]}-rc.*.md"):
+        previous = re.fullmatch(re.escape(match[1]) + r"-rc\.(\d+)", note.stem)
+        if previous and int(previous[1]) < int(match[2]):
+            assert note.stem in compatible, f"OTA must accept documented predecessor {note.stem}"
 
 
 def test_release_note_and_compatibility_match_release_metadata():

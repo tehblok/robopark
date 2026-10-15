@@ -1,6 +1,6 @@
 # Тестовый релиз Robopark: Khadas VIM4, AGX Orin и macOS agent
 
-Для перехода RC9→RC10 используйте [заметки RC10](../releases/0.2.3-rc.10.md)
+Для перехода RC9→RC11 используйте [заметки RC11](../releases/0.2.3-rc.11.md)
 и [схему сохранения сессии Mac](../architecture/2026-10-16-mac-session-continuity.md).
 Сборочные проверки и фактическая приёмка публикуются раздельно: `verification.json`
 и `live-verification.json`. Наличие пакета не означает успешной живой проверки SSO.
