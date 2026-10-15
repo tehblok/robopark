@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from sqlalchemy import select
@@ -11,6 +12,18 @@ from robopark_api.models import AccessStatus, Park, User, UserPark
 from robopark_api.services import rbac
 
 GatewayCapability = Literal["emergency", "inventory", "tracker"]
+
+
+def corporate_owner_login(user: User) -> str | None:
+    """Expected SSO identity; a separate mapping is optional, never a credential.
+
+    Existing explicit mappings retain their meaning. New installations use the
+    service account's login and still require an exact verified OAuth identity.
+    Invalid explicit mappings fail closed instead of silently changing owner.
+    """
+    value = (user.tracker_login or "").strip() or user.username
+    value = value.strip().lower()
+    return value if re.fullmatch(r"[a-z0-9._-]{1,128}", value, flags=re.ASCII) else None
 
 _CAPABILITY_PERMISSION: dict[GatewayCapability, str] = {
     "emergency": rbac.PERMISSION_NAV_EMERGENCY,

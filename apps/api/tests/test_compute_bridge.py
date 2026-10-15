@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from conftest import role_id_for
+from robopark_api.compute_bridge import _corporate_owner_candidates
 from robopark_api.config import Settings
 from robopark_api.emergency_bridge import create_broker_app
 from robopark_api.models import AccessStatus, AgentDevice, User
@@ -60,6 +61,33 @@ def _device(db_session, settings, *, suffix=""):
     db_session.add(device)
     db_session.commit()
     return private_key, owner, device
+
+
+def test_lazy_tracker_user_read_keeps_operator_owner_scope(db_engine, db_session):
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="compute-secret",
+        emergency_bridge_enabled=True,
+        mac_corporate_gateway_enabled=True,
+        robopark_environment="test",
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    _private_key, owner, _device_row = _device(db_session, settings, suffix="-lazy-user")
+    owner.tracker_login = "owner.tracker"
+    db_session.commit()
+
+    candidates = _corporate_owner_candidates(
+        sessionmaker(bind=db_engine, future=True),
+        settings,
+        requester_user_id=owner.id,
+        service="tracker",
+        action="user_read",
+        resource="11291906",
+        park_id=None,
+    )
+
+    assert candidates == {owner.id: "owner.tracker"}
 
 
 def test_compute_ws_uses_distinct_domain_and_dispatches_hashed_typed_job(db_engine, db_session):

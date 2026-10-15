@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
-from robopark_api.deps import require_builtin_admin_or_royal, require_royal
+from robopark_api.deps import require_royal
 from robopark_api.models import HostOperationStatus, User
 from robopark_api.ops_schemas import (
     HostCapabilitiesOut,
@@ -603,7 +603,7 @@ def get_system_health(
 
 @router.get("/admin/ops/release-status", response_model=ReleaseStatusOut)
 def get_release_status(
-    _user: User = Depends(require_builtin_admin_or_royal),
+    _user: User = Depends(require_royal),
     settings: Settings = Depends(get_settings),
 ):
     return release_status(_bridge_root(settings))

@@ -133,6 +133,12 @@ let issuePlan = try CorporateReadPolicy.plan(issueRequest)
 try check(issuePlan.method == "GET"
           && issuePlan.url.absoluteString == "https://st-api.yandex-team.ru/v2/issues/TEST-1",
           "typed Tracker issue request has a fixed HTTPS destination")
+let userRequest = try CorporateReadPolicy.decode(try corporateEnvelope(action: "user_read", resource: "11291906"),
+    expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")
+let userPlan = try CorporateReadPolicy.plan(userRequest)
+try check(userPlan.method == "GET"
+          && userPlan.url.absoluteString == "https://st-api.yandex-team.ru/v2/users/11291906",
+          "typed Tracker user reference has a fixed HTTPS destination")
 let installations = try CorporateReadPolicy.decode(try corporateEnvelope(service: "inventory",
     action: "rover_installations", resource: "a664", params: ["offset": 2, "limit": 25, "slot": "/base/lidar"]),
     expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")

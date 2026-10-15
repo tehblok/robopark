@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from robopark_api.deps import require_approved
+from robopark_api.deps import require_approved, require_royal
 from robopark_api.models import User
 from robopark_api.services import compute_client
 from robopark_api.services.emergency_bridge_client import BridgeError
@@ -256,7 +256,7 @@ async def resize_image(
 
 
 @router.get("/pool")
-def pool(response: Response, user: User = Depends(require_approved)) -> dict:
+def pool(response: Response, user: User = Depends(require_royal)) -> dict:
     response.headers["Cache-Control"] = "no-store"
     try:
         return compute_client.fetch_compute_status(requester_user_id=user.id)

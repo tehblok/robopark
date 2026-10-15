@@ -139,6 +139,7 @@ def _write_error(exc):
 
 _ISSUE = r"[A-Z][A-Z0-9_]{0,63}-[1-9][0-9]{0,11}"
 _QUEUE = r"[A-Z][A-Z0-9_]{0,63}"
+_USER = r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
 _PATHS = (
     ("GET", rf"/v[23]/issues/({_ISSUE})", "issue_read"),
     ("GET", rf"/v[23]/issues/({_ISSUE})/comments", "comments_read"),
@@ -146,6 +147,7 @@ _PATHS = (
     ("GET", rf"/v[23]/issues/({_ISSUE})/changelog", "history_read"),
     ("GET", rf"/v[23]/queues/({_QUEUE})", "queue_read"),
     ("GET", rf"/v[23]/queues/({_QUEUE})/components", "queue_components_read"),
+    ("GET", rf"/v[23]/users/({_USER})", "user_read"),
 )
 
 

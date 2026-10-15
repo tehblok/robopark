@@ -23,6 +23,7 @@ def test_admin_cannot_create_snapshot(client, seed_royal, db_session):
     db_session.commit()
     login_as(client, "admin1", "secret")
     assert client.post("/admin/ops/snapshot").status_code == 403
+    assert client.get("/admin/ops/release-status").status_code == 403
 
 
 def test_royal_legacy_snapshot_route_is_retired(client, seed_royal, test_settings):

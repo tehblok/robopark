@@ -51,8 +51,8 @@ final class StubProtocol: URLProtocol {
     override func stopLoading() { pending?.cancel(); pending=nil }
 }
 
-func envelope() throws -> Data { try JSONSerialization.data(withJSONObject:[
-    "service":"tracker","action":"issue_read","resource":"TEST-1","params":[:],
+func envelope(action:String="issue_read",resource:String="TEST-1") throws -> Data { try JSONSerialization.data(withJSONObject:[
+    "service":"tracker","action":action,"resource":resource,"params":[:],
     "owner_user_id":7,"owner_tracker_login":"owner.login","requester_user_id":7]) }
 func writeEnvelope() throws -> Data { try JSONSerialization.data(withJSONObject:[
     "service":"tracker","action":"comment_create","resource":"TEST-1","params":["text":"hello"],
@@ -88,6 +88,11 @@ func check(_ value:@autoclosure() -> Bool,_ message:String) { if !value() { fata
   let task=Task { try await Network.corporateRead(plan:plan,oauthToken:"token",request:request,sessionOverride:session) }
   try await Task.sleep(nanoseconds:50_000_000); task.cancel()
   do { _=try await task.value; fatalError("FAIL: cancelled request completed") } catch { }
+  let userRequest=try CorporateReadPolicy.decode(try envelope(action:"user_read",resource:"11291906"),
+      expectedOwnerUserID:7,expectedOwnerTrackerLogin:"owner.login")
+  let userPlan=try CorporateReadPolicy.plan(userRequest)
+  check(userPlan.method == "GET" && userPlan.url.absoluteString == "https://st-api.yandex-team.ru/v2/users/11291906",
+        "Tracker SDK lazy user reference stays on the fixed typed endpoint")
   StubProtocol.mode = .reply(200,Data("{\"name\":\"a664\"}".utf8),["Content-Type":"application/json"])
   let inventoryReady = await Network.corporateInventoryReadiness(
       serverAuthorizedVIN:"YASADR00000000664",oauthToken:"token",sessionOverride:session)
@@ -185,7 +190,7 @@ def main() -> int:
         cache.mkdir(parents=True, exist_ok=True)
         return subprocess.run(["swift","run","--package-path",str(root),"--scratch-path",str(cache),
             "--cache-path",str(cache/"cache"),"--config-path",str(cache/"config"),
-            "--security-path",str(cache/"security"),"--disable-sandbox","CorporateReadChecks"]).returncode
+            "--security-path",str(cache/"security"),"--disable-sandbox","CorporateReadChecks"], check=False).returncode
 
 
 if __name__ == "__main__":

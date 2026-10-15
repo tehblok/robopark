@@ -50,6 +50,14 @@ def test_sdk_issue_subresources(suffix, action):
     )
 
 
+def test_sdk_user_reference_becomes_a_typed_read():
+    assert typed_request("GET", "https://st-api.yandex-team.ru/v2/users/11291906") == (
+        "user_read",
+        "11291906",
+        {},
+    )
+
+
 @pytest.mark.parametrize(
     "method,url,options",
     [
@@ -147,6 +155,50 @@ def test_sdk_uses_native_context_for_search_and_resources(monkeypatch):
     assert [call["action"] for call in calls] == ["issue_read", "issues_search"]
     assert all(call["requester_user_id"] == 7 for call in calls)
     assert calls[1]["params"] == {"query": "Queue: TEST", "order": ["createdAt"], "per_page": 50}
+    tracker_client.clear_tracker_clients()
+
+
+def test_sdk_issue_projection_resolves_lazy_user_through_typed_read(monkeypatch):
+    from robopark_api.services import corporate_gateway_client, tracker_client
+    from robopark_api.services.corporate_gateway_contract import CorporateReadResponse
+
+    calls = []
+
+    def native_read(**kwargs):
+        calls.append(kwargs)
+        if kwargs["action"] == "issue_read":
+            payload = {
+                "self": "https://st-api.yandex-team.ru/v2/issues/TEST-1",
+                "key": "TEST-1",
+                "summary": "Owned issue",
+                "createdBy": {
+                    "self": "https://st-api.yandex-team.ru/v2/users/11291906",
+                    "id": "11291906",
+                    "display": "Owner Name",
+                },
+            }
+        else:
+            assert kwargs["action"] == "user_read"
+            payload = {
+                "self": "https://st-api.yandex-team.ru/v2/users/11291906",
+                "id": "11291906",
+                "display": "Owner Name",
+                "login": "owner.login",
+            }
+        return CorporateReadResponse(200, {}, payload)
+
+    monkeypatch.setattr(corporate_gateway_client, "read", native_read)
+    tracker_client.clear_tracker_clients()
+    issue = tracker_client._client(GatewayCredential(7)).issues["TEST-1"]
+
+    projected = tracker_client.issue_to_dict(issue)
+
+    assert projected["reporter"] == {"display": "Owner Name", "login": "owner.login"}
+    assert [(call["action"], call["resource"]) for call in calls] == [
+        ("issue_read", "TEST-1"),
+        ("user_read", "11291906"),
+    ]
+    assert all(call["requester_user_id"] == 7 for call in calls)
     tracker_client.clear_tracker_clients()
 
 

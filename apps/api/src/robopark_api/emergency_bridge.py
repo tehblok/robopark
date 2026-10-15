@@ -374,7 +374,7 @@ def _authenticate_device(
                     sort_keys=True,
                 ),
             )
-        return device.id, owner.id, (owner.tracker_login or "").strip() or None
+        return device.id, owner.id, gateway_policy.corporate_owner_login(owner)
 
 
 async def _receive_json(websocket: WebSocket) -> dict[str, Any]:

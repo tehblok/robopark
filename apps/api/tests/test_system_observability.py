@@ -52,9 +52,14 @@ def test_heartbeat_retries_conflicting_insert_and_never_moves_presence_backwards
     assert db_session.query(PresenceSample).filter_by(user_id=seed_mechanic.id).count() == 1
 
 
-def test_admin_system_history_requires_admin_and_bounds_days(client, seed_mechanic, seed_royal):
+def test_system_history_requires_royal_and_bounds_days(
+    client, seed_mechanic, seed_admin, seed_royal
+):
     login_as(client, "mech1", "secret")
     assert client.get("/admin/system/history").status_code == 403
+    login_as(client, "admin", "secret")
+    assert client.get("/admin/system/history").status_code == 403
+    assert client.get("/admin/system/summary").status_code == 403
     login_as(client, "royal", "secret")
     assert client.get("/admin/system/history?days=8").status_code == 422
     response = client.get("/admin/system/history?days=7")
@@ -505,14 +510,14 @@ def test_host_snapshot_exposes_failed_builder_budget_without_trusting_error_text
     assert storage["builder_cache_budget"] == {"attempted": True, "blocked": True}
 
 
-def test_admin_presence_excludes_other_park(
-    client, db_session, seed_admin, seed_mechanic, seed_park_with_tracker
+def test_royal_presence_excludes_other_park(
+    client, db_session, seed_royal, seed_mechanic, seed_park_with_tracker
 ):
-    db_session.add(UserPark(user_id=seed_admin.id, park_id=seed_park_with_tracker.id))
+    db_session.add(UserPark(user_id=seed_royal.id, park_id=seed_park_with_tracker.id))
     db_session.commit()
     login_as(client, "mech1", "secret")
     assert client.post("/presence/heartbeat").status_code == 204
-    login_as(client, "admin", "secret")
+    login_as(client, "royal", "secret")
     body = client.get("/admin/system/summary").json()
     assert body["online"]["total"] == 1
     assert body["online"]["by_role"] == {"mechanic": 1}

@@ -25,9 +25,15 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
-from robopark_api.deps import require_approved, require_emergency_viewer
+from robopark_api.deps import require_approved, require_emergency_viewer, require_royal
 from robopark_api.models import AccessStatus, AgentDevice, AgentEnrollment, User
-from robopark_api.services import audit, emergency_bridge_client, rbac, robot_registry
+from robopark_api.services import (
+    audit,
+    emergency_bridge_client,
+    gateway_policy,
+    rbac,
+    robot_registry,
+)
 from robopark_api.services.login_throttle import client_ip
 
 router = APIRouter(prefix="/agent-devices", tags=["agent-devices"])
@@ -375,7 +381,7 @@ def claim(
         return {
             "device_id": existing.id,
             "owner_user_id": existing.owner_user_id,
-            "owner_tracker_login": (owner.tracker_login or "").strip() or None,
+            "owner_tracker_login": gateway_policy.corporate_owner_login(owner),
             "environment": existing.environment,
             "instance_id": existing.instance_id,
             "protocol": PROTOCOL,
@@ -434,7 +440,7 @@ def claim(
         return {
             "device_id": raced.id,
             "owner_user_id": raced.owner_user_id,
-            "owner_tracker_login": (owner.tracker_login or "").strip() or None,
+            "owner_tracker_login": gateway_policy.corporate_owner_login(owner),
             "environment": raced.environment,
             "instance_id": raced.instance_id,
             "protocol": PROTOCOL,
@@ -459,7 +465,7 @@ def claim(
     return {
         "device_id": device.id,
         "owner_user_id": device.owner_user_id,
-        "owner_tracker_login": (owner.tracker_login or "").strip() or None,
+        "owner_tracker_login": gateway_policy.corporate_owner_login(owner),
         "environment": device.environment,
         "instance_id": device.instance_id,
         "protocol": PROTOCOL,
@@ -471,7 +477,7 @@ def _authenticated_device_payload(device: AgentDevice, owner: User) -> dict:
     return {
         "device_id": device.id,
         "owner_user_id": device.owner_user_id,
-        "owner_tracker_login": (owner.tracker_login or "").strip() or None,
+        "owner_tracker_login": gateway_policy.corporate_owner_login(owner),
         "environment": device.environment,
         "instance_id": device.instance_id,
         "protocol": PROTOCOL,
@@ -635,7 +641,9 @@ def list_devices(
     user: User = Depends(require_emergency_viewer),
     db: Session = Depends(get_db),
 ) -> dict:
-    include_all = all_devices and rbac.is_admin_or_royal(user)
+    if all_devices and not rbac.is_royal(user):
+        raise HTTPException(403, "royal_only")
+    include_all = all_devices
     query = select(AgentDevice).order_by(AgentDevice.created_at, AgentDevice.id)
     if not include_all:
         query = query.where(AgentDevice.owner_user_id == user.id)
@@ -654,13 +662,13 @@ def list_devices(
 
 @router.get("/pool-status")
 def pool_status(
-    user: User = Depends(require_emergency_viewer),
+    user: User = Depends(require_royal),
     settings: Settings = Depends(get_settings),
 ) -> dict:
     if not settings.emergency_bridge_enabled:
         return {
             "enabled": False,
-            "scope": "all" if rbac.is_admin_or_royal(user) else "own",
+            "scope": "all",
             "summary": dict.fromkeys(
                 (
                     "connected",

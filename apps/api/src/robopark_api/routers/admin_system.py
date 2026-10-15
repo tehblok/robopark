@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from robopark_api.config import Settings, get_settings
 from robopark_api.crypto import SecretDecryptionError
 from robopark_api.db import get_db
-from robopark_api.deps import require_builtin_admin_or_royal, require_user
+from robopark_api.deps import require_royal, require_user
 from robopark_api.models import User
 from robopark_api.ops_schemas import ReleaseStatusOut
 from robopark_api.schedule_models import TrackerNotificationCursor
@@ -59,7 +59,7 @@ def presence_heartbeat(
 def system_summary(
     response: Response,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_builtin_admin_or_royal),
+    actor: User = Depends(require_royal),
     settings: Settings = Depends(get_settings),
 ) -> dict:
     response.headers["Cache-Control"] = "no-store"
@@ -127,7 +127,7 @@ def system_history(
     response: Response,
     days: int = Query(default=7, ge=1, le=7),
     db: Session = Depends(get_db),
-    actor: User = Depends(require_builtin_admin_or_royal),
+    actor: User = Depends(require_royal),
 ) -> dict:
     response.headers["Cache-Control"] = "no-store"
     return {

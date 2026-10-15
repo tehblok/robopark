@@ -48,7 +48,7 @@ def test_sync_health_reads_shared_heartbeat_and_finite_queue_projection(db_sessi
     assert "worker-a" not in json.dumps(result)
 
 
-def test_admin_and_royal_can_read_sync_health_but_mechanic_cannot(
+def test_only_royal_can_read_sync_health(
     client, db_session, seed_mechanic, seed_admin, seed_royal, monkeypatch
 ):
     from robopark_api.routers import admin_health
@@ -57,9 +57,10 @@ def test_admin_and_royal_can_read_sync_health_but_mechanic_cannot(
     assert client.get("/admin/health").status_code == 401
     login_as(client, seed_mechanic.username, "secret")
     assert client.get("/admin/health").status_code == 403
-    for actor in (seed_admin, seed_royal):
-        login_as(client, actor.username, "secret")
-        response = client.get("/admin/health")
-        assert response.status_code == 200
-        assert response.json()["sync"]["worker_lease_state"] == "unknown"
-        assert response.headers["cache-control"] == "no-store"
+    login_as(client, seed_admin.username, "secret")
+    assert client.get("/admin/health").status_code == 403
+    login_as(client, seed_royal.username, "secret")
+    response = client.get("/admin/health")
+    assert response.status_code == 200
+    assert response.json()["sync"]["worker_lease_state"] == "unknown"
+    assert response.headers["cache-control"] == "no-store"

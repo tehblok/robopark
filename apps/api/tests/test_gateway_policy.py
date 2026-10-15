@@ -4,6 +4,20 @@ from robopark_api.security import hash_password
 from robopark_api.services.gateway_policy import eligible_gateway_owner_ids, requester_can_gateway
 
 
+def test_corporate_owner_login_defaults_to_service_username():
+    from robopark_api.services.gateway_policy import corporate_owner_login
+
+    user = User(username="Tehblokdan", tracker_login=None)
+    assert corporate_owner_login(user) == "tehblokdan"
+    user.tracker_login = " explicit.owner "
+    assert corporate_owner_login(user) == "explicit.owner"
+    user.tracker_login = "invalid@example.com"
+    assert corporate_owner_login(user) is None
+    user.tracker_login = None
+    user.username = "invalid@example.com"
+    assert corporate_owner_login(user) is None
+
+
 def _user(db, username: str, role: str, *, status: str = "approved", active: bool = True):
     user = User(
         username=username,

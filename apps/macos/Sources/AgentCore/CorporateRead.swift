@@ -46,6 +46,7 @@ public enum CorporateReadPolicy {
     public static func admits(inflight: Int) -> Bool { (0..<2).contains(inflight) }
     private static let issuePattern = "^[A-Z][A-Z0-9_]{0,63}-[1-9][0-9]{0,11}$"
     private static let queuePattern = "^[A-Z][A-Z0-9_]{0,63}$"
+    private static let userPattern = "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
     private static let roverPattern = "^a[0-9]{1,11}$"
     private static let issueActions = Set(["issue_read", "comments_read", "transitions_read", "history_read"])
     private static let queueActions = Set(["queue_read", "queue_components_read"])
@@ -107,6 +108,7 @@ public enum CorporateReadPolicy {
         if request.action == "issues_search" { allowed = ["page", "per_page", "expand", "fields", "query", "order"] }
         else if request.action == "issues_count" { allowed = ["query"] }
         else if ["issue_read", "queue_read"].contains(request.action) { allowed = ["expand", "fields"] }
+        else if request.action == "user_read" { allowed = [] }
         else if issueActions.contains(request.action) || request.action == "queue_components_read" {
             allowed = ["page", "per_page", "expand", "fields"]
         } else { throw CorporateReadError.invalid }
@@ -140,7 +142,10 @@ public enum CorporateReadPolicy {
                                                                          query: urlQuery), body: bytes)
         }
         let path: String
-        if issueActions.contains(request.action) {
+        if request.action == "user_read" {
+            guard request.resource.range(of: userPattern, options: .regularExpression) != nil else { throw CorporateReadError.invalid }
+            path = "/v2/users/\(request.resource)"
+        } else if issueActions.contains(request.action) {
             guard request.resource.range(of: issuePattern, options: .regularExpression) != nil else { throw CorporateReadError.invalid }
             let suffix = ["issue_read": "", "comments_read": "/comments", "transitions_read": "/transitions", "history_read": "/changelog"][request.action]!
             path = "/v2/issues/\(request.resource)\(suffix)"

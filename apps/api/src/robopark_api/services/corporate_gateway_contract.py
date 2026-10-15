@@ -20,6 +20,7 @@ Action = Literal[
     "queue_read",
     "queue_components_read",
     "issues_count",
+    "user_read",
 ]
 
 OPERATION = "corporate_read_v1"
@@ -43,12 +44,14 @@ SERVICE_ACTIONS = {
             "queue_read",
             "queue_components_read",
             "issues_count",
+            "user_read",
         }
     ),
 }
 _ISSUE = re.compile(r"[A-Z][A-Z0-9_]{0,63}-[1-9][0-9]{0,11}\Z")
 _QUEUE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _ROVER = re.compile(r"a[0-9]{1,11}\Z")
+_USER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _PAGINATION_HEADERS = frozenset(
     {"x-total-count", "x-total-pages", "x-current-page", "x-next-page", "link"}
 )
@@ -61,6 +64,7 @@ _TRACKER_PARAMS = {
     "queue_read": frozenset({"expand", "fields"}),
     "queue_components_read": frozenset({"page", "per_page", "expand", "fields"}),
     "issues_count": frozenset({"query"}),
+    "user_read": frozenset(),
 }
 
 
@@ -148,6 +152,9 @@ def validate_request(service: str, action: str, resource: str, params: object) -
             query = params.get("query")
             if not isinstance(query, str) or not 1 <= len(query) <= 4_096:
                 raise ContractError("corporate_params_invalid")
+        elif action == "user_read":
+            if _USER.fullmatch(resource) is None:
+                raise ContractError("corporate_resource_invalid")
         elif action in {"queue_read", "queue_components_read"}:
             if _QUEUE.fullmatch(resource) is None:
                 raise ContractError("corporate_resource_invalid")

@@ -22,11 +22,14 @@ def test_contract_allows_only_typed_actions_resources_and_flat_params():
         "search",
         {"query": "Queue: ROBOPARK", "page": 1, "per_page": 50, "order": ["-createdAt"]},
     )["order"] == ["-createdAt"]
+    assert corporate_gateway_contract.validate_request("tracker", "user_read", "11291906", {}) == {}
 
     for value in (
         ("inventory", "rover_card", "https://inventory/secret", {}),
         ("inventory", "delete", "a664", {}),
         ("tracker", "issue_read", "ROBOPARK-1", {"url": "https://other"}),
+        ("tracker", "user_read", "../issues/ROBOPARK-1", {}),
+        ("tracker", "user_read", "11291906", {"expand": "all"}),
         ("tracker", "issues_search", "search", {"query": "Queue: X", "order": ["bad field"]}),
     ):
         with pytest.raises(corporate_gateway_contract.ContractError):

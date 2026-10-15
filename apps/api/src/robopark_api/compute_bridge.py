@@ -266,7 +266,7 @@ def _authenticate_device(
         public_key.verify(decoded_signature, signed, ec.ECDSA(hashes.SHA256()))
         device.last_seen_at = datetime.now(UTC)
         db.commit()
-        return device.id, owner.id, (owner.tracker_login or "").strip() or None
+        return device.id, owner.id, gateway_policy.corporate_owner_login(owner)
 
 
 def _device_still_valid(session_factory: sessionmaker, settings: Settings, device_id: str) -> bool:
@@ -357,6 +357,7 @@ def _corporate_owner_candidates(
     *,
     requester_user_id: int,
     service: str,
+    action: str,
     resource: str,
     park_id: int | None,
     device_id: str | None = None,
@@ -375,7 +376,7 @@ def _corporate_owner_candidates(
                     return {}
             except (HTTPException, ValueError):
                 return None
-        elif not rbac.is_admin_or_royal(requester):
+        elif not rbac.is_admin_or_royal(requester) and action != "user_read":
             if "-" in resource:
                 queue = resource.rsplit("-", 1)[0]
                 if queue not in tracker_policy.allowed_queues_for_user(db, requester):
@@ -407,7 +408,7 @@ def _corporate_owner_candidates(
             for owner in owners
             if owner.is_active
             and owner.access_status == AccessStatus.approved.value
-            and (login := (owner.tracker_login or "").strip())
+            and (login := gateway_policy.corporate_owner_login(owner))
         }
 
 
@@ -1013,6 +1014,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                 settings,
                 requester_user_id=payload.requester_user_id,
                 service=payload.service,
+                action=payload.action,
                 resource=payload.resource,
                 park_id=payload.park_id,
             )
@@ -1038,6 +1040,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                 settings,
                 requester_user_id=payload.requester_user_id,
                 service=payload.service,
+                action=payload.action,
                 resource=payload.resource,
                 park_id=payload.park_id,
                 device_id=channel.device_id,
@@ -1101,6 +1104,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                     settings,
                     requester_user_id=payload.requester_user_id,
                     service=payload.service,
+                    action=payload.action,
                     resource=payload.resource,
                     park_id=payload.park_id,
                     device_id=channel.device_id,

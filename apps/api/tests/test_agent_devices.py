@@ -134,6 +134,26 @@ def test_authenticated_first_login_claims_device_without_manual_code_and_is_idem
     assert device.approved_by_user_id == seed_admin.id
 
 
+def test_first_claim_uses_account_login_when_no_separate_corporate_mapping(
+    client, db_session, seed_admin
+):
+    seed_admin.tracker_login = None
+    db_session.commit()
+    login_as(client, "admin", "secret")
+    response = client.post(
+        "/agent-devices/claim-auth",
+        json={
+            "label": "Owner Mac",
+            "public_key": _public_key(),
+            "environment": "production",
+            "instance_id": "00000000-0000-0000-0000-000000000000",
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["owner_tracker_login"] == "admin"
+    assert response.json()["owner_user_id"] == seed_admin.id
+
+
 def test_authenticated_compute_registration_does_not_require_emergency_permission(
     client, seed_admin, monkeypatch
 ):
@@ -241,8 +261,8 @@ def test_owner_can_list_and_revoke_device(client, db_session, seed_admin):
     assert db_session.get(AgentDevice, claimed["device_id"]).revoked_at is not None
 
 
-def test_claimed_device_trusts_approved_service_account_and_remains_revocable(
-    client, db_session, seed_admin
+def test_claimed_device_trusts_approved_service_account_and_is_visible_to_royal(
+    client, db_session, seed_royal
 ):
     operator = User(
         username="operator-device",
@@ -270,7 +290,7 @@ def test_claimed_device_trusts_approved_service_account_and_remains_revocable(
     assert own["status"] == "approved"
     assert own["approved_by_user_id"] == operator.id
 
-    login_as(client, "admin", "secret")
+    login_as(client, "royal", "secret")
     devices = client.get("/agent-devices?all=true").json()["devices"]
     assert any(
         item["id"] == device_id
@@ -284,6 +304,27 @@ def test_claimed_device_trusts_approved_service_account_and_remains_revocable(
 
     assert client.delete(f"/agent-devices/{device_id}").status_code == 204
     assert db_session.get(AgentDevice, device_id).revoked_at is not None
+
+
+def test_admin_cannot_view_all_agent_devices_but_can_still_view_own(client, db_session, seed_admin):
+    login_as(client, "admin", "secret")
+    claimed = client.post(
+        "/agent-devices/claim-auth",
+        json={
+            "label": "Admin Mac",
+            "public_key": _public_key(),
+            "environment": "production",
+            "instance_id": "00000000-0000-0000-0000-000000000000",
+        },
+    )
+    assert claimed.status_code == 201
+
+    own = client.get("/agent-devices")
+    all_devices = client.get("/agent-devices?all=true")
+
+    assert own.status_code == 200
+    assert [item["id"] for item in own.json()["devices"]] == [claimed.json()["device_id"]]
+    assert all_devices.status_code == 403
 
 
 def test_claim_enforces_per_user_device_limit(client, seed_admin, test_settings):
@@ -429,8 +470,8 @@ def test_claim_rejects_non_ascii_code_as_controlled_client_error(client):
     assert response.json()["detail"] == "invalid_code"
 
 
-def test_pool_status_returns_private_broker_projection_for_current_user(
-    client, seed_admin, test_settings, monkeypatch
+def test_pool_status_is_royal_only_and_returns_global_broker_projection(
+    client, db_session, seed_admin, seed_pending_operator, seed_royal, test_settings, monkeypatch
 ):
     test_settings.emergency_bridge_enabled = True
     projected = {
@@ -447,17 +488,23 @@ def test_pool_status_returns_private_broker_projection_for_current_user(
         return projected
 
     monkeypatch.setattr(emergency_bridge_client, "fetch_pool_status", fake_status)
-    login_as(client, "admin", "secret")
+    seed_pending_operator.access_status = AccessStatus.approved.value
+    db_session.commit()
+    for username in (seed_admin.username, seed_pending_operator.username):
+        login_as(client, username, "secret")
+        assert client.get("/agent-devices/pool-status").status_code == 403
+
+    login_as(client, "royal", "secret")
 
     response = client.get("/agent-devices/pool-status")
 
     assert response.status_code == 200
     assert response.json() == projected
-    assert captured == {"requester_user_id": seed_admin.id, "settings": test_settings}
+    assert captured == {"requester_user_id": seed_royal.id, "settings": test_settings}
 
 
 def test_pool_status_disabled_is_local_and_does_not_call_broker(
-    client, seed_admin, test_settings, monkeypatch
+    client, seed_royal, test_settings, monkeypatch
 ):
     test_settings.emergency_bridge_enabled = False
     monkeypatch.setattr(
@@ -465,7 +512,7 @@ def test_pool_status_disabled_is_local_and_does_not_call_broker(
         "fetch_pool_status",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("broker must not be called")),
     )
-    login_as(client, "admin", "secret")
+    login_as(client, "royal", "secret")
 
     response = client.get("/agent-devices/pool-status")
 

@@ -5,13 +5,13 @@ from sqlalchemy.orm import Session
 
 from robopark_api.config import Settings, get_settings
 from robopark_api.db import get_db
-from robopark_api.deps import require_admin
+from robopark_api.deps import require_royal
 from robopark_api.services.operational_health import cached_host_snapshot
 from robopark_api.services.ops.context import resolved_ops_dir
 from robopark_api.services.sync_health import sync_health
 
 router = APIRouter(
-    prefix="/admin/health", tags=["admin-health"], dependencies=[Depends(require_admin)]
+    prefix="/admin/health", tags=["admin-health"], dependencies=[Depends(require_royal)]
 )
 
 

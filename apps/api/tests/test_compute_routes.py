@@ -270,9 +270,16 @@ def test_image_compute_rejects_small_oversized_or_inconsistent_images(
     assert aborted == ["t" * 32]
 
 
-def test_pool_is_authenticated_and_delegates_owner_scope(client, seed_admin, monkeypatch):
+def test_pool_is_royal_only_and_delegates_global_scope(
+    client, db_session, seed_admin, seed_pending_operator, seed_royal, monkeypatch
+):
     assert client.get("/compute/pool").status_code == 401
-    login_as(client, seed_admin.username, "secret")
+    seed_pending_operator.access_status = "approved"
+    db_session.commit()
+    for username in (seed_admin.username, seed_pending_operator.username):
+        login_as(client, username, "secret")
+        assert client.get("/compute/pool").status_code == 403
+    login_as(client, seed_royal.username, "secret")
     expected = {
         "enabled": True,
         "scope": "all",
