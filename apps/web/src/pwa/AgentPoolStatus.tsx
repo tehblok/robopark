@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, type AgentPoolStatus as PoolStatus } from '../api'
 import './AgentPoolStatus.css'
-import { statusLabel, formatBytes, ownerName, type GraphDevice } from './poolFormatting'
+import { deviceStatusLabel, formatBytes, ownerName, type GraphDevice } from './poolFormatting'
 
 export function NetworkGraph({ status }: { status: { devices: GraphDevice[] } }) {
   const displayed = status.devices.slice(0, 12)
@@ -31,7 +31,7 @@ export function NetworkGraph({ status }: { status: { devices: GraphDevice[] } })
           <rect x="270" y={ownerY - 17} width="150" height="34" rx="10" className="rp-agent-graph__owner" />
           <text x="345" y={ownerY + 5} textAnchor="middle">{name.slice(0, 22)}</text>
           {deviceRows.map(({ device, y }) => <g key={device.id}>
-            <title>{device.label}: {statusLabel[device.status]}</title>
+            <title>{device.label}: {deviceStatusLabel(device)}</title>
             <line x1="420" y1={ownerY} x2="530" y2={y} />
             <circle cx="548" cy={y} r="12" className={`rp-agent-graph__device rp-agent-graph__device--${device.status}`} />
             <text x="568" y={y + 5}>{device.label.slice(0, 18)}</text>
@@ -71,7 +71,7 @@ export function AgentPoolStatus({ load = api.agentPoolStatus }: { load?: () => P
       {status.devices.length ? <><NetworkGraph status={status} /><ul className="rp-agent-list">{status.devices.map(device => (
         <li key={device.id} tabIndex={0}>
           <span><strong>{device.label}</strong><small>{ownerName(device)}</small></span>
-          <small>{statusLabel[device.status]} · {device.inflight}/{device.capacity}{device.queued ? ` · очередь ${device.queued}` : ''}{device.latency_ms == null ? '' : ` · связь ${Math.round(device.latency_ms)} мс`}</small>
+          <small>{deviceStatusLabel(device)} · {device.inflight}/{device.capacity}{device.queued ? ` · очередь ${device.queued}` : ''}{device.latency_ms == null ? '' : ` · связь ${Math.round(device.latency_ms)} мс`}</small>
           {device.fresh !== false && (device.cpu_percent != null || device.memory_percent != null) ? <small>{device.cpu_percent == null ? '' : `CPU ${Math.round(device.cpu_percent)}%`}{device.cpu_percent != null && device.memory_percent != null ? ' · ' : ''}{device.memory_percent == null ? '' : `память ${Math.round(device.memory_percent)}%`}{device.thermal_state ? ` · нагрев ${device.thermal_state}` : ''}</small> : null}
           {device.throughput_mbps != null ? <small>{device.throughput_mbps.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} Мбит/с скорость ответов{device.response_latency_ms == null ? '' : ` · ${Math.round(device.response_latency_ms)} мс ответ`}</small> : null}
           {(device.compression_saved_bytes ?? 0) > 0 || (device.cache_hits ?? 0) > 0 ? <small>экономия {formatBytes(device.compression_saved_bytes ?? 0)} · кэш {device.cache_hits ?? 0}</small> : null}

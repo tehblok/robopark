@@ -15,12 +15,14 @@ import { applyInitialTheme } from './design-system/theme/theme'
 import { registerServiceWorker } from './pwa/registerServiceWorker'
 import { captureShareTargetId } from './pwa/shareTargetIntent'
 import { desktopRuntime } from './pwa/desktopRuntime'
+import { initializeDesktopTransport } from './pwa/desktopTransport'
 import { hydrateDesktopOfflineIdentity } from './shared/auth/offlineIdentity'
 
 captureShareTargetId()
 applyInitialTheme()
 
 async function bootstrap() {
+  await initializeDesktopTransport()
   await hydrateDesktopOfflineIdentity()
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

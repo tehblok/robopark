@@ -51,7 +51,8 @@
     "0.2.3-rc.1",
     "0.2.3-rc.2",
     "0.2.3-rc.3",
-    "0.2.3-rc.4"
+    "0.2.3-rc.4",
+    "0.2.3-rc.5"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -69,5 +70,5 @@
       65536
     ]
   },
-  "update_notes": "Test Mac startup fix: normalize bundle resource paths so the local workspace root opens correctly; retains RC4 installer and Khadas legacy-updater fixes."
+  "update_notes": "Test server-first corporate reads with owner Mac availability fallback, Tracker user-reference fix, Royal-only technical views and local browser workspace with native corporate login."
 }

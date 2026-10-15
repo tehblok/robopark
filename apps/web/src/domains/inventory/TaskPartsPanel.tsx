@@ -4,6 +4,7 @@ import { Button } from '../../design-system/actions/Button'
 import { ErrorState, LoadingState } from '../../design-system/feedback/AsyncState'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
+import { DesktopAuthenticatedImage } from '../../shared/media/DesktopAuthenticatedMedia'
 import { inventoryInt64Compare, isPositiveInventoryQuantity } from './inventoryTypes'
 import type { OfflineActionInput } from '../../pwa/syncEngine'
 import type { OfflineAction } from '../../pwa/offlineTypes'
@@ -210,9 +211,9 @@ function TaskPartsContent({ parkId, issueKey, apiClient = api, onWritten, enqueu
       <Button type="submit" variant="secondary">Найти</Button>
     </form> : null}
     {currentData ? <form aria-label="Списание запчасти" className="form-grid" onSubmit={submit}><label className="field"><span>Компонента</span><select required value={componentId || ''} onChange={event => { idempotencyKey.current = null; setComponentId(Number(event.target.value)); setPartId(0) }}><option value="">Выберите</option>{currentData.components.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-      {component?.has_photo ? <img alt={component.name} className="task-parts__component-photo" src={apiClient.inventoryComponentPhotoUrl(component.id)} /> : null}
+      {component?.has_photo ? <DesktopAuthenticatedImage alt={component.name} className="task-parts__component-photo" src={apiClient.inventoryComponentPhotoUrl(component.id)} /> : null}
       {component ? <label className="field"><span>Запчасть</span><select required value={partId || ''} onChange={event => { idempotencyKey.current = null; setPartId(Number(event.target.value)) }}><option value="">Выберите</option>{component.parts.map(item => <option key={item.id} value={item.id}>{item.name} · {item.article} · {item.quantity} шт.</option>)}</select></label> : null}
-      {part ? <article className="task-part-preview">{part.has_photo ? <img alt={part.name} src={apiClient.inventoryPartPhotoUrl(globalCatalog ? -part.id : part.id)} /> : null}<div><h3>{part.name}</h3><p>Артикул: {part.article}</p><p>Место: <strong>{part.location}</strong></p><StatusBadge tone={part.quantity !== '0' ? 'success' : 'critical'}>{part.quantity !== '0' ? `На складе: ${part.quantity}` : 'Нет на складе'}</StatusBadge></div></article> : null}
+      {part ? <article className="task-part-preview">{part.has_photo ? <DesktopAuthenticatedImage alt={part.name} src={apiClient.inventoryPartPhotoUrl(globalCatalog ? -part.id : part.id)} /> : null}<div><h3>{part.name}</h3><p>Артикул: {part.article}</p><p>Место: <strong>{part.location}</strong></p><StatusBadge tone={part.quantity !== '0' ? 'success' : 'critical'}>{part.quantity !== '0' ? `На складе: ${part.quantity}` : 'Нет на складе'}</StatusBadge></div></article> : null}
       {part ? <label className="field"><span>Списать, шт.</span><input inputMode="numeric" onChange={event => { idempotencyKey.current = null; setQuantity(event.target.value) }} pattern="[0-9]*" value={quantity} /></label> : null}{globalCatalog && nextOffset < total ? <Button busy={loadingMore} onClick={() => void load(nextOffset, true)} type="button" variant="secondary">Загрузить ещё</Button> : null}<Button busy={busy} disabled={hydratingAction || pending || !part || part.quantity === '0' || !isPositiveInventoryQuantity(quantity) || inventoryInt64Compare(quantity, part.quantity) > 0} type="submit">Списать в задачу</Button></form> : null}
     </fieldset>
   </div>

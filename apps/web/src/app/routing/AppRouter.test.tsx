@@ -161,6 +161,26 @@ describe('AppRouter', () => {
       .not.toBeInTheDocument()
   })
 
+  it('blocks an admin from opening the Royal-only Mac network route directly', async () => {
+    renderApp('/network', testUser({ role: 'admin', permissions: ['nav.admin'], parks: [north] }))
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/admin'))
+    expect(screen.queryByRole('heading', { name: 'Сеть Mac' })).not.toBeInTheDocument()
+  })
+
+  it('keeps technical pools out of an operator sync center', async () => {
+    const agentPool = vi.spyOn(api, 'agentPoolStatus')
+    const computePool = vi.spyOn(api, 'computePoolStatus')
+    renderApp('/overview', testUser({ role: 'operator', permissions: ['nav.dashboard'], parks: [north] }))
+
+    await userEvent.click(await screen.findByRole('button', { name: /Открыть центр синхронизации/ }))
+    expect(screen.getByRole('region', { name: 'Центр синхронизации' })).toBeVisible()
+    expect(screen.queryByText('Общий пул Mac')).not.toBeInTheDocument()
+    expect(screen.queryByText('Вычисления на Mac')).not.toBeInTheDocument()
+    expect(agentPool).not.toHaveBeenCalled()
+    expect(computePool).not.toHaveBeenCalled()
+  })
+
   it('renders one top-level fallback while shell authentication is loading', () => {
     renderApp('/overview', null, { loading: true })
 

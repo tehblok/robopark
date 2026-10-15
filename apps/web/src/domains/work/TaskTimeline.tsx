@@ -5,6 +5,7 @@ import { isImageAttachment } from '../../components/tracker/commentChat'
 import { formatDateTime } from '../../components/tracker/issue-utils'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { loadTaskAttachment, releaseTaskAttachment } from '../../pwa/taskAttachmentCache'
+import { DesktopAuthenticatedDownload } from '../../shared/media/DesktopAuthenticatedMedia'
 import { TaskSyncStatus } from './TaskSyncStatus'
 
 function attachmentUrl(raw: string | null | undefined): string | null {
@@ -45,7 +46,7 @@ function Attachment({ attachment }: { attachment: TrackerAttachment }) {
     </a>
   }
   return url
-    ? <a href={url} rel="noreferrer" target="_blank">{attachment.name}</a>
+    ? <DesktopAuthenticatedDownload download={attachment.name} href={url} rel="noreferrer" target="_blank">{attachment.name}</DesktopAuthenticatedDownload>
     : <span>{attachment.name}</span>
 }
 

@@ -4,7 +4,7 @@ import CryptoKit
 import Security
 import AgentCore
 
-@MainActor final class AgentApplication: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
+@MainActor final class AgentApplication: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     private let testOrigin = TestDeploymentAssignment.origin
     let bridge = Bridge()
     lazy var compute = ComputeBridge(bridge: bridge)
@@ -17,21 +17,25 @@ import AgentCore
     var panel: WKWebView?
     var loginWindow: NSWindow?
     var loginView: WKWebView?
+    var legacyWorkspaceWindow: NSWindow?
+    var legacyWorkspaceView: WKWebView?
+    var legacyMenuItem: NSMenuItem?
     var updateTimer: Timer?
     var updateStatusTimer: Timer?
     var probeTimer: Timer?
     var workspace: WorkspaceServer?
-    var workspaceWindow: NSWindow?
-    var workspaceView: WKWebView?
     private var enrollmentTask: Task<Void, Never>?
     private var probeRefreshTask: Task<Void, Never>?
     private var identityRestoreTask: Task<Void, Never>?
+    private var workspaceSetupTask: Task<Void, Error>?
     private var enrollmentRun = UUID()
     private var corporateLoginRun = UUID()
     private var corporateOAuthState: String?
     private var accountActive = false
     private var emergencyAuthorized = false
     private var activeAccountID: Int?
+    private var accountRole: String?
+    private var legacyWorkspaceAvailable: Bool?
     private let accountPresentKey = "RoboparkServiceAccountPresent"
     var lastError = ""
     var accountLabel = "Не выполнен вход"
@@ -47,7 +51,9 @@ import AgentCore
         if UserDefaults.standard.bool(forKey: accountPresentKey) { accountLabel = "Проверка аккаунта…" }
         let menu = NSMenu()
         menu.addItem(withTitle: "Открыть Robopark", action: #selector(showWorkspace), keyEquivalent: "")
-        menu.addItem(withTitle: "Служба и подключение", action: #selector(showPanel), keyEquivalent: "")
+        menu.addItem(withTitle: "Служба и подключение", action: #selector(showDevice), keyEquivalent: "")
+        let legacyItem = menu.addItem(withTitle: "Черновики предыдущей версии…", action: #selector(showLegacyWorkspace), keyEquivalent: "")
+        legacyItem.isEnabled = false; legacyMenuItem = legacyItem
         menu.addItem(withTitle: "Проверить обновления", action: #selector(checkUpdate), keyEquivalent: "")
         menu.addItem(withTitle: "Удалить Robopark…", action: #selector(uninstall), keyEquivalent: "")
         menu.addItem(.separator())
@@ -64,10 +70,10 @@ import AgentCore
         notifications.onChange = { [weak self] in self?.render() }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(wake), name: NSWorkspace.didWakeNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(sleep), name: NSWorkspace.willSleepNotification, object: nil)
-        DistributedNotificationCenter.default().addObserver(self, selector: #selector(showPanel), name: Notification.Name("ru.robopark.agent.open"), object: nil)
-        if !CommandLine.arguments.contains("--background") || bridge.registration == nil {
-            if workspace?.session.profile != nil { showWorkspace() } else { showPanel() }
-        }
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(showWorkspace), name: Notification.Name("ru.robopark.agent.open"), object: nil)
+        startWorkspaceService()
+        detectLegacyWorkspace()
+        if !CommandLine.arguments.contains("--background") { showWorkspace() }
         restoreAccountSession()
         Task { await updater.check() }
         updateTimer = Timer.scheduledTimer(withTimeInterval: 4 * 60 * 60, repeats: true) { [weak self] _ in
@@ -79,7 +85,8 @@ import AgentCore
         probeTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                if self.accountActive { self.refreshProbeTarget() }
+                if self.workspace?.session.profile == nil { self.startWorkspaceService() }
+                else if self.accountActive { self.refreshProbeTarget() }
                 else { self.restoreAccountSession() }
             }
         }
@@ -88,48 +95,97 @@ import AgentCore
         guard workspace == nil else { return }
         let server = try WorkspaceServer()
         if let registration = bridge.registration { try server.session.useRegistration(registration) }
-        server.session.onIdentity = { [weak self] user in self?.accountVerified(user) }
+        server.session.onIdentity = { [weak self] user in await self?.accountVerified(user) }
         server.session.onLogout = { [weak self] in await self?.accountLogout() }
+        server.agentStatus = { [weak self] in self?.agentStatusResponse() ?? .json(["detail": "agent_starting"], status: 503) }
+        server.agentAction = { [weak self] body in
+            guard let self else { return .json(["detail": "agent_stopped"], status: 503) }
+            return await self.handleAgentAction(body)
+        }
         workspace = server
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWorkspace(); return true }
     @objc func showWorkspace() { presentWorkspace(route: nil) }
+    @objc func showDevice() { presentWorkspace(route: "/device") }
+    @objc func showLegacyWorkspace() {
+        Task {
+            do { try await openLegacyWorkspace() }
+            catch { lastError = "Не удалось открыть прежнее рабочее окно. Повторите после запуска локальной службы."; render() }
+        }
+    }
     func showNotificationCenter() { presentWorkspace(route: "/schedule#notifications") }
     private func presentWorkspace(route: String?) {
-        guard let workspace, workspace.session.profile != nil else { showPanel(); return }
+        guard let workspace else { showPanel(); return }
         Task {
             do {
                 try await workspace.start()
-                let target = route.flatMap { URL(string: $0, relativeTo: workspace.initialURL)?.absoluteURL } ?? workspace.initialURL
-                if workspaceWindow == nil {
-                    let config = WKWebViewConfiguration()
-                    config.websiteDataStore = .default()
-                    let view = WKWebView(frame: .zero, configuration: config)
-                    view.navigationDelegate = self
-                    view.uiDelegate = self
-                    let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 850),
-                        styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-                    win.title = "Robopark"; win.contentView = view; win.isReleasedWhenClosed = false; win.center()
-                    workspaceView = view; workspaceWindow = win
-                    await withCheckedContinuation { continuation in
-                        view.configuration.websiteDataStore.httpCookieStore.setCookie(workspace.sessionCookie) { continuation.resume() }
-                    }
-                    if workspaceView === view { view.load(URLRequest(url: target)) }
-                } else if route != nil {
-                    workspaceView?.load(URLRequest(url: target))
-                }
-                workspaceWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+                do { try await ensureWorkspaceConfiguration() }
+                catch { lastError = "Тестовый сервер пока недоступен. Локальный интерфейс открыт; служба повторит настройку автоматически." }
+                let target = workspace.launchURL(route: route)
+                guard NSWorkspace.shared.open(target) else { throw NetworkFailure.invalid }
             } catch {
                 lastError = "Не удалось запустить локальный интерфейс. Порт 18444 должен быть свободен; повторите запуск службы."
                 showPanel()
             }
         }
     }
-    private func clearWorkspaceData() async {
-        workspaceWindow?.close(); workspaceWindow = nil; workspaceView = nil
-        await withCheckedContinuation { continuation in
-            WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { continuation.resume() }
+    private func startWorkspaceService() {
+        guard let workspace else { return }
+        Task {
+            do {
+                try await workspace.start()
+                try await ensureWorkspaceConfiguration()
+                if lastError.contains("Тестовый сервер пока недоступен") { lastError = "" }
+            } catch {
+                lastError = workspace.session.profile == nil
+                    ? "Тестовый сервер пока недоступен. Локальная служба повторит настройку автоматически."
+                    : "Не удалось запустить локальный интерфейс на 127.0.0.1:18444."
+                render()
+            }
         }
+    }
+    private func ensureWorkspaceConfiguration() async throws {
+        guard let workspace, workspace.session.profile == nil else { return }
+        if let workspaceSetupTask { try await workspaceSetupTask.value; return }
+        let task = Task { @MainActor [bridge, testOrigin] in
+            let origin = try ServerOrigin(testOrigin)
+            let (info, _) = try await bridge.verifiedInfo(origin)
+            try workspace.session.configure(origin: origin, info: info)
+        }
+        workspaceSetupTask = task
+        defer { workspaceSetupTask = nil }
+        try await task.value
+    }
+    private func detectLegacyWorkspace() {
+        WKWebsiteDataStore.default().fetchDataRecords(ofTypes: [WKWebsiteDataTypeIndexedDBDatabases]) { [weak self] records in
+            Task { @MainActor in
+                guard let self else { return }
+                let found = records.contains { $0.displayName == "127.0.0.1" }
+                self.legacyWorkspaceAvailable = found
+                self.legacyMenuItem?.isEnabled = found
+                self.render()
+            }
+        }
+    }
+    private func openLegacyWorkspace() async throws {
+        guard legacyWorkspaceAvailable == true, let workspace else { throw NetworkFailure.invalid }
+        try await workspace.start()
+        try await ensureWorkspaceConfiguration()
+        let target = workspace.launchURL(route: nil)
+        if legacyWorkspaceView == nil {
+            let config = WKWebViewConfiguration()
+            config.websiteDataStore = .default()
+            let view = WKWebView(frame: .zero, configuration: config)
+            view.navigationDelegate = self; view.uiDelegate = self
+            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 850),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            win.title = "Robopark — черновики предыдущей версии"
+            win.contentView = view; win.isReleasedWhenClosed = false; win.center()
+            legacyWorkspaceView = view; legacyWorkspaceWindow = win
+        }
+        legacyWorkspaceView?.load(URLRequest(url: target))
+        legacyWorkspaceWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
     private func restoreAccountSession() {
         guard identityRestoreTask == nil, let session = workspace?.session else { return }
@@ -138,16 +194,19 @@ import AgentCore
             self?.identityRestoreTask = nil
         }
     }
-    private func accountVerified(_ user: [String: Any]) {
-        guard enrollmentTask == nil, let session = workspace?.session,
+    private func accountVerified(_ user: [String: Any]) async {
+        if let enrollmentTask { await enrollmentTask.value; return }
+        guard let session = workspace?.session,
               let profile = session.profile, let userID = user["id"] as? Int,
               TestDeploymentAssignment.matches(origin: profile.origin, instanceID: profile.instanceID,
                                                environment: profile.environment) else { return }
         accountLabel = (user["display_name"] as? String) ?? (user["username"] as? String) ?? "Аккаунт Robopark"
+        accountRole = user["role"] as? String
         guard user["access_status"] as? String == "approved", user["must_change_password"] as? Bool != true else {
             accountActive = false
             emergencyAuthorized = false
             activeAccountID = nil
+            accountRole = nil
             UserDefaults.standard.set(false, forKey: accountPresentKey)
             bridge.stop()
             compute.stop()
@@ -168,7 +227,7 @@ import AgentCore
             return
         }
         let run = UUID(); enrollmentRun = run
-        enrollmentTask = Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self else { return }
             defer { if self.enrollmentRun == run { self.enrollmentTask = nil; self.render() } }
             do {
@@ -191,11 +250,12 @@ import AgentCore
                 if canUseEmergency { self.refreshProbeTarget() }
                 self.compute.start()
                 self.notifications.start(accountID: userID, role: user["role"] as? String ?? "", session: session)
-                await self.updater.check()
+                Task { @MainActor [weak self] in await self?.updater.check() }
             } catch is CancellationError { }
             catch {
                 if self.enrollmentRun == run {
                     self.accountActive = false
+                    self.accountRole = nil
                     self.bridge.stop()
                     self.compute.stop()
                     self.notifications.stop(removeDelivered: false)
@@ -203,12 +263,15 @@ import AgentCore
                 }
             }
         }
+        enrollmentTask = task
+        await task.value
     }
     private func accountLogout() async {
         accountLabel = "Не выполнен вход"
         accountActive = false
         emergencyAuthorized = false
         activeAccountID = nil
+        accountRole = nil
         UserDefaults.standard.set(false, forKey: accountPresentKey)
         probeRefreshTask?.cancel(); probeRefreshTask = nil
         identityRestoreTask?.cancel(); identityRestoreTask = nil
@@ -222,6 +285,9 @@ import AgentCore
         updater.reset()
         corporateLoginRun = UUID(); corporateOAuthState = nil
         loginWindow?.close(); loginWindow = nil; loginView = nil
+        // Close the legacy surface on logout but preserve its default WebKit
+        // data store so the owner can reopen and synchronize old drafts later.
+        legacyWorkspaceWindow?.close(); legacyWorkspaceWindow = nil; legacyWorkspaceView = nil
     }
     private func refreshProbeTarget() {
         guard accountActive, emergencyAuthorized, probeRefreshTask == nil, let session = workspace?.session,
@@ -267,7 +333,7 @@ import AgentCore
     }
     @objc func sleep() { bridge.stop(); compute.stop(); notifications.suspend() }
     @objc func quit() { enrollmentTask?.cancel(); workspace?.stop(); bridge.stop(); compute.stop(); notifications.suspend(); NSApp.terminate(nil) }
-    private func restoreAfterFailedUninstall(workspaceWasVisible: Bool) {
+    private func restoreAfterFailedUninstall() {
         if accountActive {
             if emergencyAuthorized { bridge.start(); refreshProbeTarget() }
             compute.start()
@@ -275,22 +341,12 @@ import AgentCore
         } else {
             restoreAccountSession()
         }
-        guard workspaceWasVisible, let workspace else { return }
-        Task {
-            do {
-                try await workspace.start()
-                workspaceView?.load(URLRequest(url: workspace.initialURL))
-                workspaceWindow?.makeKeyAndOrderFront(nil)
-            } catch {
-                lastError = "Удаление отменено; не удалось перезапустить локальный интерфейс. Перезапустите Robopark."
-                render()
-            }
-        }
+        startWorkspaceService()
     }
     @objc func uninstall() {
         let alert = NSAlert()
         alert.messageText = "Удалить Robopark?"
-        alert.informativeText = "Можно сохранить аккаунт и офлайн-данные для повторной установки. Полное удаление также удалит незавершённые офлайн-черновики."
+        alert.informativeText = "Можно сохранить аккаунт и офлайн-данные для повторной установки. Полное удаление удалит Keychain и данные прежнего встроенного окна. Данные сайта 127.0.0.1 в системном браузере сохранятся."
         alert.addButton(withTitle: "Отмена")
         alert.addButton(withTitle: "Удалить, сохранив данные")
         alert.addButton(withTitle: "Удалить все данные")
@@ -300,7 +356,7 @@ import AgentCore
         if removeData {
             let confirm = NSAlert()
             confirm.messageText = "Удалить аккаунт и офлайн-данные?"
-            confirm.informativeText = "Это действие удалит локальный вход, очередь синхронизации и незавершённые офлайн-черновики."
+            confirm.informativeText = "Будут удалены локальный вход и данные прежнего встроенного окна. Данные сайта 127.0.0.1 в системном браузере можно удалить отдельно в настройках данных сайтов браузера."
             confirm.addButton(withTitle: "Отмена"); confirm.addButton(withTitle: "Удалить всё")
             guard confirm.runModal() == .alertSecondButtonReturn else { return }
         }
@@ -315,7 +371,6 @@ import AgentCore
             lastError = "Встроенный деинсталлятор повреждён. Переустановите пакет и повторите удаление."
             render(); return
         }
-        let workspaceWasVisible = workspaceWindow?.isVisible == true
         enrollmentTask?.cancel(); workspace?.stop(); bridge.stop(); compute.stop(); notifications.suspend()
         let quotedPath = "'" + script.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
         let fixedCommand = quotedPath + (removeData ? " --remove-data" : "")
@@ -330,12 +385,140 @@ import AgentCore
                 if process.terminationStatus == 0 { NSApp.terminate(nil) }
                 else {
                     lastError = "Удаление отменено или не завершилось."
-                    restoreAfterFailedUninstall(workspaceWasVisible: workspaceWasVisible); render()
+                    restoreAfterFailedUninstall(); render()
                 }
             } catch {
                 lastError = "Не удалось открыть системный запрос удаления."
-                restoreAfterFailedUninstall(workspaceWasVisible: workspaceWasVisible); render()
+                restoreAfterFailedUninstall(); render()
             }
+        }
+    }
+    private func corporateServiceStates() -> (tracker: String, inventory: String, emergency: String) {
+        guard let profile = bridge.registration else {
+            return ("login_required", "unverified", "login_required")
+        }
+        let owner = CorporateAuthPolicy.normalizedLogin(profile.ownerTrackerLogin)
+        let login = CorporateAuthPolicy.normalizedLogin(profile.corporateLogin)
+        let tracker: String
+        if owner == nil || profile.trackerOAuthToken?.isEmpty != false {
+            tracker = "login_required"
+        } else if bridge.hasVerifiedCorporateOAuth, login == owner {
+            tracker = "ready"
+        } else if (profile.trackerOAuthExpiresAt?.timeIntervalSinceNow ?? 0) <= 60 {
+            tracker = "login_required"
+        } else {
+            tracker = "unverified"
+        }
+        let inventory: String
+        switch bridge.inventoryReadiness {
+        case .ready where tracker == "ready" && !profile.probeVIN.isEmpty: inventory = "ready"
+        case .denied: inventory = "denied"
+        case .unreachable: inventory = "unavailable"
+        default: inventory = "unverified"
+        }
+        let emergency: String
+        if owner == nil || profile.cookie.isEmpty {
+            emergency = "login_required"
+        } else if login != owner {
+            emergency = "denied"
+        } else {
+            switch CorporateIdentityStatus(rawValue: profile.corporateIdentityStatus ?? "") {
+            case .ready where profile.corporateCookieVerifiedAt != nil: emergency = "ready"
+            case .reauthRequired: emergency = "login_required"
+            case .accessDenied, .ownerMismatch: emergency = "denied"
+            case .networkUnavailable: emergency = "unavailable"
+            default: emergency = "unverified"
+            }
+        }
+        return (tracker, inventory, emergency)
+    }
+    private func agentStatusResponse() -> LocalHTTPResponse {
+        let profile = bridge.registration
+        let session = workspace?.session
+        let accountState: String
+        if accountActive { accountState = "signed_in" }
+        else if identityRestoreTask != nil || enrollmentTask != nil { accountState = "checking" }
+        else if UserDefaults.standard.bool(forKey: accountPresentKey), !lastError.isEmpty { accountState = "error" }
+        else { accountState = "signed_out" }
+        let ownerLoginConfigured = CorporateAuthPolicy.normalizedLogin(profile?.ownerTrackerLogin) != nil
+        let ownerBound = accountActive && activeAccountID != nil && activeAccountID == profile?.ownerUserID
+        let services = corporateServiceStates()
+        let serverState = session?.profile == nil && workspaceSetupTask == nil &&
+            lastError.contains("Тестовый сервер пока недоступен") ? "offline" : (session?.connectionState ?? "offline")
+        let message: String?
+        if !accountActive { message = "Войдите в аккаунт Robopark на этом Mac." }
+        else if !ownerLoginConfigured { message = "Для владельца Mac не назначен корпоративный логин." }
+        else if [services.tracker, services.inventory, services.emergency].allSatisfy({ $0 == "ready" }) { message = nil }
+        else { message = "Часть корпоративных сервисов требует входа или повторной проверки." }
+        let status = DesktopAgentStatus(snapshot: AgentStatusSnapshot(
+            accountState: accountState,
+            accountLabel: accountLabel,
+            accountRole: accountRole,
+            registered: profile != nil,
+            serverState: serverState,
+            serverLastSuccessAt: session?.lastSuccessAt,
+            ownerLoginConfigured: ownerLoginConfigured,
+            probeConfigured: profile?.probeVIN.isEmpty == false,
+            tracker: services.tracker,
+            inventory: services.inventory,
+            emergency: services.emergency,
+            corporateChecking: loginWindow != nil,
+            corporateMessage: message,
+            corporateCanLogin: ownerBound && ownerLoginConfigured,
+            autostartSupported: true,
+            autostartEnabled: autostart.isEnabled(),
+            paused: profile?.paused ?? false,
+            legacyWorkspaceAvailable: legacyWorkspaceAvailable,
+            updateState: updater.statusState,
+            currentVersion: updater.version,
+            availableVersion: updater.availableVersion,
+            updateMessage: updater.message
+        ))
+        return .json(status.jsonObject)
+    }
+    private func handleAgentAction(_ body: [String: Any]) async -> LocalHTTPResponse {
+        let action: DesktopAgentAction
+        do { action = try DesktopAgentAction(body: body) }
+        catch { return .json(["detail": "invalid_agent_action"], status: 422) }
+        do {
+            switch action {
+            case .connect:
+                guard let workspace else { throw NetworkFailure.invalid }
+                try await workspace.start()
+                try await ensureWorkspaceConfiguration()
+                if accountActive {
+                    if emergencyAuthorized { bridge.start() }
+                    compute.start(); notifications.resume()
+                } else {
+                    _ = await workspace.session.restoreIdentity()
+                }
+            case .corporateLogin:
+                let profile = bridge.registration
+                guard accountActive, activeAccountID == profile?.ownerUserID,
+                      CorporateAuthPolicy.normalizedLogin(profile?.ownerTrackerLogin) != nil else {
+                    return .json(["detail": "corporate_login_unavailable"], status: 409)
+                }
+                openEmergencyLogin()
+            case .autostart(let enabled):
+                try autostart.setEnabled(enabled)
+            case .pause(let enabled):
+                guard bridge.registration != nil else { return .json(["detail": "device_not_registered"], status: 409) }
+                try bridge.pause(enabled)
+            case .checkUpdate:
+                await updater.check(manual: true)
+            case .reloadKeychain:
+                try bridge.reloadRegistration()
+                if let registration = bridge.registration { try workspace?.session.useRegistration(registration) }
+                startWorkspaceService()
+                restoreAccountSession()
+            case .openLegacyWorkspace:
+                try await openLegacyWorkspace()
+            }
+            return agentStatusResponse()
+        } catch {
+            lastError = "Операция локальной службы не завершилась. Проверьте сеть и Keychain."
+            render()
+            return .json(["detail": "agent_action_failed"], status: 409)
         }
     }
     func render() {
@@ -411,7 +594,7 @@ import AgentCore
             .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
     }
     func openEmergencyLogin() {
-        guard accountActive, emergencyAuthorized,
+        guard accountActive,
               let ownerUserID = bridge.registration?.ownerUserID,
               activeAccountID == ownerUserID,
               CorporateAuthPolicy.normalizedLogin(bridge.registration?.ownerTrackerLogin) != nil else {
@@ -429,14 +612,21 @@ import AgentCore
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 740),
                            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         win.title = "Подключение корпоративных сервисов"
+        win.delegate = self
         win.contentView = view; win.isReleasedWhenClosed = false; win.center()
         loginWindow = win; loginView = view
         guard let url = try? CorporateAuthPolicy.authorizationURL(state: state) else { return }
         view.load(URLRequest(url: url))
         win.makeKeyAndOrderFront(nil)
     }
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow, closing === loginWindow else { return }
+        corporateLoginRun = UUID(); corporateOAuthState = nil
+        loginWindow = nil; loginView = nil
+        render()
+    }
     private func verifyCorporateIdentity(authorization: String, run: UUID) async -> (CorporateIdentityStatus, String?) {
-        guard corporateLoginRun == run, accountActive, emergencyAuthorized,
+        guard corporateLoginRun == run, accountActive,
               activeAccountID == bridge.registration?.ownerUserID,
               let owner = CorporateAuthPolicy.normalizedLogin(bridge.registration?.ownerTrackerLogin) else {
             return (.ownerMismatch, nil)
@@ -459,13 +649,13 @@ import AgentCore
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if webView === panel { render(); return }
-        if webView === workspaceView { return }
+        if webView === legacyWorkspaceView { return }
         guard webView === loginView, webView.url?.host?.lowercased() == EmergencyTarget.host,
-              accountActive, emergencyAuthorized,
+              accountActive,
               let ownerUserID = bridge.registration?.ownerUserID,
               activeAccountID == ownerUserID else { return }
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
-            guard let self, self.accountActive, self.emergencyAuthorized,
+            guard let self, self.accountActive,
                   let ownerUserID = self.bridge.registration?.ownerUserID,
                   self.activeAccountID == ownerUserID else { return }
             let candidates = cookies.map { cookie in
@@ -486,7 +676,8 @@ import AgentCore
                     try self.bridge.storeVerifiedSession(header, login: login)
                     self.loginWindow?.close(); self.loginWindow = nil; self.loginView = nil
                     self.corporateOAuthState = nil
-                    self.bridge.start(); self.render()
+                    if self.emergencyAuthorized { self.bridge.start() }
+                    self.render()
                 } catch { self.showCorporateFailure(.ownerMismatch) }
             }
         }
@@ -510,10 +701,12 @@ import AgentCore
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
-        if webView === workspaceView {
-            if url.scheme == "http", url.host == "127.0.0.1", url.port == 18444, url.user == nil, url.password == nil { decisionHandler(.allow) }
+        if webView === legacyWorkspaceView {
+            if url.scheme == "http", url.host == "127.0.0.1", url.port == 18444,
+               url.user == nil, url.password == nil { decisionHandler(.allow) }
             else {
-                if navigationAction.navigationType == .linkActivated, url.scheme == "https", url.user == nil, url.password == nil { NSWorkspace.shared.open(url) }
+                if navigationAction.navigationType == .linkActivated, url.scheme == "https",
+                   url.user == nil, url.password == nil { NSWorkspace.shared.open(url) }
                 decisionHandler(.cancel)
             }
         }
@@ -553,7 +746,8 @@ import AgentCore
     }
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
                  initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
-        guard webView === workspaceView, frame.securityOrigin.host == "127.0.0.1", frame.securityOrigin.port == 18444 else { completionHandler(nil); return }
+        guard webView === legacyWorkspaceView, frame.securityOrigin.host == "127.0.0.1",
+              frame.securityOrigin.port == 18444 else { completionHandler(nil); return }
         let chooser = NSOpenPanel()
         chooser.canChooseDirectories = false; chooser.canChooseFiles = true
         chooser.allowsMultipleSelection = parameters.allowsMultipleSelection
@@ -562,8 +756,10 @@ import AgentCore
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                  initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-        guard webView === workspaceView, origin.host == "127.0.0.1", origin.port == 18444,
-              frame.securityOrigin.host == origin.host, frame.securityOrigin.port == origin.port else { decisionHandler(.deny); return }
+        guard webView === legacyWorkspaceView, origin.host == "127.0.0.1", origin.port == 18444,
+              frame.securityOrigin.host == origin.host, frame.securityOrigin.port == origin.port else {
+            decisionHandler(.deny); return
+        }
         decisionHandler(.prompt)
     }
 }

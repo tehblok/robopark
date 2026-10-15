@@ -41,7 +41,8 @@ def test_uninstaller_has_a_read_only_plan_and_keeps_data_by_default():
         ["/bin/sh", str(script), "--plan"], capture_output=True, text=True, check=False
     )
     assert checked.returncode == 0
-    assert "user data is preserved by default" in checked.stdout
+    assert "app data is preserved by default" in checked.stdout
+    assert "Browser site data for 127.0.0.1 is never removed" in checked.stdout
     assert "/Library/LaunchDaemons/ru.robopark.update-helper.plist" in checked.stdout
     assert "spctl" not in script.read_text()
 

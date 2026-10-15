@@ -186,6 +186,8 @@ func testTransport() -> URLSession {
         let login = try await session.proxy(local("POST", "/api/auth/%6cogin", body: "{}"))
         try check(login.status == 200 && login.headers["Set-Cookie"] == nil, "encoded login has native lifecycle and never leaks cookie")
         try check(logoutCalls == 1 && session.profile?.cookies.count == 1, "login clears old session before native replacement")
+        let loginRequest = MockURLProtocol.seen.last(where: { $0.url?.path == "/api/auth/login" })
+        try check(loginRequest?.timeoutInterval == 10, "login request has a bounded ten-second timeout")
         MockURLProtocol.replies["POST /api/auth/logout?"] = .init(status: 204, headers: [:], body: Data(), delay: 0)
         let logout = try await session.proxy(local("POST", "/api/auth/%6cogout", body: "{}"))
         try check(logout.status == 204 && session.profile?.cookies.isEmpty == true && SecureStore.isSignedOut("workspace"), "logout clears native session")
@@ -313,6 +315,22 @@ func testTransport() -> URLSession {
         let legacyAfterClaim = try await legacyOwner.proxy(local("GET", "/api/tasks"))
         try check(legacyAfterClaim.status == 200,
                   "server-derived claim unlocks legacy installation for its owner")
+        try check(legacyOwner.lastSuccessAt != nil && legacyOwner.connectionState == "connected",
+                  "connection status is based on actual upstream response")
+        var invalidations = 0
+        legacyOwner.onSessionInvalidated = { invalidations += 1 }
+        MockURLProtocol.replies["GET /api/auth/me?"] = .init(status: 401, headers: [:],
+            body: Data("{}".utf8), delay: 0)
+        let expired = try await legacyOwner.proxy(local("GET", "/api/auth/me"))
+        try check(expired.status == 401 && invalidations == 1 && legacyOwner.profile?.accountID == nil
+                  && legacyOwner.profile?.cookies.isEmpty == true && SecureStore.isSignedOut("workspace"),
+                  "expired upstream identity revokes browser and native credentials")
+        let lastHealthyAt = legacyOwner.lastSuccessAt
+        MockURLProtocol.replies["GET /api/health/ready?"] = .init(status: 503, headers: [:],
+            body: Data("{}".utf8), delay: 0)
+        _ = try await legacyOwner.call(path: "/api/health/ready")
+        try check(legacyOwner.connectionState == "error", "HTTP failure is not reported as healthy connection")
+        try check(legacyOwner.lastSuccessAt == lastHealthyAt, "HTTP 503 does not overwrite the last successful connection timestamp")
         print("PASS: \(checks) production WorkspaceSession lifecycle, cookie isolation and generation checks")
     }
 }

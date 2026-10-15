@@ -31,6 +31,28 @@ def test_malformed_success_response_raises_emergency_error():
         emergency_client.fetch_robot_payload(cookie="candidate", vin="YASADR00000000447")
 
 
+@pytest.mark.parametrize(
+    "status,exception",
+    [
+        (404, emergency_client.EmergencyError),
+        (429, emergency_client.EmergencyError),
+        (500, emergency_client.EmergencyAvailabilityError),
+        (503, emergency_client.EmergencyAvailabilityError),
+    ],
+)
+def test_only_server_5xx_is_classified_as_availability(status, exception):
+    response = MagicMock(status_code=status, headers={"content-type": "application/json"})
+    http_client = MagicMock()
+    http_client.__enter__.return_value = http_client
+    http_client.get.return_value = response
+
+    with (
+        patch("robopark_api.services.emergency_client.httpx.Client", return_value=http_client),
+        pytest.raises(exception, match=f"upstream status {status}"),
+    ):
+        emergency_client.fetch_robot_payload(cookie="candidate", vin="YASADR00000000447")
+
+
 def test_cookie_header_is_normalized_and_request_looks_like_a_browser():
     response = MagicMock(status_code=200, headers={"content-type": "application/json"})
     response.json.return_value = {"vin": "YASADR00000000447"}

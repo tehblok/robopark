@@ -25,6 +25,7 @@ def corporate_owner_login(user: User) -> str | None:
     value = value.strip().lower()
     return value if re.fullmatch(r"[a-z0-9._-]{1,128}", value, flags=re.ASCII) else None
 
+
 _CAPABILITY_PERMISSION: dict[GatewayCapability, str] = {
     "emergency": rbac.PERMISSION_NAV_EMERGENCY,
     # External SDC Inventory follows the Emergency robot/VIN ACL. Warehouse

@@ -57,13 +57,13 @@ public struct Challenge: Codable {
     public func sign(key: P256.Signing.PrivateKey, environment: String, instanceID: String) throws -> Data {
         guard type == "challenge", protocolVersion == 1, self.environment == environment,
               instance_id == instanceID, !nonce.isEmpty, nonce.count <= 256,
-              !nonce.contains("\n") else { throw AgentError.wrongServer }
+              !nonce.utf8.contains(10) else { throw AgentError.wrongServer }
         return try key.signature(for: Data("robopark-bridge-v1\n\(instanceID)\n\(environment)\n\(nonce)".utf8)).derRepresentation
     }
     public func signCompute(key: P256.Signing.PrivateKey, environment: String, instanceID: String) throws -> Data {
         guard type == "challenge", protocolVersion == 1, self.environment == environment,
               instance_id == instanceID, !nonce.isEmpty, nonce.count <= 256,
-              !nonce.contains("\n") else { throw AgentError.wrongServer }
+              !nonce.utf8.contains(10) else { throw AgentError.wrongServer }
         return try key.signature(for: Data("robopark-compute-v1\n\(instanceID)\n\(environment)\n\(nonce)".utf8)).derRepresentation
     }
 }

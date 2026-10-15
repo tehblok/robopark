@@ -5,6 +5,7 @@ import { EmptyState, ErrorState, LoadingState } from '../../design-system/feedba
 import { FormField } from '../../design-system/forms/FormField'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { classifyApiError } from '../../shared/api/classifyApiError'
+import { DesktopAuthenticatedImage } from '../../shared/media/DesktopAuthenticatedMedia'
 import { InventoryLabels } from './InventoryLabels'
 import { retainInventoryPartRecords } from './inventoryPartRetention'
 import { inventoryInt64Compare, inventoryQuantityError, isInventoryQuantity } from './inventoryTypes'
@@ -189,7 +190,7 @@ export function InventoryPartsView({ apiClient = api, canManage = true, canPrint
       const selected = item.id === selectedId
       const low = inventoryInt64Compare(item.quantity, item.minimum_quantity) < 0
       return <article className={`inventory-search-card${selected ? ' inventory-search-card--selected' : ''}`} key={item.id}>
-        {item.has_photo ? <img alt={item.name} className="inventory-search-card__photo" height={72} src={apiClient.inventoryPartPhotoUrl(-item.id)} width={72} /> : <div className="inventory-photo-placeholder inventory-search-card__photo">Нет фото</div>}
+        {item.has_photo ? <DesktopAuthenticatedImage alt={item.name} className="inventory-search-card__photo" height={72} src={apiClient.inventoryPartPhotoUrl(-item.id)} width={72} /> : <div className="inventory-photo-placeholder inventory-search-card__photo">Нет фото</div>}
         <div className="inventory-search-card__body"><div className="inventory-search-card__heading"><div><h3>{item.name}</h3><p>{item.component_name} · <strong>{item.article}</strong></p></div><StatusBadge tone={item.quantity === '0' ? 'critical' : low ? 'warning' : 'success'}>{item.quantity} шт.</StatusBadge></div>
           <p className="inventory-search-card__location">{item.location || 'Место не указано'}</p>
           {canPrint ? <label className="inventory-label-choice"><input aria-label={`Выбрать для печати ${item.name}`} checked={selectedLabelIds.has(item.id)} onChange={() => togglePrintPart(item.id)} type="checkbox" /> В печать</label> : null}

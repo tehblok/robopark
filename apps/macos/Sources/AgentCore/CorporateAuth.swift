@@ -88,7 +88,7 @@ public enum CorporateAuthPolicy {
         }
         guard values["state"] == expectedState,
               let token = values["access_token"], !token.isEmpty, token.utf8.count <= 8192,
-              !token.contains("\r"), !token.contains("\n"),
+              !token.utf8.contains(13), !token.utf8.contains(10),
               let lifetimeText = values["expires_in"], let lifetime = TimeInterval(lifetimeText),
               lifetime > 60, lifetime <= 31_536_000 else { throw AgentError.invalidJob }
         return CorporateOAuthCredential(token: token, expiresAt: now.addingTimeInterval(lifetime))
@@ -101,8 +101,8 @@ public enum CorporateAuthPolicy {
               cookie.secure, cookie.domain.lowercased() == ".yandex-team.ru",
               cookie.path == "/", cookie.expires == nil || cookie.expires! > now,
               !cookie.value.isEmpty, cookie.value.utf8.count <= 8192,
-              !cookie.value.contains(";"), !cookie.value.contains("\r"),
-              !cookie.value.contains("\n") else { throw AgentError.invalidJob }
+              !cookie.value.contains(";"), !cookie.value.utf8.contains(13),
+              !cookie.value.utf8.contains(10) else { throw AgentError.invalidJob }
         return "Session_id=\(cookie.value)"
     }
 

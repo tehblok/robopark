@@ -86,8 +86,8 @@ describe('canAccessRoute', () => {
     expect(canAccessRoute(user({ role: 'operator', access_status: 'pending', permissions: ['nav.tasks'] }), 'assistant')).toBe(false)
     expect(canAccessRoute(user({ role: 'operator', permissions: [] }), 'assistant')).toBe(false)
   })
-  it('limits the system console to built-in admin and royal roles', () => {
-    expect(canAccessRoute(user({ role: 'admin', permissions: ['nav.admin'] }), 'system')).toBe(true)
+  it('limits the technical system console to Royal', () => {
+    expect(canAccessRoute(user({ role: 'admin', permissions: ['nav.admin'] }), 'system')).toBe(false)
     expect(canAccessRoute(user({ role: 'royal', permissions: ['nav.admin'] }), 'system')).toBe(true)
     expect(canAccessRoute(user({ role: 'field_lead', permissions: ['nav.admin'] }), 'system')).toBe(false)
   })
@@ -223,6 +223,18 @@ describe('landingPathForUser', () => {
 })
 
 describe('role guard', () => {
+  it('keeps the technical Mac network route Royal-only even when another role has admin permissions', () => {
+    expect(canAccessRoute(user({ role: 'royal', permissions: [] }), 'network')).toBe(true)
+    expect(canAccessRoute(user({ role: 'admin', permissions: ['nav.admin'] }), 'network')).toBe(false)
+    expect(canAccessRoute(user({ role: 'operator', permissions: ['nav.admin'] }), 'network')).toBe(false)
+  })
+
+  it('adds the own-device route only inside the local desktop runtime', () => {
+    const operator = user({ role: 'operator', permissions: ['nav.dashboard'] })
+    expect(navigationForUser(operator, 'desktop').map(item => item.id)).not.toContain('device')
+    expect(navigationForUser(operator, 'desktop', true).map(item => item.id)).toContain('device')
+  })
+
   it.each(['royal', 'admin', 'operator', 'mechanic', 'driver'])('accepts system role %s', (role) => {
     expect(isSystemUserRole(role)).toBe(true)
   })

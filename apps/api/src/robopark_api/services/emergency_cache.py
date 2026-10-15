@@ -250,35 +250,57 @@ def get_robot_payload(
     probe: tuple[str | None, str | None] | None = None,
     requester_user: User | None = None,
     _metadata: dict[str, float | bool] | None = None,
+    _accept_cached_stale: bool = True,
 ) -> dict[str, Any]:
     """Fetch using one cookie/identity capture when a caller already has it."""
     global _cache_bytes
     settings = settings_for_session(db)
     cookie, identity = probe or settings_svc.get_emergency_cookie_probe(db)
-    if settings.emergency_bridge_enabled:
-        if requester_user is not None:
+    owner_gateway = settings.emergency_bridge_enabled and requester_user is not None
+    if owner_gateway:
+        server_stale: tuple[dict[str, Any], dict[str, float | bool]] | None = None
+        if cookie:
             try:
-                release_request_session()
-                payload = emergency_bridge_client.fetch_robot_payload(
+                # Keep the normal server cache/single-flight shared by all
+                # requesters. Personal Mac results never enter that cache.
+                server_metadata: dict[str, float | bool] = {}
+                server_payload = get_robot_payload(
+                    db=db,
                     vin=vin,
-                    requester_user_id=requester_user.id,
-                    attempt_budget=1 if settings.emergency_direct_fallback_enabled else 2,
-                    settings=settings,
+                    probe=(cookie, identity),
+                    requester_user=None,
+                    _metadata=server_metadata,
+                    _accept_cached_stale=False,
                 )
+                if not server_metadata.get("stale"):
+                    if _metadata is not None:
+                        _metadata.update(server_metadata)
+                    return server_payload
+                server_stale = server_payload, server_metadata
+            except emergency_client.EmergencyAuthError:
+                raise
+            except emergency_client.EmergencyAvailabilityError:
+                pass
+        try:
+            release_request_session()
+            payload = emergency_bridge_client.fetch_robot_payload(
+                vin=vin,
+                requester_user_id=requester_user.id,
+                attempt_budget=2,
+                settings=settings,
+            )
+        except emergency_bridge_client.BridgeError as exc:
+            if server_stale is not None:
+                payload, server_metadata = server_stale
                 if _metadata is not None:
-                    _metadata.update(stale=False, age_seconds=0.0)
+                    _metadata.update(server_metadata)
                 return payload
-            except emergency_bridge_client.BridgeError as exc:
-                unavailable = (
-                    not isinstance(exc, emergency_bridge_client.BridgeRequestError)
-                    or exc.availability
-                )
-                if not settings.emergency_direct_fallback_enabled or not unavailable:
-                    raise emergency_client.EmergencyError("emergency bridge unavailable") from exc
-        elif not settings.emergency_direct_fallback_enabled:
-            raise emergency_client.EmergencyError("emergency bridge requires requester authority")
-        if not cookie:
-            raise emergency_client.EmergencyError("emergency direct fallback is not configured")
+            raise emergency_client.EmergencyError("emergency owner gateway unavailable") from exc
+        if _metadata is not None:
+            _metadata.update(stale=False, age_seconds=0.0)
+        return payload
+    if not cookie:
+        raise emergency_client.EmergencyError("emergency server credential is not configured")
     now = time.monotonic()
     merge = get_live_merge_store()
     stale: _CacheEntry | None = None
@@ -290,6 +312,7 @@ def get_robot_payload(
             cached is not None
             and cached.identity == identity
             and now - cached.cached_at < PAYLOAD_CACHE_TTL_SECONDS
+            and (_accept_cached_stale or not cached.stale)
         ):
             payload = cached.payload
             _cache.move_to_end(vin)
@@ -380,7 +403,7 @@ def get_robot_payload(
             def load() -> dict[str, Any]:
                 release_request_session()
                 with _http_semaphore():
-                    return emergency_client.fetch_robot_payload(cookie=cookie or "", vin=vin)
+                    return emergency_client.fetch_robot_payload(cookie=cookie, vin=vin)
 
             if merge is not None:
                 shared_key = _shared_key(identity, vin)
@@ -392,20 +415,23 @@ def get_robot_payload(
                         load,
                         is_current=lambda: _flight_is_current(flight),
                         max_stale_seconds=PAYLOAD_MAX_STALE_SECONDS,
-                        stale_if=lambda exc: (
-                            isinstance(exc, emergency_client.EmergencyError)
-                            and not isinstance(exc, emergency_client.EmergencyAuthError)
+                        stale_if=lambda exc: isinstance(
+                            exc, emergency_client.EmergencyAvailabilityError
                         ),
                         on_stale=mark_shared_stale,
                     )
                 except LiveMergeTimeout as exc:
-                    raise emergency_client.EmergencyError(
+                    raise emergency_client.EmergencyAvailabilityError(
                         "emergency request coordination timed out"
                     ) from exc
                 except LiveMergeUpstreamError as exc:
                     if exc.error_type == "EmergencyAuthError":
                         raise emergency_client.EmergencyAuthError(
                             "emergency cookie invalid"
+                        ) from exc
+                    if exc.error_type == "EmergencyAvailabilityError":
+                        raise emergency_client.EmergencyAvailabilityError(
+                            "emergency upstream request failed"
                         ) from exc
                     raise emergency_client.EmergencyError(
                         "emergency upstream request failed"
@@ -469,8 +495,7 @@ def get_robot_payload(
     except BaseException as exc:
         if (
             stale is not None
-            and isinstance(exc, emergency_client.EmergencyError)
-            and not isinstance(exc, emergency_client.EmergencyAuthError)
+            and isinstance(exc, emergency_client.EmergencyAvailabilityError)
             and time.monotonic() - stale.source_loaded_at < PAYLOAD_MAX_STALE_SECONDS
         ):
             payload = stale.payload

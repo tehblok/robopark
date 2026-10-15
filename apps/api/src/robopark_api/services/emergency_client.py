@@ -29,6 +29,10 @@ class EmergencyError(Exception):
     pass
 
 
+class EmergencyAvailabilityError(EmergencyError):
+    """The server route failed in a way that is safe to retry through the owner Mac."""
+
+
 def _ssl_context() -> ssl.SSLContext:
     context = ssl.create_default_context(cafile=certifi.where())
     context.load_verify_locations(cafile=_YANDEX_ROOT_CA)
@@ -75,12 +79,14 @@ def fetch_robot_payload(*, cookie: str, vin: str) -> dict[str, Any]:
             else:
                 raise EmergencyAuthError("emergency cookie invalid")
     except httpx.HTTPError as exc:
-        raise EmergencyError(str(exc)) from exc
+        raise EmergencyAvailabilityError(str(exc)) from exc
 
     content_type = response.headers.get("content-type", "")
     html = "text/html" in content_type.lower()
     if html:
         raise EmergencyError("unexpected html response")
+    if response.status_code >= 500:
+        raise EmergencyAvailabilityError(f"emergency upstream status {response.status_code}")
     if response.status_code >= 400:
         raise EmergencyError(f"emergency upstream status {response.status_code}")
 

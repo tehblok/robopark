@@ -162,6 +162,10 @@ export const ROUTE_COVERAGE_MANIFEST: readonly RouteCoverageItem[] = [
     asyncStates('system', ['metrics', 'view'], ['operations', 'view'], ['confirmation', 'dialog']), [
       action('host-operation', OWNERS),
     ]),
+  route('network', 'NetworkPage.Classic', OWNERS,
+    asyncStates('network', ['graph', 'view'])),
+  route('device', 'DevicePage.LocalDesktop', ALL_ROLES,
+    nested('device', ['desktop-only', 'view'])),
 
   route('admin', 'ManagementPage.Classic', MANAGER_ROLES,
     asyncStates('admin', ['users', 'tab'], ['roles', 'tab'], ['parks', 'tab'], ['requests', 'tab'])),

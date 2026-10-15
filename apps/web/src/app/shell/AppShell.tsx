@@ -30,6 +30,7 @@ import { ComputePoolStatus } from '../../pwa/ComputePoolStatus'
 import { readReportPhotoDraft, writeReportPhotoDraft } from '../../domains/reports/reportPhotoDrafts'
 import { reportDraftKey } from '../../domains/reports/reports'
 import { TelegramAccountPanel } from '../../domains/telegram/TelegramAccountPanel'
+import { desktopRuntime } from '../../pwa/desktopRuntime'
 
 const GROUPS: readonly NavGroup[] = [
   'operations',
@@ -342,6 +343,7 @@ export function AppShell() {
   const [railCollapsed, setRailCollapsed] = useState(false)
   const phoneViewport = useMediaQuery(DENSITY_MEDIA_QUERY)
   const splitTablet = useMediaQuery('(min-width: 900px) and (max-width: 1199px)')
+  const localDesktop = desktopRuntime() !== null
 
   useEffect(() => {
     const onInstalled = () => {
@@ -376,12 +378,12 @@ export function AppShell() {
   }
 
   const desktopItems = useMemo(
-    () => user ? withMechanicTasks(navigationForUser(user, 'desktop'), user) : [],
-    [user],
+    () => user ? withMechanicTasks(navigationForUser(user, 'desktop', localDesktop), user) : [],
+    [localDesktop, user],
   )
   const mobileItems = useMemo(
-    () => user ? navigationForUser(user, 'mobile') : [],
-    [user],
+    () => user ? navigationForUser(user, 'mobile', localDesktop) : [],
+    [localDesktop, user],
   )
   const { primary: primaryMobileItems, secondary: secondaryMobileItems } = useMemo(
     () => user ? mobileNavigation(mobileItems, user) : { primary: [], secondary: [] },
@@ -621,7 +623,7 @@ export function AppShell() {
               user={user}
             />
           ) : <span aria-hidden="true" />}
-          <SyncCenter offlineSession={offlineSession} offlineControls={<><OfflineWorkspaceControl user={user} /><ComputePoolStatus /><AgentPoolStatus /></>} />
+          <SyncCenter offlineSession={offlineSession} offlineControls={<><OfflineWorkspaceControl user={user} />{user.role === 'royal' ? <><ComputePoolStatus /><AgentPoolStatus /></> : null}</>} />
           <div className="rp-shell__topbar-actions">
             <IconButton label="Уведомления" icon="notifications" onClick={() => navigate('/schedule#notifications')} variant="ghost" />
             <span className="rp-shell__user">

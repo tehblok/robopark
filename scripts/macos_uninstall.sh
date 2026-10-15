@@ -9,7 +9,7 @@ if [ "$mode" = --plan ]; then
   echo '/Library/LaunchDaemons/ru.robopark.update-helper.plist'
   echo '/Library/PrivilegedHelperTools/RoboparkUpdater'
   echo '/Library/Application Support/RoboparkUpdater'
-  echo 'Receipt: ru.robopark.agent; user data is preserved by default.'
+  echo 'Receipt: ru.robopark.agent; app data is preserved by default. Browser site data for 127.0.0.1 is never removed.'
   exit 0
 fi
 [ "$(/usr/bin/uname -s)" = Darwin ] || { echo 'Требуется macOS.' >&2; exit 1; }
@@ -124,7 +124,7 @@ if [ "$mode" = --remove-data ] && [ "$console_uid" -ge 501 ]; then
   # Delete only our own generic-password service, without printing keychain data.
   count=0
   while [ "$count" -lt 512 ] && /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/security delete-generic-password -s ru.robopark.agent >/dev/null 2>&1; do count=$((count + 1)); done
-  echo 'Robopark удалён. Локальные данные текущего пользователя удалены.'
+  echo 'Robopark удалён. Keychain и данные прежнего встроенного окна удалены. Данные сайта 127.0.0.1 в системном браузере сохранены; при необходимости удалите их в настройках данных сайтов браузера.'
 else
-  echo 'Robopark удалён. Локальные данные сохранены для повторной установки.'
+  echo 'Robopark удалён. Данные приложения и сайта 127.0.0.1 в системном браузере сохранены для повторной установки.'
 fi

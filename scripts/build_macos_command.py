@@ -36,7 +36,7 @@ if [ "$mode" = --help ]; then
   echo "Robopark $version: запустите без параметров для установки или локального обновления."
   echo '--verify: проверить встроенный пакет без установки.'
   echo '--uninstall: удалить приложение и службы, сохранить локальные данные.'
-  echo '--uninstall-remove-data: удалить также локальные данные текущего пользователя.'
+  echo '--uninstall-remove-data: удалить Keychain и данные прежнего встроенного окна. Данные сайта 127.0.0.1 в системном браузере сохраняются.'
   exit 0
 fi
 if [ "$mode" != --verify ] && [ "$(/usr/bin/uname -s)" != Darwin ]; then echo 'Требуется macOS 13+ на Apple Silicon.' >&2; exit 1; fi
@@ -47,7 +47,7 @@ if [ "$mode" = --uninstall ] || [ "$mode" = --uninstall-remove-data ]; then
 @UNINSTALL@
 ROBOPARK_UNINSTALL_SCRIPT
   echo 'Будут удалены приложение Robopark и его фоновые службы.'
-  if [ "$mode" = --uninstall-remove-data ]; then echo 'Будут также удалены локальные данные, вход и офлайн-черновики текущего пользователя.'; fi
+  if [ "$mode" = --uninstall-remove-data ]; then echo 'Будут удалены Keychain и данные прежнего встроенного окна. Данные сайта 127.0.0.1 в системном браузере сохранятся; при необходимости удалите их в настройках браузера.'; fi
   read -r -p 'Продолжить? Введите DELETE: ' confirmation
   [ "$confirmation" = DELETE ] || exit 0
   if [ "$mode" = --uninstall-remove-data ]; then /usr/bin/sudo /bin/sh "$stage/uninstall.sh" --remove-data

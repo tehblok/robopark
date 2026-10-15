@@ -40,7 +40,7 @@ def test_client_never_follows_redirect_or_uses_ambient_proxy(monkeypatch):
         )
 
     monkeypatch.setattr(sdc_inventory.httpx, "Client", factory)
-    with pytest.raises(sdc_inventory.InventoryError, match="sdc_inventory_upstream_error"):
+    with pytest.raises(sdc_inventory.InventoryError, match="sdc_inventory_request_rejected"):
         sdc_inventory.fetch_card("secret", "a664")
     assert options["follow_redirects"] is False
     assert options["trust_env"] is False
@@ -54,6 +54,48 @@ def test_inventory_scope_checked_before_network(client, seed_mechanic, monkeypat
     )
     response = client.get("/sdc-inventory/robots/a664")
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "status,body,expected_error,availability",
+    [
+        (400, b"{}", "sdc_inventory_request_rejected", False),
+        (409, b"{}", "sdc_inventory_request_rejected", False),
+        (422, b"{}", "sdc_inventory_request_rejected", False),
+        (429, b"{}", "sdc_inventory_rate_limited", False),
+        (500, b"{}", "sdc_inventory_upstream_error", True),
+        (200, b"not-json", "sdc_inventory_response_invalid", False),
+    ],
+)
+def test_inventory_client_classifies_only_transport_and_5xx_as_availability(
+    monkeypatch, status, body, expected_error, availability
+):
+    real_client = httpx.Client
+
+    def factory(**kwargs):
+        return real_client(
+            **kwargs,
+            transport=httpx.MockTransport(lambda _request: httpx.Response(status, content=body)),
+        )
+
+    monkeypatch.setattr(sdc_inventory.httpx, "Client", factory)
+    with pytest.raises(sdc_inventory.InventoryError, match=expected_error) as caught:
+        sdc_inventory.fetch_card("secret", "a664")
+    assert isinstance(caught.value, sdc_inventory.InventoryAvailabilityError) is availability
+
+
+def test_inventory_client_classifies_transport_timeout_as_availability(monkeypatch):
+    real_client = httpx.Client
+
+    def factory(**kwargs):
+        def timeout(request):
+            raise httpx.ReadTimeout("timed out", request=request)
+
+        return real_client(**kwargs, transport=httpx.MockTransport(timeout))
+
+    monkeypatch.setattr(sdc_inventory.httpx, "Client", factory)
+    with pytest.raises(sdc_inventory.InventoryAvailabilityError, match="sdc_inventory_unavailable"):
+        sdc_inventory.fetch_card("secret", "a664")
 
 
 def test_card_returns_projected_facts_and_source(client, db_session, seed_admin, monkeypatch):
@@ -82,7 +124,7 @@ def test_card_returns_projected_facts_and_source(client, db_session, seed_admin,
     assert body["physical_inspection"] == "not_performed"
 
 
-def test_test_gateway_uses_owner_mac_and_never_falls_back_to_server_token(
+def test_test_gateway_uses_owner_mac_when_server_token_is_missing(
     client, seed_admin, test_settings, monkeypatch
 ):
     login_as(client, seed_admin.username, "secret")
@@ -94,7 +136,7 @@ def test_test_gateway_uses_owner_mac_and_never_falls_back_to_server_token(
     monkeypatch.setattr(
         platform_settings,
         "get_tracker_token",
-        lambda *_args: pytest.fail("interactive gateway must not read the service token"),
+        lambda *_args: None,
     )
     monkeypatch.setattr(
         corporate_gateway_client,
@@ -116,7 +158,7 @@ def test_test_gateway_uses_owner_mac_and_never_falls_back_to_server_token(
     assert calls[0]["requester_user_id"] == seed_admin.id
 
 
-def test_test_gateway_unavailable_falls_back_to_configured_server_token(
+def test_healthy_server_inventory_is_primary_and_does_not_call_mac(
     client, seed_admin, test_settings, monkeypatch
 ):
     login_as(client, seed_admin.username, "secret")
@@ -127,9 +169,7 @@ def test_test_gateway_unavailable_falls_back_to_configured_server_token(
     monkeypatch.setattr(
         corporate_gateway_client,
         "read",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            corporate_gateway_client.CorporateGatewayError(503, "corporate_unavailable")
-        ),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Mac fallback")),
     )
     monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "server-token")
     monkeypatch.setattr(
@@ -147,7 +187,7 @@ def test_test_gateway_unavailable_falls_back_to_configured_server_token(
     assert response.json()["robot"]["storage"] == "Server path"
 
 
-def test_test_gateway_fallback_requires_flag_and_configured_server_token(
+def test_missing_server_token_returns_mac_availability_failure(
     client, seed_admin, test_settings, monkeypatch
 ):
     login_as(client, seed_admin.username, "secret")
@@ -155,6 +195,7 @@ def test_test_gateway_fallback_requires_flag_and_configured_server_token(
     test_settings.emergency_bridge_enabled = True
     test_settings.mac_corporate_gateway_enabled = True
     test_settings.mac_corporate_server_fallback_enabled = False
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: None)
     monkeypatch.setattr(
         corporate_gateway_client,
         "read",
@@ -162,54 +203,132 @@ def test_test_gateway_fallback_requires_flag_and_configured_server_token(
             corporate_gateway_client.CorporateGatewayError(503, "corporate_unavailable")
         ),
     )
-    monkeypatch.setattr(
-        platform_settings,
-        "get_tracker_token",
-        lambda *_args: pytest.fail("disabled fallback must not read the server token"),
-    )
     response = client.get("/sdc-inventory/robots/a664")
     assert response.status_code == 503
     assert response.json()["detail"] == "corporate_unavailable"
 
-    test_settings.mac_corporate_server_fallback_enabled = True
-    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: None)
+
+def test_server_inventory_availability_failure_uses_owner_mac(
+    client, seed_admin, test_settings, monkeypatch
+):
+    login_as(client, seed_admin.username, "secret")
+    test_settings.robopark_environment = "test"
+    test_settings.emergency_bridge_enabled = True
+    test_settings.mac_corporate_gateway_enabled = True
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "server-token")
+    monkeypatch.setattr(
+        sdc_inventory,
+        "fetch_card",
+        lambda *_args: (_ for _ in ()).throw(
+            sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
+        ),
+    )
+    mac_calls = []
+    monkeypatch.setattr(
+        corporate_gateway_client,
+        "read",
+        lambda **kwargs: (
+            mac_calls.append(kwargs)
+            or corporate_gateway_contract.CorporateReadResponse(
+                200, {}, {"name": "a664", "storage": "Owner Mac"}
+            )
+        ),
+    )
+
     response = client.get("/sdc-inventory/robots/a664")
-    assert response.status_code == 503
-    assert response.json()["detail"] == "sdc_inventory_token_not_configured"
+
+    assert response.status_code == 200
+    assert response.json()["robot"]["storage"] == "Owner Mac"
+    assert len(mac_calls) == 1
 
 
 @pytest.mark.parametrize(
-    "error",
+    "status,body,expected_status,uses_mac",
     [
-        corporate_gateway_client.CorporateGatewayError(403, "corporate_access_denied"),
-        corporate_gateway_client.CorporateGatewayError(404, "corporate_not_found"),
-        corporate_gateway_client.CorporateGatewayError(429, "corporate_rate_limited"),
-        corporate_gateway_client.CorporateGatewayError(503, "corporate_invalid_response"),
+        (401, b"{}", 403, False),
+        (403, b"{}", 403, False),
+        (404, b"{}", 404, False),
+        (429, b"{}", 429, False),
+        (400, b"{}", 502, False),
+        (200, b"not-json", 502, False),
+        (503, b"{}", 200, True),
     ],
 )
-def test_test_gateway_does_not_fallback_for_denial_not_found_rate_limit_or_invalid(
-    client, seed_admin, test_settings, monkeypatch, error
+def test_router_falls_back_only_for_real_server_availability(
+    client,
+    seed_admin,
+    test_settings,
+    monkeypatch,
+    status,
+    body,
+    expected_status,
+    uses_mac,
+):
+    login_as(client, seed_admin.username, "secret")
+    test_settings.robopark_environment = "test"
+    test_settings.emergency_bridge_enabled = True
+    test_settings.mac_corporate_gateway_enabled = True
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "server-token")
+    real_client = httpx.Client
+
+    def factory(**kwargs):
+        return real_client(
+            **kwargs,
+            transport=httpx.MockTransport(lambda _request: httpx.Response(status, content=body)),
+        )
+
+    mac_calls = []
+    monkeypatch.setattr(sdc_inventory.httpx, "Client", factory)
+    monkeypatch.setattr(
+        corporate_gateway_client,
+        "read",
+        lambda **kwargs: (
+            mac_calls.append(kwargs)
+            or corporate_gateway_contract.CorporateReadResponse(
+                200, {}, {"name": "a664", "storage": "Owner Mac"}
+            )
+        ),
+    )
+
+    response = client.get("/sdc-inventory/robots/a664")
+
+    assert response.status_code == expected_status, response.text
+    assert len(mac_calls) == int(uses_mac)
+
+
+@pytest.mark.parametrize(
+    "server_error,expected_status",
+    [
+        ("sdc_inventory_access_denied", 403),
+        ("sdc_inventory_not_found", 404),
+        ("sdc_inventory_response_invalid", 502),
+        ("sdc_inventory_response_too_large", 502),
+    ],
+)
+def test_test_gateway_does_not_bypass_server_denial_not_found_or_invalid_response(
+    client, seed_admin, test_settings, monkeypatch, server_error, expected_status
 ):
     login_as(client, seed_admin.username, "secret")
     test_settings.robopark_environment = "test"
     test_settings.emergency_bridge_enabled = True
     test_settings.mac_corporate_gateway_enabled = True
     test_settings.mac_corporate_server_fallback_enabled = True
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "server-token")
+    monkeypatch.setattr(
+        sdc_inventory,
+        "fetch_card",
+        lambda *_args: (_ for _ in ()).throw(sdc_inventory.InventoryError(server_error)),
+    )
     monkeypatch.setattr(
         corporate_gateway_client,
         "read",
-        lambda **_kwargs: (_ for _ in ()).throw(error),
-    )
-    monkeypatch.setattr(
-        platform_settings,
-        "get_tracker_token",
-        lambda *_args: pytest.fail("non-availability failure must not fall back"),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("permission bypass")),
     )
 
     response = client.get("/sdc-inventory/robots/a664")
 
-    assert response.status_code == error.status_code
-    assert response.json()["detail"] == error.code
+    assert response.status_code == expected_status
+    assert response.json()["detail"] == server_error
 
 
 def test_installations_keep_pagination_and_filter_response_scope(monkeypatch):

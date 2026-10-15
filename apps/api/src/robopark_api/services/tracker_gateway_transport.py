@@ -1,8 +1,9 @@
 """Route the existing Tracker SDK through typed, owner-bound native reads.
 
 GatewayCredential is a request context, never an OAuth token. No HTTP endpoint
-accepts it from a client. A separately configured server credential may be used
-for a fixed-endpoint read only when the eligible native route is unavailable.
+accepts it from a client. A separately configured server credential is the
+primary fixed-endpoint reader; an eligible owner Mac is an availability-only
+fallback and never receives that credential.
 """
 
 from __future__ import annotations
@@ -218,7 +219,7 @@ def typed_request(method, url, *, params=None, data=None, files=None, stream=Fal
 
 
 def connection(context: GatewayCredential):
-    from requests import Response, Session
+    from requests import RequestException, Response, Session
     from yandex_tracker_client.connection import Connection
     from yandex_tracker_client.exceptions import TrackerClientError
 
@@ -234,7 +235,7 @@ def connection(context: GatewayCredential):
                     {
                         "Authorization": f"OAuth {context.server_token}",
                         "Content-Type": "application/json",
-                        "User-Agent": "Robopark corporate read fallback",
+                        "User-Agent": "Robopark corporate server read",
                     }
                 )
 
@@ -253,29 +254,9 @@ def connection(context: GatewayCredential):
             response.url = url
             response.encoding = "utf-8"
             response.headers["Content-Type"] = "application/json"
-            try:
-                result = corporate_gateway_client.read(
-                    service="tracker",
-                    action=action,
-                    resource=resource,
-                    params=parameters,
-                    requester_user_id=context.requester_user_id,
-                    deadline_ms=3000 if self.server is not None else 15000,
-                )
-                response.status_code = result.status_code
-                response.headers.update(result.headers)
-                payload = result.payload
-            except corporate_gateway_client.CorporateGatewayError as exc:
-                # A read can safely move to the explicitly configured service
-                # identity after transport loss. Denials and corrupt replies
-                # are not availability failures. All request URLs/parameters
-                # have already passed the closed read registry above.
-                if (
-                    self.server is not None
-                    and exc.status_code == 503
-                    and exc.code in {"corporate_unavailable", "corporate_gateway_disabled"}
-                ):
-                    return self.server.request(
+            if self.server is not None:
+                try:
+                    server_response = self.server.request(
                         method=method,
                         url=url,
                         params=params,
@@ -283,6 +264,23 @@ def connection(context: GatewayCredential):
                         timeout=10,
                         allow_redirects=False,
                     )
+                except RequestException:
+                    server_response = None
+                if server_response is not None and server_response.status_code < 500:
+                    return server_response
+            try:
+                result = corporate_gateway_client.read(
+                    service="tracker",
+                    action=action,
+                    resource=resource,
+                    params=parameters,
+                    requester_user_id=context.requester_user_id,
+                    deadline_ms=15000,
+                )
+                response.status_code = result.status_code
+                response.headers.update(result.headers)
+                payload = result.payload
+            except corporate_gateway_client.CorporateGatewayError as exc:
                 response.status_code = exc.status_code
                 payload = {"errorMessages": [exc.code]}
             response._content = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode()

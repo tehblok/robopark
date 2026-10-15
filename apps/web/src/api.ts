@@ -1,6 +1,7 @@
 import type { AnalyticsBucket, AnalyticsTaskKeysGroup, HistoricalAnalytics } from './domains/analytics/analyticsModel'
 import { activateTaskAttachmentCache, clearTaskAttachmentCache } from './pwa/taskAttachmentCache'
 import { preparePhotoFile } from './pwa/mediaPipeline'
+import { desktopRuntime } from './pwa/desktopRuntime'
 import type {
   InventoryCatalogComponent,
   InventoryCatalogDeleteSummary,
@@ -1211,7 +1212,7 @@ export async function request<T>(path: string, init?: RequestInit, metadata?: Re
       },
       ...init,
     },
-    JSON_TIMEOUT_MS,
+    desktopRuntime() && ['/auth/login', '/auth/me'].includes(path) ? 90_000 : JSON_TIMEOUT_MS,
     async (response) => {
       if (!response.ok) {
         const detail = await readErrorDetail(response)

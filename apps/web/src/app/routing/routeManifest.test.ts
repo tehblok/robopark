@@ -297,6 +297,16 @@ describe('ROUTE_MANIFEST', () => {
         nav: { group: 'administration', desktopOrder: 90 },
       },
       {
+        id: 'network', path: '/network', label: 'Сеть Mac', icon: 'integration',
+        prerequisites: ['password-changed', 'approved', 'mechanic-has-park'], surface: 'shell',
+        nav: { group: 'administration', desktopOrder: 95 },
+      },
+      {
+        id: 'device', path: '/device', label: 'Этот Mac', icon: 'integration',
+        prerequisites: ['password-changed', 'approved', 'mechanic-has-park'], surface: 'shell',
+        nav: { group: 'operations', desktopOrder: 55, localDesktopOnly: true },
+      },
+      {
         id: 'admin-robot-check',
         path: '/admin/emergency/config',
         label: 'Настройка проверки робота',
@@ -352,8 +362,8 @@ describe('ROUTE_MANIFEST', () => {
 
 describe('navigation ordering', () => {
   const expectedDesktop = {
-    royal: ['overview', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'system', 'admin-robot-check'],
-    admin: ['overview', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'system', 'admin-robot-check'],
+    royal: ['overview', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'system', 'network', 'admin-robot-check'],
+    admin: ['overview', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     operator: ['overview', 'operator-parks', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     mechanic: ['overview', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     driver: ['overview', 'work', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
@@ -361,8 +371,8 @@ describe('navigation ordering', () => {
   } as const
 
   const expectedMobile = {
-    royal: ['overview', 'admin', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'system', 'admin-robot-check'],
-    admin: ['admin', 'overview', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'system', 'admin-robot-check'],
+    royal: ['overview', 'admin', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'system', 'network', 'admin-robot-check'],
+    admin: ['admin', 'overview', 'work', 'assistant', 'robots', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin-robot-check'],
     operator: ['overview', 'work', 'robots', 'assistant', 'campaigns', 'operator-parks', 'inventory', 'reports', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     mechanic: ['work', 'assistant', 'robots', 'overview', 'inventory', 'reports', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],
     driver: ['robots', 'overview', 'reports', 'work', 'inventory', 'campaigns', 'schedule', 'analytics', 'admin', 'admin-robot-check'],

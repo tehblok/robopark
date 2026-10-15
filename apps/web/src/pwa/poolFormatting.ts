@@ -9,7 +9,12 @@ export function formatBytes(value: number): string {
   return `${Math.round(value / 1_000)} КБ`
 }
 
-export type GraphDevice = Pick<PoolStatus['devices'][number], 'id' | 'label' | 'status' | 'owner_user_id' | 'owner_username' | 'owner_display_name'>
+export type GraphDevice = Pick<PoolStatus['devices'][number], 'id' | 'label' | 'status' | 'connected' | 'ready' | 'owner_user_id' | 'owner_username' | 'owner_display_name'>
+
+export function deviceStatusLabel(device: Pick<PoolStatus['devices'][number], 'connected' | 'ready' | 'status'>): string {
+  if (device.connected && !device.ready && device.status === 'offline') return 'в сети, ожидает готовности'
+  return statusLabel[device.status]
+}
 
 export function ownerName(device: GraphDevice): string {
   return device.owner_display_name || device.owner_username || 'Сотрудник'

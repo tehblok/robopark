@@ -18,6 +18,9 @@ struct WorkspaceProfile: Codable {
     private var transitioning = false
     var onIdentity: (([String: Any]) async -> Void)?
     var onLogout: (() async -> Void)?
+    var onSessionInvalidated: (() -> Void)?
+    private(set) var lastSuccessAt: Date?
+    private(set) var connectionState = "connecting"
     private let transport: URLSession
 
     // The injected session is used by hermetic lifecycle checks. Production
@@ -83,6 +86,7 @@ struct WorkspaceProfile: Codable {
     func clear() throws {
         SecureStore.markSignedOut("workspace", true)
         generation = UUID(); profile = nil
+        onSessionInvalidated?()
         try SecureStore.deleteData("workspace-profile-v1")
     }
     private func persist() throws {
@@ -104,6 +108,7 @@ struct WorkspaceProfile: Codable {
         generation = UUID()
         profile?.cookies = []
         profile?.accountID = nil
+        onSessionInvalidated?()
         try? persist()
         await onLogout?()
     }
@@ -147,13 +152,18 @@ struct WorkspaceProfile: Codable {
         var request = try WorkspaceProxyPolicy.request(origin: origin, target: target, method: method, headers: headers, body: body, cookies: current.cookies)
         request.timeoutInterval = min(30, max(1, timeout))
         let url = request.url!
-        let (stream, raw) = try await transport.bytes(for: request)
+        let stream: URLSession.AsyncBytes
+        let raw: URLResponse
+        do { (stream, raw) = try await transport.bytes(for: request) }
+        catch { if generation == run { connectionState = "offline" }; throw error }
         guard let response = raw as? HTTPURLResponse, response.expectedContentLength <= 32 * 1024 * 1024 else { throw NetworkFailure.invalid }
         var data = Data()
-        for try await byte in stream {
-            guard data.count < 32 * 1024 * 1024 else { throw NetworkFailure.invalid }
-            data.append(byte)
-        }
+        do {
+            for try await byte in stream {
+                guard data.count < 32 * 1024 * 1024 else { throw NetworkFailure.invalid }
+                data.append(byte)
+            }
+        } catch { if generation == run { connectionState = "offline" }; throw error }
         guard !Task.isCancelled, generation == run else { throw CancellationError() }
         // Redirects are blocked by NetworkPolicy. Never convert one into a local
         // navigation or forward the native cookie to its Location.
@@ -165,7 +175,7 @@ struct WorkspaceProfile: Codable {
             guard domain == url.host?.lowercased(), cookie.isSecure,
                   cookie.name.utf8.count <= 128, cookie.value.utf8.count <= 8192,
                   !cookie.name.contains(";"), !cookie.value.contains(";"),
-                  !cookie.value.contains("\r"), !cookie.value.contains("\n") else { continue }
+                  !cookie.value.utf8.contains(13), !cookie.value.utf8.contains(10) else { continue }
             profile?.cookies.removeAll { $0.name == cookie.name && $0.path == cookie.path }
             if cookie.expiresDate == nil || cookie.expiresDate! > Date() {
                 profile?.cookies.append(WorkspaceCookie(name: cookie.name, value: cookie.value, path: cookie.path, expires: cookie.expiresDate))
@@ -173,6 +183,8 @@ struct WorkspaceProfile: Codable {
         }
         guard (profile?.cookies.count ?? 0) <= 16 else { profile?.cookies = []; try persist(); throw NetworkFailure.invalid }
         if !incoming.isEmpty { try persist() }
+        if response.statusCode < 500 { lastSuccessAt = Date() }
+        connectionState = response.statusCode >= 500 ? "error" : "connected"
         return (data, response)
     }
     func proxy(_ local: LocalHTTPRequest) async -> LocalHTTPResponse {
@@ -188,6 +200,7 @@ struct WorkspaceProfile: Codable {
         if login || logout {
             transitioning = true; generation = UUID()
             SecureStore.markSignedOut("workspace", true)
+            onSessionInvalidated?()
         }
         defer { if login || logout { transitioning = false } }
         do {
@@ -195,7 +208,7 @@ struct WorkspaceProfile: Codable {
                 await onLogout?()
                 if login { profile?.cookies = []; profile?.accountID = nil; try persist() }
             }
-            let (bytes, response) = try await request(target: local.target, method: local.method, headers: local.headers, body: local.body)
+            let (bytes, response) = try await request(target: local.target, method: local.method, headers: local.headers, body: local.body, timeout: login || identity ? 10 : 30)
             if login, (200...299).contains(response.statusCode) {
                 try persist()
                 SecureStore.markSignedOut("workspace", false)
@@ -211,6 +224,9 @@ struct WorkspaceProfile: Codable {
                     return .json(["detail": "device_owner_mismatch"], status: 403)
                 }
                 await onIdentity?(user)
+            }
+            if identity, [401, 403].contains(response.statusCode) {
+                await rejectIdentity()
             }
             var original: [String: String] = [:]
             for (key, value) in response.allHeaderFields {

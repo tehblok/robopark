@@ -1,0 +1,8 @@
+.rp-device-page { display: grid; gap: var(--rp-section-gap); }
+.rp-device-page :is(p, dl) { margin-block: 0; }
+.rp-device-page .panel-body { display: grid; gap: var(--rp-card-gap); }
+.rp-device-actions { display: flex; flex-wrap: wrap; gap: var(--rp-control-gap); }
+.rp-device-access { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: var(--rp-card-gap); }
+.rp-device-access > div { padding: var(--rp-compact-row-padding); border: 1px solid var(--rp-divider); border-radius: var(--rp-radius-card); }
+.rp-device-access dt { color: var(--rp-text-muted); }
+.rp-device-access dd { margin: var(--rp-space-1) 0 0; font-weight: var(--rp-font-weight-medium); }

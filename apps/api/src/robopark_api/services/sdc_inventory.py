@@ -40,6 +40,10 @@ class InventoryError(Exception):
     pass
 
 
+class InventoryAvailabilityError(InventoryError):
+    """The server route is unavailable and may safely fail over to an owner Mac."""
+
+
 def robot_name(value: str) -> str:
     text = value.strip().lower().replace("а", "a")
     if re.fullmatch(r"yasadr[0-9]{11}", text):
@@ -51,7 +55,7 @@ def robot_name(value: str) -> str:
 
 def _get(token: str, path: str, params=None):
     if not _SLOTS.acquire(blocking=False):
-        raise InventoryError("sdc_inventory_busy")
+        raise InventoryAvailabilityError("sdc_inventory_busy")
     try:
         with httpx.Client(
             timeout=10, follow_redirects=False, trust_env=False, verify=_ssl_context()
@@ -67,17 +71,28 @@ def _get(token: str, path: str, params=None):
                     raise InventoryError("sdc_inventory_access_denied")
                 if response.status_code == 404:
                     raise InventoryError("sdc_inventory_not_found")
+                if response.status_code == 429:
+                    raise InventoryError("sdc_inventory_rate_limited")
+                if response.status_code >= 500:
+                    raise InventoryAvailabilityError("sdc_inventory_upstream_error")
                 if response.status_code != 200:
-                    raise InventoryError("sdc_inventory_upstream_error")
+                    raise InventoryError("sdc_inventory_request_rejected")
                 chunks, size = [], 0
                 for part in response.iter_bytes(chunk_size=16384):
                     size += len(part)
-                    if size > MAX_RESPONSE_BYTES or time.monotonic() > deadline:
+                    if size > MAX_RESPONSE_BYTES:
                         raise InventoryError("sdc_inventory_response_too_large")
+                    if time.monotonic() > deadline:
+                        raise InventoryAvailabilityError("sdc_inventory_unavailable")
                     chunks.append(part)
-                return json.loads(b"".join(chunks))
-    except (httpx.HTTPError, ValueError, RecursionError, OSError):
-        raise InventoryError("sdc_inventory_unavailable") from None
+                try:
+                    return json.loads(b"".join(chunks))
+                except (ValueError, RecursionError):
+                    raise InventoryError("sdc_inventory_response_invalid") from None
+    except InventoryError:
+        raise
+    except (httpx.HTTPError, OSError):
+        raise InventoryAvailabilityError("sdc_inventory_unavailable") from None
     finally:
         _SLOTS.release()
 

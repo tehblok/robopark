@@ -65,6 +65,23 @@ it('shows disconnected registered Macs and does not claim stale telemetry is cur
   expect(screen.getByText('Измерений пока нет.')).toBeVisible()
 })
 
+it('does not call a connected Mac offline while its corporate readiness is still pending', async () => {
+  render(<AgentPoolStatus load={async () => ({
+    enabled: true,
+    scope: 'all',
+    summary: { connected: 1, ready: 0, busy: 0, paused: 0, capacity: 0, inflight: 0, queued: 0, requests: 0, completed: 0, failed: 0, encoded_bytes: 0, decoded_bytes: 0, probes_sent: 0, probes_failed: 0, upstream_dispatches: 0, upstream_backpressure: 0 },
+    devices: [{
+      id: 'connected-unready', label: 'Mac рояла', status: 'offline', connected: true, ready: false,
+      capacity: 0, inflight: 0, queued: 0, load: 0, latency_ms: null, power: 'ac', last_seen_at: null,
+      requests: 0, completed: 0, failed: 0, encoded_bytes: 0, decoded_bytes: 0,
+      upstream_dispatches: 0, upstream_backpressure: 0,
+    }],
+  })} />)
+
+  expect(await screen.findByText(/в сети, ожидает готовности · 0\/0/)).toBeVisible()
+  expect(screen.queryByText(/Mac рояла: не в сети/)).not.toBeInTheDocument()
+})
+
 it('lays out twelve employee rows without overlapping the graph viewport', async () => {
   const devices = Array.from({ length: 12 }, (_, index) => ({
     id: `device-${index}`, label: `Mac ${index}`, status: 'offline' as const, connected: false, ready: false, fresh: false,

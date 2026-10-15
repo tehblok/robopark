@@ -1,0 +1,11 @@
+.rp-network-page { display: grid; gap: var(--rp-section-gap); }
+.rp-network-page .rp-sync-center__pool {
+  display: grid;
+  gap: var(--rp-card-gap);
+  margin: 0;
+  padding: var(--rp-section-padding);
+  border: 1px solid var(--rp-divider);
+  border-radius: var(--rp-radius-card);
+  background: var(--rp-surface-raised);
+}
+.rp-network-page .rp-sync-center__pool > :is(p, small) { margin: 0; }

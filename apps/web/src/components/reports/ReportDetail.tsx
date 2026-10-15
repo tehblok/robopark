@@ -8,6 +8,7 @@ import { Spinner } from '../ui/Feedback'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
 import { ConfirmDialog } from '../../design-system/overlays/ConfirmDialog'
 import { ResponsiveDisclosure, ResponsiveDisclosureGroup } from '../../design-system/layout/ResponsiveDisclosure'
+import { DesktopAuthenticatedDownload } from '../../shared/media/DesktopAuthenticatedMedia'
 import { formatReportDate, trackerHref } from './report-utils'
 
 type ReportDetailProps = {
@@ -211,9 +212,9 @@ export function ReportDetail({
           <ul>
             {report.attachments?.map((attachment) => (
               <li key={attachment.id}>
-                <a href={apiClient.reportAttachmentUrl(report.id, attachment.id)}>
+                <DesktopAuthenticatedDownload download={attachment.filename} href={apiClient.reportAttachmentUrl(report.id, attachment.id)}>
                   {attachment.filename}
-                </a>
+                </DesktopAuthenticatedDownload>
               </li>
             ))}
           </ul>

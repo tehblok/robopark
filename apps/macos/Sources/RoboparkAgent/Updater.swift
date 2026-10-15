@@ -13,11 +13,21 @@ import AgentCore
     let bridge: Bridge
     private(set) var message = "Автообновление ещё не проверялось"
     private(set) var busy = false
-    private var catalogTarget = ""
+    private(set) var catalogTarget = ""
+    private var lastCheckFailed = false
     var onChange: (() -> Void)?
 
     init(bridge: Bridge) { self.bridge = bridge }
     var version: String { Bundle.main.object(forInfoDictionaryKey: "RoboparkReleaseVersion") as? String ?? "development" }
+    var statusState: String {
+        if busy { return "checking" }
+        if lastCheckFailed { return "error" }
+        if message.contains("ещё не проверялось") || message.contains("Ожидается первая") { return "checking" }
+        if message.hasPrefix("Доступна подписанная версия") { return "available" }
+        if message.contains("недоступна") || message.contains("не может понизить") { return "error" }
+        return "current"
+    }
+    var availableVersion: String? { statusState == "available" && !catalogTarget.isEmpty ? catalogTarget : nil }
 
     func check(manual: Bool = false) async {
         guard !busy else { return }
@@ -35,6 +45,7 @@ import AgentCore
             let verified = try UpdateVerifier(publicKey: EmbeddedTrust.publicKey()).verify(bytes,
                 now: Int64(Date().timeIntervalSince1970), minimumGeneration: minimum,
                 channel: assignment.channel)
+            lastCheckFailed = false
             catalogTarget = verified.target.version
             if let registration = bridge.registration,
                registration.origin == origin.url.absoluteString,
@@ -52,7 +63,8 @@ import AgentCore
                 message = "Каталог не может понизить установленную версию"
             }
         } catch {
-            if manual { message = "Проверка тестового сервера недоступна. Автообновление повторит попытку без изменения установленной версии." }
+            lastCheckFailed = true
+            message = "Проверка тестового сервера недоступна. Автообновление повторит попытку без изменения установленной версии."
         }
     }
 
@@ -79,5 +91,5 @@ import AgentCore
         if notify { onChange?() }
     }
 
-    func reset() { message = "Автообновление ещё не проверялось"; onChange?() }
+    func reset() { message = "Автообновление ещё не проверялось"; lastCheckFailed = false; onChange?() }
 }

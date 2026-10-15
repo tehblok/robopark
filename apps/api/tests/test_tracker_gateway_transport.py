@@ -203,48 +203,91 @@ def test_sdk_issue_projection_resolves_lazy_user_through_typed_read(monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "status,code,falls_back",
+    "server_status,uses_mac",
     [
-        (503, "corporate_unavailable", True),
-        (503, "corporate_gateway_disabled", True),
-        (401, "corporate_authentication", False),
-        (403, "corporate_access_denied", False),
-        (404, "corporate_not_found", False),
-        (429, "corporate_rate_limited", False),
-        (503, "corporate_invalid_response", False),
+        (200, False),
+        (401, False),
+        (403, False),
+        (404, False),
+        (429, False),
+        (500, True),
+        (503, True),
     ],
 )
-def test_read_fallback_is_only_for_availability(monkeypatch, status, code, falls_back):
+def test_read_is_server_first_and_mac_is_only_for_server_availability(
+    monkeypatch, server_status, uses_mac
+):
     from requests import Response, Session
 
     from robopark_api.services import corporate_gateway_client, tracker_gateway_transport
+    from robopark_api.services.corporate_gateway_contract import CorporateReadResponse
 
-    calls = []
+    server_calls = []
+    mac_calls = []
 
-    def unavailable(**kwargs):
-        raise corporate_gateway_client.CorporateGatewayError(status, code)
+    def native_read(**kwargs):
+        mac_calls.append(kwargs)
+        return CorporateReadResponse(200, {}, {"key": "TEST-1", "route": "mac"})
 
     def server_request(self, **kwargs):
-        calls.append((dict(self.headers), kwargs))
+        server_calls.append((dict(self.headers), kwargs))
         response = Response()
-        response.status_code = 200
-        response._content = b'{"key":"TEST-1"}'
+        response.status_code = server_status
+        response._content = json.dumps({"key": "TEST-1", "route": "server"}).encode()
         return response
 
-    monkeypatch.setattr(corporate_gateway_client, "read", unavailable)
+    monkeypatch.setattr(corporate_gateway_client, "read", native_read)
     monkeypatch.setattr(Session, "request", server_request)
     context = GatewayCredential(7, server_token="server-test-token")
     conn = tracker_gateway_transport.connection(context)
     response = conn.session.request(
         method="GET", url="https://st-api.yandex-team.ru/v2/issues/TEST-1"
     )
-    assert response.status_code == (200 if falls_back else status)
-    assert len(calls) == int(falls_back)
-    if falls_back:
-        headers, request = calls[0]
-        assert headers["Authorization"] == "OAuth server-test-token"
-        assert request["allow_redirects"] is False
-        assert request["timeout"] <= 10
+    assert response.status_code == (200 if uses_mac else server_status)
+    assert len(server_calls) == 1
+    assert len(mac_calls) == int(uses_mac)
+    headers, request = server_calls[0]
+    assert headers["Authorization"] == "OAuth server-test-token"
+    assert request["allow_redirects"] is False
+    assert request["timeout"] <= 10
+
+
+def test_read_transport_failure_uses_mac_and_next_read_recovers_to_server(monkeypatch):
+    from requests import ConnectionError, Response, Session
+
+    from robopark_api.services import corporate_gateway_client, tracker_gateway_transport
+    from robopark_api.services.corporate_gateway_contract import CorporateReadResponse
+
+    server_outcomes = iter((ConnectionError("offline"), 200))
+    mac_calls = []
+
+    def server_request(_self, **_kwargs):
+        outcome = next(server_outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        response = Response()
+        response.status_code = outcome
+        response._content = b'{"key":"TEST-1","route":"server"}'
+        return response
+
+    def native_read(**kwargs):
+        mac_calls.append(kwargs)
+        return CorporateReadResponse(200, {}, {"key": "TEST-1", "route": "mac"})
+
+    monkeypatch.setattr(Session, "request", server_request)
+    monkeypatch.setattr(corporate_gateway_client, "read", native_read)
+    conn = tracker_gateway_transport.connection(
+        GatewayCredential(7, server_token="server-test-token")
+    )
+
+    first = conn.session.request(method="GET", url="https://st-api.yandex-team.ru/v2/issues/TEST-1")
+    second = conn.session.request(
+        method="GET", url="https://st-api.yandex-team.ru/v2/issues/TEST-1"
+    )
+
+    assert json.loads(first.content)["route"] == "mac"
+    assert json.loads(second.content)["route"] == "server"
+    assert len(mac_calls) == 1
 
 
 def test_no_server_credential_never_attempts_anonymous_fallback(monkeypatch):
@@ -252,16 +295,19 @@ def test_no_server_credential_never_attempts_anonymous_fallback(monkeypatch):
 
     from robopark_api.services import corporate_gateway_client, tracker_gateway_transport
 
-    def unavailable(**kwargs):
-        raise corporate_gateway_client.CorporateGatewayError(503, "corporate_unavailable")
+    def native_read(**_kwargs):
+        from robopark_api.services.corporate_gateway_contract import CorporateReadResponse
 
-    monkeypatch.setattr(corporate_gateway_client, "read", unavailable)
+        return CorporateReadResponse(200, {}, {"key": "TEST-1", "route": "mac"})
+
+    monkeypatch.setattr(corporate_gateway_client, "read", native_read)
     monkeypatch.setattr(Session, "request", lambda *a, **kw: pytest.fail("unexpected server HTTP"))
     conn = tracker_gateway_transport.connection(GatewayCredential(7))
     response = conn.session.request(
         method="GET", url="https://st-api.yandex-team.ru/v2/issues/TEST-1"
     )
-    assert response.status_code == 503
+    assert response.status_code == 200
+    assert json.loads(response.content)["route"] == "mac"
 
 
 def test_native_client_does_not_keep_replaced_server_credential():

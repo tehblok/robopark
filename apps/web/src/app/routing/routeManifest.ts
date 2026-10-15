@@ -17,13 +17,14 @@ export type AppRouteId =
   | 'inventory' | 'schedule'
   | 'analytics' | 'reports' | 'reports-new' | 'report-detail' | 'admin' | 'admin-settings' | 'admin-users' | 'admin-roles' | 'admin-tracker'
   | 'admin-robot-check' | 'not-found'
-  | 'system'
+  | 'system' | 'network' | 'device'
 export type NavGroup = 'operations' | 'collaboration' | 'insights' | 'administration'
 export type NavSurface = 'desktop' | 'mobile'
 export type AccessPrerequisite = 'password-changed' | 'approved' | 'mechanic-has-park'
 export type RouteNav = {
   group: NavGroup
   desktopOrder: number
+  localDesktopOnly?: boolean
   mobilePriority?: Partial<Record<UserRole, number>>
 }
 export type RouteManifestItem = {
@@ -314,6 +315,24 @@ export const ROUTE_MANIFEST: readonly RouteManifestItem[] = [
     prerequisites: SHELL_PREREQUISITES,
     surface: 'shell',
     nav: { group: 'administration', desktopOrder: 90 },
+  },
+  {
+    id: 'network',
+    path: '/network',
+    label: 'Сеть Mac',
+    icon: 'integration',
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
+    nav: { group: 'administration', desktopOrder: 95 },
+  },
+  {
+    id: 'device',
+    path: '/device',
+    label: 'Этот Mac',
+    icon: 'integration',
+    prerequisites: SHELL_PREREQUISITES,
+    surface: 'shell',
+    nav: { group: 'operations', desktopOrder: 55, localDesktopOnly: true },
   },
   {
     id: 'admin-robot-check',

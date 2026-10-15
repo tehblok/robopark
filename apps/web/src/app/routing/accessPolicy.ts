@@ -63,7 +63,10 @@ export function canAccessRoute(user: AccessUser, routeId: AppRouteId): boolean {
   if (routeId === 'operator-parks' && user.role !== 'operator') {
     return false
   }
-  if (routeId === 'system' && user.role !== 'admin' && user.role !== 'royal') {
+  if (routeId === 'system' && user.role !== 'royal') {
+    return false
+  }
+  if (routeId === 'network' && user.role !== 'royal') {
     return false
   }
   if (routeId === 'assistant' && !['mechanic', 'operator', 'admin', 'royal'].includes(user.role)) {
@@ -118,10 +121,10 @@ export function landingPathForUser(user: AccessUser): string {
   return routeById('no-cabinet').path
 }
 
-export function navigationForUser(user: AccessUser, surface: NavSurface): NavigationItem[] {
+export function navigationForUser(user: AccessUser, surface: NavSurface, localDesktop = false): NavigationItem[] {
   return ROUTE_MANIFEST
     .filter((route): route is RouteManifestItem & { nav: NonNullable<RouteManifestItem['nav']> } =>
-      route.nav != null && canAccessRoute(user, route.id),
+      route.nav != null && (!route.nav.localDesktopOnly || localDesktop) && canAccessRoute(user, route.id),
     )
     .map((route) => {
       const priority = surface === 'desktop'

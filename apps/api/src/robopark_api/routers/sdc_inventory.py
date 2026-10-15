@@ -26,13 +26,18 @@ def _read(function, *args, **kwargs):
     try:
         return function(*args, **kwargs)
     except sdc_inventory.InventoryError as exc:
-        code = str(exc)
-        status = {
-            "sdc_inventory_access_denied": 403,
-            "sdc_inventory_not_found": 404,
-            "sdc_inventory_busy": 503,
-        }.get(code, 502)
-        raise HTTPException(status, code) from None
+        raise _inventory_http_error(exc) from None
+
+
+def _inventory_http_error(exc: sdc_inventory.InventoryError) -> HTTPException:
+    code = str(exc)
+    status = {
+        "sdc_inventory_access_denied": 403,
+        "sdc_inventory_not_found": 404,
+        "sdc_inventory_rate_limited": 429,
+        "sdc_inventory_busy": 503,
+    }.get(code, 502)
+    return HTTPException(status, code)
 
 
 def _gateway_read(*, action, name, params, user, park_id, settings):
@@ -50,31 +55,25 @@ def _gateway_read(*, action, name, params, user, park_id, settings):
         raise HTTPException(exc.status_code, exc.code) from None
 
 
-def _gateway_or_none(*, action, name, params, user, park_id, settings):
-    try:
-        return _gateway_read(
-            action=action,
-            name=name,
-            params=params,
-            user=user,
-            park_id=park_id,
-            settings=settings,
-        )
-    except HTTPException as exc:
-        if (
-            exc.status_code == 503
-            and exc.detail in {"corporate_unavailable", "corporate_gateway_disabled"}
-            and settings.mac_corporate_server_fallback_enabled
-        ):
-            return None
-        raise
-
-
 def _service_token(db):
     token = platform_settings.get_tracker_token(db)
     if not token:
         raise HTTPException(503, "sdc_inventory_token_not_configured")
     return token
+
+
+def _server_read(function, db, *args, **kwargs):
+    """Return (result, availability_error); never hide ACL/not-found failures."""
+    try:
+        token = _service_token(db)
+    except HTTPException as exc:
+        return None, exc
+    try:
+        return function(token, *args, **kwargs), None
+    except sdc_inventory.InventoryError as exc:
+        if isinstance(exc, sdc_inventory.InventoryAvailabilityError):
+            return None, HTTPException(503, str(exc))
+        raise _inventory_http_error(exc) from None
 
 
 @router.get("/robots/{robot}", summary="SDC Inventory: карточка, локация и состояние робота")
@@ -87,8 +86,11 @@ def robot_card(
 ):
     """Учётные факты; fleet — тип флота, port/storage — локация. Не физический осмотр."""
     name = _access(db, user, robot, park_id)
+    result, server_error = _server_read(sdc_inventory.fetch_card, db, name)
+    if result is not None:
+        return result
     if corporate_gateway_client.enabled(settings):
-        payload = _gateway_or_none(
+        payload = _gateway_read(
             action="rover_card",
             name=name,
             params={},
@@ -96,9 +98,9 @@ def robot_card(
             park_id=park_id,
             settings=settings,
         )
-        if payload is not None:
-            return _read(sdc_inventory.project_card, payload, name)
-    return _read(sdc_inventory.fetch_card, _service_token(db), name)
+        return _read(sdc_inventory.project_card, payload, name)
+    assert server_error is not None
+    raise server_error
 
 
 @router.get(
@@ -116,11 +118,21 @@ def robot_installations(
 ):
     """Постраничные установки. Сравни серийные номера с осмотром человека; учитывай status и complete."""
     name = _access(db, user, robot, park_id)
+    params = {"offset": offset, "limit": limit}
+    if slot is not None:
+        params["slot"] = slot
+    result, server_error = _server_read(
+        sdc_inventory.fetch_installations,
+        db,
+        name,
+        offset=offset,
+        limit=limit,
+        slot=slot,
+    )
+    if result is not None:
+        return result
     if corporate_gateway_client.enabled(settings):
-        params = {"offset": offset, "limit": limit}
-        if slot is not None:
-            params["slot"] = slot
-        payload = _gateway_or_none(
+        payload = _gateway_read(
             action="rover_installations",
             name=name,
             params=params,
@@ -128,20 +140,13 @@ def robot_installations(
             park_id=park_id,
             settings=settings,
         )
-        if payload is not None:
-            return _read(
-                sdc_inventory.project_installations,
-                payload,
-                name,
-                offset=offset,
-                limit=limit,
-                slot=slot,
-            )
-    return _read(
-        sdc_inventory.fetch_installations,
-        _service_token(db),
-        name,
-        offset=offset,
-        limit=limit,
-        slot=slot,
-    )
+        return _read(
+            sdc_inventory.project_installations,
+            payload,
+            name,
+            offset=offset,
+            limit=limit,
+            slot=slot,
+        )
+    assert server_error is not None
+    raise server_error

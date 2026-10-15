@@ -191,7 +191,7 @@ public enum CorporateWritePolicy {
                   !filename.isEmpty, filename.utf8.count <= 255,
                   filename == URL(fileURLWithPath: filename).lastPathComponent,
                   filename != ".", filename != "..",
-                  !filename.contains("/") && !filename.contains("\\") && !filename.contains("\r") && !filename.contains("\n"),
+                  !filename.contains("/") && !filename.contains("\\") && !filename.utf8.contains(13) && !filename.utf8.contains(10),
                   let contentType = request.params["content_type"] as? String, attachmentTypes.contains(contentType),
                   let encoded = request.params["data_base64"] as? String,
                   let content = Data(base64Encoded: encoded), !content.isEmpty, content.count <= 4 * 1024 * 1024 else {

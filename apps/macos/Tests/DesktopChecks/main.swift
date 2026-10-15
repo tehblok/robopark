@@ -33,13 +33,28 @@ try check(scopedRequest.value(forHTTPHeaderField: "Cookie") == nil, "cookie expi
 let safeResponse = WorkspaceProxyPolicy.responseHeaders(["Set-Cookie": "secret", "Location": "https://evil", "Content-Length": "999", "Content-Encoding": "gzip", "Content-Type": "application/json", "X-Request-ID": "trace"])
 try check(safeResponse["Set-Cookie"] == nil && safeResponse["Location"] == nil && safeResponse["Content-Encoding"] == nil, "no credential or redirect leak")
 try check(safeResponse["Content-Type"] == "application/json" && safeResponse["X-Request-ID"] == "trace", "safe response metadata")
+for header in ["X-Tracker-State", "X-Robopark-Relay-Ticket", "X-Privileged-Authorization", "Upload-Offset"] {
+    let request = try WorkspaceProxyPolicy.request(origin: proxyOrigin, target: "/api/tasks", method: "POST",
+        headers: [header: "synthetic-check", "x-robopark-session": "local-only", "authorization": "browser-injected", "x-untrusted": "not-allowed"], body: Data(), cookies: [nativeCookie])
+    try check(request.value(forHTTPHeaderField: header) == "synthetic-check", "business header preserved: \(header)")
+    try check(request.value(forHTTPHeaderField: "X-Robopark-Session") == nil && request.value(forHTTPHeaderField: "Authorization") == nil
+        && request.value(forHTTPHeaderField: "X-Untrusted") == nil, "local and arbitrary credentials stay out of upstream")
+    rejects("business header CRLF rejected") {
+        _ = try WorkspaceProxyPolicy.request(origin: proxyOrigin, target: "/api/tasks", method: "POST",
+            headers: [header: "bad\r\nInjected: value"], body: Data(), cookies: [])
+    }
+}
+let uploadHeaders = WorkspaceProxyPolicy.responseHeaders(["Upload-Offset": "8192", "Upload-Length": "16384", "Upload-Expires": "soon"])
+try check(uploadHeaders["Upload-Offset"] == "8192" && uploadHeaders["Upload-Length"] == "16384", "OTA resume metadata is preserved")
 func request(_ target: String = "/api/auth/me", method: String = "GET", headers: String = "", body: String = "") throws -> LocalHTTPRequest {
-    let wire = "\(method) \(target) HTTP/1.1\r\nHost: 127.0.0.1:18444\r\nCookie: rp_local=\(token)\r\n\(headers)Content-Length: \(body.utf8.count)\r\n\r\n\(body)"
+    let wire = "\(method) \(target) HTTP/1.1\r\nHost: 127.0.0.1:18444\r\nX-Robopark-Session: \(token)\r\n\(headers)Content-Length: \(body.utf8.count)\r\n\r\n\(body)"
     return try LocalHTTPRequest.parse(Data(wire.utf8))!
 }
 let valid = try request()
 try LocalHTTPPolicy.authorize(valid, port: 18444, token: token)
 try check(valid.path == "/api/auth/me", "origin-form path")
+let cookieOnly = try LocalHTTPRequest.parse(Data("GET /api/auth/me HTTP/1.1\r\nHost: 127.0.0.1:18444\r\nCookie: rp_local=\(token)\r\n\r\n".utf8))!
+rejects("legacy cookie alone cannot authorize") { try LocalHTTPPolicy.authorize(cookieOnly, port: 18444, token: token) }
 try check(try request("/api/auth/%6cogout?reason=user", method: "POST").path == "/api/auth/logout", "encoded logout follows native account lifecycle")
 try check(try request("/%61pi/auth/log%69n", method: "POST").path == "/api/auth/login", "encoded login follows native account lifecycle")
 let mutation = try request("/api/auth/login", method: "POST", headers: "Origin: http://127.0.0.1:18444\r\n", body: "{}")
@@ -47,6 +62,9 @@ try LocalHTTPPolicy.authorize(mutation, port: 18444, token: token)
 rejects("CSRF cross origin") { try LocalHTTPPolicy.authorize(request(headers: "Origin: https://evil.example\r\n"), port: 18444, token: token) }
 rejects("CSRF no origin on write") { try LocalHTTPPolicy.authorize(request(method: "POST"), port: 18444, token: token) }
 rejects("incorrect session") { try LocalHTTPPolicy.authorize(valid, port: 18444, token: "wrong") }
+rejects("duplicate capability header") {
+    _ = try LocalHTTPRequest.parse(Data("GET /api/auth/me HTTP/1.1\r\nHost: 127.0.0.1:18444\r\nX-Robopark-Session: one\r\nX-Robopark-Session: two\r\n\r\n".utf8))
+}
 for head in ["Host: attacker.example", "Host: 127.0.0.1:18444\r\nHost: evil", "Host: 127.0.0.1:18444\r\nTransfer-Encoding: chunked", "Host: 127.0.0.1:18444\r\nContent-Length: -1", "Host: 127.0.0.1:18444\r\nContent-Length: 1\r\nContent-Length: 1"] {
     rejects("host/smuggling rejected") {
         let parsed = try LocalHTTPRequest.parse(Data("GET / HTTP/1.1\r\n\(head)\r\n\r\n".utf8))!

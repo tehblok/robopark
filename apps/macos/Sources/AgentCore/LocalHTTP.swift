@@ -36,7 +36,7 @@ public struct LocalHTTPRequest: Equatable, Sendable {
             let name = String(line[..<colon]).lowercased()
             let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
             guard name.range(of: "^[a-z0-9!#$%&'*+.^_`|~-]+$", options: .regularExpression) != nil,
-                  headers[name] == nil, !value.contains("\r"), !value.contains("\n") else { throw LocalHTTPError.malformed }
+                  headers[name] == nil, !value.utf8.contains(13), !value.utf8.contains(10) else { throw LocalHTTPError.malformed }
             headers[name] = value
         }
         guard headers["host"] != nil, headers["transfer-encoding"] == nil,
@@ -77,16 +77,19 @@ public enum LocalHTTPPolicy {
         let b = Array(SHA256.hash(data: Data(rhs.utf8)))
         return zip(a, b).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
     }
-    public static func authorize(_ request: LocalHTTPRequest, port: UInt16, token: String) throws {
+    /// Also applies to the credential-free browser shell and login endpoint.
+    public static func authorizeContext(_ request: LocalHTTPRequest, port: UInt16) throws {
         let host = "127.0.0.1:\(port)"
         let origin = "http://" + host
         guard request.headers["host"] == host,
               request.headers["origin"] == nil || request.headers["origin"] == origin,
               !["cross-site", "same-site"].contains(request.headers["sec-fetch-site"] ?? "") else { throw LocalHTTPError.forbidden }
         if !["GET", "HEAD"].contains(request.method), request.headers["origin"] != origin { throw LocalHTTPError.forbidden }
-        let cookies = (request.headers["cookie"] ?? "").split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
-        let sessions = cookies.filter { $0.hasPrefix("rp_local=") }
-        guard sessions.count == 1, equalSecret(String(sessions[0].dropFirst(9)), token) else { throw LocalHTTPError.forbidden }
+    }
+    public static func authorize(_ request: LocalHTTPRequest, port: UInt16, token: String) throws {
+        try authorizeContext(request, port: port)
+        guard let capability = request.headers["x-robopark-session"],
+              !capability.isEmpty, equalSecret(capability, token) else { throw LocalHTTPError.forbidden }
     }
 }
 
@@ -109,7 +112,7 @@ public struct LocalHTTPResponse: Sendable {
         fields["Referrer-Policy"] = "no-referrer"
         fields["Cross-Origin-Resource-Policy"] = "same-origin"
         fields["X-Frame-Options"] = "DENY"
-        let safe = fields.filter { !$0.key.contains("\r") && !$0.key.contains("\n") && !$0.value.contains("\r") && !$0.value.contains("\n") }
+        let safe = fields.filter { !$0.key.utf8.contains(13) && !$0.key.utf8.contains(10) && !$0.value.utf8.contains(13) && !$0.value.utf8.contains(10) }
         var bytes = Data(("HTTP/1.1 \(status) Response\r\n" + safe.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)\r\n" }.joined() + "\r\n").utf8)
         if !head { bytes.append(body) }
         return bytes

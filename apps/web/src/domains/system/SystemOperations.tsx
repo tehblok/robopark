@@ -4,6 +4,7 @@ import { Alert, Panel } from '../../components/PageShell'
 import { Button } from '../../design-system/actions/Button'
 import { Dialog } from '../../design-system/overlays/Dialog'
 import { StatusBadge } from '../../design-system/status/StatusBadge'
+import { DesktopAuthenticatedDownload } from '../../shared/media/DesktopAuthenticatedMedia'
 import { HOST_OPERATION_KINDS, type HostCapabilities, type HostOperationContext, type HostOperationKind, type HostOperationPayload, type SystemClient, type SystemJob } from '../../opsApi'
 import { clearOperationReservation, readOperationReservation, safeOperationDraft, writeOperationReservation, type OperationActor } from './operationReservation'
 
@@ -94,7 +95,7 @@ function operationResult(job: SystemJob, client: SystemClient, includeMaintenanc
     {includeMaintenance && result?.docker_image_result && <div className="rp-system-cleanup-preview"><p>Подтверждённо удалено меток образов: {result.docker_image_result.deleted_count}.</p><ul>{result.docker_image_result.deleted.map(item => <li key={item.tag}><code>{item.tag}</code><span>{new Intl.NumberFormat('ru-RU').format(item.reported_bytes)} байт</span></li>)}</ul></div>}
     {includeMaintenance && result?.builder_cache_preview && <div className="rp-system-cleanup-preview"><p>Предпросмотр BuildKit: {result.builder_cache_preview.planned.length} запись, {new Intl.NumberFormat('ru-RU').format(result.builder_cache_preview.total_reported_bytes)} байт.</p><ul>{result.builder_cache_preview.planned.map(item => <li key={item.id}><code>{item.id}</code><span>{new Intl.NumberFormat('ru-RU').format(item.reported_bytes)} байт</span></li>)}</ul></div>}
     {includeMaintenance && result?.builder_cache_result && <div className="rp-system-cleanup-preview"><p>Подтверждённо удалено записей BuildKit: {result.builder_cache_result.deleted_count}.</p><ul>{result.builder_cache_result.deleted.map(item => <li key={item.id}><code>{item.id}</code><span>{new Intl.NumberFormat('ru-RU').format(item.reported_bytes)} байт</span></li>)}</ul></div>}
-    {diagnosticReady && <a className="rp-button rp-button--primary rp-button--compact" download href={client.operationArtifactUrl(job.id)}>Скачать диагностику</a>}
+    {diagnosticReady && <DesktopAuthenticatedDownload className="rp-button rp-button--primary rp-button--compact" download href={client.operationArtifactUrl(job.id)}>Скачать диагностику</DesktopAuthenticatedDownload>}
     {job.kind === 'diagnostics' && job.state === 'succeeded' && !diagnosticReady && <Alert tone="warning">Архив не создан. Соберите диагностику заново.</Alert>}
     {job.state === 'succeeded' && !result && <p>Хост подтвердил выполнение операции.</p>}
   </div>

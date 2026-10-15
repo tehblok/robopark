@@ -425,7 +425,7 @@ def write_delivery_metadata(
                 f"Mac: один файл Robopark-{version}-arm64.command; установка или локальное обновление сохраняет данные.\n"
                 "Онлайн-обновление автоматически проверяет подписанный каталог тестового сервера.\n"
                 "Удаление: меню Robopark → Удалить Robopark… или скрипт с --uninstall.\n"
-                "--uninstall-remove-data также удаляет локальные данные текущего пользователя.\n"
+                "--uninstall-remove-data удаляет Keychain и данные прежнего встроенного окна текущего пользователя; данные сайта 127.0.0.1 в браузере удаляются отдельно в его настройках.\n"
                 "Сборка без Apple notarization; скрипт не отключает защиту macOS.\n"
                 if include_macos_command and macos_pkg is not None
                 else ""

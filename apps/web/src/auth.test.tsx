@@ -16,6 +16,8 @@ import { operationReservationKey } from './domains/system/operationReservation'
 import { clearProtectedBrowserStorage } from './shared/auth/protectedBrowserStorage'
 import { readReportPhotoDraft, writeReportPhotoDraft } from './domains/reports/reportPhotoDrafts'
 import { reportsAccessIdentity } from './domains/reports/reports'
+import { initializeDesktopTransport, resetDesktopTransportForTests } from './pwa/desktopTransport'
+import { setDesktopRuntimeForTests } from './pwa/desktopRuntime'
 
 const oldAccount: User = {
   id: 3,
@@ -122,6 +124,37 @@ async function activationSafetyProbe(): Promise<() => boolean> {
 }
 
 describe('AuthProvider session boundaries', () => {
+  it('does not invalidate another tab or purge its durable data when the native capability has rotated', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount)
+    const view = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    setDesktopRuntimeForTests({ version: 1, instanceId: '6f17d720-9fab-48da-8dd5-9f3d270b2878' })
+    vi.stubGlobal('location', new URL('http://127.0.0.1:18444'))
+    const native = vi.fn(async () => new Response(JSON.stringify({ detail: 'local_session_required' }), { status: 401 }))
+    vi.stubGlobal('fetch', native)
+    await initializeDesktopTransport()
+    const purged = vi.spyOn(storageRegistry, 'purgeScope')
+    const revoked = vi.fn()
+    window.addEventListener('robopark:authorization-failure', revoked)
+    const transition = JSON.stringify({ phase: 'verified', nonce: 'fresh-session-in-another-tab' })
+    localStorage.setItem('robopark:auth-transition', transition)
+    localStorage.setItem(reportKey, 'new-tab-draft')
+    try {
+      act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'robopark:auth-transition', newValue: transition })))
+      await waitFor(() => expect(native).toHaveBeenCalledOnce())
+      await act(async () => { await new Promise(done => setTimeout(done, 0)) })
+      expect(revoked).not.toHaveBeenCalled()
+      expect(purged).not.toHaveBeenCalled()
+      expect(localStorage.getItem('robopark:auth-transition')).toBe(transition)
+      expect(localStorage.getItem(reportKey)).toBe('new-tab-draft')
+    } finally {
+      view.unmount()
+      window.removeEventListener('robopark:authorization-failure', revoked)
+      resetDesktopTransportForTests()
+      setDesktopRuntimeForTests(undefined)
+    }
+  })
   it('recovers claimed share cleanup after logout already removed the offline identity', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory())
     const park = { id: 7, name: 'Recovery park', tag: 'recovery', timezone: 'Europe/Moscow' }

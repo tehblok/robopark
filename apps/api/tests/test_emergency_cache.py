@@ -1,13 +1,19 @@
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 from sqlalchemy.orm import Session
 
 from robopark_api.models import Report
-from robopark_api.services import emergency_cache, emergency_client, reports
+from robopark_api.services import (
+    emergency_bridge_client,
+    emergency_cache,
+    emergency_client,
+    reports,
+)
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.live_merge import LiveMergeStore
 
@@ -33,7 +39,7 @@ def test_background_probe_keeps_public_metadata_consistent(db_session, monkeypat
     before = settings_svc.get_emergency_cookie_checked_at(db_session)
     failure = {
         "invalid": emergency_client.EmergencyAuthError(),
-        "unavailable": emergency_client.EmergencyError(),
+        "unavailable": emergency_client.EmergencyAvailabilityError(),
     }.get(outcome)
     monkeypatch.setattr(
         emergency_client,
@@ -89,6 +95,230 @@ def test_cache_expires_at_exactly_three_seconds(db_session, monkeypatch):
     now[0] += 0.001
     assert emergency_cache.get_robot_payload(db=db_session, vin=VIN) == {"call": 2}
     assert calls == 2
+
+
+def test_server_unavailable_uses_owner_mac_then_recovers_to_server(
+    db_session, seed_admin, test_settings, monkeypatch
+):
+    now = [100.0]
+    direct_calls = []
+    mac_calls = []
+
+    def direct(**kwargs):
+        direct_calls.append(kwargs)
+        if len(direct_calls) == 1:
+            raise emergency_client.EmergencyAvailabilityError("server transport unavailable")
+        return {"vin": kwargs["vin"], "route": "server"}
+
+    def mac(**kwargs):
+        mac_calls.append(kwargs)
+        return {"vin": kwargs["vin"], "route": "mac"}
+
+    test_settings.emergency_bridge_enabled = True
+    test_settings.emergency_direct_fallback_enabled = False
+    monkeypatch.setattr(emergency_cache, "settings_for_session", lambda _db: test_settings)
+    monkeypatch.setattr(emergency_cache.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", direct)
+    monkeypatch.setattr(emergency_bridge_client, "fetch_robot_payload", mac)
+    monkeypatch.setattr(
+        settings_svc, "record_emergency_cookie_probe", lambda *_args, **_kwargs: False
+    )
+    probe = ("Session_id=server", "server-cookie")
+
+    first = emergency_cache.get_robot_payload(
+        db=db_session, vin=VIN, probe=probe, requester_user=seed_admin
+    )
+    now[0] += 3.0
+    second = emergency_cache.get_robot_payload(
+        db=db_session, vin=VIN, probe=probe, requester_user=seed_admin
+    )
+
+    assert first["route"] == "mac"
+    assert second["route"] == "server"
+    assert len(direct_calls) == 2
+    assert len(mac_calls) == 1
+    assert mac_calls[0]["requester_user_id"] == seed_admin.id
+
+
+def test_warm_server_cache_prefers_ready_mac_over_stale_and_retries_server_next_request(
+    db_session, seed_admin, test_settings, monkeypatch
+):
+    now = [100.0]
+    server_available = [True]
+    direct_calls = []
+    mac_calls = []
+
+    def direct(**kwargs):
+        direct_calls.append(kwargs)
+        if not server_available[0]:
+            raise emergency_client.EmergencyAvailabilityError("server offline")
+        return {"vin": kwargs["vin"], "route": "server", "call": len(direct_calls)}
+
+    def mac(**kwargs):
+        mac_calls.append(kwargs)
+        return {"vin": kwargs["vin"], "route": "mac"}
+
+    test_settings.emergency_bridge_enabled = True
+    monkeypatch.setattr(emergency_cache, "settings_for_session", lambda _db: test_settings)
+    monkeypatch.setattr(emergency_cache.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", direct)
+    monkeypatch.setattr(emergency_bridge_client, "fetch_robot_payload", mac)
+    monkeypatch.setattr(settings_svc, "record_emergency_cookie_probe", lambda *_a, **_k: False)
+    probe = ("Session_id=server", "server-cookie")
+
+    warm = emergency_cache.get_robot_payload(
+        db=db_session, vin=VIN, probe=probe, requester_user=seed_admin
+    )
+    now[0] = 104.0
+    server_available[0] = False
+    fallback = emergency_cache.get_robot_payload(
+        db=db_session, vin=VIN, probe=probe, requester_user=seed_admin
+    )
+    now[0] = 105.0
+    server_available[0] = True
+    recovered = emergency_cache.get_robot_payload(
+        db=db_session, vin=VIN, probe=probe, requester_user=seed_admin
+    )
+
+    assert warm["route"] == "server"
+    assert fallback["route"] == "mac"
+    assert recovered["route"] == "server"
+    assert len(direct_calls) == 3
+    assert len(mac_calls) == 1
+
+
+def test_warm_server_cache_returns_stale_only_when_owner_mac_is_unavailable(
+    db_session, seed_admin, test_settings, monkeypatch
+):
+    now = [100.0]
+    responses = iter(
+        (
+            {"vin": VIN, "route": "server"},
+            emergency_client.EmergencyAvailabilityError("server offline"),
+        )
+    )
+
+    def direct(**_kwargs):
+        response = next(responses)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    test_settings.emergency_bridge_enabled = True
+    monkeypatch.setattr(emergency_cache, "settings_for_session", lambda _db: test_settings)
+    monkeypatch.setattr(emergency_cache.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(emergency_client, "fetch_robot_payload", direct)
+    monkeypatch.setattr(
+        emergency_bridge_client,
+        "fetch_robot_payload",
+        lambda **_kwargs: (_ for _ in ()).throw(emergency_bridge_client.BridgeError()),
+    )
+    monkeypatch.setattr(settings_svc, "record_emergency_cookie_probe", lambda *_a, **_k: False)
+    probe = ("Session_id=server", "server-cookie")
+
+    emergency_cache.get_robot_payload(
+        db=db_session, vin=VIN, probe=probe, requester_user=seed_admin
+    )
+    now[0] = 104.0
+    result = emergency_cache.get_robot_payload_result(
+        db=db_session, vin=VIN, probe=probe, requester_user=seed_admin
+    )
+
+    assert result.payload["route"] == "server"
+    assert result.stale is True
+    assert result.age_seconds == pytest.approx(4.0)
+
+
+@pytest.mark.parametrize(
+    "server_error",
+    [
+        emergency_client.EmergencyError("emergency upstream status 404"),
+        emergency_client.EmergencyError("invalid emergency response"),
+    ],
+)
+def test_server_semantic_failure_does_not_fallback_to_owner_mac(
+    db_session, seed_admin, test_settings, monkeypatch, server_error
+):
+    test_settings.emergency_bridge_enabled = True
+    monkeypatch.setattr(emergency_cache, "settings_for_session", lambda _db: test_settings)
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        lambda **_kwargs: (_ for _ in ()).throw(server_error),
+    )
+    monkeypatch.setattr(
+        emergency_bridge_client,
+        "fetch_robot_payload",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("permission bypass")),
+    )
+
+    with pytest.raises(emergency_client.EmergencyError, match=str(server_error)):
+        emergency_cache.get_robot_payload(
+            db=db_session,
+            vin=VIN,
+            probe=("Session_id=server", "server-cookie"),
+            requester_user=seed_admin,
+        )
+
+
+def test_missing_server_cookie_uses_owner_mac_without_sending_a_server_secret(
+    db_session, seed_admin, test_settings, monkeypatch
+):
+    mac_calls = []
+    test_settings.emergency_bridge_enabled = True
+    monkeypatch.setattr(emergency_cache, "settings_for_session", lambda _db: test_settings)
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("anonymous server request")),
+    )
+    monkeypatch.setattr(
+        emergency_bridge_client,
+        "fetch_robot_payload",
+        lambda **kwargs: mac_calls.append(kwargs) or {"vin": kwargs["vin"], "route": "mac"},
+    )
+    monkeypatch.setattr(
+        settings_svc, "record_emergency_cookie_probe", lambda *_args, **_kwargs: False
+    )
+
+    result = emergency_cache.get_robot_payload(
+        db=db_session, vin=VIN, probe=(None, None), requester_user=seed_admin
+    )
+
+    assert result["route"] == "mac"
+    assert set(mac_calls[0]) == {"vin", "requester_user_id", "attempt_budget", "settings"}
+
+
+def test_healthy_server_cache_and_singleflight_are_shared_across_requesters(
+    db_session, test_settings, monkeypatch
+):
+    calls = []
+    test_settings.emergency_bridge_enabled = True
+    monkeypatch.setattr(emergency_cache, "settings_for_session", lambda _db: test_settings)
+    monkeypatch.setattr(
+        emergency_client,
+        "fetch_robot_payload",
+        lambda **kwargs: calls.append(kwargs) or {"vin": kwargs["vin"], "route": "server"},
+    )
+    monkeypatch.setattr(
+        emergency_bridge_client,
+        "fetch_robot_payload",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Mac fallback")),
+    )
+    monkeypatch.setattr(
+        settings_svc, "record_emergency_cookie_probe", lambda *_args, **_kwargs: False
+    )
+    probe = ("Session_id=server", "server-cookie")
+
+    first = emergency_cache.get_robot_payload(
+        db=db_session, vin=VIN, probe=probe, requester_user=SimpleNamespace(id=101)
+    )
+    second = emergency_cache.get_robot_payload(
+        db=db_session, vin=VIN, probe=probe, requester_user=SimpleNamespace(id=202)
+    )
+
+    assert first is second
+    assert len(calls) == 1
 
 
 def test_payload_cache_is_a_512_entry_lru(monkeypatch):
@@ -305,10 +535,10 @@ def test_auth_error_invalidates_vin_marks_cookie_invalid_and_reraises(db_session
 
 def test_unavailable_refresh_returns_last_good_only_before_sixty_seconds(db_session, monkeypatch):
     now = [100.0]
-    responses = iter(({"version": 1}, emergency_client.EmergencyError("offline")))
+    responses = iter(({"version": 1}, emergency_client.EmergencyAvailabilityError("offline")))
 
     def fake_fetch(**kwargs):
-        response = next(responses, emergency_client.EmergencyError("offline"))
+        response = next(responses, emergency_client.EmergencyAvailabilityError("offline"))
         if isinstance(response, BaseException):
             raise response
         return response
@@ -330,7 +560,7 @@ def test_payload_result_identifies_last_good_age_without_changing_legacy_return(
     db_session, monkeypatch
 ):
     now = [100.0]
-    responses = iter(({"version": 1}, emergency_client.EmergencyError("offline")))
+    responses = iter(({"version": 1}, emergency_client.EmergencyAvailabilityError("offline")))
 
     def fake_fetch(**kwargs):
         response = next(responses)

@@ -112,7 +112,7 @@ def test_mechanic_can_export_assigned_park_as_utf8_bom_csv(
     )
 
     assert response.status_code == 200, response.text
-    assert remote["called"] is offload
+    assert remote["called"] is False
     assert response.content.startswith(b"\xef\xbb\xbf")
     rows = list(csv.reader(io.StringIO(response.content.decode("utf-8-sig"))))
     assert rows[0] == [
@@ -1102,3 +1102,44 @@ def test_remote_csv_rejects_self_hashed_but_semantically_changed_output(monkeypa
     )
 
     assert inventory_exports._remote_csv(payload, requester_user_id=1) is None
+
+
+def test_csv_uses_mac_only_after_local_renderer_is_unavailable(monkeypatch):
+    payload = {"headers": ["Name"], "rows": [["Alice"]]}
+    rendered = io.BytesIO(b"\xef\xbb\xbfName\r\nAlice\r\n")
+    remote = []
+    monkeypatch.setattr(
+        inventory_exports,
+        "_build_materialized_csv",
+        lambda _payload: (_ for _ in ()).throw(OSError("server storage unavailable")),
+    )
+    monkeypatch.setattr(
+        inventory_exports,
+        "_remote_csv",
+        lambda _payload, *, requester_user_id: remote.append(requester_user_id) or rendered,
+    )
+
+    result = inventory_exports._server_first_csv(
+        payload, requester_user_id=17, allow_mac_fallback=True
+    )
+
+    assert result is rendered
+    assert remote == [17]
+
+
+def test_csv_local_failure_does_not_use_mac_without_explicit_fallback(monkeypatch):
+    monkeypatch.setattr(
+        inventory_exports,
+        "_build_materialized_csv",
+        lambda _payload: (_ for _ in ()).throw(OSError("server storage unavailable")),
+    )
+    monkeypatch.setattr(
+        inventory_exports,
+        "_remote_csv",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Mac")),
+    )
+
+    with pytest.raises(OSError, match="server storage unavailable"):
+        inventory_exports._server_first_csv(
+            {"headers": [], "rows": []}, requester_user_id=17, allow_mac_fallback=False
+        )

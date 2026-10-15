@@ -20,7 +20,8 @@ describe('executable route coverage manifest', () => {
 
   it('covers async, stale and denied states for every shell route', () => {
     for (const route of ROUTE_COVERAGE_MANIFEST) {
-      if (ROUTE_MANIFEST.find(item => item.id === route.routeId)?.surface !== 'shell') continue
+      const manifestRoute = ROUTE_MANIFEST.find(item => item.id === route.routeId)
+      if (manifestRoute?.surface !== 'shell' || manifestRoute.nav?.localDesktopOnly) continue
       const kinds = new Set(route.states.map(state => state.kind))
       for (const kind of ['loading', 'empty', 'error', 'stale', 'denied']) {
         expect(kinds.has(kind as never), `${route.routeId}:${kind}`).toBe(true)

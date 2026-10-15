@@ -103,6 +103,9 @@ const EXECUTABLE: Partial<Record<AppRouteId, Record<string, ExecutableState>>> =
     operations: visible('.rp-system-operations > section:has(h2:text-is("Управляемые операции"))', 'The royal system route renders capability-gated typed operations.', { actorRole: 'royal' }),
     confirmation: visible('[role="dialog"]:has-text("Подтвердить операцию")', 'An available typed operation opens the exact reauthorization dialog.', { actorRole: 'royal', trigger: { role: 'button', name: 'Собрать диагностику' } }),
   },
+  network: {
+    graph: visible('svg[aria-label="Граф сети: сервер, сотрудники и их Mac"]', 'The Royal network route renders the employee and Mac topology graph.', { actorRole: 'royal' }),
+  },
   admin: {
     users: visible('a[href^="/admin/users"]', 'The management landing page renders the users destination.', { actorRole: 'royal' }),
     roles: visible('a[href^="/admin/roles"]', 'The management landing page renders the roles destination.', { actorRole: 'royal' }),
@@ -128,7 +131,7 @@ const OWNER_ACTOR: Partial<Record<AppRouteId, CoverageAudience>> = {
   robots: 'mechanic', 'robot-detail': 'mechanic', 'robot-check': 'mechanic', 'legacy-robot-check': 'mechanic',
   inventory: 'mechanic', reports: 'mechanic', 'reports-new': 'mechanic', 'report-detail': 'operator',
   campaigns: 'royal', 'campaign-detail': 'royal', schedule: 'mechanic', analytics: 'operator',
-  system: 'royal',
+  system: 'royal', network: 'royal', device: 'operator',
   admin: 'royal', 'admin-settings': 'royal', 'admin-users': 'royal', 'admin-roles': 'royal',
   'admin-tracker': 'royal', 'admin-robot-check': 'royal',
 }
@@ -167,6 +170,7 @@ const ROUTE_ASYNC_CONTRACTS: Partial<Record<AppRouteId, RouteAsyncContract>> = {
   'admin-roles': { method: 'GET', path: '/api/admin/roles', emptyBody: [], protectedSelector: 'text=\u041c\u0435\u0445\u0430\u043d\u0438\u043a' },
   'admin-tracker': { method: 'GET', path: '/api/tracker/issues', emptyBody: { items: [], total: 0, limit: 50, offset: 0, has_more: false }, protectedSelector: 'button[aria-label^="\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u0437\u0430\u0434\u0430\u0447\u0443 ROBOPARK-42:"]' },
   'admin-robot-check': { method: 'GET', path: '/api/admin/emergency/sections', emptyBody: [], protectedSelector: 'button[aria-label="\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u0440\u0430\u0437\u0434\u0435\u043b \u041a\u043e\u043b\u0451\u0441\u0430"]' },
+  network: { method: 'GET', path: '/api/agent-devices/pool-status', emptyBody: { enabled: true, scope: 'all', summary: { connected: 0, ready: 0, busy: 0, paused: 0, capacity: 0, inflight: 0, queued: 0, requests: 0, completed: 0, failed: 0, encoded_bytes: 0, decoded_bytes: 0, probes_sent: 0, probes_failed: 0, upstream_dispatches: 0, upstream_backpressure: 0 }, devices: [] }, protectedSelector: 'section[aria-label="\u041e\u0431\u0449\u0438\u0439 \u043f\u0443\u043b Mac"]' },
 }
 
 const TARGETS: Partial<Record<AppRouteId, Record<string, Omit<OwnerStateDriver, 'stateKey' | 'stateKind'>>>> = {
@@ -294,6 +298,7 @@ const TARGETS: Partial<Record<AppRouteId, Record<string, Omit<OwnerStateDriver, 
 }
 
 const NOT_APPLICABLE: Readonly<Record<string, string>> = {
+  'route-coverage:device:desktop-only': 'DevicePage is mounted only by the trusted loopback desktop runtime; its status and action states are exercised by dedicated component contract tests instead of the remote-site route fixture.',
   'route-coverage:admin:loading': 'ManagementPage is a synchronous navigation landing and owns no loading request or asynchronous data controller.',
   'route-coverage:admin:empty': 'ManagementPage derives visible destinations synchronously from authenticated permissions and owns no empty API collection.',
   'route-coverage:admin:error': 'ManagementPage performs no domain request, so it has no route-owned API error state to execute.',
@@ -307,6 +312,18 @@ const NOT_APPLICABLE: Readonly<Record<string, string>> = {
 
 function ownerDriver(routeId: AppRouteId, stateId: string, kind: NestedStateKind): OwnerStateDriver {
   const stateKey = `route-coverage:${routeId}:${stateId}`
+  if (routeId === 'network' && ['loading', 'empty', 'error', 'stale', 'denied'].includes(kind)) {
+    const fixtureByKind = { loading: 'pending', empty: 'empty-200', error: 'error-503', stale: 'stale-503', denied: 'denied-403' } as const
+    const expectedSelector = kind === 'loading' ? 'p:has-text("Проверяем общий пул Mac")'
+      : kind === 'empty' ? 'p:has-text("Зарегистрированных Mac пока нет")'
+        : 'p:has-text("Статус общего пула временно недоступен")'
+    return {
+      stateKey, stateKind: kind, action: 'async', targetSelector: 'section[aria-label="Общий пул Mac"]',
+      expectedSelector, protectedSelector: 'section[aria-label="Общий пул Mac"]',
+      endpoint: { method: 'GET', path: '/api/agent-devices/pool-status', emptyBody: ROUTE_ASYNC_CONTRACTS.network!.emptyBody },
+      asyncFixture: fixtureByKind[kind as keyof typeof fixtureByKind],
+    }
+  }
   if (routeId === 'system' && ['loading', 'empty', 'error', 'stale', 'denied'].includes(kind)) {
     const fixtureByKind = { loading: 'pending', empty: 'empty-200', error: 'error-503', stale: 'stale-503', denied: 'denied-403' } as const
     const expectedSelector = kind === 'loading' ? '.rp-loading-state[aria-label="Загружаем состояние системы"]'

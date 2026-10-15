@@ -706,6 +706,17 @@ def _build_materialized_csv(payload: dict):
         raise
 
 
+def _server_first_csv(payload: dict, *, requester_user_id: int, allow_mac_fallback: bool):
+    try:
+        return _build_materialized_csv(payload)
+    except (OSError, UnicodeError, csv.Error, MemoryError):
+        if allow_mac_fallback:
+            remote = _remote_csv(payload, requester_user_id=requester_user_id)
+            if remote is not None:
+                return remote
+        raise
+
+
 def _file_chunks(file_obj) -> Iterator[bytes]:
     try:
         while chunk := file_obj.read(64 * 1024):
@@ -747,8 +758,10 @@ def build_inventory_export(
             snapshot = _capture_export_snapshot(snapshot_db, queries, include_aliases=True)
             spool = _build_xlsx(snapshot_db, queries, snapshot)
     if csv_payload is not None:
-        spool = _remote_csv(csv_payload, requester_user_id=user.id) or _build_materialized_csv(
-            csv_payload
+        spool = _server_first_csv(
+            csv_payload,
+            requester_user_id=user.id,
+            allow_mac_fallback=remote_compute_enabled,
         )
     suffix = "all" if all_parks else f"park-{park_ids[0]}"
     if format == "csv":

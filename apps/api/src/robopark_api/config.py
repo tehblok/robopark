@@ -68,13 +68,14 @@ class Settings(BaseSettings):
     emergency_max_concurrency: int = 8
     emergency_bridge_upstream_reads_per_second: float = Field(default=8.0, ge=1.0, le=64.0)
     emergency_bridge_enabled: bool = False
-    # Server→Mac→server CSV relay trades bandwidth for CPU. Keep it opt-in on Wi-Fi.
+    # Allow CSV rendering on a Mac only when the server renderer fails.
     compute_csv_offload_enabled: bool = False
     # Read-only corporate traffic may use the owner's Mac on the test stand only.
     mac_corporate_gateway_enabled: bool = False
-    # Test gateway availability may fall back to the existing server credential.
+    # Use the configured Tracker server identity first; Mac is availability fallback.
     mac_corporate_server_fallback_enabled: bool = True
     emergency_bridge_url: str = "http://emergency-bridge:8091"
+    # Legacy deployment compatibility; Emergency is server-first whenever a server cookie exists.
     emergency_direct_fallback_enabled: bool = False
     robopark_environment: Literal["test", "production"] = "production"
     robopark_instance_id: UUID = UUID(int=0)

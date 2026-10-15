@@ -37,7 +37,7 @@ def test_snapshot_uses_bridge_without_server_cookie(client, db_session, test_set
     assert response.json()["vin"] == "YASADR00000000447"
 
 
-def test_user_gateway_availability_failure_falls_back_to_server_cookie(
+def test_healthy_server_cookie_is_primary_and_does_not_call_mac(
     client, db_session, test_settings, monkeypatch
 ):
     user = User(
@@ -56,7 +56,7 @@ def test_user_gateway_availability_failure_falls_back_to_server_cookie(
     monkeypatch.setattr(
         emergency_bridge_client,
         "fetch_robot_payload",
-        lambda **_kwargs: (_ for _ in ()).throw(emergency_bridge_client.BridgeError()),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Mac fallback")),
     )
     monkeypatch.setattr(
         platform_settings,
@@ -75,7 +75,7 @@ def test_user_gateway_availability_failure_falls_back_to_server_cookie(
     assert response.status_code == 200
 
 
-def test_user_gateway_auth_denial_never_falls_back_to_server_cookie(
+def test_server_auth_denial_never_falls_back_to_owner_mac(
     client, db_session, test_settings, monkeypatch
 ):
     user = User(
@@ -99,19 +99,17 @@ def test_user_gateway_auth_denial_never_falls_back_to_server_cookie(
     monkeypatch.setattr(
         emergency_bridge_client,
         "fetch_robot_payload",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            emergency_bridge_client.BridgeRequestError(
-                503, "upstream_auth_denied", availability=False
-            )
-        ),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("authorization bypass")),
     )
     monkeypatch.setattr(
         emergency_client,
         "fetch_robot_payload",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("authorization bypass")),
+        lambda **_kwargs: (_ for _ in ()).throw(
+            emergency_client.EmergencyAuthError("server cookie denied")
+        ),
     )
     login_as(client, user.username, "secret")
 
     response = client.get("/emergency/447/snapshot")
 
-    assert response.status_code == 502
+    assert response.status_code == 403
