@@ -230,6 +230,91 @@ def test_quarantine_refuses_an_existing_non_rc43_installation(tmp_path: Path) ->
         transition.quarantine()
 
 
+def test_rc43_without_updater_config_resumes_and_preserves_original_absence(
+    tmp_path: Path,
+) -> None:
+    root = _installed_root(tmp_path)
+    updater = root / "etc/robopark/updater.env"
+    updater.unlink()  # Matches the real Khadas RC43 backup inventory.
+    runner = FakeRunner()
+    transition = setup.Transition(root=root, runner=runner)
+    target = _target("a" * 64)
+    transition.bind_target(target)  # State left by the old installer's failed preflight.
+    state_before = transition.state_path.read_bytes()
+
+    resumed = setup.Transition(root=root, runner=runner)
+    resumed.bind_target(target)
+    assert resumed.state_path.read_bytes() == state_before
+    resumed.quarantine()
+    assert not updater.exists()  # No configuration change before data isolation.
+    absence = resumed.backup_dir / "updater.env.absent"
+    assert absence.read_bytes() == b"absent\n"
+    assert stat.S_IMODE(absence.stat().st_mode) == 0o600
+
+    resumed._patch_configuration(target)
+    assert updater.read_text() == "GITHUB_ENABLED=false\nROBOPARK_UPDATE_CHANNEL=manual\n"
+    assert stat.S_IMODE(updater.stat().st_mode) == 0o600
+    resumed.quarantine()  # Reassertion during recovery must not back up new settings.
+    assert absence.read_bytes() == b"absent\n"
+    assert not (resumed.backup_dir / "updater.env").exists()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "broken_symlink", "directory", "fifo"])
+def test_optional_updater_config_does_not_allow_unsafe_paths(tmp_path: Path, kind: str) -> None:
+    root = _installed_root(tmp_path)
+    updater = root / "etc/robopark/updater.env"
+    updater.unlink()
+    if kind == "symlink":
+        updater.symlink_to("host.env")
+    elif kind == "broken_symlink":
+        updater.symlink_to("missing.env")
+    elif kind == "directory":
+        updater.mkdir()
+    else:
+        os.mkfifo(updater)
+    runner = FakeRunner()
+    transition = setup.Transition(root=root, runner=runner)
+    transition.bind_target(_target("a" * 64))
+    with pytest.raises(setup.SetupError, match="existing_install_required"):
+        transition.quarantine()
+    assert not runner.calls
+    assert not transition.backup_dir.exists()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "content", "permissions", "conflict"])
+def test_updater_absence_backup_cannot_be_replaced_or_conflicted(tmp_path: Path, kind: str) -> None:
+    root = _installed_root(tmp_path)
+    (root / "etc/robopark/updater.env").unlink()
+    transition = setup.Transition(root=root, runner=FakeRunner())
+    transition.bind_target(_target("a" * 64))
+    transition.quarantine()
+    marker = transition.backup_dir / "updater.env.absent"
+    if kind == "symlink":
+        marker.unlink()
+        marker.symlink_to("host.env")
+    elif kind == "content":
+        marker.write_bytes(b"changed\n")
+    elif kind == "permissions":
+        marker.chmod(0o644)
+    else:
+        (transition.backup_dir / "updater.env").write_text("not original\n")
+    with pytest.raises(setup.SetupError, match="original_backup_invalid"):
+        transition.quarantine()
+
+
+@pytest.mark.parametrize("name", ["host.env", "tuna.env"])
+def test_missing_required_config_still_stops_before_quarantine(tmp_path: Path, name: str) -> None:
+    root = _installed_root(tmp_path)
+    (root / "etc/robopark" / name).unlink()
+    runner = FakeRunner()
+    transition = setup.Transition(root=root, runner=runner)
+    transition.bind_target(_target("a" * 64))
+    with pytest.raises(setup.SetupError, match="existing_install_required"):
+        transition.quarantine()
+    assert not runner.calls
+    assert not transition.backup_dir.exists()
+
+
 def test_resume_refuses_a_different_target_identity(tmp_path: Path) -> None:
     root = _installed_root(tmp_path)
     transition = setup.Transition(root=root, runner=FakeRunner())
@@ -522,10 +607,13 @@ def test_stale_terminal_failed_ota_allows_reviewed_update_from_rc43(
     assert any(call[0] == "python3" and call[-1:] == ["update"] for call in runner.calls)
 
 
+@pytest.mark.parametrize("legacy_without_updater", [False, True])
 def test_apply_orders_isolation_before_env_and_ota_then_enables_test_tuna(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_without_updater: bool,
 ) -> None:
     root = _installed_root(tmp_path)
+    if legacy_without_updater:
+        (root / "etc/robopark/updater.env").unlink()
     ota = b"reviewed-ota"
     monkeypatch.setattr(setup, "EXPECTED_OTA_SIZE", len(ota))
     monkeypatch.setattr(setup, "EXPECTED_OTA_SHA256", hashlib.sha256(ota).hexdigest())
@@ -539,6 +627,8 @@ def test_apply_orders_isolation_before_env_and_ota_then_enables_test_tuna(
         assert backup_dir == root / "var/lib/robopark-test-transition"
         assert not (root / "var/lib/robopark-test-transition/test-api-allow").exists()
         assert "ROBOPARK_ENVIRONMENT=production" in (root / "etc/robopark/host.env").read_text()
+        if legacy_without_updater:
+            assert not (root / "etc/robopark/updater.env").exists()
         events.append("isolated")
 
     def http_get(url: str) -> dict:

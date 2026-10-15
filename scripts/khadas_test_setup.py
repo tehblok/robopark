@@ -235,9 +235,15 @@ def _atomic_write(path: Path, content: bytes, mode: int) -> None:
             pass
 
 
-def _patch_env(path: Path, updates: Mapping[str, str]) -> None:
+def _patch_env(path: Path, updates: Mapping[str, str], *, allow_missing: bool = False) -> None:
+    if path.is_symlink():
+        raise SetupError("configuration_missing")
     try:
         raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        if not allow_missing:
+            raise SetupError("configuration_missing") from error
+        raw = ""
     except OSError as error:
         raise SetupError("configuration_missing") from error
     lines = raw.splitlines()
@@ -448,7 +454,7 @@ class Transition:
             releases = (self.root / "opt/robopark/releases").resolve(strict=True)
             release.relative_to(releases)
         except (OSError, ValueError) as error:
-            raise SetupError("existing_install_required") from error
+            raise SetupError("existing_install_required: /opt/robopark/current") from error
         if not release.name.startswith("0.2.0-rc.43"):
             raise SetupError("rc43_install_required")
         version = release / "VERSION"
@@ -460,8 +466,24 @@ class Transition:
         self._compose_prefix()
         for name in ("host.env", "tuna.env", "updater.env"):
             path = self.root / "etc/robopark" / name
+            # Existing RC43 hosts may never have configured GitHub updates.
+            # Only genuine absence is optional, not a dangling link or special file.
+            if name == "updater.env" and not path.exists() and not path.is_symlink():
+                continue
             if path.is_symlink() or not path.is_file():
-                raise SetupError("existing_install_required")
+                raise SetupError(f"existing_install_required: /etc/robopark/{name}")
+
+    def _validate_original_backup(self, path: Path) -> None:
+        try:
+            info = path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != self.expected_uid
+                or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                raise ValueError
+        except (OSError, ValueError) as error:
+            raise SetupError("original_backup_invalid") from error
 
     def _backup_once(self) -> None:
         self._secure_directory(self.transition_dir)
@@ -478,18 +500,22 @@ class Transition:
             sources["bot-enabled.json"] = bot
         for name, source in sources.items():
             destination = self.backup_dir / name
+            # Preserve absence as part of the original snapshot: a later recovery
+            # must not mistake the generated TEST updater configuration for RC43's.
+            absent = self.backup_dir / "updater.env.absent"
+            if name == "updater.env" and (absent.exists() or absent.is_symlink()):
+                self._validate_original_backup(absent)
+                if (
+                    absent.read_bytes() != b"absent\n"
+                    or destination.exists() or destination.is_symlink()
+                ):
+                    raise SetupError("original_backup_invalid")
+                continue
             if destination.exists() or destination.is_symlink():
-                try:
-                    info = destination.lstat()
-                    if (
-                        stat.S_ISLNK(info.st_mode)
-                        or not stat.S_ISREG(info.st_mode)
-                        or info.st_uid != self.expected_uid
-                        or stat.S_IMODE(info.st_mode) != 0o600
-                    ):
-                        raise ValueError
-                except (OSError, ValueError) as error:
-                    raise SetupError("original_backup_invalid") from error
+                self._validate_original_backup(destination)
+                continue
+            if name == "updater.env" and not source.exists() and not source.is_symlink():
+                _atomic_write(absent, b"absent\n", 0o600)
                 continue
             _atomic_write(destination, source.read_bytes(), 0o600)
 
@@ -877,6 +903,7 @@ class Transition:
         _patch_env(
             etc / "updater.env",
             {"GITHUB_ENABLED": "false", "ROBOPARK_UPDATE_CHANNEL": "manual"},
+            allow_missing=True,
         )
 
     @staticmethod
