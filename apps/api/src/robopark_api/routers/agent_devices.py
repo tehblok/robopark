@@ -13,7 +13,7 @@ from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -29,6 +29,7 @@ from robopark_api.deps import require_approved, require_emergency_viewer, requir
 from robopark_api.models import AccessStatus, AgentDevice, AgentEnrollment, User
 from robopark_api.services import (
     audit,
+    device_auth,
     emergency_bridge_client,
     gateway_policy,
     rbac,
@@ -184,19 +185,7 @@ def probe_target(
     manufacture a healthy Mac or an arbitrary VIN.
     """
     _no_store(response)
-    roster = robot_registry.registry_rows(
-        db,
-        user,
-        park_id=None,
-        query="",
-        state="all",
-        active_errors=False,
-        open_tasks=False,
-        offset=0,
-        limit=1,
-    )
-    items = roster["items"]
-    return {"vin": items[0]["vin"] if items else None}
+    return {"vin": robot_registry.probe_target_vin(db, user)}
 
 
 @router.get("/setup", response_class=HTMLResponse)
@@ -488,6 +477,7 @@ def _authenticated_device_payload(device: AgentDevice, owner: User) -> dict:
 @router.post("/claim-auth", status_code=status.HTTP_201_CREATED)
 def claim_authenticated(
     payload: AuthenticatedClaimIn,
+    request: Request,
     response: Response,
     user: User = Depends(require_approved),
     db: Session = Depends(get_db),
@@ -518,14 +508,44 @@ def claim_authenticated(
             AgentDevice.instance_id == str(payload.instance_id),
         )
     )
+    auth_session = device_auth.current_session(request, db, settings)
+    if auth_session is None or auth_session.user_id != user.id:
+        raise HTTPException(401, "authentication_required")
+    if auth_session.auth_method == device_auth.AUTH_METHOD_DEVICE:
+        if (
+            existing is None
+            or existing.id != auth_session.device_id
+            or existing.owner_user_id != user.id
+            or existing.revoked_at is not None
+            or existing.device_auth_enabled_at is None
+        ):
+            raise HTTPException(403, "fresh_password_auth_required")
+        response.status_code = status.HTTP_200_OK
+        return _authenticated_device_payload(existing, owner)
     if existing is not None:
         if existing.owner_user_id != user.id:
             raise HTTPException(409, "device_owner_mismatch")
         if existing.revoked_at is not None:
             raise HTTPException(409, "device_revoked")
+        if auth_session.device_id not in {None, existing.id}:
+            raise HTTPException(403, "fresh_password_auth_required")
+        if existing.device_auth_enabled_at is not None:
+            auth_session.device_id = existing.id
+            db.commit()
+            response.status_code = status.HTTP_200_OK
+            return _authenticated_device_payload(existing, owner)
+        if not device_auth.password_session_is_fresh(auth_session, user_id=user.id):
+            response.status_code = status.HTTP_200_OK
+            return _authenticated_device_payload(existing, owner)
+        auth_session.device_id = existing.id
+        device_auth.enable_for_fresh_password(existing)
+        db.commit()
         response.status_code = status.HTTP_200_OK
         return _authenticated_device_payload(existing, owner)
 
+    device_auth.require_fresh_password_session(request, db, settings, user_id=user.id)
+    if auth_session.device_id is not None:
+        raise HTTPException(403, "fresh_password_auth_required")
     active_count = db.scalar(
         select(func.count())
         .select_from(AgentDevice)
@@ -535,6 +555,7 @@ def claim_authenticated(
         raise HTTPException(409, "device_limit")
     now = datetime.now(UTC)
     device = AgentDevice(
+        id=str(uuid4()),
         owner_user_id=user.id,
         label=payload.label.strip(),
         public_key_x963=public_key,
@@ -542,7 +563,9 @@ def claim_authenticated(
         instance_id=str(payload.instance_id),
         approved_at=now,
         approved_by_user_id=user.id,
+        device_auth_enabled_at=now,
     )
+    auth_session.device_id = device.id
     db.add(device)
     try:
         db.commit()
@@ -561,6 +584,12 @@ def claim_authenticated(
             raise HTTPException(409, "device_owner_mismatch") from None
         if raced.revoked_at is not None:
             raise HTTPException(409, "device_revoked") from None
+        auth_session = device_auth.current_session(request, db, settings)
+        if auth_session is None or auth_session.device_id not in {None, raced.id}:
+            raise HTTPException(403, "fresh_password_auth_required") from None
+        auth_session.device_id = raced.id
+        device_auth.enable_for_fresh_password(raced)
+        db.commit()
         response.status_code = status.HTTP_200_OK
         return _authenticated_device_payload(raced, owner)
     db.refresh(device)
@@ -711,6 +740,7 @@ def revoke_device(
         raise HTTPException(404)
     if device.revoked_at is None:
         device.revoked_at = datetime.now(UTC)
+        device_auth.disable_for_device(db, device.id)
         db.commit()
         audit.record(
             db,

@@ -43,6 +43,7 @@ USER_AGENT = os.environ.get("TRACKER_USER_AGENT", "robopark-api/0.1")
 # Tracker API отдаёт не более 50 тикетов за один HTTP-запрос; find() сам
 # дочитывает следующие страницы по Link header при итерации.
 API_PAGE_SIZE = 50
+REGISTRY_FIELDS = "key,summary,queue,tags,status,resolution"
 SEARCH_CALL_TIMEOUT_SECONDS = NOTIFICATION_SEARCH_CALL_TIMEOUT_SEC
 SEARCH_MAX_ATTEMPTS = NOTIFICATION_SEARCH_MAX_ATTEMPTS
 SEARCH_OPERATION_TIMEOUT_SECONDS = NOTIFICATION_SEARCH_OPERATION_TIMEOUT_SEC
@@ -787,6 +788,22 @@ def issue_to_dict(issue: Any, *, login_cache: dict[str, str] | None = None) -> d
     }
 
 
+def _registry_issue_to_dict(issue: Any) -> dict[str, Any]:
+    """Normalize only fields needed by the robot roster and probe."""
+    raw_status = _field(issue, "status")
+    raw_resolution = _field(issue, "resolution")
+    return {
+        "key": str(_field(issue, "key") or ""),
+        "robot": parse_robot_from_summary(str(_field(issue, "summary") or "")),
+        "queue": _queue_display(_field(issue, "queue")),
+        "tags": _tags_from(_field(issue, "tags")),
+        "status": _status_display(raw_status),
+        "status_key": _status_key(raw_status),
+        "resolution": _resolution_display(raw_resolution),
+        "resolution_key": _status_key(raw_resolution),
+    }
+
+
 def _card_status_closed(status: str) -> bool:
     low = (status or "").strip().lower().replace("ё", "е")
     if not low:
@@ -889,22 +906,32 @@ def _search(
     filter_open: bool = True,
     order: list[str] | None = None,
     limit: int | None = None,
+    projection: str | None = None,
 ) -> list[dict[str, Any]]:
+    if projection not in {None, "registry"}:
+        raise ValueError("tracker_projection_invalid")
     client = _client(token)
     kwargs: dict[str, Any] = {"per_page": API_PAGE_SIZE}
     if order:
         kwargs["order"] = order
+    if projection == "registry":
+        kwargs["fields"] = REGISTRY_FIELDS
 
     def _run() -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         login_cache: dict[str, str] = {}
         for seen, issue in enumerate(client.issues.find(query, **kwargs), start=1):
-            item = issue_to_dict(issue, login_cache=login_cache)
+            item = (
+                _registry_issue_to_dict(issue)
+                if projection == "registry"
+                else issue_to_dict(issue, login_cache=login_cache)
+            )
             if filter_open and not is_issue_open_item(item):
                 if limit is not None and seen >= limit:
                     break
                 continue
-            item["_tracker_resource"] = issue
+            if projection is None:
+                item["_tracker_resource"] = issue
             items.append(item)
             if limit is not None and seen >= limit:
                 break
@@ -985,8 +1012,15 @@ def search_issues(
     query: str,
     filter_open: bool = True,
     order: list[str] | None = None,
+    projection: str | None = None,
 ) -> list[dict[str, Any]]:
-    return _search(token, query, filter_open=filter_open, order=order)
+    return _search(
+        token,
+        query,
+        filter_open=filter_open,
+        order=order,
+        projection=projection,
+    )
 
 
 def search_issue_page(
@@ -996,11 +1030,19 @@ def search_issue_page(
     limit: int,
     filter_open: bool = True,
     order: list[str] | None = None,
+    projection: str | None = None,
 ) -> list[dict[str, Any]]:
     """Read at most one bounded page without exhausting the SDK iterator."""
     if not 1 <= limit <= API_PAGE_SIZE:
         raise ValueError("tracker_page_limit_invalid")
-    return _search(token, query, filter_open=filter_open, order=order, limit=limit)
+    return _search(
+        token,
+        query,
+        filter_open=filter_open,
+        order=order,
+        limit=limit,
+        projection=projection,
+    )
 
 
 def search_closed_history_page(*, token: str, query: str, page: int) -> list[dict[str, Any]]:

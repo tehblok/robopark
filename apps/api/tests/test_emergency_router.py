@@ -95,6 +95,19 @@ def test_shared_probe_failure_preserves_upstream_or_auth_status(
     shared_key = f"{identity or 'legacy'}:YASADR00000000447"
     if failure == "waiting":
         store._write_inflight("emergency.robot", shared_key)
+        # Keep the simulated leader alive while the router resolves scope.
+        # A busy full suite can otherwise age this one-second fixture lease
+        # before reaching Emergency, legitimately making the caller a leader.
+        original_read_inflight = store._read_inflight
+        monkeypatch.setattr(
+            store,
+            "_read_inflight",
+            lambda namespace, key: (
+                {"claim": "fixture-live-leader"}
+                if (namespace, key) == ("emergency.robot", shared_key)
+                else original_read_inflight(namespace, key)
+            ),
+        )
     else:
         error = (
             emergency_client.EmergencyAuthError("emergency cookie invalid")

@@ -56,6 +56,64 @@ def test_closed_history_page_reads_only_fields_needed_for_status_import(monkeypa
     assert len(result) == 1
 
 
+def test_registry_projection_reads_one_minimal_page_without_exhausting_iterator(monkeypatch):
+    from robopark_api.services import tracker_client
+
+    calls = []
+    yielded = []
+
+    class FakeIssues:
+        def find(self, query, **kwargs):
+            calls.append((query, kwargs))
+            for index in range(51):
+                yielded.append(index)
+                yield {
+                    "key": f"RP-{index + 1}",
+                    "summary": f"[{index + 1}] repair",
+                    "queue": {"key": "ROBOPARK"},
+                    "tags": ["Alpha"],
+                    "status": {"key": "closed", "display": "Закрыт"},
+                    "resolution": {"key": "fixed", "display": "Решено"},
+                    "description": "must not enter registry projection",
+                    "createdBy": {"id": "42"},
+                }
+
+    monkeypatch.setattr(
+        tracker_client, "_client", lambda token: type("Client", (), {"issues": FakeIssues()})()
+    )
+    monkeypatch.setattr(tracker_client, "_run_tracked", lambda fn, **kwargs: fn())
+
+    result = tracker_client.search_issue_page(
+        token="test-token",
+        query='Queue: "ROBOPARK" Tags: "Alpha"',
+        limit=50,
+        filter_open=False,
+        projection="registry",
+    )
+
+    assert yielded == list(range(50))
+    assert calls == [
+        (
+            'Queue: "ROBOPARK" Tags: "Alpha"',
+            {
+                "per_page": 50,
+                "fields": "key,summary,queue,tags,status,resolution",
+            },
+        )
+    ]
+    assert len(result) == 50
+    assert result[0] == {
+        "key": "RP-1",
+        "robot": "1",
+        "queue": "ROBOPARK",
+        "tags": ["Alpha"],
+        "status": "Закрыт",
+        "status_key": "closed",
+        "resolution": "fixed",
+        "resolution_key": "fixed",
+    }
+
+
 def test_issue_to_dict_includes_queue():
     item = issue_to_dict(
         {

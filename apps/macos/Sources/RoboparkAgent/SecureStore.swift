@@ -4,33 +4,83 @@ import AgentCore
 import CryptoKit
 
 enum SecureStore {
-    private static let service = "ru.robopark.agent"
+    private static let service = "ru.robopark.agent.stable-v1"
+    private static let legacyService = "ru.robopark.agent"
+    private static let interactionLock = NSRecursiveLock()
+    private static var interactive = false
+
+    // Legacy file-based Keychain operations otherwise display dialogs even at
+    // background launch, before the accessory application has a usable window.
+    // Only the explicit foreground recovery action opts into system UI.
+    static func withUserApproval<T>(_ body: () throws -> T) rethrows -> T {
+        interactionLock.lock(); defer { interactionLock.unlock() }
+        let previous = interactive; interactive = true
+        defer { interactive = previous }
+        return try body()
+    }
+    private static func perform(_ operation: () -> OSStatus) -> OSStatus {
+        interactionLock.lock(); defer { interactionLock.unlock() }
+        var previous = DarwinBoolean(false)
+        let readStatus = SecKeychainGetUserInteractionAllowed(&previous)
+        guard readStatus == errSecSuccess else { return readStatus }
+        let setStatus = SecKeychainSetUserInteractionAllowed(interactive)
+        guard setStatus == errSecSuccess else { return setStatus }
+        defer { SecKeychainSetUserInteractionAllowed(previous.boolValue) }
+        return operation()
+    }
     private static func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
-    static func readData(_ account: String) throws -> Data? {
-        var request = query(account)
+    private static func readRaw(_ request: [String: Any]) throws -> Data? {
+        var request = request
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
-        let status = SecItemCopyMatching(request as CFDictionary, &item)
+        let status = perform { SecItemCopyMatching(request as CFDictionary, &item) }
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = item as? Data else {
             throw NSError(domain: "RoboparkKeychain", code: Int(status))
         }
         return data
     }
+    static func readData(_ account: String) throws -> Data? {
+        if let value = try readRaw(query(account)) { return value }
+        var legacy = query(account); legacy[kSecAttrService as String] = legacyService
+        guard let value = try readRaw(legacy) else { return nil }
+        // Copy-before-use preserves old drafts and credentials if migration is
+        // interrupted. New items inherit the stable RC9 designated requirement.
+        // A locked legacy item throws; it is never treated as an empty account.
+        try writeData(value, account: account)
+        return value
+    }
     static func writeData(_ data: Data, account: String) throws {
         let attributes: [String: Any] = [kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
-        var status = SecItemUpdate(query(account) as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound { status = SecItemAdd(query(account).merging(attributes) { _, new in new } as CFDictionary, nil) }
+        var status = perform { SecItemUpdate(query(account) as CFDictionary, attributes as CFDictionary) }
+        if status == errSecItemNotFound { status = perform { SecItemAdd(query(account).merging(attributes) { _, new in new } as CFDictionary, nil) } }
         guard status == errSecSuccess else { throw NSError(domain: "RoboparkKeychain", code: Int(status)) }
     }
     static func deleteData(_ account: String) throws {
-        let status = SecItemDelete(query(account) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw NSError(domain: "RoboparkKeychain", code: Int(status)) }
+        // Remove the old namespace first so a crash cannot fall back to it.
+        var legacy = query(account); legacy[kSecAttrService as String] = legacyService
+        for request in [legacy, query(account)] {
+            let status = perform { SecItemDelete(request as CFDictionary) }
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw NSError(domain: "RoboparkKeychain", code: Int(status))
+            }
+        }
+    }
+    static func migrateCorporateWriteReceipts() throws {
+        guard let bytes = try readData("corporate-write-receipt-index-v1") else { return }
+        let index = try JSONDecoder().decode(CorporateWriteReceiptIndex.self, from: bytes)
+        guard index.accounts.count <= CorporateWriteReceiptIndex.capacity,
+              index.accounts.allSatisfy({ $0.range(of: "^corporate-write-receipt-v1-[a-f0-9]{64}$", options: .regularExpression) != nil }) else {
+            throw CorporateWriteError.receiptStorage
+        }
+        // Prepared/executing/unknown receipts are copied unchanged. Missing
+        // rows are legitimate when a crash occurred between reserve and write.
+        for account in Set(index.accounts) { _ = try readData(account) }
     }
     static func reserveCorporateWriteReceipt(_ account: String) throws {
         let indexAccount = "corporate-write-receipt-index-v1"
@@ -65,39 +115,17 @@ enum SecureStore {
         } catch { throw CorporateWriteError.receiptStorage }
     }
     static func load() throws -> Registration? {
-        guard !isSignedOut("registration") else { return nil }
-        var request = query("registration")
-        request[kSecReturnData as String] = true
-        request[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(request as CFDictionary, &item)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw NSError(domain: "RoboparkKeychain", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Хранилище Keychain недоступно. Разблокируйте сеанс macOS."])
-        }
+        guard !isSignedOut("registration"), let data = try readData("registration") else { return nil }
         return try JSONDecoder().decode(Registration.self, from: data)
     }
     static func save(_ value: Registration) throws {
-        let data = try JSONEncoder().encode(value)
-        let attributes: [String: Any] = [kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
-        var status = SecItemUpdate(query("registration") as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            status = SecItemAdd(query("registration").merging(attributes) { _, new in new } as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else {
-            throw NSError(domain: "RoboparkKeychain", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Не удалось сохранить регистрацию в Keychain."])
-        }
+        try writeData(JSONEncoder().encode(value), account: "registration")
         markSignedOut("registration", false)
     }
     static func remove() throws {
-        // A failed Keychain deletion must not restore the old registration on
-        // wake or next launch. This non-secret tombstone survives a locked jar.
+        // Deletion failure never resurrects a signed-out owner on next launch.
         markSignedOut("registration", true)
-        let status = SecItemDelete(query("registration") as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw NSError(domain: "RoboparkKeychain", code: Int(status))
-        }
+        try deleteData("registration")
     }
     static func isSignedOut(_ account: String) -> Bool {
         UserDefaults.standard.bool(forKey: "robopark.signed-out.\(account).v1")

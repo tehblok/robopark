@@ -17,6 +17,7 @@ import AgentCore
     var panel: WKWebView?
     var loginWindow: NSWindow?
     var loginView: WKWebView?
+    private var loginPopups: [(view: WKWebView, window: NSWindow)] = []
     var legacyWorkspaceWindow: NSWindow?
     var legacyWorkspaceView: WKWebView?
     var legacyMenuItem: NSMenuItem?
@@ -31,6 +32,9 @@ import AgentCore
     private var enrollmentRun = UUID()
     private var corporateLoginRun = UUID()
     private var corporateOAuthState: String?
+    private var corporateLoginMessage: String?
+    private var corporateLoginLabel: NSTextField?
+    private var corporateNavigationTimer: Timer?
     private var accountActive = false
     private var emergencyAuthorized = false
     private var activeAccountID: Int?
@@ -54,6 +58,7 @@ import AgentCore
         menu.addItem(withTitle: "Служба и подключение", action: #selector(showDevice), keyEquivalent: "")
         let legacyItem = menu.addItem(withTitle: "Черновики предыдущей версии…", action: #selector(showLegacyWorkspace), keyEquivalent: "")
         legacyItem.isEnabled = false; legacyMenuItem = legacyItem
+        menu.addItem(withTitle: "Подключить защищённое хранилище…", action: #selector(connectKeychain), keyEquivalent: "")
         menu.addItem(withTitle: "Проверить обновления", action: #selector(checkUpdate), keyEquivalent: "")
         menu.addItem(withTitle: "Удалить Robopark…", action: #selector(uninstall), keyEquivalent: "")
         menu.addItem(.separator())
@@ -284,6 +289,7 @@ import AgentCore
         notifications.stop(removeDelivered: true)
         updater.reset()
         corporateLoginRun = UUID(); corporateOAuthState = nil
+        closeCorporatePopups()
         loginWindow?.close(); loginWindow = nil; loginView = nil
         // Close the legacy surface on logout but preserve its default WebKit
         // data store so the owner can reopen and synchronize old drafts later.
@@ -448,6 +454,7 @@ import AgentCore
         let message: String?
         if !accountActive { message = "Войдите в аккаунт Robopark на этом Mac." }
         else if !ownerLoginConfigured { message = "Для владельца Mac не назначен корпоративный логин." }
+        else if let corporateLoginMessage { message = corporateLoginMessage }
         else if [services.tracker, services.inventory, services.emergency].allSatisfy({ $0 == "ready" }) { message = nil }
         else { message = "Часть корпоративных сервисов требует входа или повторной проверки." }
         let status = DesktopAgentStatus(snapshot: AgentStatusSnapshot(
@@ -507,10 +514,7 @@ import AgentCore
             case .checkUpdate:
                 await updater.check(manual: true)
             case .reloadKeychain:
-                try bridge.reloadRegistration()
-                if let registration = bridge.registration { try workspace?.session.useRegistration(registration) }
-                startWorkspaceService()
-                restoreAccountSession()
+                try recoverKeychain()
             case .openLegacyWorkspace:
                 try await openLegacyWorkspace()
             }
@@ -520,6 +524,26 @@ import AgentCore
             render()
             return .json(["detail": "agent_action_failed"], status: 409)
         }
+    }
+    @objc private func connectKeychain() {
+        showPanel()
+        // Give the foreground panel a run-loop turn before asking SecurityAgent.
+        DispatchQueue.main.async { [weak self] in
+            do { try self?.recoverKeychain() }
+            catch { self?.lastError = "Доступ к Keychain не предоставлен. Сохранённые данные оставлены на месте."; self?.render() }
+        }
+    }
+    private func recoverKeychain() throws {
+        NSApp.activate(ignoringOtherApps: true)
+        try SecureStore.withUserApproval {
+            try bridge.reloadRegistration()
+            try initializeWorkspace()
+            if let registration = bridge.registration { try workspace?.session.useRegistration(registration) }
+            // Migrate the offline key in the same explicit foreground operation.
+            _ = try SecureStore.readData("workspace-storage-key-v1")
+            try SecureStore.migrateCorporateWriteReceipts()
+        }
+        lastError = ""; startWorkspaceService(); restoreAccountSession(); render()
     }
     func render() {
         let profile = bridge.registration
@@ -569,12 +593,7 @@ import AgentCore
                 case "notificationPermission":
                     await notifications.requestPermission()
                 case "reloadKeychain":
-                    try bridge.reloadRegistration()
-                    try initializeWorkspace()
-                    if accountActive {
-                        if emergencyAuthorized { bridge.start() }
-                        compute.start()
-                    }
+                    try recoverKeychain()
                 case "check": await updater.check(manual: true)
                 case "uninstall": uninstall()
                 case "ready": break
@@ -604,26 +623,109 @@ import AgentCore
         let state: String
         do { state = try freshOAuthState() }
         catch { lastError = "Не удалось безопасно начать корпоративный вход."; render(); return }
-        let run = UUID(); corporateLoginRun = run; corporateOAuthState = state
+        corporateNavigationTimer?.invalidate()
+        closeCorporatePopups()
+        corporateLoginRun = UUID(); corporateOAuthState = state
+        setCorporateLoginMessage("Открываю корпоративный вход…")
+        // Retrying keeps the in-memory SSO cookies, so a completed password/MFA
+        // step need not be repeated after a network timeout.
+        if let loginView, let loginWindow {
+            loginView.stopLoading()
+            if let url = try? CorporateAuthPolicy.authorizationURL(state: state) {
+                loginView.load(URLRequest(url: url, timeoutInterval: 40))
+            }
+            loginWindow.makeKeyAndOrderFront(nil)
+            render(); return
+        }
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
+        // Passport can finish an asynchronous login step by opening a child.
+        // The UI delegate still enforces the trusted opener, destination and cap.
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
         let view = WKWebView(frame: .zero, configuration: config)
-        view.navigationDelegate = self
+        view.navigationDelegate = self; view.uiDelegate = self
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 740),
                            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         win.title = "Подключение корпоративных сервисов"
         win.delegate = self
-        win.contentView = view; win.isReleasedWhenClosed = false; win.center()
+        let label = NSTextField(wrappingLabelWithString: corporateLoginMessage ?? "")
+        corporateLoginLabel = label
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let retry = NSButton(title: "Повторить", target: self, action: #selector(retryCorporateLogin))
+        let status = NSStackView(views: [label, retry]); status.orientation = .horizontal
+        status.spacing = 12; status.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
+        let container = NSView()
+        for child in [status, view] { child.translatesAutoresizingMaskIntoConstraints = false; container.addSubview(child) }
+        NSLayoutConstraint.activate([
+            status.topAnchor.constraint(equalTo: container.topAnchor), status.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            status.trailingAnchor.constraint(equalTo: container.trailingAnchor), status.heightAnchor.constraint(greaterThanOrEqualToConstant: 56),
+            view.topAnchor.constraint(equalTo: status.bottomAnchor), view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: container.trailingAnchor), view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        win.contentView = container; win.isReleasedWhenClosed = false; win.center()
         loginWindow = win; loginView = view
         guard let url = try? CorporateAuthPolicy.authorizationURL(state: state) else { return }
-        view.load(URLRequest(url: url))
+        view.load(URLRequest(url: url, timeoutInterval: 40))
         win.makeKeyAndOrderFront(nil)
+        render()
+    }
+    private func isCorporateView(_ view: WKWebView) -> Bool {
+        view === loginView || loginPopups.contains { $0.view === view }
+    }
+    private func closeCorporatePopups() {
+        let windows = loginPopups; loginPopups.removeAll()
+        for popup in windows { popup.view.stopLoading(); popup.window.close() }
+    }
+    func webViewDidClose(_ webView: WKWebView) {
+        if let popup = loginPopups.first(where: { $0.view === webView }) { popup.window.close() }
+    }
+    @objc private func retryCorporateLogin() { openEmergencyLogin() }
+    private func setCorporateLoginMessage(_ message: String) {
+        corporateLoginMessage = message; corporateLoginLabel?.stringValue = message
+        render()
+    }
+    private func failCorporateNavigation(_ message: String) {
+        corporateNavigationTimer?.invalidate(); corporateNavigationTimer = nil
+        lastError = message; setCorporateLoginMessage(message)
     }
     func windowWillClose(_ notification: Notification) {
-        guard let closing = notification.object as? NSWindow, closing === loginWindow else { return }
+        guard let closing = notification.object as? NSWindow else { return }
+        if let index = loginPopups.firstIndex(where: { $0.window === closing }) {
+            loginPopups.remove(at: index).view.stopLoading(); return
+        }
+        guard closing === loginWindow else { return }
+        closeCorporatePopups()
         corporateLoginRun = UUID(); corporateOAuthState = nil
+        corporateNavigationTimer?.invalidate(); corporateNavigationTimer = nil
+        corporateLoginLabel = nil
         loginWindow = nil; loginView = nil
+        corporateLoginMessage = nil
         render()
+    }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        guard isCorporateView(webView) else { return }
+        corporateNavigationTimer?.invalidate()
+        let run = corporateLoginRun
+        setCorporateLoginMessage("Загружаю страницу корпоративного входа…")
+        corporateNavigationTimer = Timer.scheduledTimer(withTimeInterval: 45, repeats: false) { [weak self, weak webView] _ in
+            Task { @MainActor in
+                guard let self, let webView, self.corporateLoginRun == run, self.isCorporateView(webView) else { return }
+                webView.stopLoading()
+                self.failCorporateNavigation(CorporateLoginPresentation.failureMessage(
+                    NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut))!)
+            }
+        }
+    }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        guard isCorporateView(webView), let message = CorporateLoginPresentation.failureMessage(error as NSError) else { return }
+        failCorporateNavigation(message)
+    }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        self.webView(webView, didFailProvisionalNavigation: navigation, withError: error)
+    }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard isCorporateView(webView) else { return }
+        failCorporateNavigation("Окно корпоративного входа было остановлено macOS. Нажмите «Повторить».")
     }
     private func verifyCorporateIdentity(authorization: String, run: UUID) async -> (CorporateIdentityStatus, String?) {
         guard corporateLoginRun == run, accountActive,
@@ -645,12 +747,26 @@ import AgentCore
         case .ownerMismatch: lastError = "Этот корпоративный аккаунт не принадлежит владельцу Mac."
         case .ready: break
         }
-        render()
+        failCorporateNavigation(lastError)
+    }
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if isCorporateView(webView), navigationResponse.isForMainFrame,
+           let response = navigationResponse.response as? HTTPURLResponse, response.statusCode >= 400 {
+            decisionHandler(.cancel)
+            failCorporateNavigation("Корпоративный сервер входа вернул ошибку HTTP \(response.statusCode). Нажмите «Повторить».")
+            return
+        }
+        decisionHandler(.allow)
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if webView === panel { render(); return }
         if webView === legacyWorkspaceView { return }
-        guard webView === loginView, webView.url?.host?.lowercased() == EmergencyTarget.host,
+        if isCorporateView(webView) {
+            corporateNavigationTimer?.invalidate(); corporateNavigationTimer = nil
+            setCorporateLoginMessage("Завершите вход на корпоративной странице. Если она пуста, нажмите «Повторить».")
+        }
+        guard isCorporateView(webView), webView.url?.host?.lowercased() == EmergencyTarget.host,
               accountActive,
               let ownerUserID = bridge.registration?.ownerUserID,
               activeAccountID == ownerUserID else { return }
@@ -663,19 +779,21 @@ import AgentCore
                     path: cookie.path, secure: cookie.isSecure, expires: cookie.expiresDate)
             }
             guard let header = try? CorporateAuthPolicy.sessionCookie(from: candidates) else {
-                self.lastError = "Корпоративная сессия не подтверждена: требуется единый защищённый Session_id."
-                self.render(); return
+                self.failCorporateNavigation("Корпоративная сессия не подтверждена. Нажмите «Повторить».")
+                return
             }
             let run = self.corporateLoginRun
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let (status, login) = await self.verifyCorporateIdentity(authorization: header, run: run)
-                guard self.corporateLoginRun == run, self.loginView === webView else { return }
+                guard self.corporateLoginRun == run, self.isCorporateView(webView) else { return }
                 guard status == .ready, let login else { self.showCorporateFailure(status); return }
                 do {
                     try self.bridge.storeVerifiedSession(header, login: login)
+                    self.closeCorporatePopups()
                     self.loginWindow?.close(); self.loginWindow = nil; self.loginView = nil
                     self.corporateOAuthState = nil
+                    self.corporateLoginMessage = nil; self.lastError = ""
                     if self.emergencyAuthorized { self.bridge.start() }
                     self.render()
                 } catch { self.showCorporateFailure(.ownerMismatch) }
@@ -684,7 +802,7 @@ import AgentCore
     }
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
                  completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        guard webView === loginView,
+        guard isCorporateView(webView),
               challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               CorporateAuthPolicy.browserHosts.contains(challenge.protectionSpace.host.lowercased()),
               let trust = challenge.protectionSpace.serverTrust,
@@ -712,10 +830,12 @@ import AgentCore
         }
         else if webView === panel { decisionHandler(url.standardizedFileURL == panelURL?.standardizedFileURL ? .allow : .cancel) }
         else {
-            if webView === loginView, url.scheme == "https",
+            if isCorporateView(webView), url.scheme == "https",
                url.host?.lowercased() == CorporateAuthPolicy.oauthHost,
                url.path == CorporateAuthPolicy.callbackURL.path {
                 decisionHandler(.cancel)
+                corporateNavigationTimer?.invalidate(); corporateNavigationTimer = nil
+                setCorporateLoginMessage("Проверяю корпоративный аккаунт…")
                 guard let state = corporateOAuthState else { showCorporateFailure(.reauthRequired); return }
                 corporateOAuthState = nil
                 let run = corporateLoginRun
@@ -726,7 +846,7 @@ import AgentCore
                     guard let self, let webView else { return }
                     let (status, login) = await self.verifyCorporateIdentity(
                         authorization: "OAuth \(credential.token)", run: run)
-                    guard self.corporateLoginRun == run, self.loginView === webView else { return }
+                    guard self.corporateLoginRun == run, self.isCorporateView(webView) else { return }
                     guard status == .ready, let login else { self.showCorporateFailure(status); return }
                     do {
                         try self.bridge.storeVerifiedOAuth(credential, login: login)
@@ -735,14 +855,42 @@ import AgentCore
                 }
                 return
             }
+            let origin = navigationAction.sourceFrame.securityOrigin
+            if isCorporateView(webView), let target = navigationAction.targetFrame,
+               CorporateLoginPresentation.allowsBlankSubframe(url, isMainFrame: target.isMainFrame && !loginPopups.contains(where: { $0.view === webView }),
+                    sourceProtocol: origin.protocol, sourceHost: origin.host, sourcePort: origin.port) {
+                decisionHandler(.allow); return
+            }
             let allowed = LoginPolicy.allows(url)
-            if allowed { loginWindow?.title = "Подключение корпоративных сервисов — " + (url.host ?? "") }
+            if allowed, navigationAction.targetFrame?.isMainFrame != false {
+                loginWindow?.title = "Подключение корпоративных сервисов — " + (url.host ?? "")
+            }
             else {
-                lastError = "Переход на непроверенный сервер входа заблокирован: " + (url.host ?? "неизвестный адрес")
-                render()
+                if !allowed, navigationAction.targetFrame?.isMainFrame != false {
+                    failCorporateNavigation("Переход на непроверенный сервер входа заблокирован. Обратитесь к администратору.")
+                }
             }
             decisionHandler(allowed ? .allow : .cancel)
         }
+    }
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        let source = navigationAction.sourceFrame.securityOrigin
+        guard isCorporateView(webView), navigationAction.targetFrame == nil,
+              loginPopups.count < 3, let url = navigationAction.request.url,
+              CorporateLoginPresentation.allowsPopup(url, sourceProtocol: source.protocol,
+                  sourceHost: source.host, sourcePort: source.port) else { return nil }
+        // Return a real child window: window.open() must retain its WindowProxy
+        // so Passport can navigate it after the initial about:blank document.
+        // WebKit supplies the parent process pool and ephemeral cookie store.
+        let popup = WKWebView(frame: .zero, configuration: configuration)
+        popup.navigationDelegate = self; popup.uiDelegate = self
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        win.title = "Корпоративный вход"; win.contentView = popup
+        win.delegate = self; win.isReleasedWhenClosed = false; win.center()
+        loginPopups.append((popup, win)); win.makeKeyAndOrderFront(nil)
+        return popup
     }
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
                  initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {

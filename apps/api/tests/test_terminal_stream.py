@@ -185,7 +185,12 @@ def test_logout_closes_live_stream_and_stops_input(
     ) as ws:
         ws.send_json({"op": "authenticate", "ticket": ticket})
         assert ws.receive_json()["op"] == "ready"
-        assert ws.receive_bytes() == b"visible prompt"
+        # The broker output and server challenge are independent streams;
+        # accept either valid ordering while consuming both frames.
+        messages = [ws.receive(), ws.receive()]
+        assert {message.get("text") for message in messages} >= {'{"op":"heartbeat"}'}
+        assert b"visible prompt" in [message.get("bytes") for message in messages]
+        ws.send_json({"op": "heartbeat"})
         ws.send_bytes(b"id\n")
         assert client.post("/auth/logout").status_code == 204
         error = ws.receive_json()
@@ -200,3 +205,93 @@ def test_control_and_resize_reject_ambiguous_or_large_frames():
     for value in ('{"op":"heartbeat","op":"resize"}', "[]", "x" * 4097):
         with pytest.raises(TerminalError):
             message(value)
+
+
+@pytest.mark.parametrize("failure", ["revoked", "blocked_send"])
+def test_server_challenge_fails_closed_after_access_check(monkeypatch, failure):
+    from types import SimpleNamespace
+
+    from robopark_api.services.terminal import stream
+
+    events = []
+
+    def check_access(*args, **kwargs):
+        if kwargs.get("attachment"):
+            events.append("access_checked")
+            if failure == "revoked":
+                raise TerminalError("terminal_access_revoked", 403)
+        return {"id": "fixture-session"}, "fixture-attachment"
+
+    class Writer:
+        def close(self):
+            events.append("writer_closed")
+
+        async def wait_closed(self):
+            pass
+
+    class Broker:
+        def __init__(self, _):
+            pass
+
+        async def attach(self, *_):
+            return asyncio.StreamReader(), Writer()
+
+        async def terminate(self, *_):
+            events.append("revoked")
+
+    class Socket:
+        headers = {}
+        query_params = {}
+        cookies = {"fixture": "test-only-session"}
+        app = SimpleNamespace(state=SimpleNamespace(terminal_session_factory=None))
+        authenticated = False
+
+        async def accept(self):
+            pass
+
+        async def receive(self):
+            if not self.authenticated:
+                self.authenticated = True
+                return {"text": json.dumps({"op": "authenticate", "ticket": "a" * 32})}
+            await asyncio.Event().wait()
+
+        async def send_json(self, value):
+            events.append(value["op"])
+            if value["op"] == "heartbeat":
+                assert events.index("access_checked") < events.index("heartbeat")
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    events.append("challenge_cancelled")
+
+        async def close(self, **_):
+            events.append("socket_closed")
+
+    async def control(*_):
+        events.append("broker_lease")
+
+    monkeypatch.setattr(stream, "require_origin", lambda *_: None)
+    monkeypatch.setattr(stream, "check_access", check_access)
+    monkeypatch.setattr(stream, "BrokerClient", Broker)
+    monkeypatch.setattr(stream, "control", control)
+    monkeypatch.setattr(stream, "detach", lambda *_: events.append("detached"))
+
+    async def run():
+        # Production's one-second send deadline must finish independently of
+        # this larger test guard; a hung challenge must never renew the lease.
+        await asyncio.wait_for(
+            stream.serve_terminal_stream(
+                Socket(), "fixture-session", SimpleNamespace(session_cookie_name="fixture")
+            ),
+            2,
+        )
+
+    asyncio.run(run())
+    assert "access_checked" in events
+    assert "broker_lease" not in events
+    assert {"writer_closed", "detached", "socket_closed"} <= set(events)
+    if failure == "revoked":
+        assert "heartbeat" not in events
+        assert {"error", "revoked"} <= set(events)
+    else:
+        assert "challenge_cancelled" in events

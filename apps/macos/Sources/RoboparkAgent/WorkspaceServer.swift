@@ -5,7 +5,8 @@ import AgentCore
 @MainActor final class WorkspaceServer {
     let port: UInt16 = 18444
     let session: WorkspaceSession
-    private var token = WorkspaceServer.newToken()
+    private static let capabilityAccount = "workspace-browser-session-v1"
+    private var token: String
     private var launches: [String: (deadline: Date, fragment: String?)] = [:]
     private let now: () -> Date
     var sessionToken: String { token }
@@ -19,12 +20,26 @@ import AgentCore
     }
     init(now: @escaping () -> Date = Date.init) throws {
         self.now = now
+        let stored = SecureStore.isSignedOut(Self.capabilityAccount) ? nil : try SecureStore.readData(Self.capabilityAccount)
+        if let stored, let value = String(data: stored, encoding: .utf8),
+           value.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil { token = value }
+        else {
+            token = Self.newToken()
+            try SecureStore.writeData(Data(token.utf8), account: Self.capabilityAccount)
+            SecureStore.markSignedOut(Self.capabilityAccount, false)
+        }
         session = try WorkspaceSession()
         session.onSessionInvalidated = { [weak self] in self?.revokeBrowserSession() }
     }
     private func revokeBrowserSession() {
+        // Fail closed across a crash even if Keychain is locked during logout.
+        SecureStore.markSignedOut(Self.capabilityAccount, true)
         token = Self.newToken()
         launches.removeAll()
+        do {
+            try SecureStore.writeData(Data(token.utf8), account: Self.capabilityAccount)
+            SecureStore.markSignedOut(Self.capabilityAccount, false)
+        } catch { /* Next launch must replace the old durable capability. */ }
     }
     func launchURL(route: String? = nil) -> URL {
         launches = launches.filter { $0.value.deadline > now() }
@@ -52,7 +67,7 @@ import AgentCore
         do { _ = try await task.value; server = http; starting = nil }
         catch { http.stop(); starting = nil; throw error }
     }
-    func stop() { starting?.cancel(); starting = nil; server?.stop(); server = nil; revokeBrowserSession() }
+    func stop() { starting?.cancel(); starting = nil; server?.stop(); server = nil; launches.removeAll() }
     private func storageKey() throws -> Data {
         if let bytes = try SecureStore.readData("workspace-storage-key-v1") {
             guard bytes.count == 32 else { throw NetworkFailure.invalid }

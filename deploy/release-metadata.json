@@ -1,5 +1,5 @@
 {
-  "migration_head": "0065_corporate_write_receipts",
+  "migration_head": "0066_device_auth",
   "migration_compatibility": {
     "from_heads": [
       "0055_media_upload_park",
@@ -12,7 +12,8 @@
       "0062_notification_retention_idx",
       "0063_agent_devices",
       "0064_agent_device_identity",
-      "0065_corporate_write_receipts"
+      "0065_corporate_write_receipts",
+      "0066_device_auth"
     ],
     "reversible": false
   },
@@ -54,7 +55,8 @@
     "0.2.3-rc.4",
     "0.2.3-rc.5",
     "0.2.3-rc.6",
-    "0.2.3-rc.7"
+    "0.2.3-rc.7",
+    "0.2.3-rc.8"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -72,5 +74,5 @@
       65536
     ]
   },
-  "update_notes": "Test recovery: Tracker pagination on server and owner Mac; bounded Mac WebSocket handshake and heartbeat recovery; corporate write authority checks."
+  "update_notes": "Test recovery: scoped Tracker reads, bounded probes and terminal heartbeat; persistent Mac sessions, stable test signing and corporate login diagnostics."
 }

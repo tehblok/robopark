@@ -60,8 +60,69 @@ def test_registry_one_tracker_batch_no_emergency_and_unique_exact_robot_counts(c
     assert data["source_complete"] is True
     batch.assert_called_once()
     assert batch.call_args.kwargs["filter_open"] is False
+    assert batch.call_args.kwargs["projection"] == "registry"
     assert '"ROBOPARK"' in batch.call_args.kwargs["query"]
+    assert 'Tags: "Alpha"' in batch.call_args.kwargs["query"]
     emergency.assert_not_called()
+
+
+def test_registry_scopes_upstream_query_to_each_authorized_queue_tag_pair(
+    client, db_session, registry, seed_mechanic
+):
+    second = Park(name="Beta", tag="Beta", tracker_queue="ROBOLAB", is_active=True)
+    db_session.add(second)
+    db_session.flush()
+    db_session.add(UserPark(user_id=seed_mechanic.id, park_id=second.id))
+    db_session.commit()
+    with patch("robopark_api.services.tracker_cache.search_issues", return_value=[]) as batch:
+        assert client.get("/robots").status_code == 200
+    upstream_query = batch.call_args.kwargs["query"]
+    assert '(Queue: "ROBOPARK" Tags: "Alpha")' in upstream_query
+    assert '(Queue: "ROBOLAB" Tags: "Beta")' in upstream_query
+
+
+def test_registry_chunks_long_authorized_scope_and_deduplicates_issues(
+    client, db_session, registry, seed_mechanic
+):
+    for index in range(24):
+        suffix = f"{index:02d}"
+        park = Park(
+            name=f"Long scope {suffix}",
+            tag=f"TAG{suffix}" + "T" * 59,
+            tracker_queue=f"QUEUE{suffix}" + "Q" * 119,
+            is_active=True,
+        )
+        db_session.add(park)
+        db_session.flush()
+        db_session.add(UserPark(user_id=seed_mechanic.id, park_id=park.id))
+    db_session.commit()
+    queries = []
+
+    def batch(**kwargs):
+        queries.append(kwargs["query"])
+        return [issue("ROBOPARK-1")]
+
+    with patch("robopark_api.services.tracker_cache.search_issues", side_effect=batch):
+        response = client.get("/robots")
+
+    assert response.status_code == 200
+    assert len(queries) >= 2
+    assert all(1 <= len(query) <= 4096 for query in queries)
+    assert sum(query.count("Queue:") for query in queries) == 25
+    assert response.json()["items"][0]["task_count"] == 1
+
+
+def test_registry_minimal_projection_keeps_robot_with_only_closed_task(client, registry):
+    with patch(
+        "robopark_api.services.tracker_cache.search_issues",
+        return_value=[issue("ROBOPARK-5", status="closed")],
+    ) as batch:
+        response = client.get(f"/robots?park_id={registry.id}")
+    assert response.status_code == 200
+    assert response.json()["items"][0]["vin"] == VIN
+    assert response.json()["items"][0]["task_count"] == 0
+    assert batch.call_args.kwargs["filter_open"] is False
+    assert batch.call_args.kwargs["projection"] == "registry"
 
 
 @pytest.mark.parametrize("query", [VIN.lower(), "ROBOPARK-1", "0447"])

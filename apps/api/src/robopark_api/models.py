@@ -128,11 +128,23 @@ class User(Base):
 
 class AuthSession(Base):
     __tablename__ = "sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "auth_method IN ('password', 'device')",
+            name="ck_sessions_auth_method",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    auth_method: Mapped[str] = mapped_column(
+        String(16), default="password", server_default="password"
+    )
+    device_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_devices.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped[User] = relationship(back_populates="sessions")
@@ -1262,6 +1274,33 @@ class AgentDevice(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    device_auth_enabled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    device_auth_disabled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    device_auth_rate_window_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    device_auth_rate_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class DeviceAuthChallenge(Base):
+    __tablename__ = "device_auth_challenges"
+    __table_args__ = (
+        Index("ix_device_auth_challenges_device_created", "device_id", "created_at"),
+        CheckConstraint("length(nonce_hash) = 64", name="ck_device_auth_nonce_hash"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_devices.id", ondelete="CASCADE"), index=True
+    )
+    nonce_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class CorporateWriteAuthority(Base):

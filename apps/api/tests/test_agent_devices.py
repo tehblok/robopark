@@ -529,18 +529,28 @@ def test_automatic_probe_target_uses_authorized_registry_without_emergency_calls
     assert client.get("/agent-devices/probe-target").status_code == 401
     login_as(client, "mech1", "secret")
     monkeypatch.setattr(platform_settings, "get_tracker_token", lambda db: "fixture-token")
-    monkeypatch.setattr(
-        tracker_client,
-        "search_issues",
-        lambda **kwargs: [
+    seen = []
+
+    def bounded_page(**kwargs):
+        seen.append(kwargs)
+        return [
             {"key": "ROBOPARK-FOREIGN", "queue": "ROBOPARK", "tags": ["Foreign"], "robot": "1"},
             {
                 "key": "ROBOPARK-OWN",
                 "queue": "ROBOPARK",
                 "tags": [seed_park_with_tracker.tag],
                 "robot": "447",
+                "status": "closed",
+                "status_key": "closed",
+                "resolution": "fixed",
             },
-        ],
+        ]
+
+    monkeypatch.setattr(tracker_client, "search_issue_page", bounded_page)
+    monkeypatch.setattr(
+        tracker_client,
+        "search_issues",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("probe exhausted history")),
     )
 
     def unexpected_read(**kwargs):
@@ -551,6 +561,11 @@ def test_automatic_probe_target_uses_authorized_registry_without_emergency_calls
     assert response.status_code == 200
     assert response.json() == {"vin": "YASADR00000000447"}
     assert response.headers["cache-control"] == "no-store"
+    assert len(seen) == 1
+    assert seen[0]["limit"] == 50
+    assert seen[0]["filter_open"] is False
+    assert seen[0]["projection"] == "registry"
+    assert 'Tags: "Alpha"' in seen[0]["query"]
 
 
 def test_automatic_probe_target_has_no_guessed_robot_when_registry_empty(
@@ -560,7 +575,7 @@ def test_automatic_probe_target_has_no_guessed_robot_when_registry_empty(
 
     login_as(client, "admin", "secret")
     monkeypatch.setattr(platform_settings, "get_tracker_token", lambda db: "fixture-token")
-    monkeypatch.setattr(tracker_client, "search_issues", lambda **kwargs: [])
+    monkeypatch.setattr(tracker_client, "search_issue_page", lambda **kwargs: [])
     response = client.get("/agent-devices/probe-target")
     assert response.status_code == 200
     assert response.json() == {"vin": None}

@@ -96,7 +96,14 @@ export class TerminalConnection {
         try { message = JSON.parse(event.data) } catch { return }
         if (!message || typeof message !== 'object') return
         const value = message as { op?: string; session?: SessionOut; reason?: string; error?: string }
-        if (value.op === 'ready' && value.session) {
+        if (value.op === 'heartbeat') {
+          // A server-pushed challenge keeps the lease alive when background
+          // tab throttling delays the fallback interval.  Never answer from a
+          // stale socket or before the current socket is ready.
+          if (ready && this.readySocket === socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ op: 'heartbeat' }))
+          }
+        } else if (value.op === 'ready' && value.session) {
           ready = true
           this.readySocket = socket
           this.firstDetachedAt = 0

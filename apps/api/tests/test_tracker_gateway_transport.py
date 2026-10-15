@@ -228,6 +228,263 @@ def test_personal_read_never_uses_cached_service_account_data(monkeypatch):
     assert len(calls) == 2
 
 
+def test_gateway_server_primary_reuses_service_cache(monkeypatch):
+    from robopark_api.services import tracker_cache, tracker_client
+
+    tracker_cache.clear_all_for_tests()
+    calls = []
+
+    def get_issue(*, token, key):
+        calls.append(token)
+        return {"key": key, "summary": "server"}
+
+    monkeypatch.setattr(tracker_client, "get_issue", get_issue)
+    context = GatewayCredential(7, server_token="service-token")
+
+    assert tracker_cache.get_issue(token=context, key="TEST-1")["summary"] == "server"
+    assert tracker_cache.get_issue(token=context, key="TEST-1")["summary"] == "server"
+    assert calls == ["service-token"]
+
+
+def test_gateway_network_fallback_never_publishes_mac_result_to_service_cache(monkeypatch):
+    import requests
+
+    from robopark_api.services import tracker_cache, tracker_client
+
+    tracker_cache.clear_all_for_tests()
+    server_calls = 0
+    mac_calls = 0
+
+    def get_issue(*, token, key):
+        nonlocal server_calls, mac_calls
+        if isinstance(token, GatewayCredential):
+            mac_calls += 1
+            assert token.server_token is None
+            return {"key": key, "summary": "owner-mac"}
+        server_calls += 1
+        if server_calls == 1:
+            try:
+                raise requests.ConnectionError("offline")
+            except requests.ConnectionError as cause:
+                raise tracker_client.TrackerError("server unavailable") from cause
+        return {"key": key, "summary": "server-restored"}
+
+    monkeypatch.setattr(tracker_client, "get_issue", get_issue)
+    context = GatewayCredential(7, server_token="service-token")
+
+    assert tracker_cache.get_issue(token=context, key="TEST-2")["summary"] == "owner-mac"
+    assert tracker_cache.get_issue(token="service-token", key="TEST-2")["summary"] == (
+        "server-restored"
+    )
+    assert (server_calls, mac_calls) == (2, 1)
+
+
+def test_gateway_permission_failure_never_falls_back_to_mac(monkeypatch):
+    from robopark_api.services import tracker_cache, tracker_client
+
+    tracker_cache.clear_all_for_tests()
+    calls = []
+
+    def get_issue(*, token, key):
+        calls.append(token)
+        if isinstance(token, GatewayCredential):
+            raise AssertionError("permission failure must not reach owner Mac")
+        try:
+            raise PermissionError("denied")
+        except PermissionError as cause:
+            raise tracker_client.TrackerError("server denied") from cause
+
+    monkeypatch.setattr(tracker_client, "get_issue", get_issue)
+
+    with pytest.raises(tracker_client.TrackerError, match="server denied"):
+        tracker_cache.get_issue(
+            token=GatewayCredential(7, server_token="service-token"), key="TEST-3"
+        )
+    assert calls == ["service-token"]
+
+
+def test_gateway_without_server_token_reads_only_from_owner_mac(monkeypatch):
+    from robopark_api.services import tracker_cache, tracker_client
+
+    tracker_cache.clear_all_for_tests()
+    calls = []
+
+    def get_issue(*, token, key):
+        calls.append(token)
+        return {"key": key, "summary": "owner-mac"}
+
+    monkeypatch.setattr(tracker_client, "get_issue", get_issue)
+    context = GatewayCredential(7)
+
+    assert tracker_cache.get_issue(token=context, key="TEST-4")["summary"] == "owner-mac"
+    assert calls == [context]
+
+
+@pytest.mark.parametrize("failure", ["rate_limited", "slot_wait"])
+def test_gateway_nonavailability_failure_never_falls_back_to_mac(monkeypatch, failure):
+    from robopark_api.services import tracker_cache, tracker_client
+
+    tracker_cache.clear_all_for_tests()
+    calls = []
+
+    class Response:
+        status_code = 429
+        reason = "rate limited"
+
+        @staticmethod
+        def json():
+            return {"errorMessages": ["rate limited"]}
+
+    def get_issue(*, token, key):
+        calls.append(token)
+        if isinstance(token, GatewayCredential):
+            raise AssertionError("non-availability failure must not reach owner Mac")
+        if failure == "rate_limited":
+            from yandex_tracker_client.exceptions import TrackerServerError
+
+            cause = TrackerServerError(Response())
+        else:
+            cause = TimeoutError("Tracker API slot wait timed out")
+        raise tracker_client.TrackerError(failure) from cause
+
+    monkeypatch.setattr(tracker_client, "get_issue", get_issue)
+
+    with pytest.raises(tracker_client.TrackerError, match=failure):
+        tracker_cache.get_issue(
+            token=GatewayCredential(7, server_token="service-token"), key="TEST-5"
+        )
+    assert calls == ["service-token"]
+
+
+def test_gateway_server_5xx_falls_back_to_mac(monkeypatch):
+    from robopark_api.services import tracker_cache, tracker_client
+
+    tracker_cache.clear_all_for_tests()
+    calls = []
+
+    class Response:
+        status_code = 503
+        reason = "unavailable"
+
+        @staticmethod
+        def json():
+            return {"errorMessages": ["unavailable"]}
+
+    def get_issue(*, token, key):
+        calls.append(token)
+        if isinstance(token, GatewayCredential):
+            assert token.server_token is None
+            return {"key": key, "summary": "owner-mac"}
+        from yandex_tracker_client.exceptions import TrackerServerError
+
+        raise tracker_client.TrackerError("server unavailable") from TrackerServerError(Response())
+
+    monkeypatch.setattr(tracker_client, "get_issue", get_issue)
+
+    result = tracker_cache.get_issue(
+        token=GatewayCredential(7, server_token="service-token"), key="TEST-6"
+    )
+    assert result["summary"] == "owner-mac"
+    assert calls == ["service-token", GatewayCredential(7)]
+
+
+def test_gateway_shared_failure_rechecks_server_before_permission_decision():
+    from robopark_api.services import tracker_cache, tracker_client
+    from robopark_api.services.live_merge import LiveMergeUpstreamError
+
+    calls = []
+
+    def cached():
+        try:
+            raise LiveMergeUpstreamError("shared failure", error_type="TrackerError")
+        except LiveMergeUpstreamError as cause:
+            raise tracker_client.TrackerError("Tracker shared request failed") from cause
+
+    def direct():
+        calls.append("server")
+        try:
+            raise PermissionError("denied")
+        except PermissionError as cause:
+            raise tracker_client.TrackerError("server denied") from cause
+
+    def mac():
+        calls.append("mac")
+        raise AssertionError("permission failure must not reach owner Mac")
+
+    with pytest.raises(tracker_client.TrackerError, match="server denied"):
+        tracker_cache._server_primary_read(cached=cached, direct=direct, mac=mac)
+    assert calls == ["server"]
+
+
+def test_gateway_server_primary_metrics_reuse_service_cache(monkeypatch):
+    from robopark_api.services import tracker_cache, tracker_metrics
+
+    tracker_cache.clear_all_for_tests()
+    calls = []
+
+    def collect(*, token, **kwargs):
+        calls.append(token)
+        return {"total": 12}
+
+    monkeypatch.setattr(tracker_metrics, "collect_park_metrics", collect)
+    context = GatewayCredential(7, server_token="service-token")
+    scope = {"queue": "TEST", "tag": "park"}
+
+    assert tracker_cache.collect_park_metrics(token=context, **scope) == {"total": 12}
+    assert tracker_cache.collect_park_metrics(token=context, **scope) == {"total": 12}
+    assert calls == ["service-token"]
+
+
+def test_gateway_metrics_direct_recheck_bypasses_nested_shared_count_failure(monkeypatch):
+    import requests
+
+    from robopark_api.services import tracker_cache, tracker_client
+    from robopark_api.services.live_merge import LiveMergeUpstreamError
+
+    tracker_cache.clear_all_for_tests()
+
+    def lost_shared_failure(*_args, **_kwargs):
+        try:
+            raise LiveMergeUpstreamError("shared failure", error_type="TrackerError")
+        except LiveMergeUpstreamError as cause:
+            raise tracker_client.TrackerError("Tracker shared request failed") from cause
+
+    monkeypatch.setattr(tracker_cache._metrics_cache, "get_or_load", lost_shared_failure)
+    monkeypatch.setattr(tracker_cache._count_cache, "get_or_load", lost_shared_failure)
+    calls = []
+
+    def count(*, token, query):
+        calls.append(token)
+        if token == "service-token":
+            try:
+                raise requests.ConnectionError("offline")
+            except requests.ConnectionError as cause:
+                raise tracker_client.TrackerError("server unavailable") from cause
+        assert isinstance(token, GatewayCredential)
+        assert token.server_token is None
+        return 1
+
+    monkeypatch.setattr(tracker_client, "count_issues", count)
+    result = tracker_cache.collect_park_metrics(
+        token=GatewayCredential(7, server_token="service-token"),
+        queue="TEST",
+        tag="park",
+    )
+
+    assert result == {
+        "open_blockers": 1,
+        "backlog": 1,
+        "in_transit": 1,
+        "queued": 1,
+        "waiting_team": 1,
+        "waiting_parts": 1,
+        "arrived": 1,
+        "done": 1,
+    }
+    assert calls[0] == "service-token"
+    assert all(isinstance(token, GatewayCredential) for token in calls[1:])
+
+
 def test_personal_blockers_ignore_cache_only_options(monkeypatch):
     from robopark_api.services import tracker_cache, tracker_client
 

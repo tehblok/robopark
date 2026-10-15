@@ -31,7 +31,39 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
+try:
+    from scripts.macos_signing import ensure_test_signing_identity, isolated_test_signer
+except ModuleNotFoundError:  # Direct execution: scripts/ is sys.path[0].
+    from macos_signing import ensure_test_signing_identity, isolated_test_signer
+
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def sign_application_target(
+    target: Path,
+    *,
+    identifier: str,
+    developer_identity: str | None,
+    test_secret_dir: Path,
+) -> str | None:
+    """Sign one TEST artifact and return its public certificate fingerprint."""
+    if developer_identity:
+        subprocess.run(
+            [
+                "codesign", "--force", "--sign", developer_identity, "--options",
+                "runtime", "--timestamp", "--identifier", identifier, str(target),
+            ],
+            check=True,
+        )
+        subprocess.run(["codesign", "--verify", "--strict", str(target)], check=True)
+        return None
+    pin = json.loads((ROOT / "deploy/macos-test-signing.json").read_text())["certificate_sha256"]
+    if not isinstance(pin, str) or not re.fullmatch(r"[0-9a-f]{64}", pin):
+        raise ValueError("invalid_test_signing_pin")
+    identity = ensure_test_signing_identity(test_secret_dir, expected_fingerprint=pin)
+    with isolated_test_signer(identity) as signer:
+        signer.sign(target, identifier=identifier)
+    return identity.fingerprint
 
 
 def package_name(version: str) -> str:
@@ -286,6 +318,7 @@ def build(
     sign_application: str | None = None,
     sign_installer: str | None = None,
     notary_profile: str | None = None,
+    test_signing_dir: Path = ROOT / ".release-secrets/macos-test-signing",
 ) -> dict:
     version = (ROOT / "VERSION").read_text().strip()
     filename = package_name(version)
@@ -427,26 +460,26 @@ def build(
         (launch_dir / "ru.robopark.agent.plist").write_bytes(
             plistlib.dumps(launch_agent())
         )
-        signing = [
-            "codesign",
-            "--force",
-            "--sign",
-            sign_application or "-",
-            "--options",
-            "runtime",
-        ]
-        if sign_application:
-            signing.append("--timestamp")
-        subprocess.run([*signing, str(compute_worker)], check=True)
-        subprocess.run(["codesign", "--verify", "--strict", str(compute_worker)], check=True)
+        test_signing_fingerprint = sign_application_target(
+            compute_worker,
+            identifier="ru.robopark.agent.compute",
+            developer_identity=sign_application,
+            test_secret_dir=test_signing_dir,
+        )
         helper_dir = payload / "Library/PrivilegedHelperTools"
         helper_dir.mkdir(parents=True)
         helper = helper_dir / "RoboparkUpdater"
         shutil.copy2(bin_path / "RoboparkUpdater", helper)
         helper.chmod(0o755)
         subprocess.run(["strip", "-S", str(helper)], check=True)
-        subprocess.run([*signing, str(helper)], check=True)
-        subprocess.run(["codesign", "--verify", "--strict", str(helper)], check=True)
+        helper_test_fingerprint = sign_application_target(
+            helper,
+            identifier="ru.robopark.agent.updater",
+            developer_identity=sign_application,
+            test_secret_dir=test_signing_dir,
+        )
+        if helper_test_fingerprint != test_signing_fingerprint:
+            raise ValueError("inconsistent_test_signing_identity")
         daemon_dir = payload / "Library/LaunchDaemons"
         daemon_dir.mkdir(parents=True)
         (daemon_dir / "ru.robopark.update-helper.plist").write_bytes(
@@ -596,7 +629,14 @@ esac
         for script in scripts.iterdir():
             script.chmod(0o755)
             subprocess.run(["sh", "-n", str(script)], check=True)
-        subprocess.run([*signing, str(app)], check=True)
+        app_test_fingerprint = sign_application_target(
+            app,
+            identifier="ru.robopark.agent",
+            developer_identity=sign_application,
+            test_secret_dir=test_signing_dir,
+        )
+        if app_test_fingerprint != test_signing_fingerprint:
+            raise ValueError("inconsistent_test_signing_identity")
         subprocess.run(
             ["codesign", "--verify", "--deep", "--strict", str(app)], check=True
         )
@@ -654,6 +694,8 @@ esac
         "architecture": "arm64",
         "minimum_macos": "13.0",
         "developer_id_signed": bool(sign_application and sign_installer),
+        "stable_test_identity_signed": bool(test_signing_fingerprint),
+        "test_signing_certificate_sha256": test_signing_fingerprint,
         "notarized": bool(notary_profile),
         "metadata_signed": True,
         "physical_install_tested": False,
@@ -688,6 +730,11 @@ def main() -> int:
     parser.add_argument("--sign-application")
     parser.add_argument("--sign-installer")
     parser.add_argument("--notary-profile")
+    parser.add_argument(
+        "--test-signing-dir",
+        type=Path,
+        default=ROOT / ".release-secrets/macos-test-signing",
+    )
     args = parser.parse_args()
     report = build(
         args.output.resolve(),
@@ -696,6 +743,7 @@ def main() -> int:
         sign_application=args.sign_application,
         sign_installer=args.sign_installer,
         notary_profile=args.notary_profile,
+        test_signing_dir=args.test_signing_dir.resolve(),
     )
     print(json.dumps(report, indent=2))
     return 0

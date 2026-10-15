@@ -1,5 +1,39 @@
 import Foundation
 
+/// Only fixed messages are exposed: NSError descriptions and URLs may contain credentials.
+public enum CorporateLoginPresentation {
+    public static func failureMessage(_ error: NSError) -> String? {
+        if error.domain == NSURLErrorDomain {
+            switch error.code {
+            case NSURLErrorCancelled: return nil
+            case NSURLErrorTimedOut: return "Истекло время загрузки корпоративного входа. Проверьте сеть и нажмите «Повторить»."
+            case NSURLErrorNotConnectedToInternet, NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost,
+                 NSURLErrorNetworkConnectionLost:
+                return "Нет связи с корпоративным сервером входа. Проверьте корпоративную сеть и нажмите «Повторить»."
+            case NSURLErrorServerCertificateUntrusted, NSURLErrorServerCertificateHasBadDate,
+                 NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateHasUnknownRoot:
+                return "Не удалось проверить защищённое соединение с корпоративным сервером входа."
+            default: break
+            }
+        }
+        return "Страница корпоративного входа не загрузилась. Нажмите «Повторить»."
+    }
+
+    public static func allowsPopup(_ url: URL, sourceProtocol: String,
+                                    sourceHost: String, sourcePort: Int) -> Bool {
+        guard sourceProtocol == "https", CorporateAuthPolicy.browserHosts.contains(sourceHost.lowercased()),
+              [0, 443].contains(sourcePort) else { return false }
+        return url.absoluteString == "about:blank" || LoginPolicy.allows(url)
+    }
+
+    public static func allowsBlankSubframe(_ url: URL, isMainFrame: Bool,
+                                           sourceProtocol: String, sourceHost: String, sourcePort: Int) -> Bool {
+        url.absoluteString == "about:blank" && !isMainFrame && sourceProtocol == "https"
+            && CorporateAuthPolicy.browserHosts.contains(sourceHost.lowercased())
+            && [0, 443].contains(sourcePort)
+    }
+}
+
 public enum CorporateIdentityStatus: String, Codable {
     case ready
     case reauthRequired = "reauth_required"

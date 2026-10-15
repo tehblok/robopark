@@ -40,6 +40,8 @@ describe('TerminalConnection', () => {
     const socket = FakeSocket.instances[0]
     socket.open()
     expect(socket.sent).toEqual([JSON.stringify({ op: 'authenticate', ticket: 'one-use' })])
+    socket.message(JSON.stringify({ op: 'heartbeat' }))
+    expect(socket.sent).toHaveLength(1)
     socket.message(new Uint8Array([98, 101, 102, 111, 114, 101]).buffer)
     expect(output).not.toHaveBeenCalled()
     expect(() => connection.sendInput(new Uint8Array([120]))).toThrow('terminal_not_connected')
@@ -126,11 +128,14 @@ describe('TerminalConnection', () => {
     second.open(); second.message(JSON.stringify({ op: 'ready', session })); await secondConnect
     state.mockClear()
     first.message(new Uint8Array([111, 108, 100]).buffer)
+    first.message(JSON.stringify({ op: 'heartbeat' }))
     first.disconnect()
     expect(output).not.toHaveBeenCalled()
     expect(state).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(10_000)
     expect(second.sent).toContain(JSON.stringify({ op: 'heartbeat' }))
+    second.message(JSON.stringify({ op: 'heartbeat' }))
+    expect(second.sent.filter(value => value === JSON.stringify({ op: 'heartbeat' }))).toHaveLength(2)
     connection.sendInput(new Uint8Array([110, 101, 119]))
     expect(second.sent.some(value => typeof value !== 'string')).toBe(true)
     connection.close()
@@ -172,7 +177,26 @@ describe('TerminalConnection', () => {
     socket.open(); socket.message(JSON.stringify({ op: 'ready', session })); await connecting
     await vi.advanceTimersByTimeAsync(10_000)
     expect(socket.sent).toContain(JSON.stringify({ op: 'heartbeat' }))
+    socket.message(JSON.stringify({ op: 'heartbeat' }))
+    expect(socket.sent.filter(value => value === JSON.stringify({ op: 'heartbeat' }))).toHaveLength(2)
     connection.close(); hidden.mockRestore(); vi.useRealTimers()
+  })
+
+  it('answers a server challenge while the fallback timer is suspended', async () => {
+    FakeSocket.instances = []
+    const connection = new TerminalConnection({
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+      ticket: async () => ({ ticket: '12345678901234567890', expires_in: 15 }), onOutput: vi.fn(),
+    })
+    const connecting = connection.connect(session)
+    await Promise.resolve()
+    const socket = FakeSocket.instances[0]
+    socket.open(); socket.message(JSON.stringify({ op: 'ready', session })); await connecting
+    // Do not advance timers: this models a suspended background timer.
+    socket.message(JSON.stringify({ op: 'heartbeat' }))
+    expect(socket.sent).toContain(JSON.stringify({ op: 'heartbeat' }))
+    expect(socket.sent.filter(value => value === JSON.stringify({ op: 'heartbeat' }))).toHaveLength(1)
+    connection.close()
   })
 
   it('revokes and clears a ready connection on an access-expired server frame', async () => {

@@ -220,6 +220,10 @@ async def serve_terminal_stream(websocket, session_id, settings):
                     return
                 access_until = time.monotonic() + 5
                 async with write_lock:
+                    # Push a bounded liveness challenge after the fresh access
+                    # check. Browser timer throttling must not make a healthy
+                    # foreground/active socket depend on its own interval timer.
+                    await asyncio.wait_for(websocket.send_json({"op": "heartbeat"}), 1)
                     await control(
                         writer, {"op": "lease", "id": session_id, "attachment_id": attachment}
                     )

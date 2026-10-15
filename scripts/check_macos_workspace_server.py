@@ -41,8 +41,17 @@ enum NetworkFailure: Error { case invalid }
 // Test-only Keychain replacement. No credentials leave this process.
 enum SecureStore {
     private static var values: [String: Data] = [:]
+    private static var signedOut: Set<String> = []
+    static var failWrites = false
     static func readData(_ account: String) throws -> Data? { values[account] }
-    static func writeData(_ data: Data, account: String) throws { values[account] = data }
+    static func writeData(_ data: Data, account: String) throws {
+        if failWrites { throw NetworkFailure.invalid }
+        values[account] = data
+    }
+    static func isSignedOut(_ account: String) -> Bool { signedOut.contains(account) }
+    static func markSignedOut(_ account: String, _ value: Bool) {
+        if value { signedOut.insert(account) } else { signedOut.remove(account) }
+    }
 }
 
 struct TestProfile { let instanceID = "workspace-server-check"; var accountID: Int? = 7 }
@@ -168,10 +177,13 @@ private func text(_ response: LocalHTTPResponse) -> String {
             let authenticated = await server.handle(try request("/api/auth/login", method: "POST", origin: origin))
             let browserCapability = server.sessionToken
             check(authenticated.status == 204 && authenticated.headers["X-Robopark-Session"] == browserCapability,
-                  "verified login grants a process-scoped header capability")
+                  "verified login grants an owner-session header capability")
             check(browserCapability != firstCapability, "account transition revokes pre-login capability")
             let restarted = try WorkspaceServer()
-            check(restarted.sessionToken != browserCapability, "browser capability is rotated on service restart")
+            check(restarted.sessionToken == browserCapability, "browser capability survives an ordinary service restart")
+            restarted.stop()
+            let afterStop = try WorkspaceServer()
+            check(afterStop.sessionToken == browserCapability, "stopping service does not log out browser tabs")
             var actions = 0
             server.agentStatus = { .json(["version": 1]) }
             server.agentAction = { _ in actions += 1; return .json(["version": 1]) }
@@ -184,6 +196,17 @@ private func text(_ response: LocalHTTPResponse) -> String {
             let revoked = await server.handle(try request("/__robopark/storage-key", capability: browserCapability))
             check(revoked.status == 401, "logout invalidates offline key access")
             check(revoked.headers["X-Robopark-Local-Session"] == "required", "local session denial is distinguishable even for HEAD")
+            let afterLogout = try WorkspaceServer()
+            check(afterLogout.sessionToken != browserCapability, "logout revocation persists across restart")
+            let beforeLockedLogout = server.sessionToken
+            SecureStore.failWrites = true
+            server.session.onSessionInvalidated?()
+            check(server.sessionToken != beforeLockedLogout, "locked Keychain cannot retain a live revoked capability")
+            do { _ = try WorkspaceServer(); check(false, "locked Keychain must fail closed after revocation") }
+            catch { check(true, "locked Keychain fails closed after revocation") }
+            SecureStore.failWrites = false
+            let afterUnlock = try WorkspaceServer()
+            check(afterUnlock.sessionToken != beforeLockedLogout, "revocation tombstone survives a failed write")
 
             let launch = server.launchURL(route: "/tasks#alerts")
             let launchParts = URLComponents(url: launch, resolvingAgainstBaseURL: false)!

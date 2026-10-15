@@ -22,6 +22,7 @@ from robopark_api.services.emergency_snapshot import parse_emergency_snapshot
 from robopark_api.services.tracker_policy import issue_authorization_status, issue_tags
 
 RegistryState = Literal["all", "online", "offline", "unknown", "errors", "tasks"]
+TRACKER_GATEWAY_QUERY_MAX_LENGTH = 4_096
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,57 @@ def _access(db: Session, user: User, park_id: int | None) -> RegistryAccess:
     )
 
 
+def _tracker_queries(access: RegistryAccess) -> tuple[str, ...]:
+    clauses = [
+        f"(Queue: {tracker_client.ql_quote(queue)} Tags: {tracker_client.ql_quote(tag)})"
+        for queue, tag in sorted({(queue, tag) for _, queue, tag in access.parks})
+    ]
+    queries: list[str] = []
+    chunk: list[str] = []
+    for clause in clauses:
+        candidate = f"({' OR '.join([*chunk, clause])})"
+        if chunk and len(candidate) > TRACKER_GATEWAY_QUERY_MAX_LENGTH:
+            queries.append(f"({' OR '.join(chunk)})")
+            chunk = [clause]
+        else:
+            chunk.append(clause)
+    if chunk:
+        queries.append(f"({' OR '.join(chunk)})")
+    return tuple(queries)
+
+
+def probe_target_vin(db: Session, user: User) -> str | None:
+    """Return a real authorized VIN from at most one minimal page per query chunk."""
+    access = _access(db, user, None)
+    if not access.parks:
+        return None
+    token = tracker_gateway_transport.credential(db, user)
+    if not token:
+        raise HTTPException(503, detail="tracker_token_not_configured")
+    try:
+        batches = (
+            tracker_cache.search_issue_page(
+                token=token,
+                query=query,
+                limit=tracker_client.API_PAGE_SIZE,
+                filter_open=False,
+                projection="registry",
+            )
+            for query in _tracker_queries(access)
+        )
+        for issues in batches:
+            for issue in issues:
+                if (
+                    access.matching_parks(issue)
+                    and issue.get("key")
+                    and (vin := _vin(issue.get("robot")))
+                ):
+                    return vin
+    except tracker_client.TrackerError as exc:
+        raise HTTPException(502, detail="tracker_upstream_error") from exc
+    return None
+
+
 def registry_rows(
     db: Session,
     user: User,
@@ -103,19 +155,23 @@ def registry_rows(
     limit: int,
 ) -> dict:
     access = _access(db, user, park_id)
-    queues = sorted({queue for _, queue, _ in access.parks})
     issues = []
-    if queues:
+    if access.parks:
         token = tracker_gateway_transport.credential(db, user)
         if not token:
             raise HTTPException(503, detail="tracker_token_not_configured")
         # The existing client drains all upstream pages. Group/count/filter only
         # after the full batch; offset/limit paginate robots, never Tracker issues.
-        batch_query = " OR ".join(f"Queue: {tracker_client.ql_quote(queue)}" for queue in queues)
         try:
-            issues = tracker_cache.search_issues(
-                token=token, query=f"({batch_query})", filter_open=False
-            )
+            for tracker_query in _tracker_queries(access):
+                issues.extend(
+                    tracker_cache.search_issues(
+                        token=token,
+                        query=tracker_query,
+                        filter_open=False,
+                        projection="registry",
+                    )
+                )
         except tracker_client.TrackerError as exc:
             raise HTTPException(502, detail="tracker_upstream_error") from exc
     rows: dict[str, dict] = {}

@@ -73,12 +73,70 @@ def test_package_bundles_and_individually_signs_compute_worker_and_uninstaller()
     source = (ROOT / "scripts/build_macos_pkg.py").read_text()
     assert '"--product", "RoboparkComputeWorker"' in source
     assert 'bin_path / "RoboparkComputeWorker"' in source
-    assert "subprocess.run([*signing, str(compute_worker)], check=True)" in source
+    assert "sign_application_target(\n            compute_worker," in source
+    assert 'identifier="ru.robopark.agent.compute"' in source
+    assert 'identifier="ru.robopark.agent.updater"' in source
+    assert 'identifier="ru.robopark.agent"' in source
+    assert 'sign_application or "-"' not in source
     assert 'ROOT / "apps/macos/Resources/compute-peer.html"' in source
     assert 'ROOT / "scripts/macos_uninstall.sh"' in source
     assert '(resources / "uninstall.command").chmod(0o755)' in source
     assert "Refusing to downgrade Robopark" in source
     assert "lifecycle.lock" in source and "verified-update.pkg" in source
+
+
+def test_application_signing_uses_stable_test_identity_and_preserves_developer_id(
+    tmp_path, monkeypatch
+):
+    import contextlib
+    import subprocess
+
+    module = builder()
+    target = tmp_path / "RoboparkAgent"
+    target.write_bytes(b"fixture")
+    calls: list[tuple] = []
+
+    class Identity:
+        fingerprint = "public-test-certificate-fingerprint"
+
+    class Signer:
+        def sign(self, signed_target, *, identifier):
+            calls.append(("test", signed_target, identifier))
+
+    monkeypatch.setattr(module, "ensure_test_signing_identity", lambda path, **kwargs: Identity())
+
+    @contextlib.contextmanager
+    def isolated(identity):
+        assert isinstance(identity, Identity)
+        yield Signer()
+
+    monkeypatch.setattr(module, "isolated_test_signer", isolated)
+    fingerprint = module.sign_application_target(
+        target,
+        identifier="ru.robopark.agent",
+        developer_identity=None,
+        test_secret_dir=tmp_path / ".release-secrets",
+    )
+    assert fingerprint == Identity.fingerprint
+    assert calls == [("test", target, "ru.robopark.agent")]
+
+    def fake_run(command, *, check):
+        calls.append(("developer", command, check))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    assert module.sign_application_target(
+        target,
+        identifier="ru.robopark.agent",
+        developer_identity="Developer ID Application: Example",
+        test_secret_dir=tmp_path / "unused",
+    ) is None
+    assert calls[-2][1] == [
+        "codesign", "--force", "--sign", "Developer ID Application: Example",
+        "--options", "runtime", "--timestamp", "--identifier",
+        "ru.robopark.agent", str(target),
+    ]
+    assert calls[-1][1] == ["codesign", "--verify", "--strict", str(target)]
 
 
 def test_installer_scripts_preserve_disabled_autostart_and_do_not_kill_running_app():

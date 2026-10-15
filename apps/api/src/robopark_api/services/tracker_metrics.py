@@ -6,6 +6,7 @@ import json
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -270,6 +271,7 @@ def collect_park_metrics(
     tag: str,
     priority: str = "blocker",
     issue_type: str | None = None,
+    counter: Callable[..., int] | None = None,
 ) -> dict[str, int]:
     keys = DEFAULT_STATUS_KEYS
     scoped = {"priority": priority, "issue_type": issue_type}
@@ -291,7 +293,8 @@ def collect_park_metrics(
         ("arrived", build_arrived_today_query(queue, tag, **scoped)),
         ("done", build_done_today_query(queue, tag, **scoped)),
     ]
+    count = counter or count_issues
     metrics: dict[str, int] = {}
     for key, query in query_map:
-        metrics[key] = count_issues(token=token, query=query) if query else 0
+        metrics[key] = count(token=token, query=query) if query else 0
     return metrics

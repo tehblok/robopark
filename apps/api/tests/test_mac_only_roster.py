@@ -92,7 +92,7 @@ def test_probe_target_uses_mac_only_authorized_registry(
     _enable_mac_only_tracker(monkeypatch)
     monkeypatch.setattr(
         tracker_client,
-        "search_issues",
+        "search_issue_page",
         lambda **_kwargs: [
             {
                 "key": "ROBOPARK-1",

@@ -81,18 +81,23 @@ enum EmbeddedTrust {
 MAIN = r"""
 import Foundation
 import AgentCore
+import CryptoKit
 
 final class MockURLProtocol: URLProtocol {
     struct Reply { let status: Int; let headers: [String: String]; let body: Data; let delay: TimeInterval }
     static var replies: [String: Reply] = [:]
     static var seen: [URLRequest] = []
-    static func reset() { replies = [:]; seen = [] }
+    static var afterRenewIdentity: Reply?
+    static func reset() { replies = [:]; seen = []; afterRenewIdentity = nil }
     override class func canInit(with request: URLRequest) -> Bool { request.url?.scheme == "https" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         guard let url = request.url else { return }
         let key = "\(request.httpMethod ?? "GET") \(url.path)?\(url.query ?? "")"
         let reply = Self.replies[key] ?? Reply(status: 404, headers: [:], body: Data(), delay: 0)
+        if url.path == "/api/auth/device-auth/renew", reply.status == 204, let after = Self.afterRenewIdentity {
+            Self.replies["GET /api/auth/me?"] = after
+        }
         Self.seen.append(request)
         Task { await RequestLatch.shared.signal() }
         let deliver = { [weak self] in
@@ -331,6 +336,78 @@ func testTransport() -> URLSession {
         _ = try await legacyOwner.call(path: "/api/health/ready")
         try check(legacyOwner.connectionState == "error", "HTTP failure is not reported as healthy connection")
         try check(legacyOwner.lastSuccessAt == lastHealthyAt, "HTTP 503 does not overwrite the last successful connection timestamp")
+
+        // A registered device proves its own key to renew; no password is stored
+        // or replayed by this test or the production client.
+        func renewalFixture(challengeStatus: Int = 200, renewStatus: Int = 204,
+                            renewedOwner: Int = 7, emptyJar: Bool = false) throws -> WorkspaceSession {
+            SecureStore.reset(); MockURLProtocol.reset()
+            let seed = WorkspaceProfile(origin: registration.origin, instanceID: instanceA, environment: "test",
+                signedProfile: infoA.signed_profile,
+                cookies: emptyJar ? [] : [WorkspaceCookie(name: "native_session", value: "expired-fixture", path: "/", expires: nil)],
+                ownerUserID: 7, accountID: 7)
+            SecureStore.values["workspace-profile-v1"] = try JSONEncoder().encode(seed)
+            let current = try WorkspaceSession(transport: testTransport())
+            try current.useRegistration(registration)
+            let expires = DateFormatter(); expires.locale = Locale(identifier: "en_US_POSIX")
+            expires.timeZone = TimeZone(secondsFromGMT: 0); expires.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
+            let challenge: [String: Any] = ["challenge_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "nonce": String(repeating: "A", count: 43), "instance_id": instanceA, "environment": "test",
+                "expires_at": expires.string(from: Date().addingTimeInterval(60))]
+            MockURLProtocol.replies["GET /api/auth/me?"] = .init(status: 401, headers: [:], body: Data(), delay: 0)
+            MockURLProtocol.replies["POST /api/auth/device-auth/challenge?"] = .init(status: challengeStatus, headers: [:],
+                body: try JSONSerialization.data(withJSONObject: challenge), delay: 0.02)
+            MockURLProtocol.replies["POST /api/auth/device-auth/renew?"] = .init(status: renewStatus,
+                headers: renewStatus == 204 ? ["Set-Cookie": "native_session=renewed-fixture; Path=/; Secure; HttpOnly"] : [:],
+                body: Data(), delay: 0)
+            MockURLProtocol.afterRenewIdentity = .init(status: 200, headers: [:],
+                body: try JSONSerialization.data(withJSONObject: ["id": renewedOwner]), delay: 0)
+            return current
+        }
+        let renewedSession = try renewalFixture()
+        let restoredByKey = await renewedSession.restoreIdentity()
+        try check(restoredByKey && renewedSession.profile?.accountID == 7, "expired account session renews by the bound Mac key")
+        try check(MockURLProtocol.seen.filter { $0.url?.path == "/api/auth/device-auth/challenge" }.count == 1
+                  && MockURLProtocol.seen.filter { $0.url?.path == "/api/auth/device-auth/renew" }.count == 1
+                  && !MockURLProtocol.seen.contains { $0.url?.path == "/api/auth/login" },
+                  "renewal uses one challenge and never sends a password login")
+        let emptyJarSession = try renewalFixture(emptyJar: true)
+        let emptyJarRestored = await emptyJarSession.restoreIdentity()
+        try check(emptyJarRestored && emptyJarSession.profile?.accountID == 7,
+                  "restart after expired cookie deletion still renews by the bound device key")
+        let concurrentRenewal = try renewalFixture()
+        async let firstRenewal = concurrentRenewal.restoreIdentity()
+        async let secondRenewal = concurrentRenewal.restoreIdentity()
+        let bothRenewals = await (firstRenewal, secondRenewal)
+        try check(bothRenewals.0 && bothRenewals.1
+                  && MockURLProtocol.seen.filter { $0.url?.path == "/api/auth/device-auth/renew" }.count == 1,
+                  "parallel expired requests share a single signed renewal")
+        let offlineRenewal = try renewalFixture(challengeStatus: 503)
+        let offlineRenewed = await offlineRenewal.restoreIdentity()
+        try check(!offlineRenewed && offlineRenewal.profile?.accountID == 7 && !SecureStore.isSignedOut("workspace"),
+                  "temporary renewal failure preserves local identity for offline work")
+        let revokedRenewal = try renewalFixture(renewStatus: 403)
+        let revokedRenewed = await revokedRenewal.restoreIdentity()
+        try check(!revokedRenewed && revokedRenewal.profile?.accountID == nil && SecureStore.isSignedOut("workspace"),
+                  "revoked device cannot renew and clears its local session")
+        let wrongOwnerRenewal = try renewalFixture(renewedOwner: 8)
+        let wrongOwnerRenewed = await wrongOwnerRenewal.restoreIdentity()
+        try check(!wrongOwnerRenewed && wrongOwnerRenewal.profile?.accountID == nil && SecureStore.isSignedOut("workspace"),
+                  "renewal cannot change the immutable Mac owner")
+        let manualLogoutRenewal = try renewalFixture()
+        SecureStore.markSignedOut("workspace", true)
+        let manualLogoutRestored = await manualLogoutRenewal.restoreIdentity()
+        try check(!manualLogoutRestored && MockURLProtocol.seen.isEmpty,
+                  "explicit logout is never silently undone by a device key")
+        let pendingRenewal = try renewalFixture()
+        let beforeRenewal = await RequestLatch.shared.current()
+        let pendingRestore = Task { await pendingRenewal.restoreIdentity() }
+        await RequestLatch.shared.wait(for: beforeRenewal + 2)
+        try pendingRenewal.clear()
+        let staleRenewed = await pendingRestore.value
+        try check(!staleRenewed && pendingRenewal.profile == nil
+                  && !MockURLProtocol.seen.contains { $0.url?.path == "/api/auth/device-auth/renew" },
+                  "logout while challenge is pending prevents a late signed renewal")
         print("PASS: \(checks) production WorkspaceSession lifecycle, cookie isolation and generation checks")
     }
 }

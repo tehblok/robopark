@@ -71,6 +71,55 @@ rejects("claim response without an authoritative owner is rejected") {
         """.utf8))
 }
 let oauthState = "0123456789abcdef0123456789abcdef"
+var deviceSessionFixture = Registration(origin: "https://roboparktest.ru.tuna.am",
+    deviceID: "11111111-1111-4111-8111-111111111111", instanceID: "22222222-2222-4222-8222-222222222222",
+    environment: "test", label: "Fixture", privateKey: Data(repeating: 1, count: 32))
+deviceSessionFixture.ownerUserID = 7
+let deviceChallengeObject: [String: String] = ["challenge_id": "33333333-3333-4333-8333-333333333333",
+    "nonce": String(repeating: "A", count: 43), "instance_id": deviceSessionFixture.instanceID,
+    "environment": "test", "expires_at": "2026-10-16T00:00:30.000000Z"]
+let deviceChallengeNow = ISO8601DateFormatter().date(from: "2026-10-16T00:00:00Z")!
+let deviceChallenge = try JSONDecoder().decode(DeviceSessionChallenge.self,
+    from: JSONSerialization.data(withJSONObject: deviceChallengeObject))
+let deviceSignature = try deviceChallenge.signature(for: deviceSessionFixture, now: deviceChallengeNow)
+let deviceSignedBytes = Data(["robopark-device-auth-v1", deviceSessionFixture.instanceID, "test", deviceSessionFixture.deviceID,
+    deviceChallengeObject["challenge_id"]!, deviceChallengeObject["nonce"]!, deviceChallengeObject["expires_at"]!].joined(separator: "\n").utf8)
+try check(try P256.Signing.PrivateKey(rawRepresentation: deviceSessionFixture.privateKey).publicKey.isValidSignature(
+    P256.Signing.ECDSASignature(derRepresentation: Data(base64Encoded: deviceSignature)!), for: deviceSignedBytes),
+    "device renewal signs the exact domain-separated owner/device/instance challenge")
+for (key, value) in [("instance_id", "foreign"), ("environment", "production"), ("nonce", "invalid\nvalue"),
+                     ("challenge_id", "bad"), ("expires_at", "2026-10-15T23:59:30.000000Z"),
+                     ("expires_at", "2026-10-16T00:10:00.000000Z")] {
+    var bad = deviceChallengeObject; bad[key] = value
+    rejects("invalid or stale device challenge is never signed") {
+        let parsed = try JSONDecoder().decode(DeviceSessionChallenge.self, from: JSONSerialization.data(withJSONObject: bad))
+        _ = try parsed.signature(for: deviceSessionFixture, now: deviceChallengeNow)
+    }
+}
+try check(CorporateLoginPresentation.failureMessage(NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)) == nil,
+          "expected navigation cancellation is not a failed sign in")
+let timeoutMessage = CorporateLoginPresentation.failureMessage(NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut,
+    userInfo: [NSLocalizedDescriptionKey: "secret-token", NSURLErrorFailingURLStringErrorKey: "https://passport.yandex-team.ru/?token=secret-token"]))!
+try check(timeoutMessage.contains("время") && !timeoutMessage.contains("secret-token"),
+          "auth failure diagnosis excludes error descriptions and credential URLs")
+try check(CorporateLoginPresentation.allowsBlankSubframe(URL(string: "about:blank")!, isMainFrame: false,
+    sourceProtocol: "https", sourceHost: CorporateAuthPolicy.passportHost, sourcePort: 443),
+          "approved login page can create its blank child frame")
+try check(!CorporateLoginPresentation.allowsBlankSubframe(URL(string: "about:blank")!, isMainFrame: true,
+    sourceProtocol: "https", sourceHost: CorporateAuthPolicy.passportHost, sourcePort: 443),
+          "top-level blank navigation cannot replace sign in")
+try check(!CorporateLoginPresentation.allowsBlankSubframe(URL(string: "about:blank")!, isMainFrame: false,
+    sourceProtocol: "https", sourceHost: "attacker.example", sourcePort: 443),
+          "foreign blank frames do not acquire corporate trust")
+try check(CorporateLoginPresentation.allowsPopup(URL(string: "about:blank")!,
+    sourceProtocol: "https", sourceHost: CorporateAuthPolicy.passportHost, sourcePort: 443),
+          "approved Passport opener may create a real blank popup")
+try check(!CorporateLoginPresentation.allowsPopup(URL(string: "about:blank")!,
+    sourceProtocol: "http", sourceHost: CorporateAuthPolicy.passportHost, sourcePort: 80),
+          "insecure opener cannot create a corporate popup")
+try check(!CorporateLoginPresentation.allowsPopup(URL(string: "https://attacker.example")!,
+    sourceProtocol: "https", sourceHost: CorporateAuthPolicy.passportHost, sourcePort: 443),
+          "approved opener cannot send popup to unapproved host")
 let oauthCallback = URL(string: "https://oauth.yandex-team.ru/verification_code#access_token=token-123&expires_in=3600&state=\(oauthState)")!
 let oauthCredential = try CorporateAuthPolicy.oauthCredential(from: oauthCallback,
                                                                expectedState: oauthState,
@@ -375,10 +424,13 @@ try check(ApplicationInstallPathPolicy.allowsApplicationsDirectory(owner: 0, gro
 try check(!ApplicationInstallPathPolicy.allowsApplicationsDirectory(owner: 0, group: 0, permissions: 0o775), "group-writable Applications requires the admin group")
 try check(!ApplicationInstallPathPolicy.allowsApplicationsDirectory(owner: 0, group: 80, permissions: 0o777), "world-writable Applications is rejected")
 let inbox = try NativeNotificationPolicy.parseInbox(JSONSerialization.data(withJSONObject: [
-    ["id": 7, "event_type": "new_task", "protected_text": "Проверьте задачу", "read_at": NSNull()],
-    ["id": "report-8", "event_type": "report", "protected_text": "Отчёт готов", "read_at": "2026-10-14T10:00:00Z"],
+    ["id": 7, "event_type": "new_task", "protected_text": "Проверьте задачу", "read_at": NSNull(),
+     "created_at": "2026-10-15T20:00:00Z"],
+    ["id": "report-8", "event_type": "report", "protected_text": "Отчёт готов", "read_at": "2026-10-14T10:00:00Z",
+     "created_at": "2026-10-15T19:00:00.123456+00:00"],
 ]))
-try check(inbox.count == 2 && inbox[0].unread && !inbox[1].unread, "native inbox accepts all bounded server categories and read state")
+try check(inbox.count == 2 && inbox[0].unread && !inbox[1].unread && inbox.allSatisfy { $0.createdAt != nil },
+          "native inbox accepts all bounded server categories, read state, and creation time")
 try check(NativeNotificationPolicy.title(for: "operator_comment") == "Комментарий оператора", "notification category has a fixed native title")
 try check(NativeNotificationPolicy.title(for: "system_problem") == "Проблема системы" &&
           NativeNotificationPolicy.title(for: "network_problem") == "Проблема сети", "royal incident categories have distinct fixed titles")
@@ -390,10 +442,146 @@ try check(maintenanceEpisodes.update(active: true, fingerprint: "same", makeEpis
 try check(maintenanceEpisodes.update(active: false, fingerprint: "same") == .recovered("episode-1"), "maintenance recovery is emitted once")
 try check(maintenanceEpisodes.update(active: true, fingerprint: "same", makeEpisodeID: { "episode-2" }) == .started("episode-2"), "same maintenance kind can start again inside the dedup TTL")
 let unicodeInbox = try NativeNotificationPolicy.parseInbox(JSONSerialization.data(withJSONObject: [[
-    "id": "announcement-emoji", "event_type": "announcement", "protected_text": String(repeating: "🛠", count: 1000)
+    "id": "announcement-emoji", "event_type": "announcement", "protected_text": String(repeating: "🛠", count: 1000),
+    "created_at": "2026-10-15T20:00:00Z"
 ]]))
 try check(unicodeInbox[0].protectedText.utf8.count == 4000, "native inbox accepts the server's 1000-Unicode-character text limit")
 rejects("notification text bound") { _ = try NativeNotificationPolicy.parseInbox(JSONSerialization.data(withJSONObject: [["id": 1, "event_type": "task", "protected_text": String(repeating: "🛠", count: 1001)]])) }
+
+let notificationNow = Date(timeIntervalSince1970: 1_760_556_600)
+let notificationPlan = NativeNotificationPolicy.deliveryPlan(events: [
+    NativeInboxEvent(id: "task-current", eventType: "new_task", protectedText: "Текущая задача", unread: true,
+                     createdAt: notificationNow.addingTimeInterval(-60)),
+    NativeInboxEvent(id: "report-current", eventType: "report", protectedText: "Текущий репорт", unread: true,
+                     createdAt: notificationNow.addingTimeInterval(-120)),
+    NativeInboxEvent(id: "health-current", eventType: "system_recovered", protectedText: "Восстановлено", unread: true,
+                     createdAt: notificationNow.addingTimeInterval(-180)),
+    NativeInboxEvent(id: "health-extra", eventType: "integration_down", protectedText: "Интеграция", unread: true,
+                     createdAt: notificationNow.addingTimeInterval(-240)),
+    NativeInboxEvent(id: "old-report-1", eventType: "report", protectedText: "Старый отчёт 1", unread: true,
+                     createdAt: notificationNow.addingTimeInterval(-3_600)),
+    NativeInboxEvent(id: "old-report-2", eventType: "operator_comment", protectedText: "Старый отчёт 2", unread: true,
+                     createdAt: notificationNow.addingTimeInterval(-3_700)),
+    NativeInboxEvent(id: "old-report-3", eventType: "return", protectedText: "Старый отчёт 3", unread: true,
+                     createdAt: notificationNow.addingTimeInterval(-3_800)),
+    NativeInboxEvent(id: "old-report-4", eventType: "review_task", protectedText: "Старый отчёт 4", unread: true,
+                     createdAt: notificationNow.addingTimeInterval(-3_900)),
+    NativeInboxEvent(id: "old-health", eventType: "server_problem", protectedText: "Старая авария", unread: true,
+                     createdAt: notificationNow.addingTimeInterval(-4_000)),
+], now: notificationNow)
+try check(notificationPlan.deliver.map(\.id) == ["task-current", "report-current", "health-summary-health-current",
+                                                   "old-report-1", "old-report-2", "old-report-3"],
+          "native catch-up keeps every current work event but bounds current health and historical work alerts")
+try check(Set(notificationPlan.suppress.map(\.id)) == Set(["health-current", "health-extra", "old-report-4", "old-health"]),
+          "native catch-up suppresses the remaining backlog without removing it from the inbox")
+try check(notificationPlan.deliver.contains { $0.eventType == "health_summary" && $0.protectedText.contains(": 2.") },
+          "multiple current health changes produce a summary instead of hiding incidents behind recovery")
+let maintenanceNow = NativeInboxEvent(id: "maintenance-current", eventType: "maintenance", protectedText: "Работы", unread: true,
+                                    createdAt: notificationNow)
+try check(NativeNotificationPolicy.deliveryPlan(events: [maintenanceNow], now: notificationNow).deliver == [maintenanceNow],
+          "current maintenance remains visible with timestamped native fallback")
+
+var notificationLedger = NativeNotificationReceiptLedger(data: nil, now: notificationNow)
+try check(notificationLedger.reserve(accountID: 7, eventID: "event-1", reservationID: "run-a", now: notificationNow),
+          "first native notification delivery reserves the account event")
+try check(!notificationLedger.reserve(accountID: 7, eventID: "event-1", reservationID: "run-a", now: notificationNow),
+          "same run cannot reserve an event twice while delivery is suspended")
+notificationLedger.complete(accountID: 7, eventID: "event-1", reservationID: "run-a", now: notificationNow)
+let restartedLedgerData = try notificationLedger.encoded()
+var restartedLedger = NativeNotificationReceiptLedger(data: restartedLedgerData, now: notificationNow.addingTimeInterval(5))
+try check(!restartedLedger.reserve(accountID: 7, eventID: "event-1", reservationID: "run-b",
+                                     now: notificationNow.addingTimeInterval(5)),
+          "completed native notification remains deduplicated after restart")
+try check(restartedLedger.reserve(accountID: 8, eventID: "event-1", reservationID: "run-b",
+                                    now: notificationNow.addingTimeInterval(5)),
+          "native notification receipts remain isolated by account")
+try check(restartedLedger.reserve(accountID: 7, eventID: "event-retry", reservationID: "run-a", now: notificationNow),
+          "failed delivery test obtains a durable reservation")
+let interruptedLedgerData = try restartedLedger.encoded()
+var interruptedLedger = NativeNotificationReceiptLedger(data: interruptedLedgerData, now: notificationNow.addingTimeInterval(5))
+try check(interruptedLedger.reserve(accountID: 7, eventID: "event-retry", reservationID: "run-b",
+                                     now: notificationNow.addingTimeInterval(5)),
+          "a reservation interrupted by restart is retryable under the new run")
+interruptedLedger.release(accountID: 7, eventID: "event-retry", reservationID: "run-b")
+try check(interruptedLedger.reserve(accountID: 7, eventID: "event-retry", reservationID: "run-b",
+                                     now: notificationNow.addingTimeInterval(6)),
+          "explicit notification delivery failure releases the reservation for retry")
+
+let healthIssue = NativeInboxEvent(id: "health-issue-1", eventType: "server_problem",
+    protectedText: "Сервер недоступен", unread: true, createdAt: notificationNow)
+let firstHealthPlan = NativeNotificationPolicy.deliveryPlan(events: [healthIssue], accountID: 7,
+    ledger: notificationLedger, now: notificationNow)
+try check(firstHealthPlan.deliver.map(\.id) == ["health-window-issue-health-issue-1"],
+          "first health issue creates one durable debounce-window notification")
+let firstHealthNotice = firstHealthPlan.deliver[0]
+try check(notificationLedger.reserve(accountID: 7, eventID: firstHealthNotice.id,
+                                      reservationID: "health-run-1", now: notificationNow),
+          "first health notification can be reserved")
+notificationLedger.complete(accountID: 7, eventID: firstHealthNotice.id,
+                            reservationID: "health-run-1", now: notificationNow)
+notificationLedger = NativeNotificationReceiptLedger(data: try notificationLedger.encoded(),
+    now: notificationNow.addingTimeInterval(60))
+
+let healthIssue2 = NativeInboxEvent(id: "health-issue-2", eventType: "integration_down",
+    protectedText: "Интеграция недоступна", unread: true,
+    createdAt: notificationNow.addingTimeInterval(60))
+let workDuringIncident = NativeInboxEvent(id: "task-during-health", eventType: "new_task",
+    protectedText: "Новая задача", unread: true, createdAt: notificationNow.addingTimeInterval(60))
+let repeatedHealthPlan = NativeNotificationPolicy.deliveryPlan(events: [healthIssue, healthIssue2, workDuringIncident],
+    accountID: 7, ledger: notificationLedger, now: notificationNow.addingTimeInterval(60))
+try check(repeatedHealthPlan.deliver == [workDuringIncident],
+          "a new issue in the same health window is quiet while a fresh work event is still delivered")
+try check(Set(repeatedHealthPlan.suppress.map(\.id)) == Set(["health-issue-1", "health-issue-2"]),
+          "health debounce changes only native delivery and leaves source inbox events untouched")
+
+let healthRecovery = NativeInboxEvent(id: "health-recovery-1", eventType: "system_recovered",
+    protectedText: "Система восстановлена", unread: true,
+    createdAt: notificationNow.addingTimeInterval(120))
+let recoveryPlan = NativeNotificationPolicy.deliveryPlan(events: [healthIssue, healthIssue2, healthRecovery], accountID: 7,
+    ledger: notificationLedger, now: notificationNow.addingTimeInterval(120))
+try check(recoveryPlan.deliver.count == 1 && recoveryPlan.deliver[0].id == "health-window-recovery-health-recovery-1" &&
+          recoveryPlan.deliver[0].eventType == "system_recovered",
+          "health recovery crosses the phase boundary and is delivered once")
+let recoveryNotice = recoveryPlan.deliver[0]
+try check(notificationLedger.reserve(accountID: 7, eventID: recoveryNotice.id,
+                                      reservationID: "health-run-2", now: notificationNow.addingTimeInterval(120)),
+          "health recovery can be reserved independently from the issue")
+notificationLedger.complete(accountID: 7, eventID: recoveryNotice.id,
+                            reservationID: "health-run-2", now: notificationNow.addingTimeInterval(120))
+notificationLedger = NativeNotificationReceiptLedger(data: try notificationLedger.encoded(),
+    now: notificationNow.addingTimeInterval(180))
+let healthRecovery2 = NativeInboxEvent(id: "health-recovery-2", eventType: "system_recovered",
+    protectedText: "Система снова в норме", unread: true,
+    createdAt: notificationNow.addingTimeInterval(180))
+let repeatedRecoveryPlan = NativeNotificationPolicy.deliveryPlan(events: [healthRecovery2], accountID: 7,
+    ledger: notificationLedger, now: notificationNow.addingTimeInterval(180))
+try check(repeatedRecoveryPlan.deliver.isEmpty,
+          "a later poll with a new single recovery does not create another banner in the same window")
+
+let reopenedHealthIssue = NativeInboxEvent(id: "health-issue-reopened", eventType: "server_problem",
+    protectedText: "Новая авария после восстановления", unread: true,
+    createdAt: notificationNow.addingTimeInterval(240))
+let reopenedIssuePlan = NativeNotificationPolicy.deliveryPlan(events: [reopenedHealthIssue], accountID: 7,
+    ledger: notificationLedger, now: notificationNow.addingTimeInterval(240))
+try check(reopenedIssuePlan.deliver.map(\.id) == ["health-window-issue-health-issue-reopened"],
+          "a recovery closes the previous issue episode so a genuine new outage alerts inside ten minutes")
+
+let nextWindowIssue = NativeInboxEvent(id: "health-issue-later", eventType: "server_problem",
+    protectedText: "Новая авария", unread: true, createdAt: notificationNow.addingTimeInterval(660))
+let nextWindowPlan = NativeNotificationPolicy.deliveryPlan(events: [nextWindowIssue], accountID: 7,
+    ledger: notificationLedger, now: notificationNow.addingTimeInterval(660))
+try check(nextWindowPlan.deliver.map(\.id) == ["health-window-issue-health-issue-later"],
+          "a health issue outside the rolling debounce window can alert again")
+var interruptedHealthLedger = NativeNotificationReceiptLedger(data: nil, now: notificationNow)
+try check(interruptedHealthLedger.reserve(accountID: 9, eventID: "health-window-issue-health-before-crash",
+    reservationID: "health-crashed-run", now: notificationNow), "health delivery is durably reserved before the banner")
+let healthAfterCrash = NativeInboxEvent(id: "health-after-crash", eventType: "server_problem",
+    protectedText: "Авария после перезапуска", unread: true,
+    createdAt: notificationNow.addingTimeInterval(30))
+let interruptedHealthPlan = NativeNotificationPolicy.deliveryPlan(events: [healthAfterCrash], accountID: 9,
+    ledger: interruptedHealthLedger, now: notificationNow.addingTimeInterval(30))
+try check(interruptedHealthPlan.deliver.map(\.id) == ["health-window-issue-health-before-crash"],
+          "an interrupted health delivery reuses its durable window id instead of creating a second banner")
 var incident = NativeIncidentPolicy()
 try check(incident.failed(isRoyal: true, networkAvailable: true) == nil && incident.failed(isRoyal: true, networkAvailable: true) == nil, "royal incident waits for three failures")
 try check(incident.failed(isRoyal: true, networkAvailable: true) == .serverIssue, "royal server incident starts after three online failures")

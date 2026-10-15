@@ -14,7 +14,8 @@ export class DesktopSessionRequiredError extends TypeError {
 }
 
 // HTTP cookies do not isolate localhost ports. Only explicit requests to this
-// exact origin carry the process-scoped capability handed off by the native app.
+// exact origin carry the owner-session capability handed off by the native app.
+// It survives service updates/restarts and rotates on account changes/revocation.
 export async function initializeDesktopTransport(): Promise<void> {
   if (!desktopRuntime() || restoreFetch) return
   const origin = window.location.origin

@@ -28,7 +28,7 @@ from robopark_api.security import (
     validate_password,
     verify_password,
 )
-from robopark_api.services import audit, ip_location, rbac, user_activity
+from robopark_api.services import audit, device_auth, ip_location, rbac, user_activity
 from robopark_api.services import platform_settings as settings_svc
 from robopark_api.services.login_throttle import (
     client_ip,
@@ -253,6 +253,7 @@ def login(
             user_id=user.id,
             token_hash=hash_session_token(raw_token),
             expires_at=now + timedelta(seconds=settings.session_idle_seconds),
+            auth_method=device_auth.AUTH_METHOD_PASSWORD,
         )
     )
     lookup_ip = user_activity.record_activity(
@@ -284,12 +285,12 @@ def logout(
 ) -> None:
     raw_token = request.cookies.get(settings.session_cookie_name)
     if raw_token:
-        revoke_terminal_sessions(
-            db, auth_session_hash=hash_session_token(raw_token), reason="logout"
-        )
-        db.execute(
-            delete(AuthSession).where(AuthSession.token_hash == hash_session_token(raw_token))
-        )
+        token_hash = hash_session_token(raw_token)
+        auth_session = db.scalar(select(AuthSession).where(AuthSession.token_hash == token_hash))
+        revoke_terminal_sessions(db, auth_session_hash=token_hash, reason="logout")
+        if auth_session is not None and auth_session.device_id:
+            device_auth.disable_for_device(db, auth_session.device_id)
+        db.execute(delete(AuthSession).where(AuthSession.token_hash == token_hash))
         db.commit()
 
     response.delete_cookie(
@@ -338,6 +339,7 @@ def change_password(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     _enforce_password_policy(payload.new_password, settings, username=user.username)
     revoke_terminal_sessions(db, owner_id=user.id, reason="password_changed")
+    device_auth.disable_for_user(db, user.id)
     user.password_hash = hash_password(payload.new_password)
     user.must_change_password = False
     # Drop other sessions so a stolen cookie does not survive the change.

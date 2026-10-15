@@ -28,23 +28,81 @@ from robopark_api.services.tracker_gateway_transport import GatewayCredential
 
 
 def _owner_gateway_read(function):
-    """Service-account cache entries never satisfy a personal Mac request.
+    """Prefer the shared service-account cache, isolating owner-Mac fallbacks.
 
-    The gateway broker may coalesce owner-scoped reads; this older cache has no
-    upstream authority key and is deliberately bypassed for those requests.
+    A personal Mac result never enters a service cache. Authorization is
+    refreshed before the caller creates each GatewayCredential.
     """
 
     @wraps(function)
     def read(*args, **kwargs):
-        if isinstance(kwargs.get("token"), GatewayCredential):
-            # These govern the legacy shared cache, not the upstream request.
+        context = kwargs.get("token")
+        if isinstance(context, GatewayCredential):
+            direct_kwargs = dict(kwargs)
             if function.__name__ == "fetch_park_blockers":
-                kwargs.pop("max_age_seconds", None)
-                kwargs.pop("allow_stale", None)
-            return getattr(tracker_client, function.__name__)(*args, **kwargs)
+                direct_kwargs.pop("max_age_seconds", None)
+                direct_kwargs.pop("allow_stale", None)
+            direct = getattr(tracker_client, function.__name__)
+            mac_context = GatewayCredential(context.requester_user_id)
+            if not context.server_token:
+                direct_kwargs["token"] = context
+                return direct(*args, **direct_kwargs)
+
+            cached_kwargs = {**kwargs, "token": context.server_token}
+            server_kwargs = {**direct_kwargs, "token": context.server_token}
+            mac_kwargs = {**direct_kwargs, "token": mac_context}
+            return _server_primary_read(
+                cached=lambda: function(*args, **cached_kwargs),
+                direct=lambda: direct(*args, **server_kwargs),
+                mac=lambda: direct(*args, **mac_kwargs),
+            )
         return function(*args, **kwargs)
 
     return read
+
+
+def _exception_chain(exc: BaseException):
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        yield exc
+        exc = exc.__cause__ or exc.__context__
+
+
+def _server_availability_failure(exc: BaseException) -> bool:
+    """Accept only structural network/read-timeout and HTTP 5xx signals."""
+    from requests.exceptions import ConnectionError as RequestsConnectionError
+    from requests.exceptions import Timeout as RequestsTimeout
+    from yandex_tracker_client.exceptions import TrackerRequestError, TrackerServerError
+
+    for cause in _exception_chain(exc):
+        if isinstance(cause, (RequestsConnectionError, RequestsTimeout, TrackerRequestError)):
+            return True
+        if isinstance(cause, TrackerServerError) and type(cause.status_code) is int:
+            return 500 <= cause.status_code <= 599
+    return False
+
+
+def _shared_failure_lost_cause(exc: BaseException) -> bool:
+    return any(isinstance(cause, LiveMergeUpstreamError) for cause in _exception_chain(exc))
+
+
+def _server_primary_read(*, cached, direct, mac):
+    try:
+        return cached()
+    except Exception as cached_exc:
+        if _server_availability_failure(cached_exc):
+            return mac()
+        if not _shared_failure_lost_cause(cached_exc):
+            raise
+    # A peer's shared error contains only its outer exception type. Recheck the
+    # server directly so permission/validation failures can never route to Mac.
+    try:
+        return direct()
+    except Exception as direct_exc:
+        if _server_availability_failure(direct_exc):
+            return mac()
+        raise
 
 
 class _TrackerCache[T](ResponseCache[T]):
@@ -196,16 +254,23 @@ def search_issues(
     query: str,
     filter_open: bool = True,
     order: list[str] | None = None,
+    projection: str | None = None,
 ) -> list[dict[str, Any]]:
-    key = f"{filter_open}|{order or []}|{query}"
+    key = f"{projection or 'full'}|{filter_open}|{order or []}|{query}"
+    client_kwargs = {
+        "token": token,
+        "query": query,
+        "filter_open": filter_open,
+        "order": order,
+    }
+    if projection is not None:
+        client_kwargs["projection"] = projection
     return _issues_cache.get_or_load(
         key,
         lambda: _remember_projection(
             _issues_cache,
             key,
-            tracker_client.search_issues(
-                token=token, query=query, filter_open=filter_open, order=order
-            ),
+            tracker_client.search_issues(**client_kwargs),
         ),
     )
 
@@ -218,20 +283,24 @@ def search_issue_page(
     limit: int,
     filter_open: bool = True,
     order: list[str] | None = None,
+    projection: str | None = None,
 ) -> list[dict[str, Any]]:
-    key = f"page:{limit}|{filter_open}|{order or []}|{query}"
+    key = f"page:{projection or 'full'}:{limit}|{filter_open}|{order or []}|{query}"
+    client_kwargs = {
+        "token": token,
+        "query": query,
+        "limit": limit,
+        "filter_open": filter_open,
+        "order": order,
+    }
+    if projection is not None:
+        client_kwargs["projection"] = projection
     return _issues_cache.get_or_load(
         key,
         lambda: _remember_projection(
             _issues_cache,
             key,
-            tracker_client.search_issue_page(
-                token=token,
-                query=query,
-                limit=limit,
-                filter_open=filter_open,
-                order=order,
-            ),
+            tracker_client.search_issue_page(**client_kwargs),
         ),
     )
 
@@ -350,7 +419,7 @@ def peek_robot_source(queues: tuple[str, ...]) -> list[dict[str, Any]] | None:
     if not normalized:
         return None
     batch_query = " OR ".join(f"Queue: {tracker_client.ql_quote(queue)}" for queue in normalized)
-    key = f"False|[]|({batch_query})"
+    key = f"full|False|[]|({batch_query})"
     found, issues = _issues_cache.get_if_fresh(key)
     if not found or issues is None:
         return None
@@ -427,9 +496,59 @@ def collect_park_metrics(
     from robopark_api.services import tracker_metrics as metrics_svc
 
     if isinstance(token, GatewayCredential):
-        return metrics_svc.collect_park_metrics(
-            token=token, queue=queue, tag=tag, priority=priority, issue_type=issue_type
+        context = token
+        mac_context = GatewayCredential(context.requester_user_id)
+        if not context.server_token:
+            return metrics_svc.collect_park_metrics(
+                token=context,
+                queue=queue,
+                tag=tag,
+                priority=priority,
+                issue_type=issue_type,
+            )
+        return _server_primary_read(
+            cached=lambda: _collect_park_metrics_cached(
+                token=context.server_token,
+                queue=queue,
+                tag=tag,
+                priority=priority,
+                issue_type=issue_type,
+            ),
+            direct=lambda: metrics_svc.collect_park_metrics(
+                token=context.server_token,
+                queue=queue,
+                tag=tag,
+                priority=priority,
+                issue_type=issue_type,
+                counter=tracker_client.count_issues,
+            ),
+            mac=lambda: metrics_svc.collect_park_metrics(
+                token=mac_context,
+                queue=queue,
+                tag=tag,
+                priority=priority,
+                issue_type=issue_type,
+            ),
         )
+
+    return _collect_park_metrics_cached(
+        token=token,
+        queue=queue,
+        tag=tag,
+        priority=priority,
+        issue_type=issue_type,
+    )
+
+
+def _collect_park_metrics_cached(
+    *,
+    token: str,
+    queue: str,
+    tag: str,
+    priority: str,
+    issue_type: str | None,
+) -> dict[str, int]:
+    from robopark_api.services import tracker_metrics as metrics_svc
 
     key = f"{queue}|{tag}|{priority}|{issue_type or ''}"
     return _metrics_cache.get_or_load(

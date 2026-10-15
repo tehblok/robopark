@@ -14,7 +14,12 @@ struct WorkspaceProfile: Codable {
 /// Native cookie jar: server credentials are never forwarded to browser storage.
 @MainActor final class WorkspaceSession {
     private(set) var profile: WorkspaceProfile?
-    private var generation = UUID()
+    private var generation = UUID() {
+        didSet { renewalTask?.cancel(); renewalTask = nil; identityCheckedAt = nil }
+    }
+    private var deviceAuthMaterial: Registration?
+    private var renewalTask: Task<Bool, Error>?
+    private var identityCheckedAt: Date?
     private var transitioning = false
     var onIdentity: (([String: Any]) async -> Void)?
     var onLogout: (() async -> Void)?
@@ -75,6 +80,7 @@ struct WorkspaceProfile: Codable {
                 changed = true
             }
             if changed { try persist() }
+            deviceAuthMaterial = registration
             return
         }
         guard profile == nil else { return }
@@ -82,6 +88,7 @@ struct WorkspaceProfile: Codable {
                                    environment: registration.environment, signedProfile: registration.signedProfile,
                                    ownerUserID: registration.ownerUserID)
         try persist()
+        deviceAuthMaterial = registration
     }
     func clear() throws {
         SecureStore.markSignedOut("workspace", true)
@@ -101,6 +108,7 @@ struct WorkspaceProfile: Codable {
         profile?.ownerUserID = binding.ownerUserID
         profile?.accountID = binding.activeUserID
         try persist()
+        identityCheckedAt = Date()
         return userID
     }
     private func rejectIdentity() async {
@@ -121,7 +129,8 @@ struct WorkspaceProfile: Codable {
         return try await request(target: path, method: method, headers: headers, body: body, timeout: timeout)
     }
     func restoreIdentity() async -> Bool {
-        guard let current = profile, !current.cookies.isEmpty,
+        guard let current = profile,
+              (!current.cookies.isEmpty || (current.accountID != nil && current.accountID == deviceAuthMaterial?.ownerUserID)),
               !SecureStore.isSignedOut("workspace") else { return false }
         do {
             let (bytes, response) = try await call(path: "/api/auth/me", timeout: 10)
@@ -143,6 +152,82 @@ struct WorkspaceProfile: Codable {
         }
     }
     func request(target: String, method: String, headers: [String: String], body: Data, timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
+        let path = String(target.split(separator: "?", maxSplits: 1).first ?? "")
+        let accountRequest = path.hasPrefix("/api/auth/") || path.hasPrefix("/api/privileged-auth/")
+        let safeRead = ["GET", "HEAD"].contains(method)
+        // Check identity before a write after inactivity, so the write itself
+        // is sent once. Never replay an arbitrary mutation after a 401.
+        if !safeRead, !accountRequest, profile?.accountID != nil,
+           identityCheckedAt.map({ Date().timeIntervalSince($0) > 300 }) ?? true {
+            let (identityData, identity) = try await request(target: "/api/auth/me", method: "GET", headers: [:], body: Data(), timeout: 10)
+            guard identity.statusCode == 200 else { return (Data(), identity) }
+            guard let user = try JSONSerialization.jsonObject(with: identityData) as? [String: Any] else { throw NetworkFailure.invalid }
+            do { _ = try acceptIdentity(user, previousAccountID: profile?.accountID) }
+            catch { await rejectIdentity(); throw error }
+        }
+        let run = generation
+        let result = try await performRequest(target: target, method: method, headers: headers, body: body, timeout: timeout)
+        guard result.1.statusCode == 401, path == "/api/auth/me" || !accountRequest else { return result }
+        if try await renewDeviceSession(identityAlreadyUnauthorized: path == "/api/auth/me") {
+            guard generation == run else { throw CancellationError() }
+            if safeRead {
+                return try await performRequest(target: target, method: method, headers: headers, body: body, timeout: timeout)
+            }
+            // Session is restored; the caller can retry explicitly/idempotently.
+            throw NetworkFailure.network
+        }
+        return result
+    }
+    private func renewDeviceSession(identityAlreadyUnauthorized: Bool) async throws -> Bool {
+        guard !SecureStore.isSignedOut("workspace"), !transitioning,
+              let registration = deviceAuthMaterial,
+              let owner = registration.ownerUserID, owner == profile?.ownerUserID,
+              owner == profile?.accountID else { return false }
+        if let renewalTask { return try await renewalTask.value }
+        let run = generation
+        let task = Task { @MainActor [weak self] () throws -> Bool in
+            guard let self else { return false }
+            if !identityAlreadyUnauthorized {
+                let (identityData, response) = try await self.performRequest(target: "/api/auth/me", method: "GET", headers: [:], body: Data(), timeout: 10)
+                if response.statusCode == 200 {
+                    guard let user = try JSONSerialization.jsonObject(with: identityData) as? [String: Any] else { throw NetworkFailure.invalid }
+                    do { _ = try self.acceptIdentity(user, previousAccountID: owner) }
+                    catch { await self.rejectIdentity(); return false }
+                    return true // Another in-flight request may already have renewed the jar.
+                }
+                if response.statusCode >= 500 || response.statusCode == 429 { throw NetworkFailure.network }
+                guard response.statusCode == 401 else { return false }
+            }
+            let jsonHeaders = ["content-type": "application/json", "accept": "application/json"]
+            let challengeBody = try JSONSerialization.data(withJSONObject: ["device_id": registration.deviceID])
+            let (data, response) = try await self.performRequest(target: "/api/auth/device-auth/challenge", method: "POST",
+                headers: jsonHeaders, body: challengeBody, timeout: 10)
+            if response.statusCode >= 500 || response.statusCode == 429 { throw NetworkFailure.network }
+            guard response.statusCode == 200 else { return false }
+            guard data.count <= 4096, self.generation == run, !Task.isCancelled,
+                  !SecureStore.isSignedOut("workspace") else { throw CancellationError() }
+            let challenge = try JSONDecoder().decode(DeviceSessionChallenge.self, from: data)
+            let signature = try challenge.signature(for: registration)
+            let renewBody = try JSONSerialization.data(withJSONObject: ["device_id": registration.deviceID,
+                "challenge_id": challenge.challenge_id, "nonce": challenge.nonce, "signature": signature])
+            let (_, renewed) = try await self.performRequest(target: "/api/auth/device-auth/renew", method: "POST",
+                headers: jsonHeaders, body: renewBody, timeout: 10)
+            if renewed.statusCode >= 500 || renewed.statusCode == 429 { throw NetworkFailure.network }
+            guard renewed.statusCode == 204 else { return false }
+            guard self.generation == run, !Task.isCancelled, !SecureStore.isSignedOut("workspace") else { throw CancellationError() }
+            let (identityData, identity) = try await self.performRequest(target: "/api/auth/me", method: "GET", headers: [:], body: Data(), timeout: 10)
+            if identity.statusCode >= 500 || identity.statusCode == 429 { throw NetworkFailure.network }
+            guard identity.statusCode == 200,
+                  let user = try JSONSerialization.jsonObject(with: identityData) as? [String: Any] else { return false }
+            do { _ = try self.acceptIdentity(user, previousAccountID: owner) }
+            catch { await self.rejectIdentity(); return false }
+            return true
+        }
+        renewalTask = task
+        defer { if generation == run { renewalTask = nil } }
+        return try await task.value
+    }
+    private func performRequest(target: String, method: String, headers: [String: String], body: Data, timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
         guard let current = profile else { throw AgentError.wrongServer }
         guard TestDeploymentAssignment.matches(origin: current.origin, instanceID: current.instanceID,
                                                environment: current.environment) else { throw AgentError.wrongServer }

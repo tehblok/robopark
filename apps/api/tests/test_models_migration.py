@@ -19,9 +19,11 @@ from sqlalchemy.orm import Session
 from robopark_api import models, notification_delivery_models, schedule_models  # noqa: F401
 from robopark_api.config import Settings
 from robopark_api.models import (
+    AgentDevice,
     AuthSession,
     Base,
     CorporateWriteAuthority,
+    DeviceAuthChallenge,
     InventoryCatalogComponent,
     InventoryCatalogPart,
     InventoryCount,
@@ -76,6 +78,7 @@ def test_metadata_has_required_tables():
         "ai_runs",
         "agent_devices",
         "agent_enrollments",
+        "device_auth_challenges",
         "corporate_write_authorities",
         "corporate_write_receipts",
         "users",
@@ -197,7 +200,7 @@ def test_global_inventory_accumulators_compile_as_postgresql_bigint():
 def test_alembic_head_includes_agent_device_registry():
     api_dir = Path(__file__).parents[1]
     script = ScriptDirectory.from_config(Config(api_dir / "alembic.ini"))
-    assert script.get_heads() == ["0065_corporate_write_receipts"]
+    assert script.get_heads() == ["0066_device_auth"]
 
 
 def test_corporate_write_migration_keeps_legacy_pending_action_on_server(
@@ -611,8 +614,7 @@ def test_notification_delivery_migration_upgrades_linear_head(sqlite_database_ur
     }
     with engine.connect() as connection:
         assert (
-            connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0065_corporate_write_receipts"
+            connection.scalar(text("SELECT version_num FROM alembic_version")) == "0066_device_auth"
         )
 
 
@@ -1273,11 +1275,39 @@ def test_models_match_required_schema():
         "user_id",
         "token_hash",
         "expires_at",
+        "auth_method",
+        "device_id",
         "created_at",
     }
     assert AuthSession.__tablename__ == "sessions"
     assert {foreign_key.target_fullname for foreign_key in AuthSession.__table__.foreign_keys} == {
-        "users.id"
+        "users.id",
+        "agent_devices.id",
+    }
+    assert set(AgentDevice.__table__.columns.keys()) == {
+        "id",
+        "owner_user_id",
+        "label",
+        "public_key_x963",
+        "environment",
+        "instance_id",
+        "created_at",
+        "last_seen_at",
+        "approved_at",
+        "approved_by_user_id",
+        "revoked_at",
+        "device_auth_enabled_at",
+        "device_auth_disabled_at",
+        "device_auth_rate_window_at",
+        "device_auth_rate_count",
+    }
+    assert set(DeviceAuthChallenge.__table__.columns.keys()) == {
+        "id",
+        "device_id",
+        "nonce_hash",
+        "expires_at",
+        "consumed_at",
+        "created_at",
     }
 
 
@@ -1360,11 +1390,14 @@ def test_migrated_indexes_and_foreign_keys_match_models(sqlite_database_url, mon
     }
 
     foreign_keys = inspector.get_foreign_keys("sessions")
-    assert len(foreign_keys) == 1
-    assert foreign_keys[0]["constrained_columns"] == ["user_id"]
-    assert foreign_keys[0]["referred_table"] == "users"
-    assert foreign_keys[0]["referred_columns"] == ["id"]
-    assert foreign_keys[0]["options"]["ondelete"] == "CASCADE"
+    by_column = {tuple(item["constrained_columns"]): item for item in foreign_keys}
+    assert set(by_column) == {("user_id",), ("device_id",)}
+    assert by_column[("user_id",)]["referred_table"] == "users"
+    assert by_column[("user_id",)]["referred_columns"] == ["id"]
+    assert by_column[("user_id",)]["options"]["ondelete"] == "CASCADE"
+    assert by_column[("device_id",)]["referred_table"] == "agent_devices"
+    assert by_column[("device_id",)]["referred_columns"] == ["id"]
+    assert by_column[("device_id",)]["options"]["ondelete"] == "SET NULL"
 
 
 def test_migrated_parks_have_tracker_columns_and_history_table(sqlite_database_url, monkeypatch):
