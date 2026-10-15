@@ -7,6 +7,8 @@ upstream payload is a REST dict or a Startrek client object.
 
 from types import SimpleNamespace
 
+import pytest
+
 from robopark_api.services.tracker_client import issue_to_dict
 
 
@@ -72,6 +74,112 @@ def test_search_reuses_user_lookups_and_never_hydrates_status_history(monkeypatc
     calls.clear()
     tracker_client.search_issues(token="other-token", query="Queue: ROBOPARK")
     assert calls == ["/v2/users/123"]  # The memo belongs to one search, not another token.
+
+
+def test_search_keeps_embedded_person_when_optional_user_lookup_is_forbidden(monkeypatch):
+    from requests import Response
+    from yandex_tracker_client import TrackerClient
+    from yandex_tracker_client.exceptions import Forbidden
+    from yandex_tracker_client.objects import Reference, Resource
+
+    from robopark_api.services import tracker_client
+
+    sdk = TrackerClient(token="test", org_id="test")
+    calls = []
+
+    def get(*, path, **_kwargs):
+        calls.append(path)
+        response = Response()
+        response.status_code = 403
+        response.reason = "Forbidden"
+        raise Forbidden(response)
+
+    monkeypatch.setattr(sdk._connection, "get", get)
+
+    def issues(*_args, **_kwargs):
+        return [
+            Resource(
+                sdk._connection,
+                f"/v2/issues/ROBOPARK-{i}",
+                {
+                    "key": f"ROBOPARK-{i}",
+                    "summary": "repair",
+                    "assignee": Reference(
+                        sdk._connection,
+                        "/v2/users/1120000000361660",
+                        {"id": "1120000000361660", "display": "Механик"},
+                    ),
+                },
+            )
+            for i in range(2)
+        ]
+
+    monkeypatch.setattr(sdk.issues, "find", issues)
+    monkeypatch.setattr(tracker_client, "_client", lambda _: sdk)
+    monkeypatch.setattr(tracker_client, "call_with_retry", lambda fn, **_: fn())
+
+    rows = tracker_client.search_issues(token="test", query="Queue: ROBOPARK")
+
+    assert [row["assignee"] for row in rows] == [
+        {"display": "Механик", "login": ""},
+        {"display": "Механик", "login": ""},
+    ]
+    assert calls == ["/v2/users/1120000000361660"]
+
+
+def test_missing_optional_user_does_not_become_numeric_login(monkeypatch):
+    from requests import Response
+    from yandex_tracker_client import TrackerClient
+    from yandex_tracker_client.exceptions import NotFound
+    from yandex_tracker_client.objects import Reference
+
+    sdk = TrackerClient(token="test", org_id="test")
+    calls = []
+
+    def get(*, path, **_kwargs):
+        calls.append(path)
+        response = Response()
+        response.status_code = 404
+        response.reason = "Not Found"
+        raise NotFound(response)
+
+    monkeypatch.setattr(sdk._connection, "get", get)
+    person = Reference(
+        sdk._connection,
+        "/v2/users/1120000000361660",
+        {"id": "1120000000361660"},
+    )
+    login_cache: dict[str, str] = {}
+
+    first = issue_to_dict({"key": "ROBOPARK-1", "assignee": person}, login_cache=login_cache)
+    second = issue_to_dict({"key": "ROBOPARK-2", "assignee": person}, login_cache=login_cache)
+
+    assert first["assignee"] is None
+    assert second["assignee"] is None
+    assert calls == ["/v2/users/1120000000361660"]
+
+
+def test_mandatory_search_forbidden_still_fails(monkeypatch):
+    from requests import Response
+    from yandex_tracker_client import TrackerClient
+    from yandex_tracker_client.exceptions import Forbidden
+
+    from robopark_api.services import tracker_client
+
+    sdk = TrackerClient(token="test", org_id="test")
+    response = Response()
+    response.status_code = 403
+    response.reason = "Forbidden"
+
+    def forbidden_search(*_args, **_kwargs):
+        raise Forbidden(response)
+
+    monkeypatch.setattr(sdk.issues, "find", forbidden_search)
+    monkeypatch.setattr(tracker_client, "_client", lambda _: sdk)
+    monkeypatch.setattr(tracker_client, "call_with_retry", lambda fn, **_: fn())
+
+    with pytest.raises(tracker_client.TrackerError):
+        tracker_client.search_issues(token="test", query="Queue: ROBOPARK")
 
 
 def test_loaded_sdk_fields_match_rest_payload_without_metadata_requests(monkeypatch):

@@ -632,6 +632,15 @@ def _attachments_from(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _optional_person_lookup_error(exc: BaseException) -> bool:
+    """Whether an SDK user dereference may be omitted from an issue projection."""
+    try:
+        from yandex_tracker_client.exceptions import Forbidden, NotFound
+    except ImportError:
+        return False
+    return isinstance(exc, (Forbidden, NotFound))
+
+
 def _person(raw: Any, login_cache: dict[str, str] | None = None) -> dict[str, str] | None:
     """Normalize a Tracker user reference to ``{display, login}``."""
     if raw is None:
@@ -641,16 +650,23 @@ def _person(raw: Any, login_cache: dict[str, str] | None = None) -> dict[str, st
         return {"display": text, "login": text} if text else None
     if isinstance(raw, dict):
         display = raw.get("display") or raw.get("login") or ""
-        login = raw.get("login") or raw.get("id") or ""
+        identity = str(raw.get("id") or "").strip()
+        login = raw.get("login") or (identity if identity and not identity.isdecimal() else "")
     else:
         display = _field(raw, "display") or _field(raw, "login") or ""
         identity = str(_field(raw, "id") or "")
+        identity_login = identity if identity and not identity.isdecimal() else ""
         if login_cache is not None and identity in login_cache:
             login = login_cache[identity]
         else:
             # User references often omit login. Resolve once per search, retaining
             # the real login needed by workload and assignee filters.
-            login = getattr(raw, "login", None) or identity
+            try:
+                login = getattr(raw, "login", None) or identity_login
+            except Exception as exc:  # noqa: BLE001 - SDK exceptions are optional imports
+                if not _optional_person_lookup_error(exc):
+                    raise
+                login = identity_login
             if login_cache is not None and identity:
                 login_cache[identity] = str(login or "").strip()
     display = str(display or "").strip()
