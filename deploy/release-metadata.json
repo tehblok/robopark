@@ -49,7 +49,8 @@
     "0.2.1",
     "0.2.2",
     "0.2.3-rc.1",
-    "0.2.3-rc.2"
+    "0.2.3-rc.2",
+    "0.2.3-rc.3"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -67,5 +68,5 @@
       65536
     ]
   },
-  "update_notes": "Test: owner-bound corporate gateways, operation-aware Mac scheduling, pinned write receipts, offline clients and bounded direct/relay photo processing."
+  "update_notes": "Test installer fix: clean Mac installation and reinstall after app removal; preserve downgrade and malformed-bundle guards. Includes rc.3 corporate Mac gateways and adaptive pool."
 }

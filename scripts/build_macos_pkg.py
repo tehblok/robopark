@@ -557,7 +557,17 @@ if [ -e "$support/lifecycle.lock" ]; then
     exit 1
   fi
 fi
-installed=$(/usr/libexec/PlistBuddy -c 'Print :RoboparkReleaseVersion' /Applications/Robopark.app/Contents/Info.plist 2>/dev/null || true)
+installed=''
+# A missing bundle is a fresh installation. PlistBuddy's missing-file message
+# goes to stdout, so do not invoke it for an absent app or ignore read failures.
+if [ -e /Applications/Robopark.app ] || [ -L /Applications/Robopark.app ]; then
+  if [ -L /Applications/Robopark.app ] || [ ! -d /Applications/Robopark.app/Contents ] || [ -L /Applications/Robopark.app/Contents ] || [ ! -f /Applications/Robopark.app/Contents/Info.plist ] || [ -L /Applications/Robopark.app/Contents/Info.plist ]; then
+    echo 'Existing Robopark bundle is invalid; refusing replacement.' >&2; exit 1
+  fi
+  if ! installed=$(/usr/libexec/PlistBuddy -c 'Print :RoboparkReleaseVersion' /Applications/Robopark.app/Contents/Info.plist 2>/dev/null) || [ -z "$installed" ]; then
+    echo 'Existing Robopark version cannot be read; refusing replacement.' >&2; exit 1
+  fi
+fi
 case "$installed" in
   '') ;;
   *)

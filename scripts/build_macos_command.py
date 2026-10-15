@@ -65,7 +65,17 @@ if [ "$mode" = --verify ]; then echo "VERIFIED Robopark $version SHA-256 $actual
 [ "$(/usr/bin/uname -m)" = arm64 ] || { echo 'Этот выпуск предназначен для Apple Silicon.' >&2; exit 1; }
 os_major=$(/usr/bin/sw_vers -productVersion | /usr/bin/cut -d. -f1)
 [ "$os_major" -ge 13 ] || { echo 'Требуется macOS 13 или новее.' >&2; exit 1; }
-current=$(/usr/libexec/PlistBuddy -c 'Print :RoboparkReleaseVersion' /Applications/Robopark.app/Contents/Info.plist 2>/dev/null || true)
+current=''
+# PlistBuddy prints a missing-file diagnostic to stdout. Read only an existing
+# bundle, and never treat a failed read as an absent installed version.
+if [ -e /Applications/Robopark.app ] || [ -L /Applications/Robopark.app ]; then
+  if [ -L /Applications/Robopark.app ] || [ ! -d /Applications/Robopark.app/Contents ] || [ -L /Applications/Robopark.app/Contents ] || [ ! -f /Applications/Robopark.app/Contents/Info.plist ] || [ -L /Applications/Robopark.app/Contents/Info.plist ]; then
+    echo 'Не удалось определить версию существующего Robopark: приложение повреждено. Установка остановлена.' >&2; exit 1
+  fi
+  if ! current=$(/usr/libexec/PlistBuddy -c 'Print :RoboparkReleaseVersion' /Applications/Robopark.app/Contents/Info.plist 2>/dev/null) || [ -z "$current" ]; then
+    echo 'Не удалось прочитать версию существующего Robopark. Установка остановлена.' >&2; exit 1
+  fi
+fi
 if [ -n "$current" ]; then
   # Stop local installers from silently downgrading a newer automatic update.
   if ! /usr/bin/awk -v old="$current" -v new="$version" 'BEGIN {
