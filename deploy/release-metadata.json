@@ -74,5 +74,5 @@
       65536
     ]
   },
-  "update_notes": "Test recovery: scoped Tracker reads, bounded probes and terminal heartbeat; persistent Mac sessions, stable test signing and corporate login diagnostics."
+  "update_notes": "TEST corporate SSO recovery: corporate-domain HTTPS navigation, immutable authenticated Keychain broker, migration safety and launch-agent update continuity."
 }

@@ -1,6 +1,6 @@
 # Тестовый релиз Robopark: Khadas VIM4, AGX Orin и macOS agent
 
-Для перехода RC8→RC9 используйте [заметки RC9](../releases/0.2.3-rc.9.md)
+Для перехода RC9→RC10 используйте [заметки RC10](../releases/0.2.3-rc.10.md)
 и [схему сохранения сессии Mac](../architecture/2026-10-16-mac-session-continuity.md).
 Сборочные проверки и фактическая приёмка публикуются раздельно: `verification.json`
 и `live-verification.json`. Наличие пакета не означает успешной живой проверки SSO.
@@ -21,6 +21,13 @@ Orin. Любое из устройств можно назначить тест�
 не выполняет `git add`/`commit` и откажется собирать при незакоммиченных изменениях
 или untracked исходниках. Внутренний manifest OTA содержит commit реального
 исходного кода; внешний manifest также сохраняет Git tree:
+
+Для Mac сборка проверяет неизменяемый подписанный Keychain broker в
+`deploy/macos-keychain-broker/v1/arm64`. Он копируется без повторной сборки или
+подписи. Проверить его можно командой
+`apps/api/.venv/bin/python scripts/freeze_macos_keychain_broker.py`.
+Отсутствие файла, несовпадение исходников или хеша останавливает сборку: замена
+этого компонента требует отдельной версии и миграции существующих записей.
 
 ```bash
 apps/api/.venv/bin/python scripts/build_test_release.py /absolute/path/to/output

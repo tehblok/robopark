@@ -124,9 +124,8 @@ public struct Registration: Codable {
 
 
 public enum LoginPolicy {
-    public static let hosts = CorporateAuthPolicy.browserHosts
     public static func allows(_ url: URL) -> Bool {
-        guard url.scheme == "https", let host = url.host?.lowercased(), hosts.contains(host),
+        guard url.scheme == "https", let host = url.host, CorporateAuthPolicy.isCorporateBrowserHost(host),
               url.user == nil, url.password == nil, url.port == nil || url.port == 443 else { return false }
         return true
     }

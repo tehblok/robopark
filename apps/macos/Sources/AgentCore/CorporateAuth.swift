@@ -1,5 +1,37 @@
 import Foundation
 
+/// Bounded, in-memory diagnostics must never copy URLs, provider text or credentials.
+public enum CorporateLoginDiagnostic {
+    public enum Phase: String { case requested, allowed, blocked, response, finished, failed, callback }
+
+    public static func event(_ phase: Phase, url: URL?, mainFrame: Bool, code: Int? = nil) -> [String: Any] {
+        let host = url?.host?.lowercased() ?? ""
+        // Only the DNS name is useful for diagnosing a blocked redirect. Never
+        // retain the full URL, userinfo, query, fragment or an arbitrary path.
+        let safeHost = host.range(of: "^[a-z0-9.-]{1,253}$", options: .regularExpression) != nil ? host : "other"
+        let route: String
+        switch url?.absoluteString == "about:blank" ? "blank" : url?.absoluteString == "about:srcdoc" ? "srcdoc" : url?.path {
+        case "blank" where url?.scheme == "about": route = "blank"
+        case "srcdoc" where url?.scheme == "about": route = "srcdoc"
+        case "/authorize": route = "authorize"
+        case "/verification_code": route = "callback"
+        case "/auth": route = "login"
+        case "/auth/user-validate": route = "challenge"
+        case "/auth/finish": route = "finish"
+        case "/hsts": route = "hsts"
+        case "/passport": route = "passport"
+        case "/": route = "root"
+        default: route = "other"
+        }
+        var result: [String: Any] = ["phase": phase.rawValue,
+            "host": safeHost, "route": route,
+            "scheme": ["https", "http", "about"].contains(url?.scheme ?? "") ? url!.scheme! : "other",
+            "mainFrame": mainFrame]
+        if let code { result["code"] = code }
+        return result
+    }
+}
+
 /// Only fixed messages are exposed: NSError descriptions and URLs may contain credentials.
 public enum CorporateLoginPresentation {
     public static func failureMessage(_ error: NSError) -> String? {
@@ -21,15 +53,15 @@ public enum CorporateLoginPresentation {
 
     public static func allowsPopup(_ url: URL, sourceProtocol: String,
                                     sourceHost: String, sourcePort: Int) -> Bool {
-        guard sourceProtocol == "https", CorporateAuthPolicy.browserHosts.contains(sourceHost.lowercased()),
+        guard sourceProtocol == "https", CorporateAuthPolicy.isCorporateBrowserHost(sourceHost),
               [0, 443].contains(sourcePort) else { return false }
         return url.absoluteString == "about:blank" || LoginPolicy.allows(url)
     }
 
     public static func allowsBlankSubframe(_ url: URL, isMainFrame: Bool,
                                            sourceProtocol: String, sourceHost: String, sourcePort: Int) -> Bool {
-        url.absoluteString == "about:blank" && !isMainFrame && sourceProtocol == "https"
-            && CorporateAuthPolicy.browserHosts.contains(sourceHost.lowercased())
+        ["about:blank", "about:srcdoc"].contains(url.absoluteString) && !isMainFrame && sourceProtocol == "https"
+            && CorporateAuthPolicy.isCorporateBrowserHost(sourceHost)
             && [0, 443].contains(sourcePort)
     }
 }
@@ -80,7 +112,10 @@ public enum CorporateAuthPolicy {
     public static let oauthClientID = "5f671d781aca402ab7460fde4050267b"
     public static let callbackURL = URL(string: "https://oauth.yandex-team.ru/verification_code")!
     public static let trackerIdentityURL = URL(string: "https://st-api.yandex-team.ru/v3/myself")!
-    public static let browserHosts: Set<String> = [oauthHost, passportHost, EmergencyTarget.host]
+    public static func isCorporateBrowserHost(_ host: String) -> Bool {
+        let normalized = host.lowercased()
+        return normalized == "yandex-team.ru" || normalized.hasSuffix(".yandex-team.ru")
+    }
 
     public static func normalizedLogin(_ value: String?) -> String? {
         guard let value else { return nil }

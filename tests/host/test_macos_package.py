@@ -3,8 +3,11 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import os
+import subprocess
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -139,16 +142,129 @@ def test_application_signing_uses_stable_test_identity_and_preserves_developer_i
     assert calls[-1][1] == ["codesign", "--verify", "--strict", str(target)]
 
 
-def test_installer_scripts_preserve_disabled_autostart_and_do_not_kill_running_app():
+@pytest.mark.parametrize("bootout_status", [0, 3], ids=["existing-job", "fresh-install"])
+def test_installer_replaces_launch_agent_registration_before_starting(
+    tmp_path, bootout_status
+):
+    module = builder()
+    launchctl = tmp_path / "launchctl"
+    calls = tmp_path / "calls"
+    plist = tmp_path / "ru.robopark.agent.plist"
+    launchctl.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$LAUNCHCTL_CALLS\"\n"
+        "[ \"$1\" = bootout ] && exit \"$BOOTOUT_STATUS\"\n"
+        "exit 0\n"
+    )
+    launchctl.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "/bin/sh",
+            "-eu",
+            "-c",
+            "session_uid=501\n"
+            + module.launch_agent_registration_script(
+                launchctl=launchctl, plist=plist
+            ),
+        ],
+        env={
+            **os.environ,
+            "BOOTOUT_STATUS": str(bootout_status),
+            "LAUNCHCTL_CALLS": str(calls),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls.read_text().splitlines() == [
+        "bootout gui/501/ru.robopark.agent",
+        f"bootstrap gui/501 {plist}",
+        "kickstart gui/501/ru.robopark.agent",
+    ]
+
+
+def test_installer_preserves_disabled_autostart_without_process_name_kills():
     module = builder()
     script = module.postinstall_script()
+    assert module.launch_agent_update_script().rstrip() in script
     assert "print-disabled" in script
     assert "ru.robopark.agent" in script
-    assert "bootout" not in script
     assert "pkill" not in script
     assert "killall" not in script
-    assert "kickstart" not in script
     assert "update-helper" in script
+
+
+@pytest.mark.parametrize("disabled,running,bootstrap_error", [
+    (False, True, False), (True, True, False), (True, False, False), (True, True, True),
+])
+def test_installer_restarts_live_disabled_agent_and_restores_preference(
+    tmp_path, disabled, running, bootstrap_error
+):
+    module = builder()
+    command, calls = tmp_path / "launchctl", tmp_path / "calls"
+    command.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n'
+        'case "$1" in\n'
+        'print-disabled) [ "$DISABLED" = 1 ] && echo \'"ru.robopark.agent" => true\';;\n'
+        'print) [ "$RUNNING" = 1 ] && echo "pid = 1234";;\n'
+        'bootstrap) [ "$FAIL" = 1 ] && exit 7;;\n'
+        'esac\nexit 0\n'
+    )
+    command.chmod(0o755)
+    result = subprocess.run(["/bin/sh", "-eu", "-c", "session_uid=501\n" +
+        module.launch_agent_update_script(launchctl=command, process_list="/usr/bin/true")], capture_output=True, text=True, check=False,
+        env={**os.environ, "CALLS": str(calls), "DISABLED": str(int(disabled)),
+             "RUNNING": str(int(running)), "FAIL": str(int(bootstrap_error))})
+    observed = calls.read_text().splitlines()
+    assert (result.returncode != 0) == bootstrap_error
+    service = "gui/501/ru.robopark.agent"
+    if disabled and not running:
+        assert observed == ["print-disabled gui/501", f"print {service}", f"bootout {service}"]
+    else:
+        assert f"bootout {service}" in observed
+        assert any(line.startswith("bootstrap gui/501 ") for line in observed)
+        assert (f"kickstart {service}" in observed) != bootstrap_error
+        if disabled:
+            assert f"enable {service}" in observed
+            assert observed[-1] == f"disable {service}"
+        else:
+            assert not any(line.startswith(("enable ", "disable ")) for line in observed)
+
+
+@pytest.mark.parametrize("disabled,timeout", [(False, False), (True, False), (True, True)])
+def test_manual_running_app_is_stopped_by_exact_uid_and_path(tmp_path, disabled, timeout):
+    import sys
+
+    module = builder()
+    calls, alive = tmp_path / "calls", tmp_path / "alive"
+    alive.write_text("alive")
+    ps, kill, launchctl = [tmp_path / name for name in ("ps", "kill", "launchctl")]
+    ps.write_text(f"#!{sys.executable}\nimport pathlib,sys\n"
+        "app='/Applications/Robopark.app/Contents/MacOS/RoboparkAgent'\n"
+        "if sys.argv[1]=='-axo':\n"
+        " print('123 501 '+app);print('456 502 '+app);print('789 501 /tmp/RoboparkAgent')\n"
+        f"elif pathlib.Path({str(alive)!r}).exists():\n"
+        " print('501 '+app)\n")
+    kill.write_text(f"#!{sys.executable}\nimport pathlib,sys\n"
+        f"with open({str(calls)!r},'a') as f:f.write('kill '+' '.join(sys.argv[1:])+'\\n')\n"
+        + ("" if timeout else f"pathlib.Path({str(alive)!r}).unlink()\n"))
+    launchctl.write_text(f"#!{sys.executable}\nimport sys\n"
+        f"with open({str(calls)!r},'a') as f:f.write(' '.join(sys.argv[1:])+'\\n')\n"
+        + ("if sys.argv[1]=='print-disabled':print('\"ru.robopark.agent\" => true')\n" if disabled else ""))
+    for path in (ps, kill, launchctl): path.chmod(0o755)
+    script = module.launch_agent_update_script(launchctl=launchctl, process_list=ps,
+                                               terminate=kill, pause="/usr/bin/true")
+    result = subprocess.run(["/bin/sh", "-eu", "-c", "session_uid=501\n" + script],
+                            capture_output=True, text=True, check=False)
+    observed = calls.read_text().splitlines()
+    assert (result.returncode != 0) == timeout, result.stderr
+    assert [line for line in observed if line.startswith("kill ")] == ["kill -TERM 123"]
+    assert ("kickstart gui/501/ru.robopark.agent" in observed) != timeout
+    if disabled:
+        assert observed[-1] == "disable gui/501/ru.robopark.agent"
 
 
 def test_update_configuration_accepts_only_signed_test_assignment(tmp_path):

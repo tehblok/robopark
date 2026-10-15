@@ -35,6 +35,7 @@ import AgentCore
     private var corporateLoginMessage: String?
     private var corporateLoginLabel: NSTextField?
     private var corporateNavigationTimer: Timer?
+    private var corporateNavigationEvents: [[String: Any]] = []
     private var accountActive = false
     private var emergencyAuthorized = false
     private var activeAccountID: Int?
@@ -51,7 +52,11 @@ import AgentCore
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem?.button?.title = "RP"
         do { try initializeWorkspace() }
-        catch { lastError = "Не удалось открыть защищённое хранилище рабочего интерфейса. Разблокируйте Keychain." }
+        catch {
+            NSLog("Robopark workspace initialization failed (keychain=%d, code=%ld)",
+                (error as NSError).domain == "RoboparkKeychain" ? 1 : 0, (error as NSError).code)
+            lastError = "Не удалось открыть защищённое хранилище рабочего интерфейса. Разблокируйте Keychain."
+        }
         if UserDefaults.standard.bool(forKey: accountPresentKey) { accountLabel = "Проверка аккаунта…" }
         let menu = NSMenu()
         menu.addItem(withTitle: "Открыть Robopark", action: #selector(showWorkspace), keyEquivalent: "")
@@ -289,6 +294,7 @@ import AgentCore
         notifications.stop(removeDelivered: true)
         updater.reset()
         corporateLoginRun = UUID(); corporateOAuthState = nil
+        corporateNavigationEvents.removeAll()
         closeCorporatePopups()
         loginWindow?.close(); loginWindow = nil; loginView = nil
         // Close the legacy surface on logout but preserve its default WebKit
@@ -481,7 +487,9 @@ import AgentCore
             availableVersion: updater.availableVersion,
             updateMessage: updater.message
         ))
-        return .json(status.jsonObject)
+        var object = status.jsonObject
+        if accountActive && accountRole == "royal" { object["corporateNavigation"] = corporateNavigationEvents }
+        return .json(object)
     }
     private func handleAgentAction(_ body: [String: Any]) async -> LocalHTTPResponse {
         let action: DesktopAgentAction
@@ -626,6 +634,7 @@ import AgentCore
         corporateNavigationTimer?.invalidate()
         closeCorporatePopups()
         corporateLoginRun = UUID(); corporateOAuthState = state
+        corporateNavigationEvents.removeAll()
         setCorporateLoginMessage("Открываю корпоративный вход…")
         // Retrying keeps the in-memory SSO cookies, so a completed password/MFA
         // step need not be repeated after a network timeout.
@@ -672,6 +681,11 @@ import AgentCore
     private func isCorporateView(_ view: WKWebView) -> Bool {
         view === loginView || loginPopups.contains { $0.view === view }
     }
+    private func recordCorporateNavigation(_ phase: CorporateLoginDiagnostic.Phase, url: URL?,
+                                            mainFrame: Bool = true, code: Int? = nil) {
+        corporateNavigationEvents.append(CorporateLoginDiagnostic.event(phase, url: url, mainFrame: mainFrame, code: code))
+        if corporateNavigationEvents.count > 48 { corporateNavigationEvents.removeFirst(corporateNavigationEvents.count - 48) }
+    }
     private func closeCorporatePopups() {
         let windows = loginPopups; loginPopups.removeAll()
         for popup in windows { popup.view.stopLoading(); popup.window.close() }
@@ -717,6 +731,9 @@ import AgentCore
         }
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if isCorporateView(webView) {
+            recordCorporateNavigation(.failed, url: webView.url, code: (error as NSError).code)
+        }
         guard isCorporateView(webView), let message = CorporateLoginPresentation.failureMessage(error as NSError) else { return }
         failCorporateNavigation(message)
     }
@@ -751,6 +768,10 @@ import AgentCore
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                  decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if isCorporateView(webView), let response = navigationResponse.response as? HTTPURLResponse {
+            recordCorporateNavigation(.response, url: response.url,
+                mainFrame: navigationResponse.isForMainFrame, code: response.statusCode)
+        }
         if isCorporateView(webView), navigationResponse.isForMainFrame,
            let response = navigationResponse.response as? HTTPURLResponse, response.statusCode >= 400 {
             decisionHandler(.cancel)
@@ -763,6 +784,7 @@ import AgentCore
         if webView === panel { render(); return }
         if webView === legacyWorkspaceView { return }
         if isCorporateView(webView) {
+            recordCorporateNavigation(.finished, url: webView.url)
             corporateNavigationTimer?.invalidate(); corporateNavigationTimer = nil
             setCorporateLoginMessage("Завершите вход на корпоративной странице. Если она пуста, нажмите «Повторить».")
         }
@@ -804,7 +826,7 @@ import AgentCore
                  completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         guard isCorporateView(webView),
               challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              CorporateAuthPolicy.browserHosts.contains(challenge.protectionSpace.host.lowercased()),
+              CorporateAuthPolicy.isCorporateBrowserHost(challenge.protectionSpace.host),
               let trust = challenge.protectionSpace.serverTrust,
               let url = Bundle.main.url(forResource: "YandexInternalRootCA", withExtension: "der"),
               let bytes = try? Data(contentsOf: url),
@@ -830,10 +852,14 @@ import AgentCore
         }
         else if webView === panel { decisionHandler(url.standardizedFileURL == panelURL?.standardizedFileURL ? .allow : .cancel) }
         else {
+            if isCorporateView(webView) {
+                recordCorporateNavigation(.requested, url: url, mainFrame: navigationAction.targetFrame?.isMainFrame != false)
+            }
             if isCorporateView(webView), url.scheme == "https",
                url.host?.lowercased() == CorporateAuthPolicy.oauthHost,
                url.path == CorporateAuthPolicy.callbackURL.path {
                 decisionHandler(.cancel)
+                recordCorporateNavigation(.callback, url: url)
                 corporateNavigationTimer?.invalidate(); corporateNavigationTimer = nil
                 setCorporateLoginMessage("Проверяю корпоративный аккаунт…")
                 guard let state = corporateOAuthState else { showCorporateFailure(.reauthRequired); return }
@@ -862,6 +888,10 @@ import AgentCore
                 decisionHandler(.allow); return
             }
             let allowed = LoginPolicy.allows(url)
+            if isCorporateView(webView) {
+                recordCorporateNavigation(allowed ? .allowed : .blocked, url: url,
+                    mainFrame: navigationAction.targetFrame?.isMainFrame != false)
+            }
             if allowed, navigationAction.targetFrame?.isMainFrame != false {
                 loginWindow?.title = "Подключение корпоративных сервисов — " + (url.host ?? "")
             }

@@ -12,7 +12,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from scripts import build_macos_command
+
+from scripts import build_macos_command, macos_keychain_broker
 
 ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.skipif(
@@ -47,7 +48,8 @@ def version_guard(tmp_path, layer):
         ):
             source = eval(
                 compile(ast.Expression(call.args[0]), "preinstall", "eval"),
-                {"release_version": VERSION},
+                {"release_version": VERSION, "macos_keychain_broker": macos_keychain_broker,
+                 "broker_manifest": {"sha256": "a" * 64}},
             )
             return "installed=" + source.split("installed=", 1)[1]
     raise AssertionError("package preinstall script not found")

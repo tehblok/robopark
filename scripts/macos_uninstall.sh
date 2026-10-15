@@ -9,12 +9,14 @@ if [ "$mode" = --plan ]; then
   echo '/Library/LaunchDaemons/ru.robopark.update-helper.plist'
   echo '/Library/PrivilegedHelperTools/RoboparkUpdater'
   echo '/Library/Application Support/RoboparkUpdater'
+  echo '/Library/LaunchAgents/ru.robopark.keychain-broker.v1.plist'
+  echo '/Library/Application Support/RoboparkKeychainBroker'
   echo 'Receipt: ru.robopark.agent; app data is preserved by default. Browser site data for 127.0.0.1 is never removed.'
   exit 0
 fi
 [ "$(/usr/bin/uname -s)" = Darwin ] || { echo 'Требуется macOS.' >&2; exit 1; }
 [ "$(/usr/bin/id -u)" = 0 ] || { echo 'Удаление службы требует прав администратора.' >&2; exit 1; }
-for component in '/Applications/Robopark.app' '/Library/Application Support/RoboparkUpdater'; do
+for component in '/Applications/Robopark.app' '/Library/Application Support/RoboparkUpdater' '/Library/Application Support/RoboparkKeychainBroker'; do
   [ ! -L "$component" ] || { echo 'Удаление остановлено: путь приложения заменён ссылкой.' >&2; exit 1; }
 done
 console_uid=$(/usr/bin/stat -f %u /dev/console)
@@ -107,9 +109,12 @@ done
 /bin/launchctl bootout system /Library/LaunchDaemons/ru.robopark.update-helper.plist 2>/dev/null || true
 if [ "$console_uid" -ge 501 ]; then
   /bin/launchctl bootout "gui/$console_uid" /Library/LaunchAgents/ru.robopark.agent.plist 2>/dev/null || true
+  /bin/launchctl bootout "gui/$console_uid/ru.robopark.keychain-broker.v1" 2>/dev/null || true
 fi
 /bin/rm -f /Library/LaunchAgents/ru.robopark.agent.plist /Library/LaunchDaemons/ru.robopark.update-helper.plist /Library/PrivilegedHelperTools/RoboparkUpdater
+/bin/rm -f /Library/LaunchAgents/ru.robopark.keychain-broker.v1.plist
 /bin/rm -rf '/Applications/Robopark.app' '/Library/Application Support/RoboparkUpdater'
+/bin/rm -rf '/Library/Application Support/RoboparkKeychainBroker'
 /usr/sbin/pkgutil --forget ru.robopark.agent >/dev/null 2>&1 || true
 if [ "$mode" = --remove-data ] && [ "$console_uid" -ge 501 ]; then
   console_user=$(/usr/bin/id -un "$console_uid")
@@ -122,7 +127,7 @@ if [ "$mode" = --remove-data ] && [ "$console_uid" -ge 501 ]; then
   done
   /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/defaults delete ru.robopark.agent >/dev/null 2>&1 || true
   # Delete only our own generic-password service, without printing keychain data.
-  for service in ru.robopark.agent ru.robopark.agent.stable-v1; do
+  for service in ru.robopark.agent ru.robopark.agent.stable-v1 ru.robopark.keychain-broker-v1; do
     count=0
     while [ "$count" -lt 512 ] && /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/security delete-generic-password -s "$service" >/dev/null 2>&1; do count=$((count + 1)); done
   done

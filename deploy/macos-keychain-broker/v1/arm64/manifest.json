@@ -1,0 +1,10 @@
+{
+  "architecture": "arm64",
+  "cdhash": "c56e34b170a5ef1e7c9e669bf1d622bd2777ce6c",
+  "certificate_sha256": "e7f12a7259808d26f4876406efd7ff7f9d27249694c6daf7225ae8073d953b38",
+  "identifier": "ru.robopark.keychain-broker.v1",
+  "protocol": 1,
+  "schema": 1,
+  "sha256": "9d374f3ff0692e2d9d1186072e3d38bc03fd25b8a60b0ed61171dfc856f88fa4",
+  "source_sha256": "a1e25624edfd24c4a2c2014d481b18598972c6981d8453cda043e5663608e466"
+}

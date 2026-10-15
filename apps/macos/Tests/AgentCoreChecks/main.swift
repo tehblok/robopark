@@ -120,6 +120,39 @@ try check(!CorporateLoginPresentation.allowsPopup(URL(string: "about:blank")!,
 try check(!CorporateLoginPresentation.allowsPopup(URL(string: "https://attacker.example")!,
     sourceProtocol: "https", sourceHost: CorporateAuthPolicy.passportHost, sourcePort: 443),
           "approved opener cannot send popup to unapproved host")
+for host in ["guard.oauth.yandex-team.ru", "sso.passport.yandex-team.ru", "new-auth.yandex-team.ru", "yandex-team.ru"] {
+    try check(LoginPolicy.allows(URL(string: "https://\(host)/auth")!),
+        "corporate SSO may add HTTPS steps without a per-host application update")
+}
+for invalid in ["http://guard.oauth.yandex-team.ru/auth", "https://yandex-team.ru.attacker.example/",
+                "https://fake-yandex-team.ru/", "https://user:password@guard.oauth.yandex-team.ru/",
+                "https://guard.oauth.yandex-team.ru:8443/", "file:///tmp/login", "javascript:alert(1)"] {
+    try check(!LoginPolicy.allows(URL(string: invalid)!), "corporate navigation boundary rejects lookalike and unsafe origins")
+}
+try check(CorporateLoginPresentation.allowsBlankSubframe(URL(string: "about:srcdoc")!, isMainFrame: false,
+    sourceProtocol: "https", sourceHost: CorporateAuthPolicy.passportHost, sourcePort: 443),
+    "Passport can render its inline challenge frame")
+try check(!CorporateLoginPresentation.allowsBlankSubframe(URL(string: "about:srcdoc")!, isMainFrame: true,
+    sourceProtocol: "https", sourceHost: CorporateAuthPolicy.passportHost, sourcePort: 443),
+    "inline content may not replace the top-level authentication page")
+try check(CorporateLoginPresentation.allowsPopup(URL(string: "https://guard.oauth.yandex-team.ru/auth")!,
+    sourceProtocol: "https", sourceHost: "guard.oauth.yandex-team.ru", sourcePort: 443),
+    "corporate guard can continue the approved SSO popup flow")
+let diagnosticSecretURL = URL(string: "https://passport.yandex-team.ru/auth/user-validate?token=must-not-log#secret")!
+let diagnostic = CorporateLoginDiagnostic.event(.blocked, url: diagnosticSecretURL, mainFrame: true)
+try check(diagnostic["host"] as? String == "passport.yandex-team.ru"
+    && diagnostic["route"] as? String == "challenge", "diagnostic identifies the provider stage")
+let diagnosticJSON = String(data: try JSONSerialization.data(withJSONObject: diagnostic), encoding: .utf8)!
+try check(!diagnosticJSON.contains("must-not-log") && !diagnosticJSON.contains("secret")
+    && !diagnosticJSON.contains("token="), "diagnostic never retains query, fragment or arbitrary path")
+try check(CorporateLoginDiagnostic.event(.blocked,
+    url: URL(string: "https://user:secret@attacker.example/secret-token")!, mainFrame: true)["host"] as? String == "attacker.example",
+    "blocked destination diagnostics retain only DNS host, never userinfo")
+try check(CorporateLoginDiagnostic.event(.blocked,
+    url: URL(string: "https://secret-token.yandex-team.ru/secret-token")!, mainFrame: true)["route"] as? String == "other",
+    "unrecognized paths never appear in diagnostics")
+try check(CorporateLoginDiagnostic.event(.blocked, url: URL(string: "about:blank")!, mainFrame: false)["route"] as? String == "blank",
+    "blank frame failures can be distinguished from HTTP navigation")
 let oauthCallback = URL(string: "https://oauth.yandex-team.ru/verification_code#access_token=token-123&expires_in=3600&state=\(oauthState)")!
 let oauthCredential = try CorporateAuthPolicy.oauthCredential(from: oauthCallback,
                                                                expectedState: oauthState,

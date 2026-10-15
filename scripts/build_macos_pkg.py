@@ -10,6 +10,7 @@ import json
 import os
 import plistlib
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -32,8 +33,10 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 try:
+    from scripts import macos_keychain_broker
     from scripts.macos_signing import ensure_test_signing_identity, isolated_test_signer
 except ModuleNotFoundError:  # Direct execution: scripts/ is sys.path[0].
+    import macos_keychain_broker
     from macos_signing import ensure_test_signing_identity, isolated_test_signer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,9 +131,9 @@ def sign_catalog(
 
 def bundle_versions(version: str, now: int) -> dict[str, str]:
     package_name(version)
-    date = datetime.fromtimestamp(now, timezone.utc)  # noqa: UP017 -- Python 3.9
+    date = datetime.fromtimestamp(now, timezone.utc)
     days = (
-        date.date() - datetime(2020, 1, 1, tzinfo=timezone.utc).date()  # noqa: UP017 -- Python 3.9
+        date.date() - datetime(2020, 1, 1, tzinfo=timezone.utc).date()
     ).days + 1
     if not 0 < days <= 9999:
         raise ValueError("bundle_build_date_out_of_range")
@@ -212,8 +215,78 @@ def automatic_update_config(envelope: dict, public_key: str) -> dict:
     }
 
 
+def launch_agent_registration_script(
+    *,
+    launchctl: str | Path = "/bin/launchctl",
+    plist: str | Path = "/Library/LaunchAgents/ru.robopark.agent.plist",
+) -> str:
+    command = shlex.quote(str(launchctl))
+    plist_path = shlex.quote(str(plist))
+    service = '"gui/$session_uid/ru.robopark.agent"'
+    return f"""{command} bootout {service} 2>/dev/null || true
+{command} bootstrap "gui/$session_uid" {plist_path}
+{command} kickstart {service}
+"""
+
+
+def launch_agent_update_script(*, launchctl: str | Path = "/bin/launchctl",
+                               plist: str | Path = "/Library/LaunchAgents/ru.robopark.agent.plist",
+                               process_list: str | Path = "/bin/ps",
+                               terminate: str | Path = "/bin/kill",
+                               pause: str | Path = "/bin/sleep") -> str:
+    command = shlex.quote(str(launchctl))
+    ps, kill, sleep = (shlex.quote(str(p)) for p in (process_list, terminate, pause))
+    service = '"gui/$session_uid/ru.robopark.agent"'
+    restart = launch_agent_registration_script(launchctl=launchctl, plist=plist)
+    stop_manual = f"""# Match UID and full executable path, never a process-name search.
+for agent_pid in $agent_pids; do
+  current=$({ps} -p "$agent_pid" -o uid=,comm= 2>/dev/null || true)
+  if /usr/bin/printf '%s\\n' "$current" | /usr/bin/awk -v owner="$session_uid" '$1 == owner && $2 == "/Applications/Robopark.app/Contents/MacOS/RoboparkAgent" {{found=1}} END {{exit !found}}'; then
+    {kill} -TERM "$agent_pid" 2>/dev/null || true
+  fi
+done
+attempt=0
+while :; do
+  live=0
+  for agent_pid in $agent_pids; do
+    current=$({ps} -p "$agent_pid" -o uid=,comm= 2>/dev/null || true)
+    if /usr/bin/printf '%s\\n' "$current" | /usr/bin/awk -v owner="$session_uid" '$1 == owner && $2 == "/Applications/Robopark.app/Contents/MacOS/RoboparkAgent" {{found=1}} END {{exit !found}}'; then live=1; fi
+  done
+  [ "$live" = 1 ] || break
+  [ "$attempt" -lt 50 ] || {{ echo 'Robopark did not finish stopping; update restart stopped safely.' >&2; exit 1; }}
+  {sleep} 0.1
+  attempt=$((attempt + 1))
+done
+"""
+    restart = restart.replace(f"{command} bootstrap", stop_manual + f"{command} bootstrap", 1)
+    return f"""processes=$({ps} -axo pid=,uid=,comm=)
+agent_pids=$(/usr/bin/printf '%s\\n' "$processes" | /usr/bin/awk -v owner="$session_uid" '$2 == owner && $3 == "/Applications/Robopark.app/Contents/MacOS/RoboparkAgent" {{print $1}}')
+disabled=$({command} print-disabled "gui/$session_uid" 2>/dev/null || true)
+if /usr/bin/grep -q '"ru.robopark.agent" => true' <<EOF
+$disabled
+EOF
+then
+  # Disabling login autostart intentionally leaves an already running app alive.
+  # Restart that instance after replacement, then restore the saved preference.
+  if [ -n "$agent_pids" ] || {command} print {service} 2>/dev/null | /usr/bin/grep -q 'pid = [0-9]'; then
+    trap '{command} disable {service}' EXIT
+    trap 'exit 130' HUP INT TERM
+    {command} enable {service}
+{restart.rstrip()}
+    {command} disable {service}
+    trap - EXIT HUP INT TERM
+  else
+    # Remove obsolete launch constraints without starting an inactive app.
+    {command} bootout {service} 2>/dev/null || true
+  fi
+else
+{restart.rstrip()}
+fi
+"""
+
+
 def postinstall_script() -> str:
-    return """#!/bin/sh
+    script = """#!/bin/sh
 set -eu
 chown -R root:wheel /Applications/Robopark.app
 chmod -R go-w /Applications/Robopark.app
@@ -227,6 +300,7 @@ chown root:wheel '/Library/Application Support/RoboparkUpdater'
 chmod 755 '/Library/Application Support/RoboparkUpdater'
 chown root:wheel '/Library/Application Support/RoboparkUpdater/config.json' '/Library/Application Support/RoboparkUpdater/update-root.json'
 chmod 644 '/Library/Application Support/RoboparkUpdater/config.json' '/Library/Application Support/RoboparkUpdater/update-root.json'
+__ROBOPARK_BROKER_PERMISSIONS__
 /bin/launchctl bootstrap system /Library/LaunchDaemons/ru.robopark.update-helper.plist 2>/dev/null || true
 install_lock='/Library/Application Support/RoboparkUpdater/install.lock'
 if [ -f "$install_lock/state" ] && [ ! -L "$install_lock/state" ] && [ "$(/usr/bin/stat -f %u "$install_lock/state")" = 0 ]; then
@@ -236,15 +310,16 @@ fi
 session_uid=$(/usr/bin/stat -f %u /dev/console)
 case "$session_uid" in ''|*[!0-9]*) exit 0;; esac
 if [ "$session_uid" -ge 501 ]; then
-  disabled=$(/bin/launchctl print-disabled "gui/$session_uid" 2>/dev/null || true)
-  if ! /usr/bin/grep -q '"ru.robopark.agent" => true' <<EOF
-$disabled
-EOF
-  then
-    /bin/launchctl bootstrap "gui/$session_uid" /Library/LaunchAgents/ru.robopark.agent.plist 2>/dev/null || true
-  fi
+__ROBOPARK_BROKER_REGISTRATION__
+__ROBOPARK_LAUNCH_AGENT_REGISTRATION__
 fi
 """
+    return script.replace("__ROBOPARK_BROKER_PERMISSIONS__", macos_keychain_broker.postinstall_permissions().rstrip()).replace(
+        "__ROBOPARK_BROKER_REGISTRATION__", macos_keychain_broker.register_script().rstrip()
+    ).replace(
+        "__ROBOPARK_LAUNCH_AGENT_REGISTRATION__",
+        launch_agent_update_script().rstrip(),
+    )
 
 
 def stage_workspace(dist: Path, target: Path, *, version: str, commit: str) -> dict:
@@ -334,6 +409,9 @@ def build(
         notary_profile and not sign_installer
     ):
         raise ValueError("provide_both_developer_id_identities")
+    if sign_application:
+        raise ValueError("developer_id_requires_explicit_keychain_broker_identity_migration")
+    macos_keychain_broker.verify_frozen()
     output.mkdir(parents=True, exist_ok=True)
     public = ensure_update_key(key)
     try:
@@ -460,6 +538,12 @@ def build(
         (launch_dir / "ru.robopark.agent.plist").write_bytes(
             plistlib.dumps(launch_agent())
         )
+        # This signed component owns login-Keychain entries. Never rebuild,
+        # strip or re-sign it during an ordinary application release.
+        broker_manifest = macos_keychain_broker.stage_frozen(payload)
+        (launch_dir / f"{macos_keychain_broker.IDENTIFIER}.plist").write_bytes(
+            plistlib.dumps(macos_keychain_broker.launch_agent())
+        )
         test_signing_fingerprint = sign_application_target(
             compute_worker,
             identifier="ru.robopark.agent.compute",
@@ -499,6 +583,7 @@ def build(
         scripts.mkdir()
         (scripts / "preinstall").write_text(f"""#!/bin/sh
 set -eu
+{macos_keychain_broker.preinstall_script(broker_manifest['sha256'])}
 support='/Library/Application Support/RoboparkUpdater'
 install_lock="$support/install.lock"
 created_lock=0
@@ -637,6 +722,8 @@ esac
         )
         if app_test_fingerprint != test_signing_fingerprint:
             raise ValueError("inconsistent_test_signing_identity")
+        if broker_manifest["certificate_sha256"] != app_test_fingerprint:
+            raise ValueError("broker_application_identity_mismatch")
         subprocess.run(
             ["codesign", "--verify", "--deep", "--strict", str(app)], check=True
         )
