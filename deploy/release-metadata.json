@@ -50,7 +50,8 @@
     "0.2.2",
     "0.2.3-rc.1",
     "0.2.3-rc.2",
-    "0.2.3-rc.3"
+    "0.2.3-rc.3",
+    "0.2.3-rc.4"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -68,5 +69,5 @@
       65536
     ]
   },
-  "update_notes": "Test installer fix: clean Mac installation and reinstall after app removal; preserve downgrade and malformed-bundle guards. Includes rc.3 corporate Mac gateways and adaptive pool."
+  "update_notes": "Test Mac startup fix: normalize bundle resource paths so the local workspace root opens correctly; retains RC4 installer and Khadas legacy-updater fixes."
 }

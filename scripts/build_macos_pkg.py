@@ -13,6 +13,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -599,6 +600,12 @@ esac
         subprocess.run(
             ["codesign", "--verify", "--deep", "--strict", str(app)], check=True
         )
+        # Check runtime resource resolution in an actual .app, not only the
+        # asset inventory: Bundle.main URLs can retain relative base URLs.
+        subprocess.run(
+            [sys.executable, str(ROOT / "scripts/check_macos_workspace_server.py"), "--app", str(app)],
+            check=True,
+        )
         # .pkg version is numeric; the app and signed catalog retain full semver.
         package = output / filename
         command = [
@@ -639,6 +646,7 @@ esac
     (output / "catalog.json").write_text(json.dumps(catalog, indent=2) + "\n")
     (output / "update-root.json").write_text(json.dumps({"ed25519": public}) + "\n")
     report = {
+        "workspace_runtime_checked": True,
         "version": version,
         "package": package.name,
         "sha256": hashlib.sha256(package.read_bytes()).hexdigest(),

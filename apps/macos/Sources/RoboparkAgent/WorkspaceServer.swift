@@ -55,7 +55,10 @@ import AgentCore
             guard let root = Bundle.main.resourceURL?.appendingPathComponent("workspace", isDirectory: true) else { throw NetworkFailure.invalid }
             let decoded = try LocalHTTPPolicy.decodedPath(request.target)
             let path = root.appendingPathComponent(String(decoded.dropFirst())).standardizedFileURL
-            guard path.path.hasPrefix(root.standardizedFileURL.path + "/") || path == root else { throw NetworkFailure.invalid }
+            // Bundle resource URLs can retain a base URL. Compare normalized
+            // filesystem paths: URL equality rejects the same root at `/`.
+            let rootPath = root.standardizedFileURL.path
+            guard path.path.hasPrefix(rootPath + "/") || path.path == rootPath else { throw NetworkFailure.invalid }
             var file = path
             var isDirectory: ObjCBool = false
             if decoded == "/" || !FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory) || isDirectory.boolValue {

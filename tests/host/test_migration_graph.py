@@ -21,8 +21,8 @@ def test_current_release_declares_foundation_and_same_head_upgrade():
     assert policy.known_heads == frozenset({"0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram", "0061_telegram_account_metadata", "0062_notification_retention_idx", "0063_agent_devices", "0064_agent_device_identity", "0065_corporate_write_receipts"})
     assert metadata["migration_compatibility"]["from_heads"] == ["0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram", "0061_telegram_account_metadata", "0062_notification_retention_idx", "0063_agent_devices", "0064_agent_device_identity", "0065_corporate_write_receipts"]
     assert metadata["compatible_from_versions"]
-    assert {"0.2.0", "0.2.1", "0.2.2", "0.2.3-rc.1", "0.2.3-rc.2", "0.2.3-rc.3"} <= set(metadata["compatible_from_versions"])
-    assert all(version in {"0.2.0", "0.2.1", "0.2.2", "0.2.3-rc.1", "0.2.3-rc.2", "0.2.3-rc.3"} or version.startswith("0.2.0-rc.") for version in metadata["compatible_from_versions"])
+    assert {"0.2.0", "0.2.1", "0.2.2", "0.2.3-rc.1", "0.2.3-rc.2", "0.2.3-rc.3", "0.2.3-rc.4"} <= set(metadata["compatible_from_versions"])
+    assert all(version in {"0.2.0", "0.2.1", "0.2.2", "0.2.3-rc.1", "0.2.3-rc.2", "0.2.3-rc.3", "0.2.3-rc.4"} or version.startswith("0.2.0-rc.") for version in metadata["compatible_from_versions"])
     assert compatibility["known_heads"] == ["0055_media_upload_park", "0056_host_terminal", "0057_local_ai", "0058_ai_bundle_receipts", "0059_ai_action_receipts", "0060_native_telegram", "0061_telegram_account_metadata", "0062_notification_retention_idx", "0063_agent_devices", "0064_agent_device_identity", "0065_corporate_write_receipts"]
     for version in metadata["compatible_from_versions"]:
         plan = plan_upgrade(version, "0055_media_upload_park", {
