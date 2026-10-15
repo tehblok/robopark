@@ -181,6 +181,22 @@ try check(Set(searchBody?.keys.map { $0 } ?? []) == Set(["query", "order"])
           && searchQuery.contains(URLQueryItem(name: "expand", value: "transitions"))
           && searchQuery.contains(URLQueryItem(name: "fields", value: "key,summary")),
           "Tracker search sends pagination and projections as URL query")
+for flag in [false, true] {
+    let request = try CorporateReadPolicy.decode(try corporateEnvelope(action: "issues_search", resource: "search",
+        params: ["query": "Queue: TEST", "page": 2, "stale_ok": flag]),
+        expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")
+    let plan = try CorporateReadPolicy.plan(request)
+    try check(URLComponents(url: plan.url, resolvingAgainstBaseURL: false)?.queryItems?.contains(
+        URLQueryItem(name: "staleOk", value: flag ? "true" : "false")) == true,
+        "Tracker next-page consistency hint preserves its Boolean wire value")
+}
+for invalidFlag: Any in [1, 0, "false", [true]] {
+    rejects("Tracker stale_ok accepts only JSON Boolean") {
+        _ = try CorporateReadPolicy.decode(try corporateEnvelope(action: "issues_search", resource: "search",
+            params: ["query": "Queue: TEST", "stale_ok": invalidFlag]),
+            expectedOwnerUserID: 7, expectedOwnerTrackerLogin: "owner.login")
+    }
+}
 for (status, expected) in [(401, CorporateReadError.auth), (403, .accessDenied), (404, .notFound),
                            (429, .rateLimited), (500, .network)] {
     do { _ = try CorporateReadPolicy.result(status: status, data: Data("{}".utf8), headers: [:], request: issueRequest)
@@ -448,4 +464,60 @@ let cancellable = Task { try await cancelRunner.run(frame: Data("{}".utf8), time
 try await Task.sleep(nanoseconds: 50_000_000); cancellable.cancel()
 do { _ = try await cancellable.value; fatalError("FAIL: cancelled compute child completed") } catch { checks += 1 }
 try check(Date().timeIntervalSince(cancelStarted) < 1.5, "compute cancellation terminates child promptly")
+
+let watchdogRun = UUID()
+var watchdog = ConnectionWatchdog()
+watchdog.begin(run: watchdogRun, generation: "generation-1")
+guard let missedHeartbeat = watchdog.heartbeatSent(run: watchdogRun, generation: "generation-1") else {
+    fatalError("FAIL: watchdog did not arm after heartbeat")
+}
+try check(watchdog.expire(missedHeartbeat), "missing heartbeat acknowledgement expires the current socket")
+
+watchdog.begin(run: watchdogRun, generation: "generation-2")
+guard let acknowledgedHeartbeat = watchdog.heartbeatSent(run: watchdogRun, generation: "generation-2") else {
+    fatalError("FAIL: watchdog did not arm acknowledged heartbeat")
+}
+try check(watchdog.heartbeatSent(run: watchdogRun, generation: "generation-2") == nil,
+          "a second tick waits for the pending heartbeat without replacing its deadline")
+try check(watchdog.acknowledge(run: watchdogRun, generation: "generation-2"),
+          "matching acknowledgement renews channel liveness")
+try check(!watchdog.expire(acknowledgedHeartbeat), "acknowledged heartbeat cannot close its socket")
+try check(watchdog.heartbeatSent(run: watchdogRun, generation: "generation-2") != nil,
+          "a delayed acknowledgement allows the next heartbeat tick")
+
+watchdog.begin(run: watchdogRun, generation: "generation-3")
+guard let currentHeartbeat = watchdog.heartbeatSent(run: watchdogRun, generation: "generation-3") else {
+    fatalError("FAIL: watchdog did not arm current generation")
+}
+try check(!watchdog.acknowledge(run: watchdogRun, generation: "stale-generation"),
+          "stale generation acknowledgement is ignored")
+try check(watchdog.expire(currentHeartbeat), "stale acknowledgement does not keep the current socket alive")
+
+watchdog.begin(run: watchdogRun, generation: "generation-4")
+guard let oldHeartbeat = watchdog.heartbeatSent(run: watchdogRun, generation: "generation-4") else {
+    fatalError("FAIL: watchdog did not arm old connection")
+}
+watchdog.begin(run: watchdogRun, generation: "generation-5")
+try check(!watchdog.expire(oldHeartbeat), "old timeout cannot close a replacement socket")
+try check(!watchdog.end(run: watchdogRun, generation: "generation-4"),
+          "old cleanup cannot clear a replacement socket")
+guard let replacementHeartbeat = watchdog.heartbeatSent(run: watchdogRun, generation: "generation-5") else {
+    fatalError("FAIL: old cleanup cleared replacement watchdog")
+}
+try check(watchdog.end(run: watchdogRun, generation: "generation-5"),
+          "current cleanup clears its own socket")
+try check(!watchdog.expire(replacementHeartbeat), "cleaned up socket cannot expire later")
+
+let deadlineStarted = Date()
+do {
+    _ = try await AsyncDeadline.run(nanoseconds: 25_000_000) {
+        let cancellationInsensitive = Task.detached {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            return 1
+        }
+        return await cancellationInsensitive.value
+    }
+    fatalError("FAIL: handshake deadline accepted a stalled receive")
+} catch is AsyncDeadlineError { checks += 1 }
+try check(Date().timeIntervalSince(deadlineStarted) < 1.0, "handshake deadline fails promptly")
 print("PASS: \(checks) protocol, scope, update signature and artifact integrity checks")

@@ -114,6 +114,10 @@ def test_corporate_write_pins_one_mac_and_replays_without_redispatch(
                 "version": "test",
             }
         )
+        assert websocket.receive_json() == {
+            "type": "heartbeat_ack",
+            "generation": ready["generation"],
+        }
         prepared = _post(
             client,
             settings,

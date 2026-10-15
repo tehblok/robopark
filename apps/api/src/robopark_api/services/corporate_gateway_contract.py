@@ -57,7 +57,9 @@ _PAGINATION_HEADERS = frozenset(
 )
 _TRACKER_PARAMS = {
     "issue_read": frozenset({"expand", "fields"}),
-    "issues_search": frozenset({"page", "per_page", "expand", "fields", "query", "order"}),
+    "issues_search": frozenset(
+        {"page", "per_page", "expand", "fields", "query", "order", "stale_ok"}
+    ),
     "comments_read": frozenset({"page", "per_page", "expand", "fields"}),
     "transitions_read": frozenset({"page", "per_page", "expand", "fields"}),
     "history_read": frozenset({"page", "per_page", "expand", "fields"}),
@@ -167,6 +169,8 @@ def validate_request(service: str, action: str, resource: str, params: object) -
                 or params[key] > (10_000 if key == "page" else 100)
             ):
                 raise ContractError("corporate_params_invalid")
+        if "stale_ok" in params and type(params["stale_ok"]) is not bool:
+            raise ContractError("corporate_params_invalid")
         for key in ("expand", "fields"):
             if key in params and (
                 not isinstance(params[key], str) or not 1 <= len(params[key]) <= 1_024

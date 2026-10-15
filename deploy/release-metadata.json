@@ -53,7 +53,8 @@
     "0.2.3-rc.3",
     "0.2.3-rc.4",
     "0.2.3-rc.5",
-    "0.2.3-rc.6"
+    "0.2.3-rc.6",
+    "0.2.3-rc.7"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -71,5 +72,5 @@
       65536
     ]
   },
-  "update_notes": "Test Tracker hotfix: retain readable issues when an optional author or assignee profile returns 403 or 404; preserve server-first routing and mandatory issue authorization."
+  "update_notes": "Test recovery: Tracker pagination on server and owner Mac; bounded Mac WebSocket handshake and heartbeat recovery; corporate write authority checks."
 }

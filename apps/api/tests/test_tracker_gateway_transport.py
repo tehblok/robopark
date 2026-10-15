@@ -33,6 +33,137 @@ def test_sdk_search_becomes_a_typed_read():
     )
 
 
+@pytest.mark.parametrize("flag,expected", [("true", True), ("false", False)])
+def test_tracker_next_page_preserves_stale_ok(flag, expected):
+    from robopark_api.services.corporate_gateway_contract import validate_request
+
+    action, resource, params = typed_request(
+        "POST",
+        f"https://st-api.yandex-team.ru/v2/issues/_search?expand=&embed=&fields=&staleOk={flag}&page=2&perPage=50",
+        data=json.dumps({"query": "Queue: TEST"}),
+    )
+    assert validate_request("tracker", action, resource, params) == {
+        "query": "Queue: TEST",
+        "page": 2,
+        "per_page": 50,
+        "stale_ok": expected,
+    }
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "staleOk=1",
+        "staleOk=yes",
+        "staleOk=",
+        "staleOk=true&staleOk=false",
+        "embed=all",
+        "expand=&expand=all",
+    ],
+)
+def test_tracker_stale_ok_rejects_ambiguous_values(query):
+    with pytest.raises(ValueError):
+        typed_request(
+            "POST",
+            f"https://st-api.yandex-team.ru/v2/issues/_search?{query}",
+            data=json.dumps({"query": "Queue: TEST"}),
+        )
+
+
+def test_real_sdk_drains_server_pagination_link_with_stale_ok(monkeypatch):
+    from requests import Request, Response, Session
+
+    from robopark_api.services import corporate_gateway_client, tracker_client
+
+    calls = []
+
+    def server_request(_self, **kwargs):
+        calls.append(kwargs)
+        page = len(calls)
+        response = Response()
+        response.request = Request(
+            method=kwargs["method"],
+            url=kwargs["url"],
+            data=kwargs.get("data"),
+            params=kwargs.get("params"),
+        ).prepare()
+        response.status_code = 200
+        response._content = json.dumps(
+            [
+                {
+                    "self": f"https://st-api.yandex-team.ru/v2/issues/TEST-{page}",
+                    "key": f"TEST-{page}",
+                }
+            ]
+        ).encode()
+        if page == 1:
+            response.headers["Link"] = (
+                '<https://st-api.yandex-team.ru/v2/issues/_search?staleOk=false&page=2&perPage=50>; rel="next"'
+            )
+        return response
+
+    monkeypatch.setattr(Session, "request", server_request)
+    monkeypatch.setattr(
+        corporate_gateway_client, "read", lambda **_: pytest.fail("unexpected fallback")
+    )
+    tracker_client.clear_tracker_clients()
+    try:
+        client = tracker_client._client(GatewayCredential(7, server_token="test-service"))
+        assert [issue.key for issue in client.issues.find("Queue: TEST", per_page=50)] == [
+            "TEST-1",
+            "TEST-2",
+        ]
+        assert len(calls) == 2
+        assert "staleOk=false" in calls[1]["url"]
+    finally:
+        tracker_client.clear_tracker_clients()
+
+
+def test_real_sdk_drains_owner_mac_pages_without_server_credentials(monkeypatch):
+    from robopark_api.services import corporate_gateway_client, tracker_client
+    from robopark_api.services.corporate_gateway_contract import CorporateReadResponse
+
+    calls = []
+
+    def read(**kwargs):
+        calls.append(kwargs)
+        page = len(calls)
+        headers = (
+            {
+                "link": '<https://st-api.yandex-team.ru/v2/issues/_search?staleOk=false&page=2&perPage=50>; rel="next"'
+            }
+            if page == 1
+            else {}
+        )
+        return CorporateReadResponse(
+            200,
+            headers,
+            [
+                {
+                    "self": f"https://st-api.yandex-team.ru/v2/issues/TEST-{page}",
+                    "key": f"TEST-{page}",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(corporate_gateway_client, "read", read)
+    tracker_client.clear_tracker_clients()
+    try:
+        client = tracker_client._client(GatewayCredential(7))
+        assert [row.key for row in client.issues.find("Queue: TEST", per_page=50)] == [
+            "TEST-1",
+            "TEST-2",
+        ]
+        assert calls[1]["params"] == {
+            "query": "Queue: TEST",
+            "page": 2,
+            "per_page": 50,
+            "stale_ok": False,
+        }
+    finally:
+        tracker_client.clear_tracker_clients()
+
+
 @pytest.mark.parametrize(
     "suffix,action",
     [

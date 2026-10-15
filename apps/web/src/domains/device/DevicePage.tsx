@@ -58,16 +58,23 @@ export function DevicePage({
     || status?.update.state === 'checking'
     || status?.legacyWorkspaceAvailable === null
   useEffect(() => {
-    if (!desktop || !shouldPoll) return
+    if (!desktop || busy) return
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
+    const interval = shouldPoll ? 2_500 : 15_000
     const poll = async () => {
-      await refresh()
-      if (!cancelled) timer = setTimeout(() => { void poll() }, 2_500)
+      if (document.visibilityState !== 'hidden') await refresh()
+      if (!cancelled) timer = setTimeout(() => { void poll() }, interval)
     }
-    timer = setTimeout(() => { void poll() }, 2_500)
-    return () => { cancelled = true; if (timer) clearTimeout(timer) }
-  }, [desktop, refresh, shouldPoll])
+    const visible = () => { if (document.visibilityState !== 'hidden') void refresh() }
+    document.addEventListener('visibilitychange', visible)
+    timer = setTimeout(() => { void poll() }, interval)
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+      document.removeEventListener('visibilitychange', visible)
+    }
+  }, [desktop, refresh, shouldPoll, busy])
   const act = async (payload: DesktopAgentAction) => {
     const generation = ++actionGeneration.current
     setBusy(payload.action)

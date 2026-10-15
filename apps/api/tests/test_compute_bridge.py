@@ -34,6 +34,13 @@ def _signed_headers(settings: Settings, body: bytes) -> dict[str, str]:
     }
 
 
+def _receive_heartbeat_ack(websocket, generation: str) -> None:
+    assert websocket.receive_json() == {
+        "type": "heartbeat_ack",
+        "generation": generation,
+    }
+
+
 def _device(db_session, settings, *, suffix=""):
     private_key = ec.generate_private_key(ec.SECP256R1())
     owner = User(
@@ -116,6 +123,16 @@ def test_compute_ws_uses_distinct_domain_and_dispatches_hashed_typed_job(db_engi
         signature = base64.b64encode(private_key.sign(signed, ec.ECDSA(hashes.SHA256()))).decode()
         websocket.send_json({"type": "auth", "device_id": device.id, "signature": signature})
         ready = websocket.receive_json()
+        assert "heartbeat_ack" in ready["supports"]
+        websocket.send_json(
+            {
+                "type": "heartbeat",
+                "generation": "wrong-generation",
+                "capacity": 1,
+                "active_jobs": 0,
+                "supports": ["csv_render_v1"],
+            }
+        )
         websocket.send_json(
             {
                 "type": "heartbeat",
@@ -126,10 +143,32 @@ def test_compute_ws_uses_distinct_domain_and_dispatches_hashed_typed_job(db_engi
                 "memory_percent": 20,
                 "thermal_state": "normal",
                 "power": "ac",
-                "supports": ["csv_render_v1"],
+                "supports": [
+                    "image_resize_v1",
+                    "csv_render_v1",
+                    "heartbeat_ack",
+                    "webrtc_datachannel_v1",
+                    "corporate_read_v1",
+                    "corporate_inventory_read_v1",
+                    "corporate_tracker_read_v1",
+                    "corporate_write_v1",
+                    "corporate_tracker_write_v1",
+                ],
                 "version": "0.2.3-rc.2",
             }
         )
+        _receive_heartbeat_ack(websocket, ready["generation"])
+        assert app.state.compute_registry.channels[device.id].supports == {
+            "image_resize_v1",
+            "csv_render_v1",
+            "heartbeat_ack",
+            "webrtc_datachannel_v1",
+            "corporate_read_v1",
+            "corporate_inventory_read_v1",
+            "corporate_tracker_read_v1",
+            "corporate_write_v1",
+            "corporate_tracker_write_v1",
+        }
         raw_payload = json.dumps(
             {"headers": ["Name"], "rows": [["Alice"]]},
             ensure_ascii=False,
@@ -242,6 +281,7 @@ def test_corporate_read_selects_owner_mac_and_rejects_identity_mismatch(db_engin
                 "version": "0.2.3-rc.2",
             }
         )
+        _receive_heartbeat_ack(websocket, ready["generation"])
         request = {
             "service": "inventory",
             "action": "rover_card",
@@ -365,6 +405,7 @@ def test_corporate_read_rechecks_revocation_before_return(db_engine, db_session,
                 "corporate_inventory_status": "ready",
             }
         )
+        _receive_heartbeat_ack(websocket, ready["generation"])
         value = {
             "service": "inventory",
             "action": "rover_card",
@@ -697,6 +738,7 @@ def test_direct_signaling_reserves_normal_lease_and_releases_on_peer_done(db_eng
                 "version": "0.2.3-rc.2",
             }
         )
+        _receive_heartbeat_ack(websocket, ready["generation"])
         payload = {
             "operation": "image_resize_v1",
             "payload_sha256": "a" * 64,
@@ -893,6 +935,7 @@ def test_direct_signaling_retries_once_on_a_different_ready_mac(
                         "supports": ["image_resize_v1", "webrtc_datachannel_v1"],
                     }
                 )
+                _receive_heartbeat_ack(ws, ready["generation"])
 
             indexed = {first_device.id: stack[0], second_device.id: stack[1]}
             selected_ids = sorted(indexed)

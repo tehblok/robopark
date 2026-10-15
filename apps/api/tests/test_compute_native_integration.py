@@ -62,6 +62,10 @@ def connect(stack, client, settings, private, device):
             "version": "0.2.3-rc.2",
         }
     )
+    assert ws.receive_json() == {
+        "type": "heartbeat_ack",
+        "generation": ready["generation"],
+    }
     return ws
 
 

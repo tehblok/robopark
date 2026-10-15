@@ -20,6 +20,7 @@ import IOKit.ps
     private(set) var outputBytes = 0
     private var loop: Task<Void, Never>?
     private var heartbeat: Task<Void, Never>?
+    private var livenessTimeout: Task<Void, Never>?
     private var socket: URLSessionWebSocketTask?
     private var jobs: [String: Task<Void, Never>] = [:]
     private var jobTokens: [String: UUID] = [:]
@@ -30,6 +31,8 @@ import IOKit.ps
     private var directLease: DirectLease?
     private var generation = ""
     private var peerAvailable = false
+    private var heartbeatAcknowledgements = false
+    private var connectionWatchdog = ConnectionWatchdog()
     private var runID = UUID()
     private var previousCPUTicks: [UInt64]?
     private lazy var peer = ComputePeerHost(workerURL: workerURL) { [weak self] message in
@@ -88,6 +91,7 @@ import IOKit.ps
 
     private func cleanupConnection() {
         heartbeat?.cancel(); heartbeat = nil
+        livenessTimeout?.cancel(); livenessTimeout = nil; connectionWatchdog.cancel()
         jobs.values.forEach { $0.cancel() }; jobs.removeAll(); jobTokens.removeAll()
         corporateJobs.values.forEach { $0.cancel() }; corporateJobs.removeAll(); corporateJobTokens.removeAll()
         // Keep the write slot fenced until URLSession cancellation has fully
@@ -96,6 +100,7 @@ import IOKit.ps
         directLease = nil; active = 0
         peer.cancelAll()
         socket?.cancel(with: .goingAway, reason: nil); socket = nil; generation = ""; peerAvailable = false
+        heartbeatAcknowledgements = false
     }
 
     private func send(_ object: [String: Any], through channel: URLSessionWebSocketTask? = nil) async throws {
@@ -105,12 +110,16 @@ import IOKit.ps
         try await channel.send(.string(String(decoding: data, as: UTF8.self)))
     }
 
-    private func receive(_ channel: URLSessionWebSocketTask) async throws -> Data {
-        switch try await channel.receive() {
-        case .data(let data): return data
-        case .string(let text): return Data(text.utf8)
-        @unknown default: throw NetworkFailure.invalid
+    private func receive(_ channel: URLSessionWebSocketTask, timeoutNanoseconds: UInt64? = nil) async throws -> Data {
+        let operation: @Sendable () async throws -> Data = {
+            switch try await channel.receive() {
+            case .data(let data): return data
+            case .string(let text): return Data(text.utf8)
+            @unknown default: throw NetworkFailure.invalid
+            }
         }
+        guard let timeoutNanoseconds else { return try await operation() }
+        return try await AsyncDeadline.run(nanoseconds: timeoutNanoseconds, operation: operation)
     }
 
     private func connect(run: UUID) async throws {
@@ -120,22 +129,45 @@ import IOKit.ps
         let channel = Network.session.webSocketTask(with: server.computeWebSocket)
         channel.maximumMessageSize = 12 * 1024 * 1024
         socket = channel; channel.resume()
-        let challenge = try JSONDecoder().decode(Challenge.self, from: await receive(channel))
+        let challenge = try JSONDecoder().decode(
+            Challenge.self, from: await receive(channel, timeoutNanoseconds: 20_000_000_000)
+        )
         let key = try P256.Signing.PrivateKey(rawRepresentation: profile.privateKey)
         let signature = try challenge.signCompute(key: key, environment: profile.environment, instanceID: profile.instanceID)
         try await send(["type": "auth", "device_id": profile.deviceID, "signature": signature.base64EncodedString()], through: channel)
-        guard let ready = try JSONSerialization.jsonObject(with: await receive(channel)) as? [String: Any],
+        guard let ready = try JSONSerialization.jsonObject(
+            with: await receive(channel, timeoutNanoseconds: 20_000_000_000)
+        ) as? [String: Any],
               ready["type"] as? String == "ready", let nextGeneration = ready["generation"] as? String,
               !nextGeneration.isEmpty, let ownerUserID = ready["owner_user_id"] as? Int else { throw AgentError.wrongServer }
         guard runID == run, !Task.isCancelled else { throw CancellationError() }
         try bridge.acceptServerOwner(ownerUserID: ownerUserID, trackerLogin: ready["owner_tracker_login"] as? String)
         generation = nextGeneration; state = "Готов к вычислениям"; onChange?()
+        let capabilities = ready["supports"] as? [String] ?? []
+        heartbeatAcknowledgements = capabilities.contains("heartbeat_ack")
+        connectionWatchdog.begin(run: run, generation: nextGeneration)
         do { try await peer.startIfNeeded(); peerAvailable = true }
         catch { peerAvailable = false }
         heartbeat = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, self.runID == run else { return }
-                do { try await self.sendHeartbeat() } catch { channel.cancel(with: .goingAway, reason: nil); return }
+                guard let pulse = self.armLivenessTimeout(run: run, generation: nextGeneration, channel: channel) else {
+                    // A slow ACK still has its own deadline. Keep the sender alive.
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    continue
+                }
+                do {
+                    try await self.sendHeartbeat()
+                    if !self.heartbeatAcknowledgements {
+                        channel.sendPing { [weak self] error in
+                            Task { @MainActor in
+                                guard let self else { return }
+                                self.finishLegacyPing(error: error, pulse: pulse, run: run,
+                                                      generation: nextGeneration, channel: channel)
+                            }
+                        }
+                    }
+                } catch { channel.cancel(with: .goingAway, reason: nil); return }
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
             }
         }
@@ -143,6 +175,10 @@ import IOKit.ps
             guard let message = try JSONSerialization.jsonObject(with: await receive(channel)) as? [String: Any] else { throw NetworkFailure.invalid }
             guard runID == run else { throw CancellationError() }
             switch message["type"] as? String {
+            case "heartbeat_ack":
+                if message["generation"] as? String == nextGeneration {
+                    acknowledgeLiveness(run: run, generation: nextGeneration)
+                }
             case "compute_job": try acceptJob(message)
             case "compute_cancel", "cancel": cancel(message)
             case "corporate_write_receipt_ack": acknowledgeCorporateWrite(message)
@@ -176,6 +212,36 @@ import IOKit.ps
         }
     }
 
+    private func armLivenessTimeout(run: UUID, generation: String,
+                                    channel: URLSessionWebSocketTask) -> ConnectionHeartbeat? {
+        guard let pulse = connectionWatchdog.heartbeatSent(run: run, generation: generation) else { return nil }
+        livenessTimeout?.cancel()
+        livenessTimeout = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 25_000_000_000) }
+            catch { return }
+            guard let self, self.runID == run, self.generation == generation,
+                  self.connectionWatchdog.expire(pulse) else { return }
+            channel.cancel(with: .goingAway, reason: nil)
+        }
+        return pulse
+    }
+
+    private func acknowledgeLiveness(run: UUID, generation: String) {
+        guard connectionWatchdog.acknowledge(run: run, generation: generation) else { return }
+        livenessTimeout?.cancel(); livenessTimeout = nil
+    }
+
+    private func finishLegacyPing(error: Error?, pulse: ConnectionHeartbeat, run: UUID,
+                                  generation: String, channel: URLSessionWebSocketTask) {
+        guard runID == run, self.generation == generation else { return }
+        if error == nil {
+            acknowledgeLiveness(run: run, generation: generation)
+        } else if connectionWatchdog.expire(pulse) {
+            livenessTimeout?.cancel(); livenessTimeout = nil
+            channel.cancel(with: .goingAway, reason: nil)
+        }
+    }
+
     private func sendHeartbeat() async throws {
         let resources = telemetry()
         let paused = bridge.registration?.paused == true
@@ -187,7 +253,7 @@ import IOKit.ps
             : CorporateInventoryStatus.unverifiedHostACL
         let computeCapacity = resources.computeCapacity(activeJobs: active, ready: true,
             paused: paused || bridge.hasActiveEmergencyJobs, lowPower: lowPower)
-        var supports = ["image_resize_v1", "csv_render_v1"]
+        var supports = ["image_resize_v1", "csv_render_v1", "heartbeat_ack"]
         if peerAvailable { supports.append("webrtc_datachannel_v1") }
         if corporateReady {
             supports.append(contentsOf: CorporateReadPolicy.capabilities)

@@ -9,12 +9,14 @@ import zlib
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
+from starlette.websockets import WebSocketDisconnect
 
 from conftest import role_id_for
 from robopark_api.config import Settings
@@ -919,7 +921,26 @@ def test_websocket_authenticates_registered_p256_device(db_engine, db_session, s
         assert ready["owner_user_id"] == seed_admin.id
         assert ready["owner_tracker_login"] == "admin.tracker"
         assert ready["max_inflight"] == 2
-        assert ready["supports"] == ["raw_deflate", "managed_probes"]
+        assert ready["supports"] == ["raw_deflate", "managed_probes", "heartbeat_ack"]
+        ws.send_json(
+            {
+                "type": "heartbeat",
+                "generation": ready["generation"],
+                "ready": True,
+                "capacity": 1,
+                "active_jobs": 0,
+                "power": [],
+            }
+        )
+        ws.send_json(
+            {
+                "type": "heartbeat",
+                "generation": ready["generation"],
+                "ready": True,
+                "capacity": 9,
+                "active_jobs": 0,
+            }
+        )
         ws.send_json(
             {
                 "type": "heartbeat",
@@ -938,6 +959,10 @@ def test_websocket_authenticates_registered_p256_device(db_engine, db_session, s
                 "thermal_state": "fair",
             }
         )
+        assert ws.receive_json() == {
+            "type": "heartbeat_ack",
+            "generation": ready["generation"],
+        }
         probe = ws.receive_json()
         assert probe["type"] == "probe"
         assert probe["operation"] == "emergency_readiness"
@@ -966,6 +991,10 @@ def test_websocket_authenticates_registered_p256_device(db_engine, db_session, s
                 "load": 1.0,
             }
         )
+        assert ws.receive_json() == {
+            "type": "heartbeat_ack",
+            "generation": ready["generation"],
+        }
         deadline = time.monotonic() + 2
         while channel.cpu_percent != 96 and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -974,6 +1003,20 @@ def test_websocket_authenticates_registered_p256_device(db_engine, db_session, s
         assert channel.reported_active_jobs == 1  # Existing work drains at zero capacity.
         assert app.state.registry.choose({device.id}) is None
         assert app.state.registry.status()["devices"][0]["status"] == "busy"
+        device.revoked_at = datetime.now(UTC)
+        db_session.commit()
+        ws.send_json(
+            {
+                "type": "heartbeat",
+                "generation": ready["generation"],
+                "ready": True,
+                "capacity": 1,
+                "active_jobs": 0,
+            }
+        )
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 1008
 
 
 def test_legacy_pending_device_of_approved_account_is_trusted_on_bridge_login(

@@ -113,3 +113,39 @@ it('does not let an older poll overwrite a completed action', async () => {
   expect(screen.getByText('Корпоративные доступы готовы.')).toBeVisible()
   vi.useRealTimers()
 })
+
+it('refreshes stable device status when the background service loses connection or installs an update', async () => {
+  vi.useFakeTimers()
+  const changed: DesktopAgentStatus = {
+    ...status, server: { state: 'offline', lastSuccessAt: null },
+    update: { ...status.update, message: 'Установлена новая версия. Перезапустите Robopark.' },
+  }
+  const load = vi.fn().mockResolvedValueOnce(status).mockResolvedValue(changed)
+  const view = render(<DevicePage client={{ status: load, action: vi.fn() }} desktop />)
+  try {
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByText('Сервер на связи')).toBeVisible()
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(screen.getByText('Сервер недоступен')).toBeVisible()
+    expect(screen.getByText(changed.update.message!)).toBeVisible()
+    view.unmount()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(load).toHaveBeenCalledTimes(2)
+  } finally { view.unmount(); vi.useRealTimers() }
+})
+
+it('pauses passive status polling in a hidden tab and refreshes on return', async () => {
+  vi.useFakeTimers()
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+  const load = vi.fn().mockResolvedValue(status)
+  const view = render(<DevicePage client={{ status: load, action: vi.fn() }} desktop />)
+  try {
+    await act(async () => { await Promise.resolve() })
+    visibility.mockReturnValue('hidden')
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(load).toHaveBeenCalledTimes(1)
+    visibility.mockReturnValue('visible')
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await Promise.resolve() })
+    expect(load).toHaveBeenCalledTimes(2)
+  } finally { view.unmount(); visibility.mockRestore(); vi.useRealTimers() }
+})

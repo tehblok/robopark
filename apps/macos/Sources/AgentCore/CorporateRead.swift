@@ -105,7 +105,7 @@ public enum CorporateReadPolicy {
 
     private static func trackerPlan(_ request: CorporateReadRequest) throws -> CorporateReadPlan {
         let allowed: Set<String>
-        if request.action == "issues_search" { allowed = ["page", "per_page", "expand", "fields", "query", "order"] }
+        if request.action == "issues_search" { allowed = ["page", "per_page", "expand", "fields", "query", "order", "stale_ok"] }
         else if request.action == "issues_count" { allowed = ["query"] }
         else if ["issue_read", "queue_read"].contains(request.action) { allowed = ["expand", "fields"] }
         else if request.action == "user_read" { allowed = [] }
@@ -113,6 +113,9 @@ public enum CorporateReadPolicy {
             allowed = ["page", "per_page", "expand", "fields"]
         } else { throw CorporateReadError.invalid }
         guard Set(request.params.keys).isSubset(of: allowed) else { throw CorporateReadError.invalid }
+        if let raw = request.params["stale_ok"] {
+            guard let value = raw as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() else { throw CorporateReadError.invalid }
+        }
         for key in ["page", "per_page"] where request.params[key] != nil {
             let ceiling = key == "page" ? 10_000 : 100
             guard integer(request.params[key], default: 1, range: 1...ceiling) != nil else { throw CorporateReadError.invalid }
@@ -133,11 +136,16 @@ public enum CorporateReadPolicy {
             let bytes = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
             guard bytes.count <= maxRequestBytes else { throw CorporateReadError.tooLarge }
             let path = request.action == "issues_search" ? "/v2/issues/_search" : "/v2/issues/_count"
-            let urlQuery = request.action == "issues_search" ? request.params
-                .filter { ["page", "per_page", "expand", "fields"].contains($0.key) }
+            let urlQuery: [URLQueryItem] = request.action == "issues_search" ? request.params
+                .filter { ["page", "per_page", "expand", "fields", "stale_ok"].contains($0.key) }
                 .sorted(by: { $0.key < $1.key })
-                .map { URLQueryItem(name: $0.key == "per_page" ? "perPage" : $0.key,
-                                    value: String(describing: $0.value)) } : []
+                .map { item in
+                    if item.key == "stale_ok" {
+                        return URLQueryItem(name: "staleOk", value: (item.value as? Bool) == true ? "true" : "false")
+                    }
+                    return URLQueryItem(name: item.key == "per_page" ? "perPage" : item.key,
+                                        value: String(describing: item.value))
+                } : []
             return CorporateReadPlan(method: "POST", url: try fixedURL(host: trackerHost, path: path,
                                                                          query: urlQuery), body: bytes)
         }

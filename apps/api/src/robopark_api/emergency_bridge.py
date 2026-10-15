@@ -170,6 +170,51 @@ def _decode_result_payload(
     return payload, encoded_size, decoded_size
 
 
+def _valid_heartbeat(message: dict[str, Any]) -> bool:
+    bool_fields = ("ready", "paused", "probe_available")
+    if any(name in message and type(message[name]) is not bool for name in bool_fields):
+        return False
+    for name in ("capacity", "active_jobs"):
+        value = message.get(name)
+        if name in message and (type(value) is not int or not 0 <= value <= 8):
+            return False
+    bounded_metrics = (
+        ("latency_ms", 120_000),
+        ("load", 1),
+        ("cpu_percent", 100),
+        ("memory_percent", 100),
+    )
+    for name, upper in bounded_metrics:
+        value = message.get(name)
+        if name in message and (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or not 0 <= value <= upper
+        ):
+            return False
+    power = message.get("power")
+    if "power" in message and (
+        not isinstance(power, str) or power not in {"ac", "battery", "low_power", "unknown"}
+    ):
+        return False
+    thermal_state = message.get("thermal_state")
+    if "thermal_state" in message and (
+        not isinstance(thermal_state, str)
+        or thermal_state not in {"normal", "fair", "serious", "critical"}
+    ):
+        return False
+    supports = message.get("supports")
+    return not (
+        "supports" in message
+        and (
+            not isinstance(supports, list)
+            or len(supports) > 8
+            or any(not isinstance(item, str) for item in supports)
+        )
+    )
+
+
 def _device_valid(
     db: Session, device_id: str, settings: Settings
 ) -> tuple[AgentDevice, User] | None:
@@ -555,7 +600,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                     "heartbeat_interval_ms": 10_000,
                     "readiness_timeout_ms": 30_000,
                     "max_inflight": 2,
-                    "supports": ["raw_deflate", "managed_probes"],
+                    "supports": ["raw_deflate", "managed_probes", "heartbeat_ack"],
                     "probe_interval_ms": 60_000,
                     "probe_timeout_ms": 10_000,
                 }
@@ -574,7 +619,10 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                 if message.get("generation") != channel.generation:
                     continue
                 if message.get("type") == "heartbeat":
-                    channel.ready = message.get("ready") is True
+                    if not _valid_heartbeat(message):
+                        continue
+                    heartbeat_ready = message.get("ready") is True
+                    channel.ready = False
                     latency = message.get("latency_ms")
                     if isinstance(latency, (int, float)) and 0 <= latency <= 120_000:
                         channel.latency_ms = float(latency)
@@ -621,6 +669,10 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                     if type(message.get("probe_available")) is bool:
                         channel.probe_available = message["probe_available"]
                     channel.last_heartbeat = time.monotonic()
+                    await channel.send_json(
+                        {"type": "heartbeat_ack", "generation": channel.generation}
+                    )
+                    channel.ready = heartbeat_ready
                     if registry.reserve_probe(channel):
                         await channel.send_json(
                             {

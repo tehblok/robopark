@@ -700,6 +700,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                             *OPERATIONS,
                             *corporate_gateway_contract.SERVICE_CAPABILITY.values(),
                             corporate_write_contract.SERVICE_CAPABILITY,
+                            "heartbeat_ack",
                         }
                     ),
                 }
@@ -728,6 +729,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         continue
                     if type(active_jobs) is not int or not 0 <= active_jobs <= 2:
                         continue
+                    channel.ready = False
                     channel.capacity = capacity
                     channel.reported_active_jobs = active_jobs
                     paused = message.get("paused")
@@ -774,6 +776,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         *OPERATIONS,
                         *corporate_gateway_contract.SERVICE_CAPABILITY.values(),
                         corporate_write_contract.SERVICE_CAPABILITY,
+                        "heartbeat_ack",
                         "webrtc_datachannel_v1",
                     }
                     if isinstance(supports, list) and len(supports) <= len(allowed_supports):
@@ -785,8 +788,11 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                     version = message.get("version")
                     if isinstance(version, str) and len(version) <= 64:
                         channel.version = version
-                    channel.ready = True
                     channel.last_heartbeat = time.monotonic()
+                    await channel.send_json(
+                        {"type": "heartbeat_ack", "generation": channel.generation}
+                    )
+                    channel.ready = True
                     if channel.generation not in write_receipts_replayed:
                         write_receipts_replayed.add(channel.generation)
                         acknowledgements = await asyncio.to_thread(
@@ -1439,6 +1445,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
             settings,
             requester_user_id=payload.requester_user_id,
             service="tracker",
+            action="comment_create",
             resource=payload.resource,
             park_id=None,
         )
@@ -1523,6 +1530,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
             settings,
             requester_user_id=payload.requester_user_id,
             service="tracker",
+            action=payload.action,
             resource=payload.resource,
             park_id=None,
             device_id=authority_snapshot["device_id"],
@@ -1644,6 +1652,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                 settings,
                 requester_user_id=payload.requester_user_id,
                 service="tracker",
+                action=payload.action,
                 resource=payload.resource,
                 park_id=None,
                 device_id=authority_snapshot["device_id"],

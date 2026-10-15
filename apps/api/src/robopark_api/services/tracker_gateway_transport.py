@@ -167,6 +167,7 @@ def typed_request(method, url, *, params=None, data=None, files=None, stream=Fal
     ):
         raise ValueError("unsupported_gateway_request")
     parameters = {}
+    seen = set()
     pairs = list(parse_qsl(parts.query, keep_blank_values=True))
     if params:
         pairs += list(params.items()) if isinstance(params, dict) else list(params)
@@ -174,8 +175,23 @@ def typed_request(method, url, *, params=None, data=None, files=None, stream=Fal
         if value is None:
             continue
         name = "per_page" if name in {"perPage", "per_page"} else name
-        if name not in {"page", "per_page", "expand", "fields"} or name in parameters:
+        name = "stale_ok" if name == "staleOk" else name
+        if name in seen:
             raise ValueError("unsupported_gateway_parameter")
+        seen.add(name)
+        # Generated next links include empty projection placeholders.
+        # They request no expansion; nonempty embed remains unsupported.
+        if name in {"expand", "embed", "fields"} and value == "":
+            continue
+        if name not in {"page", "per_page", "expand", "fields", "stale_ok"}:
+            raise ValueError("unsupported_gateway_parameter")
+        if name == "stale_ok":
+            if method != "POST" or parts.path not in {"/v2/issues/_search", "/v3/issues/_search"}:
+                raise ValueError("unsupported_gateway_parameter")
+            if value in ("true", "false"):
+                value = value == "true"
+            if type(value) is not bool:
+                raise ValueError("unsupported_gateway_parameter")
         if (
             name in {"page", "per_page"}
             and isinstance(value, str)
@@ -219,7 +235,7 @@ def typed_request(method, url, *, params=None, data=None, files=None, stream=Fal
 
 
 def connection(context: GatewayCredential):
-    from requests import RequestException, Response, Session
+    from requests import Request, RequestException, Response, Session
     from yandex_tracker_client.connection import Connection
     from yandex_tracker_client.exceptions import TrackerClientError
 
@@ -251,6 +267,9 @@ def connection(context: GatewayCredential):
             except (ValueError, TypeError) as exc:
                 raise TrackerClientError("unsupported_gateway_operation") from exc
             response = Response()
+            # SDK pagination replays the original method/body from the response.
+            # Keep a credential-free request for owner-Mac responses as well.
+            response.request = Request(method=method, url=url, params=params, data=data).prepare()
             response.url = url
             response.encoding = "utf-8"
             response.headers["Content-Type"] = "application/json"
