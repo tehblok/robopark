@@ -214,6 +214,68 @@ private final class StallServer: @unchecked Sendable {
         _ = try await selector.select()
         check(counter.resolverCalls == 2, "invalidated candidate is selected through a new flight")
 
+        let skippedFallback = LockedCounter()
+        let systemHealthy = TestOriginAddressSelector(cacheTTL: 20, resolver: { [first] },
+            fallbackResolver: {
+                skippedFallback.incrementResolver(); return [second]
+            }, preflight: { $0 == first })
+        let healthySystemResult = try await systemHealthy.select()
+        check(healthySystemResult == first,
+              "a healthy system DNS candidate remains preferred")
+        check(skippedFallback.resolverCalls == 0,
+              "DoH fallback is not queried while system DNS has a verified candidate")
+
+        let usedFallback = LockedCounter()
+        let systemFailed = TestOriginAddressSelector(cacheTTL: 20, resolver: { [first] },
+            fallbackResolver: {
+                usedFallback.incrementResolver(); return [second]
+            }, preflight: { $0 == second })
+        let fallbackResult = try await systemFailed.select()
+        check(fallbackResult == second,
+              "DoH candidate is selected after all system DNS candidates fail TLS")
+        check(usedFallback.resolverCalls == 1,
+              "DoH fallback is queried once after system candidates fail")
+
+        let boundedFallback = LockedCounter()
+        let coldStarted = Date()
+        let coldSelector = TestOriginAddressSelector(cacheTTL: 20, resolver: {
+            try await Task.sleep(nanoseconds: 5_000_000_000)
+            return [first]
+        }, fallbackResolver: {
+            boundedFallback.incrementResolver(); return [second]
+        }, preflight: { $0 == second }, resolverTimeout: 0.08,
+           fallbackResolverTimeout: 0.08, maximumCandidates: 4)
+        let coldResult = try await coldSelector.select()
+        check(coldResult == second && boundedFallback.resolverCalls == 1,
+              "a stalled system resolver advances to the bounded fallback")
+        check(Date().timeIntervalSince(coldStarted) < 0.5,
+              "cold fallback selection completes before the CONNECT relay deadline")
+
+        let fifth = TestOriginCandidate.testing("192.0.2.5")
+        let cappedSystem = [first, second, TestOriginCandidate.testing("192.0.2.3"),
+                            TestOriginCandidate.testing("192.0.2.4"), fifth]
+        let fifthViaDoH = TestOriginAddressSelector(cacheTTL: 20,
+            resolver: { cappedSystem }, fallbackResolver: { [fifth] },
+            preflight: { $0 == fifth }, maximumCandidates: 4)
+        let fifthResult = try await fifthViaDoH.select()
+        check(fifthResult == fifth,
+              "an untested fifth system address remains eligible when DoH returns it")
+
+        let validDoH = Data(#"{"Status":0,"Question":[{"name":"roboparktest.ru.tuna.am.","type":1}],"Answer":[{"name":"roboparktest.ru.tuna.am.","type":1,"TTL":20,"data":"8.8.8.8"}]}"#.utf8)
+        check(TestOriginDoHResolver.parse(validDoH, expectedHost: TestOriginTransport.testHost)
+                == [TestOriginCandidate.testing("8.8.8.8")],
+              "DoH parser accepts an exact question and public A answer")
+        let privateDoH = Data(#"{"Status":0,"Question":[{"name":"roboparktest.ru.tuna.am","type":1}],"Answer":[{"name":"roboparktest.ru.tuna.am","type":1,"data":"10.0.0.7"}]}"#.utf8)
+        check(TestOriginDoHResolver.parse(privateDoH, expectedHost: TestOriginTransport.testHost).isEmpty,
+              "DoH parser rejects private fallback addresses")
+        let wrongQuestionDoH = Data(#"{"Status":0,"Question":[{"name":"example.com","type":1}],"Answer":[{"name":"example.com","type":1,"data":"8.8.8.8"}]}"#.utf8)
+        check(TestOriginDoHResolver.parse(wrongQuestionDoH,
+                                           expectedHost: TestOriginTransport.testHost).isEmpty,
+              "DoH parser rejects a response for a different question")
+        check(TestOriginDoHResolver.parse(Data("not-json".utf8),
+                                           expectedHost: TestOriginTransport.testHost).isEmpty,
+              "DoH parser rejects malformed responses")
+
         let loopback = TestOriginCandidate.testing("127.0.0.1")
         let exactTLS = try pinnedTLS(certificatePath: exactCertificate, serverName: TestOriginTransport.testHost)
         let wrongTLS = try pinnedTLS(certificatePath: wrongCertificate, serverName: TestOriginTransport.testHost)

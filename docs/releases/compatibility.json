@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "target_version": "0.2.3-rc.19",
+  "target_version": "0.2.3-rc.20",
   "migration_head": "0066_device_auth",
   "known_heads": [
     "0055_media_upload_park",

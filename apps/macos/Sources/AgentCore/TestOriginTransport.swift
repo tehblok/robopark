@@ -23,6 +23,7 @@ public final class TestOriginTransport: @unchecked Sendable {
     private static let listenerReadyTimeout: TimeInterval = 3
     private static let relayIdleTimeout: TimeInterval = 120
     private static let upstreamConnectTimeout: TimeInterval = 4
+    private static let addressSelectionTimeout: TimeInterval = 10
 
     private let queue = DispatchQueue(label: "ru.robopark.test-origin-connect", qos: .utility)
     private let selector: TestOriginAddressSelector
@@ -52,19 +53,26 @@ public final class TestOriginTransport: @unchecked Sendable {
         let resolver: TestOriginAddressSelector.Resolver = {
             try await TestOriginDNSResolver.resolve(host: TestOriginTransport.testHost)
         }
+        let fallbackResolver: TestOriginAddressSelector.Resolver = {
+            try await TestOriginDoHResolver.resolve(host: TestOriginTransport.testHost)
+        }
         let preflight: TestOriginAddressSelector.Preflight = { candidate in
             await TestOriginTLSPreflight.check(candidate, port: 443,
-                serverName: TestOriginTransport.testHost, timeout: 3, options: nil)
+                serverName: TestOriginTransport.testHost, timeout: 2, options: nil)
         }
-        self.init(resolver: resolver, preflight: preflight, targetPort: 443,
+        self.init(resolver: resolver, fallbackResolver: fallbackResolver,
+                  preflight: preflight, targetPort: 443,
                   honorSystemProxy: true, allowDirectFailover: true)
     }
 
     internal init(resolver: @escaping TestOriginAddressSelector.Resolver,
+                  fallbackResolver: TestOriginAddressSelector.Resolver? = nil,
                   preflight: @escaping TestOriginAddressSelector.Preflight,
                   targetPort: UInt16 = 443, honorSystemProxy: Bool = false,
                   allowDirectFailover: Bool = false) {
-        self.selector = TestOriginAddressSelector(cacheTTL: 20, resolver: resolver, preflight: preflight)
+        self.selector = TestOriginAddressSelector(cacheTTL: 20, resolver: resolver,
+                                                  fallbackResolver: fallbackResolver,
+                                                  preflight: preflight)
         self.targetPort = targetPort
         self.honorSystemProxy = honorSystemProxy
         self.allowDirectFailover = allowDirectFailover
@@ -262,7 +270,7 @@ public final class TestOriginTransport: @unchecked Sendable {
             respondAndClose(relay, status: "403 Forbidden"); return
         }
         relay.phase = .selecting
-        armDeadline(relay, seconds: 8)
+        armDeadline(relay, seconds: Self.addressSelectionTimeout)
         Task { [weak self, weak relay] in
             guard let self, let relay else { return }
             do {
@@ -438,28 +446,40 @@ internal actor TestOriginAddressSelector {
     typealias Preflight = @Sendable (TestOriginCandidate) async -> Bool
     private let cacheTTL: TimeInterval
     private let resolver: Resolver
+    private let fallbackResolver: Resolver?
     private let preflight: Preflight
+    private let resolverTimeout: TimeInterval
+    private let fallbackResolverTimeout: TimeInterval
+    private let maximumCandidates: Int
     private var cached: (candidate: TestOriginCandidate, expires: Date)?
     private var flight: (id: UUID, task: Task<TestOriginCandidate, Error>)?
 
-    init(cacheTTL: TimeInterval, resolver: @escaping Resolver, preflight: @escaping Preflight) {
-        self.cacheTTL = cacheTTL; self.resolver = resolver; self.preflight = preflight
+    init(cacheTTL: TimeInterval, resolver: @escaping Resolver,
+         fallbackResolver: Resolver? = nil, preflight: @escaping Preflight,
+         resolverTimeout: TimeInterval = 0.75,
+         fallbackResolverTimeout: TimeInterval = 3,
+         maximumCandidates: Int = 4) {
+        self.cacheTTL = cacheTTL; self.resolver = resolver
+        self.fallbackResolver = fallbackResolver; self.preflight = preflight
+        self.resolverTimeout = resolverTimeout
+        self.fallbackResolverTimeout = fallbackResolverTimeout
+        self.maximumCandidates = max(1, maximumCandidates)
     }
 
     func select(now: Date = Date()) async throws -> TestOriginCandidate {
         if let cached, now < cached.expires { return cached.candidate }
         if let flight { return try await flight.task.value }
-        let resolver = self.resolver, preflight = self.preflight
+        let resolver = self.resolver, fallbackResolver = self.fallbackResolver
+        let preflight = self.preflight
+        let resolverTimeout = self.resolverTimeout
+        let fallbackResolverTimeout = self.fallbackResolverTimeout
+        let maximumCandidates = self.maximumCandidates
         let id = UUID()
         let task = Task { () throws -> TestOriginCandidate in
-            let candidates = try await resolver()
-            guard !candidates.isEmpty else { throw TestOriginTransportError.noVerifiedAddress }
-            var offset = 0
-            while offset < candidates.count {
-                let upper = min(offset + 4, candidates.count)
-                let batch = Array(candidates[offset..<upper])
-                if let selected = await withTaskGroup(of: TestOriginCandidate?.self,
-                                                      returning: TestOriginCandidate?.self, body: { group in
+            func firstVerified(_ candidates: [TestOriginCandidate]) async -> TestOriginCandidate? {
+                let batch = Array(candidates.prefix(maximumCandidates))
+                return await withTaskGroup(of: TestOriginCandidate?.self,
+                                           returning: TestOriginCandidate?.self, body: { group in
                     for candidate in batch {
                         group.addTask { await preflight(candidate) ? candidate : nil }
                     }
@@ -467,8 +487,16 @@ internal actor TestOriginAddressSelector {
                         if let result { group.cancelAll(); return result }
                     }
                     return nil
-                }) { return selected }
-                offset = upper
+                })
+            }
+            let system = await TestOriginResolverDeadline.run(resolver, timeout: resolverTimeout)
+            let testedSystem = Array(system.prefix(maximumCandidates))
+            if let selected = await firstVerified(testedSystem) { return selected }
+            if let fallbackResolver {
+                let fallback = await TestOriginResolverDeadline.run(
+                    fallbackResolver, timeout: fallbackResolverTimeout)
+                let unique = fallback.filter { !testedSystem.contains($0) }
+                if let selected = await firstVerified(unique) { return selected }
             }
             throw TestOriginTransportError.noVerifiedAddress
         }
@@ -486,6 +514,62 @@ internal actor TestOriginAddressSelector {
 
     func invalidate(_ candidate: TestOriginCandidate) {
         if cached?.candidate == candidate { cached = nil }
+    }
+}
+
+private enum TestOriginResolverDeadline {
+    static func run(_ resolver: @escaping TestOriginAddressSelector.Resolver,
+                    timeout: TimeInterval) async -> [TestOriginCandidate] {
+        let completion = TestOriginResolverCompletion()
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { continuation in
+                completion.install(continuation)
+                let worker = Task {
+                    let value = (try? await resolver()) ?? []
+                    completion.finish(value)
+                }
+                completion.setWorker(worker)
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                    completion.finish([])
+                }
+            }
+        }, onCancel: { completion.finish([]) })
+    }
+}
+
+private final class TestOriginResolverCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<[TestOriginCandidate], Never>?
+    private var worker: Task<Void, Never>?
+    private var result: [TestOriginCandidate]?
+
+    func install(_ continuation: CheckedContinuation<[TestOriginCandidate], Never>) {
+        lock.lock()
+        if let result {
+            lock.unlock(); continuation.resume(returning: result); return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func setWorker(_ worker: Task<Void, Never>) {
+        lock.lock()
+        if result != nil { lock.unlock(); worker.cancel(); return }
+        self.worker = worker
+        lock.unlock()
+    }
+
+    func finish(_ value: [TestOriginCandidate]) {
+        lock.lock()
+        guard result == nil else { lock.unlock(); return }
+        result = value
+        let continuation = self.continuation
+        let worker = self.worker
+        self.continuation = nil
+        self.worker = nil
+        lock.unlock()
+        worker?.cancel()
+        continuation?.resume(returning: value)
     }
 }
 
@@ -518,6 +602,141 @@ internal enum TestOriginDNSResolver {
             guard !addresses.isEmpty else { throw TestOriginTransportError.noVerifiedAddress }
             return addresses
         }.value
+    }
+}
+
+internal enum TestOriginDoHResolver {
+    private static let maximumBytes = 64 * 1024
+
+    static func resolve(host: String) async throws -> [TestOriginCandidate] {
+        guard normalized(host) == normalized(TestOriginTransport.testHost) else {
+            throw TestOriginTransportError.noVerifiedAddress
+        }
+        var parts = URLComponents(string: "https://cloudflare-dns.com/dns-query")!
+        parts.queryItems = [URLQueryItem(name: "name", value: host),
+                            URLQueryItem(name: "type", value: "A")]
+        guard let url = parts.url else { throw TestOriginTransportError.noVerifiedAddress }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: 2.5)
+        request.setValue("application/dns-json", forHTTPHeaderField: "Accept")
+        request.setValue("RoboparkMacAgent/1", forHTTPHeaderField: "User-Agent")
+        let receiver = TestOriginDoHReceiver(limit: maximumBytes)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.timeoutIntervalForRequest = 2.5
+        configuration.timeoutIntervalForResource = 3
+        let session = URLSession(configuration: configuration, delegate: receiver, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let (data, response) = try await receiver.read(request, using: session)
+        let mimeType = response.mimeType?.lowercased()
+        guard response.statusCode == 200,
+              (mimeType == "application/dns-json" || mimeType == "application/json") else {
+            throw TestOriginTransportError.noVerifiedAddress
+        }
+        let candidates = parse(data, expectedHost: host)
+        guard !candidates.isEmpty else { throw TestOriginTransportError.noVerifiedAddress }
+        return candidates
+    }
+
+    internal static func parse(_ data: Data, expectedHost: String) -> [TestOriginCandidate] {
+        guard data.count <= maximumBytes,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["Status"] as? Int) == 0,
+              let questions = object["Question"] as? [[String: Any]], questions.count == 1,
+              let name = questions[0]["name"] as? String,
+              normalized(name) == normalized(expectedHost),
+              (questions[0]["type"] as? Int) == 1,
+              let answers = object["Answer"] as? [[String: Any]] else { return [] }
+        var seen = Set<TestOriginCandidate>()
+        return answers.compactMap { answer in
+            guard (answer["type"] as? Int) == 1, let literal = answer["data"] as? String,
+                  let candidate = TestOriginCandidate.publicAddress(literal),
+                  seen.insert(candidate).inserted else { return nil }
+            return candidate
+        }
+    }
+
+    private static func normalized(_ name: String) -> String {
+        name.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    }
+}
+
+private final class TestOriginDoHReceiver: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private let limit: Int
+    private var data = Data()
+    private var response: HTTPURLResponse?
+    private var completion: CheckedContinuation<(Data, HTTPURLResponse), Error>?
+    private var task: URLSessionDataTask?
+    private var finished = false
+
+    init(limit: Int) { self.limit = limit }
+
+    func read(_ request: URLRequest, using session: URLSession) async throws -> (Data, HTTPURLResponse) {
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                let dataTask = session.dataTask(with: request)
+                lock.lock()
+                guard !finished else {
+                    lock.unlock()
+                    dataTask.cancel()
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                completion = continuation
+                task = dataTask
+                lock.unlock()
+                dataTask.resume()
+            }
+        }, onCancel: { [weak self] in self?.finish(.failure(CancellationError())) })
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard let response = response as? HTTPURLResponse,
+              response.expectedContentLength <= Int64(limit) else {
+            finish(.failure(TestOriginTransportError.noVerifiedAddress))
+            completionHandler(.cancel); return
+        }
+        lock.lock(); self.response = response; let active = !finished; lock.unlock()
+        completionHandler(active ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive bytes: Data) {
+        lock.lock()
+        guard !finished, bytes.count <= limit - data.count else {
+            lock.unlock(); finish(.failure(TestOriginTransportError.noVerifiedAddress)); dataTask.cancel(); return
+        }
+        data.append(bytes); lock.unlock()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didCompleteWithError error: Error?) {
+        if let error { finish(.failure(error)); return }
+        lock.lock(); let result = response.map { (data, $0) }; lock.unlock()
+        if let result { finish(.success(result)) }
+        else { finish(.failure(TestOriginTransportError.noVerifiedAddress)) }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+
+    private func finish(_ result: Result<(Data, HTTPURLResponse), Error>) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let completion = self.completion
+        let task = self.task
+        self.completion = nil
+        self.task = nil
+        lock.unlock()
+        task?.cancel()
+        completion?.resume(with: result)
     }
 }
 
