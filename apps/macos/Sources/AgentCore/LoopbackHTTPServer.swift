@@ -5,12 +5,20 @@ import Network
 /// Listener, buffers, deadlines and task cancellation are confined to one queue.
 public final class LoopbackHTTPServer: @unchecked Sendable {
     public typealias Handler = @Sendable (LocalHTTPRequest) async -> LocalHTTPResponse
+    public typealias HeadroomPolicy = @Sendable (LocalHTTPRequest) -> Bool
     private let port: UInt16
+    private let preservesHeadroom: HeadroomPolicy
+    private let requestDeadlineSeconds: Double
     private let handler: Handler
     private let queue = DispatchQueue(label: "ru.robopark.workspace.http", qos: .utility)
     private var listener: NWListener?
     private var contexts: [UUID: Connection] = [:]
+    private var activeConstrainedRequests = 0
     private var bufferedBytes = 0
+    // Browsers load local bundles in bursts. Keep slow handler work bounded
+    // separately so it cannot consume every local transport slot.
+    private static let maximumConnections = 32
+    private static let maximumConstrainedRequests = 8
     // Mutable members are accessed only on queue; tasks pass the identity back.
     private final class Connection: @unchecked Sendable {
         let id = UUID()
@@ -18,9 +26,15 @@ public final class LoopbackHTTPServer: @unchecked Sendable {
         var bytes = Data()
         var task: Task<Void, Never>?
         var timer: DispatchSourceTimer?
+        var occupiesConstrainedSlot = false
         init(_ socket: NWConnection) { self.socket = socket }
     }
-    public init(port: UInt16 = 18444, handler: @escaping Handler) { self.port = port; self.handler = handler }
+    public init(port: UInt16 = 18444, preservesHeadroom: @escaping HeadroomPolicy = { _ in false },
+                requestDeadlineSeconds: Double = 100,
+                handler: @escaping Handler) {
+        self.port = port; self.preservesHeadroom = preservesHeadroom
+        self.requestDeadlineSeconds = requestDeadlineSeconds; self.handler = handler
+    }
 
     public func start() async throws -> UInt16 {
         try await withCheckedThrowingContinuation { continuation in
@@ -64,6 +78,11 @@ public final class LoopbackHTTPServer: @unchecked Sendable {
         context.task?.cancel(); context.task = nil
         context.socket.cancel()
     }
+    private func releaseConstrainedSlot(_ context: Connection) {
+        guard context.occupiesConstrainedSlot else { return }
+        activeConstrainedRequests -= 1
+        context.occupiesConstrainedSlot = false
+    }
     private func deadline(_ context: Connection, seconds: Double) {
         context.timer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -74,7 +93,7 @@ public final class LoopbackHTTPServer: @unchecked Sendable {
         context.timer = timer; timer.resume()
     }
     private func accept(_ socket: NWConnection) {
-        guard contexts.count < 8 else { socket.cancel(); return }
+        guard contexts.count < Self.maximumConnections else { socket.cancel(); return }
         let context = Connection(socket)
         contexts[context.id] = context
         socket.stateUpdateHandler = { [weak self, weak context] state in
@@ -98,13 +117,23 @@ public final class LoopbackHTTPServer: @unchecked Sendable {
             do {
                 if let request = try LocalHTTPRequest.parse(context.bytes) {
                     self.bufferedBytes -= context.bytes.count; context.bytes.removeAll()
-                    self.deadline(context, seconds: 100)
+                    if !self.preservesHeadroom(request) {
+                        guard self.activeConstrainedRequests < Self.maximumConstrainedRequests else {
+                            self.respond(.json(["detail": "local_transport_busy"], status: 503), to: context)
+                            return
+                        }
+                        self.activeConstrainedRequests += 1
+                        context.occupiesConstrainedSlot = true
+                    }
+                    self.deadline(context, seconds: self.requestDeadlineSeconds)
                     let handler = self.handler
-                    context.task = Task { [weak self, weak context] in
+                    context.task = Task { [weak self] in
                         let response = await handler(request)
-                        guard !Task.isCancelled, let self, let context else { return }
+                        let cancelled = Task.isCancelled
+                        guard let self else { return }
                         self.queue.async {
-                            guard self.contexts[context.id] != nil else { return }
+                            self.releaseConstrainedSlot(context)
+                            guard !cancelled, self.contexts[context.id] != nil else { return }
                             self.respond(response, to: context, head: request.method == "HEAD")
                         }
                     }
@@ -125,4 +154,5 @@ public final class LoopbackHTTPServer: @unchecked Sendable {
             if let self, let context { self.close(context) }
         })
     }
+
 }

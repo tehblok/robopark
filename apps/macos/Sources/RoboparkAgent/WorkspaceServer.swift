@@ -58,7 +58,10 @@ import AgentCore
     func start() async throws {
         if server != nil { return }
         if let starting { _ = try await starting.value; return }
-        let http = LoopbackHTTPServer(port: port) { [weak self] request in
+        let headroomPolicy: LoopbackHTTPServer.HeadroomPolicy = { request in
+            WorkspaceServer.preservesBrowserHeadroom(request)
+        }
+        let http = LoopbackHTTPServer(port: port, preservesHeadroom: headroomPolicy) { [weak self] request in
             guard let self else { return .json(["detail": "workspace_closed"], status: 503) }
             return await self.handle(request)
         }
@@ -68,6 +71,16 @@ import AgentCore
         catch { http.stop(); starting = nil; throw error }
     }
     func stop() { starting?.cancel(); starting = nil; server?.stop(); server = nil; launches.removeAll() }
+    private nonisolated static func preservesBrowserHeadroom(_ request: LocalHTTPRequest) -> Bool {
+        if ["GET", "HEAD"].contains(request.method) {
+            if request.path.hasPrefix("/api/") { return false }
+            if request.path.hasPrefix("/__robopark/") {
+                return ["/__robopark/config.js", "/__robopark/storage-key", "/__robopark/agent/status"].contains(request.path)
+            }
+            return true
+        }
+        return request.method == "POST" && request.path == "/__robopark/bootstrap"
+    }
     private func storageKey() throws -> Data {
         if let bytes = try SecureStore.readData("workspace-storage-key-v1") {
             guard bytes.count == 32 else { throw NetworkFailure.invalid }

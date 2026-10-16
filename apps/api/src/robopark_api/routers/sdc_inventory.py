@@ -8,7 +8,12 @@ from robopark_api.db import get_db
 from robopark_api.deps import require_emergency_viewer
 from robopark_api.models import User
 from robopark_api.routers.emergency import authorize_emergency_vin
-from robopark_api.services import corporate_gateway_client, platform_settings, sdc_inventory
+from robopark_api.services import (
+    corporate_gateway_client,
+    inventory_server_circuit,
+    platform_settings,
+    sdc_inventory,
+)
 
 router = APIRouter(prefix="/sdc-inventory", tags=["sdc-inventory"])
 
@@ -62,18 +67,33 @@ def _service_token(db):
     return token
 
 
-def _server_read(function, db, *args, **kwargs):
+def _server_read(function, db, *args, endpoint, **kwargs):
     """Return (result, availability_error); never hide ACL/not-found failures."""
     try:
         token = _service_token(db)
     except HTTPException as exc:
         return None, exc
+    circuit_key = inventory_server_circuit.inventory_server_circuit.key(
+        endpoint=endpoint,
+        base_url=sdc_inventory.BASE_URL,
+        credential=token,
+    )
+    admission = inventory_server_circuit.inventory_server_circuit.allow(circuit_key)
+    if admission is None:
+        return None, HTTPException(503, "sdc_inventory_unavailable")
     try:
-        return function(token, *args, **kwargs), None
+        result = function(token, *args, **kwargs)
     except sdc_inventory.InventoryError as exc:
         if isinstance(exc, sdc_inventory.InventoryAvailabilityError):
+            inventory_server_circuit.inventory_server_circuit.unavailable(circuit_key, admission)
             return None, HTTPException(503, str(exc))
+        inventory_server_circuit.inventory_server_circuit.available(circuit_key, admission)
         raise _inventory_http_error(exc) from None
+    except BaseException:
+        inventory_server_circuit.inventory_server_circuit.available(circuit_key, admission)
+        raise
+    inventory_server_circuit.inventory_server_circuit.available(circuit_key, admission)
+    return result, None
 
 
 @router.get("/robots/{robot}", summary="SDC Inventory: карточка, локация и состояние робота")
@@ -86,7 +106,7 @@ def robot_card(
 ):
     """Учётные факты; fleet — тип флота, port/storage — локация. Не физический осмотр."""
     name = _access(db, user, robot, park_id)
-    result, server_error = _server_read(sdc_inventory.fetch_card, db, name)
+    result, server_error = _server_read(sdc_inventory.fetch_card, db, name, endpoint="rover_card")
     if result is not None:
         return result
     if corporate_gateway_client.enabled(settings):
@@ -125,6 +145,7 @@ def robot_installations(
         sdc_inventory.fetch_installations,
         db,
         name,
+        endpoint="rover_installations",
         offset=offset,
         limit=limit,
         slot=slot,

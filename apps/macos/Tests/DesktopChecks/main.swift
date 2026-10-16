@@ -93,6 +93,92 @@ try check((rawResponse as? HTTPURLResponse)?.statusCode == 200, "real loopback r
 try check((try JSONSerialization.jsonObject(with: reply) as? [String: String])?["path"] == "/hello", "loopback dispatch")
 server.stop()
 testSession.invalidateAndCancel()
+
+actor SlowRequestGate {
+    private var started = 0
+    private var startedWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var blockedRequests: [CheckedContinuation<Void, Never>] = []
+
+    func block() async {
+        started += 1
+        let ready = startedWaiters.filter { started >= $0.0 }
+        startedWaiters.removeAll { started >= $0.0 }
+        ready.forEach { $0.1.resume() }
+        await withCheckedContinuation { blockedRequests.append($0) }
+    }
+
+    func waitUntilStarted(_ count: Int) async {
+        guard started < count else { return }
+        await withCheckedContinuation { startedWaiters.append((count, $0)) }
+    }
+
+    func releaseAll() {
+        let requests = blockedRequests
+        blockedRequests.removeAll()
+        requests.forEach { $0.resume() }
+    }
+}
+
+let slowGate = SlowRequestGate()
+let saturatedServer = LoopbackHTTPServer(port: 0, preservesHeadroom: { request in
+    ["GET", "HEAD"].contains(request.method) && request.path.hasPrefix("/assets/")
+}, requestDeadlineSeconds: 0.1) { request in
+    if request.path.hasPrefix("/api/slow") {
+        await slowGate.block()
+    }
+    return LocalHTTPResponse(status: 200, headers: ["Content-Type": "text/javascript"], body: Data("ok".utf8))
+}
+let saturatedPort = try await saturatedServer.start()
+let saturatedConfiguration = URLSessionConfiguration.ephemeral
+saturatedConfiguration.httpMaximumConnectionsPerHost = 32
+let saturatedSession = URLSession(configuration: saturatedConfiguration)
+let slowRequests = (0..<8).map { index in
+    Task {
+        do {
+            let (_, response) = try await saturatedSession.data(from: URL(string: "http://127.0.0.1:\(saturatedPort)/api/slow/\(index)")!)
+            return (response as? HTTPURLResponse)?.statusCode
+        } catch { return nil }
+    }
+}
+await slowGate.waitUntilStarted(8)
+let constrainedStatuses = try await withThrowingTaskGroup(of: Int?.self) { group in
+    for index in 0..<2 {
+        group.addTask {
+            let (_, response) = try await saturatedSession.data(from: URL(string: "http://127.0.0.1:\(saturatedPort)/native/slow/\(index)")!)
+            return (response as? HTTPURLResponse)?.statusCode
+        }
+    }
+    return try await group.reduce(into: []) { $0.append($1) }
+}
+try check(constrainedStatuses.count == 2 && constrainedStatuses.allSatisfy { $0 == 503 },
+          "non-static handler concurrency stays bounded with HTTP backpressure")
+slowRequests.forEach { $0.cancel() }
+saturatedSession.invalidateAndCancel()
+try await Task.sleep(nanoseconds: 300_000_000)
+let recoverySession = URLSession(configuration: saturatedConfiguration)
+let (_, cancelledResponse) = try await recoverySession.data(from: URL(string: "http://127.0.0.1:\(saturatedPort)/native/after-cancel")!)
+try check((cancelledResponse as? HTTPURLResponse)?.statusCode == 503,
+          "connection deadline does not release non-cooperative handler capacity")
+let assetStatuses = try await withThrowingTaskGroup(of: Int?.self) { group in
+    for index in 0..<6 {
+        group.addTask {
+            let (_, response) = try await recoverySession.data(from: URL(string: "http://127.0.0.1:\(saturatedPort)/assets/test-\(index).js")!)
+            return (response as? HTTPURLResponse)?.statusCode
+        }
+    }
+    return try await group.reduce(into: []) { $0.append($1) }
+}
+try check(assetStatuses.count == 6 && assetStatuses.allSatisfy { $0 == 200 }, "slow API requests preserve local asset headroom")
+await slowGate.releaseAll()
+var slowStatuses: [Int?] = []
+for request in slowRequests { slowStatuses.append(await request.value) }
+try check(slowStatuses.count == 8 && slowStatuses.allSatisfy { $0 == nil }, "cancelled slow API requests terminate")
+try await Task.sleep(nanoseconds: 100_000_000)
+let (_, recoveredResponse) = try await recoverySession.data(from: URL(string: "http://127.0.0.1:\(saturatedPort)/native/recovered")!)
+try check((recoveredResponse as? HTTPURLResponse)?.statusCode == 200,
+          "handler completion releases constrained capacity")
+saturatedServer.stop()
+recoverySession.invalidateAndCancel()
 if let flag = CommandLine.arguments.firstIndex(of: "--compression-fixture"), flag + 1 < CommandLine.arguments.count {
     let payload: [String: Any] = ["vin": "YASADR00000000664", "timestamp": Int64(Date().timeIntervalSince1970 * 1000),
         "diagnostics": Array(repeating: ["state": "ok", "sensor": "synthetic-test-sensor"], count: 200)]

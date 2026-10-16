@@ -25,6 +25,7 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
   const offset = Math.max(0, Number(params.get('offset')) || 0)
   const [data, setData] = useState<RobotRegistry | null>(null)
   const [error, setError] = useState<unknown>(null)
+  const [offlineUnavailable, setOfflineUnavailable] = useState(false)
   const [resultPark, setResultPark] = useState(parkId)
   const [retry, setRetry] = useState(0)
   const lastRetry = useRef(0)
@@ -53,7 +54,7 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
     }
     if (denied.current?.kind === 'unauthorized' || (denied.current && denied.current.parkId === parkId)) return
     denied.current = null
-    setData(null); setError(null)
+    setData(null); setError(null); setOfflineUnavailable(false)
     setResultPark(parkId)
     if (!allowed || !apiClient.robotRegistry) return
     const key = JSON.stringify([parkId, query, state, activeErrors, openTasks, offset])
@@ -70,13 +71,20 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
         replaceOffset(Math.max(0, Math.floor((value.total - 1) / 50) * 50))
         return
       }
-      setData(value); setError(null)
+      setData(value); setError(null); setOfflineUnavailable(false)
     }
-    if (!query && state === 'all' && !activeErrors && !openTasks && offset === 0 && user && parkId != null) {
+    const preparedSnapshot = !query && state === 'all' && !activeErrors && !openTasks && offset === 0 && user && parkId != null
+    const showOfflineUnavailable = () => {
+      if (current && !navigator.onLine) setOfflineUnavailable(true)
+    }
+    if (preparedSnapshot) {
       const deviceStore = currentDeviceResourceCache()
       if (deviceStore) void deviceStore.get<RobotRegistry>(offlinePreparedRobotsKey(user.id, parkId))
-        .then(value => { if (current && value?.park_id === parkId) publish(value) })
-        .catch(() => undefined)
+        .then(value => { if (value?.park_id === parkId) publish(value); else showOfflineUnavailable() })
+        .catch(showOfflineUnavailable)
+      else showOfflineUnavailable()
+    } else {
+      showOfflineUnavailable()
     }
     const load = async () => {
       clear()
@@ -117,6 +125,7 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
     const resume = () => {
       clear()
       if (!automatic()) return
+      setOfflineUnavailable(false)
       const delay = Math.max(resumeDelay(), retryAt - Date.now())
       if (delay <= 0) void load(); else timer = window.setTimeout(() => void load(), delay)
     }
@@ -159,6 +168,7 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
     </div>
     {!allowed ? <EmptyState title="Реестр недоступен" description="Для реестра нужен доступ к задачам Tracker. Можно открыть робота по номеру ниже." />
       : failure ? <ErrorState {...failure} onRetry={failure.retryable ? () => setRetry(value => value + 1) : undefined} />
+        : offlineUnavailable ? <EmptyState title="Данные не подготовлены для работы без сети" description="Подключитесь к сети и подготовьте офлайн-набор. Робота можно открыть по номеру выше." />
         : !apiClient.robotRegistry ? null : !visible || !data ? <LoadingState label="Загружаем реестр роботов" /> : <>
           <div className="rp-robot-registry__summary"><p>Найдено: {data.total}</p></div>
           <p className="rp-robot-registry__note" role="status">Телеметрия получена только из недавних проверок. {data.partial ? 'Часть данных неизвестна; откройте робота для проверки.' : 'Доступны сохранённые данные.'}</p>

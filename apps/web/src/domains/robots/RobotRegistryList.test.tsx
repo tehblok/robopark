@@ -4,6 +4,7 @@ import { MemoryRouter, useSearchParams } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, type RobotRegistry, type User } from '../../api'
 import { AuthContext } from '../../auth-context'
+import * as deviceResourceCache from '../../lib/deviceResourceCache'
 import { RobotRegistryList } from './RobotRegistryList'
 
 const user: User = { id: 1, role: 'mechanic', username: 'm', access_status: 'approved', parks: [], permissions: ['tracker.read', 'nav.robot_search'] }
@@ -156,6 +157,31 @@ it('suspends registry requests offline or hidden and coalesces wake events', asy
   await act(async () => vi.advanceTimersByTimeAsync(60_000))
   expect(client.robotRegistry).toHaveBeenCalledTimes(2)
   await act(async () => done(empty))
+})
+
+it('shows that registry data was not prepared when opened offline without a snapshot', async () => {
+  vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
+  vi.spyOn(deviceResourceCache, 'currentDeviceResourceCache').mockReturnValue(null)
+  const client = { robotRegistry: vi.fn().mockResolvedValue(empty) }
+
+  render(tree(client))
+
+  expect(await screen.findByRole('heading', { name: 'Данные не подготовлены для работы без сети' })).toBeVisible()
+  expect(client.robotRegistry).not.toHaveBeenCalled()
+})
+
+it('loads the registry after connectivity returns from an unprepared offline state', async () => {
+  const online = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
+  vi.spyOn(deviceResourceCache, 'currentDeviceResourceCache').mockReturnValue(null)
+  const client = { robotRegistry: vi.fn().mockResolvedValue(empty) }
+  render(tree(client))
+  await screen.findByRole('heading', { name: 'Данные не подготовлены для работы без сети' })
+
+  online.mockReturnValue(true)
+  fireEvent(window, new Event('online'))
+
+  expect(await screen.findByRole('heading', { name: 'Роботы не найдены' })).toBeVisible()
+  expect(client.robotRegistry).toHaveBeenCalledTimes(1)
 })
 
 // Existing lifecycle assertions use the minimum jitter; capacity tests cover dispersion.

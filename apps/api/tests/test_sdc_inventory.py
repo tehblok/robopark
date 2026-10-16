@@ -6,9 +6,17 @@ from robopark_api.services import (
     corporate_gateway_client,
     corporate_gateway_contract,
     emergency_scope,
+    inventory_server_circuit,
     platform_settings,
     sdc_inventory,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_inventory_server_circuit(monkeypatch):
+    circuit = inventory_server_circuit.InventoryServerCircuit()
+    monkeypatch.setattr(inventory_server_circuit, "inventory_server_circuit", circuit)
+    return circuit
 
 
 @pytest.mark.parametrize(
@@ -240,6 +248,213 @@ def test_server_inventory_availability_failure_uses_owner_mac(
     assert response.status_code == 200
     assert response.json()["robot"]["storage"] == "Owner Mac"
     assert len(mac_calls) == 1
+
+
+def test_repeated_server_inventory_failure_uses_fast_owner_mac_fallback(
+    client, seed_admin, test_settings, monkeypatch
+):
+    login_as(client, seed_admin.username, "secret")
+    test_settings.robopark_environment = "test"
+    test_settings.emergency_bridge_enabled = True
+    test_settings.mac_corporate_gateway_enabled = True
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "cooldown-token")
+    server_calls = []
+    mac_calls = []
+
+    def unavailable(*_args):
+        server_calls.append(True)
+        raise sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
+
+    monkeypatch.setattr(sdc_inventory, "fetch_card", unavailable)
+    monkeypatch.setattr(
+        corporate_gateway_client,
+        "read",
+        lambda **kwargs: (
+            mac_calls.append(kwargs)
+            or corporate_gateway_contract.CorporateReadResponse(
+                200, {}, {"name": "a664", "storage": "Owner Mac"}
+            )
+        ),
+    )
+
+    first = client.get("/sdc-inventory/robots/a664")
+    second = client.get("/sdc-inventory/robots/a664")
+
+    assert first.status_code == second.status_code == 200
+    assert len(server_calls) == 1
+    assert len(mac_calls) == 2
+
+
+def test_inventory_server_recovery_is_probed_once_after_cooldown(
+    client, seed_admin, test_settings, monkeypatch
+):
+    login_as(client, seed_admin.username, "secret")
+    test_settings.robopark_environment = "test"
+    test_settings.emergency_bridge_enabled = True
+    test_settings.mac_corporate_gateway_enabled = True
+    now = [100.0]
+    circuit = inventory_server_circuit.InventoryServerCircuit(
+        cooldown_seconds=10, now=lambda: now[0]
+    )
+    monkeypatch.setattr(inventory_server_circuit, "inventory_server_circuit", circuit)
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "recovery-token")
+    server_calls = []
+
+    def fetch(*_args):
+        server_calls.append(True)
+        if len(server_calls) == 1:
+            raise sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
+        return {
+            "source": "SDC Inventory",
+            "robot_name": "a664",
+            "checked_at": "2026-10-16T00:00:00+00:00",
+            "physical_inspection": "not_performed",
+            "robot": {"name": "a664", "storage": "Recovered server"},
+        }
+
+    mac_calls = []
+    monkeypatch.setattr(sdc_inventory, "fetch_card", fetch)
+    monkeypatch.setattr(
+        corporate_gateway_client,
+        "read",
+        lambda **kwargs: (
+            mac_calls.append(kwargs)
+            or corporate_gateway_contract.CorporateReadResponse(
+                200, {}, {"name": "a664", "storage": "Owner Mac"}
+            )
+        ),
+    )
+
+    assert client.get("/sdc-inventory/robots/a664").json()["robot"]["storage"] == "Owner Mac"
+    assert client.get("/sdc-inventory/robots/a664").json()["robot"]["storage"] == "Owner Mac"
+    now[0] += 10
+    recovered = client.get("/sdc-inventory/robots/a664")
+    healthy = client.get("/sdc-inventory/robots/a664")
+
+    assert recovered.json()["robot"]["storage"] == "Recovered server"
+    assert healthy.json()["robot"]["storage"] == "Recovered server"
+    assert len(server_calls) == 3
+    assert len(mac_calls) == 2
+
+
+def test_inventory_half_open_auth_refusal_is_not_bypassed_through_mac(
+    client, seed_admin, test_settings, monkeypatch
+):
+    login_as(client, seed_admin.username, "secret")
+    test_settings.robopark_environment = "test"
+    test_settings.emergency_bridge_enabled = True
+    test_settings.mac_corporate_gateway_enabled = True
+    now = [100.0]
+    circuit = inventory_server_circuit.InventoryServerCircuit(
+        cooldown_seconds=10, now=lambda: now[0]
+    )
+    monkeypatch.setattr(inventory_server_circuit, "inventory_server_circuit", circuit)
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "auth-token")
+    server_calls = []
+
+    def fetch(*_args):
+        server_calls.append(True)
+        if len(server_calls) == 1:
+            raise sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
+        if len(server_calls) == 2:
+            raise sdc_inventory.InventoryError("sdc_inventory_access_denied")
+        return {
+            "source": "SDC Inventory",
+            "robot_name": "a664",
+            "checked_at": "2026-10-16T00:00:00+00:00",
+            "physical_inspection": "not_performed",
+            "robot": {"name": "a664", "storage": "Server path"},
+        }
+
+    mac_calls = []
+    monkeypatch.setattr(sdc_inventory, "fetch_card", fetch)
+    monkeypatch.setattr(
+        corporate_gateway_client,
+        "read",
+        lambda **kwargs: (
+            mac_calls.append(kwargs)
+            or corporate_gateway_contract.CorporateReadResponse(
+                200, {}, {"name": "a664", "storage": "Owner Mac"}
+            )
+        ),
+    )
+
+    assert client.get("/sdc-inventory/robots/a664").status_code == 200
+    now[0] += 10
+    refused = client.get("/sdc-inventory/robots/a664")
+    healthy = client.get("/sdc-inventory/robots/a664")
+
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == "sdc_inventory_access_denied"
+    assert healthy.status_code == 200
+    assert healthy.json()["robot"]["storage"] == "Server path"
+    assert len(mac_calls) == 1
+
+
+def test_inventory_cooldown_isolated_by_endpoint(client, seed_admin, test_settings, monkeypatch):
+    login_as(client, seed_admin.username, "secret")
+    test_settings.robopark_environment = "test"
+    test_settings.emergency_bridge_enabled = True
+    test_settings.mac_corporate_gateway_enabled = True
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "endpoint-token")
+    card_calls = []
+    installation_calls = []
+
+    def unavailable_card(*_args):
+        card_calls.append(True)
+        raise sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
+
+    def server_installations(*_args, **_kwargs):
+        installation_calls.append(True)
+        return {"items": [], "complete": True}
+
+    monkeypatch.setattr(sdc_inventory, "fetch_card", unavailable_card)
+    monkeypatch.setattr(sdc_inventory, "fetch_installations", server_installations)
+    monkeypatch.setattr(
+        corporate_gateway_client,
+        "read",
+        lambda **_kwargs: corporate_gateway_contract.CorporateReadResponse(
+            200, {}, {"name": "a664", "storage": "Owner Mac"}
+        ),
+    )
+
+    assert client.get("/sdc-inventory/robots/a664").status_code == 200
+    installations = client.get("/sdc-inventory/robots/a664/installations")
+
+    assert installations.status_code == 200, installations.text
+    assert card_calls == [True]
+    assert installation_calls == [True]
+
+
+def test_inventory_cooldown_does_not_hide_mac_unavailability(
+    client, seed_admin, test_settings, monkeypatch
+):
+    login_as(client, seed_admin.username, "secret")
+    test_settings.robopark_environment = "test"
+    test_settings.emergency_bridge_enabled = True
+    test_settings.mac_corporate_gateway_enabled = True
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "unavailable-token")
+    server_calls = []
+
+    def unavailable(*_args):
+        server_calls.append(True)
+        raise sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
+
+    monkeypatch.setattr(sdc_inventory, "fetch_card", unavailable)
+    monkeypatch.setattr(
+        corporate_gateway_client,
+        "read",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            corporate_gateway_client.CorporateGatewayError(503, "corporate_unavailable")
+        ),
+    )
+
+    first = client.get("/sdc-inventory/robots/a664")
+    second = client.get("/sdc-inventory/robots/a664")
+
+    assert first.status_code == second.status_code == 503
+    assert first.json()["detail"] == second.json()["detail"] == "corporate_unavailable"
+    assert server_calls == [True]
 
 
 @pytest.mark.parametrize(
