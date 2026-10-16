@@ -13,6 +13,7 @@ import IOKit.ps
 
     let bridge: Bridge
     var onChange: (() -> Void)?
+    var onLifecycle: ((String, String, String?, Int?) -> Void)?
     private(set) var state = "Ожидание аккаунта"
     private(set) var active = 0
     private(set) var completed = 0
@@ -34,6 +35,7 @@ import IOKit.ps
     private var generation = ""
     private var peerAvailable = false
     private var heartbeatAcknowledgements = false
+    private var lifecyclePhase = "verify_info"
     private var connectionWatchdog = ConnectionWatchdog()
     private var runID = UUID()
     private var previousCPUTicks: [UInt64]?
@@ -69,7 +71,13 @@ import IOKit.ps
             var delay = 1.0
             while !Task.isCancelled, self.runID == run {
                 do { try await self.connect(run: run); delay = 1 }
-                catch { if self.runID == run { self.state = "Вычислительный канал переподключается…"; self.onChange?() } }
+                catch {
+                    if self.runID == run {
+                        self.emitLifecycle("closed", "error",
+                            code: self.lifecycleErrorCode(error, channel: self.socket))
+                        self.state = "Вычислительный канал переподключается…"; self.onChange?()
+                    }
+                }
                 if self.runID == run { self.cleanupConnection() }
                 if Task.isCancelled || self.runID != run { return }
                 try? await Task.sleep(nanoseconds: UInt64((delay + Double.random(in: 0...1)) * 1_000_000_000))
@@ -156,14 +164,20 @@ import IOKit.ps
 
     private func connect(run: UUID) async throws {
         guard let profile = bridge.registration else { return }
+        lifecyclePhase = "verify_info"
+        let verifyStarted = Date()
         try bridge.requireTrust()
         let server = try ServerOrigin(profile.origin)
+        emitLifecycle("verify_info", "ok", elapsedSince: verifyStarted)
         let channel = try Network.serverTransport().webSocketTask(with: server.computeWebSocket)
         channel.maximumMessageSize = 12 * 1024 * 1024
         socket = channel; channel.resume()
+        lifecyclePhase = "challenge"
+        let challengeStarted = Date()
         let challenge = try JSONDecoder().decode(
             Challenge.self, from: await receive(channel, timeoutNanoseconds: 20_000_000_000)
         )
+        emitLifecycle("challenge", "ok", elapsedSince: challengeStarted)
         let key = try P256.Signing.PrivateKey(rawRepresentation: profile.privateKey)
         let signature = try challenge.signCompute(key: key, environment: profile.environment, instanceID: profile.instanceID)
         try await send(["type": "auth", "device_id": profile.deviceID, "signature": signature.base64EncodedString()], through: channel)
@@ -174,6 +188,8 @@ import IOKit.ps
               !nextGeneration.isEmpty, let ownerUserID = ready["owner_user_id"] as? Int else { throw AgentError.wrongServer }
         guard runID == run, !Task.isCancelled else { throw CancellationError() }
         try bridge.acceptServerOwner(ownerUserID: ownerUserID, trackerLogin: ready["owner_tracker_login"] as? String)
+        lifecyclePhase = "authenticated"
+        emitLifecycle("authenticated", "ok")
         generation = nextGeneration; state = "Готов к вычислениям"; onChange?()
         let capabilities = ready["supports"] as? [String] ?? []
         heartbeatAcknowledgements = capabilities.contains("heartbeat_ack")
@@ -205,6 +221,8 @@ import IOKit.ps
                         }
                     }
                 } catch {
+                    self.emitLifecycle("heartbeat", "error",
+                        code: self.lifecycleErrorCode(error, channel: channel))
                     self.invalidateConnection(run: run, generation: nextGeneration,
                                               channel: channel, signal: liveness)
                     return
@@ -265,6 +283,8 @@ import IOKit.ps
             catch { return }
             guard let self, self.runID == run, self.generation == generation,
                   self.connectionWatchdog.expire(pulse) else { return }
+            self.emitLifecycle("heartbeat", "timeout",
+                code: self.closeCode(channel, prefix: "ack_timeout"))
             self.invalidateConnection(run: run, generation: generation,
                                       channel: channel, signal: signal)
         }
@@ -285,6 +305,8 @@ import IOKit.ps
             livenessTimeout?.cancel(); livenessTimeout = nil
         } else if connectionWatchdog.expire(pulse) {
             livenessTimeout?.cancel(); livenessTimeout = nil
+            emitLifecycle("heartbeat", "error",
+                code: lifecycleErrorCode(error!, channel: channel))
             invalidateConnection(run: run, generation: generation,
                                  channel: channel, signal: signal)
         }
@@ -298,6 +320,18 @@ import IOKit.ps
         state = "Вычислительный канал переподключается…"
         onChange?()
         signal.invalidate()
+    }
+    private func emitLifecycle(_ stage: String, _ status: String, code: String? = nil,
+                               elapsedSince started: Date? = nil) {
+        let elapsed = started.map { max(0, Int(Date().timeIntervalSince($0) * 1000)) }
+        onLifecycle?(stage, status, code, elapsed)
+    }
+    private func closeCode(_ channel: URLSessionWebSocketTask?, prefix: String) -> String {
+        "\(prefix).close.\(channel?.closeCode.rawValue ?? 0)"
+    }
+    private func lifecycleErrorCode(_ error: Error, channel: URLSessionWebSocketTask?) -> String {
+        let value = error as NSError
+        return "\(lifecyclePhase).ns.\(value.code).close.\(channel?.closeCode.rawValue ?? 0)"
     }
 
     private func sendHeartbeat() async throws {

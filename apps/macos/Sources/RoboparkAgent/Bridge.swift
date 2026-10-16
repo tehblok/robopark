@@ -22,6 +22,7 @@ import IOKit.ps
         }
     }
     var onChange: (() -> Void)?
+    var onLifecycle: ((String, String, String?, Int?) -> Void)?
     private(set) var state = "Не зарегистрирован"
     private(set) var upstreamState = "Ожидание проверочного робота"
     var needsCorporateLogin: Bool {
@@ -50,6 +51,7 @@ import IOKit.ps
     private var managedProbes = false
     private var compressedResults = false
     private var heartbeatAcknowledgements = false
+    private var lifecyclePhase = "verify_info"
     private var connectionWatchdog = ConnectionWatchdog()
     private var runID = UUID()
     private var previousCPUTicks: [UInt64]?
@@ -222,6 +224,8 @@ import IOKit.ps
                 do { try await self.connect(run: currentRun); delay = 1 }
                 catch {
                     guard self.runID == currentRun else { return }
+                    self.emitLifecycle("closed", "error",
+                        code: self.lifecycleErrorCode(error, channel: self.socket))
                     self.state = "Связь с сервером потеряна. Повторное подключение…"; self.onChange?()
                 }
                 guard self.runID == currentRun else { return }
@@ -741,7 +745,10 @@ import IOKit.ps
     private func connect(run: UUID) async throws {
         guard let profile = registration else { return }
         let server = try ServerOrigin(profile.origin)
+        lifecyclePhase = "verify_info"
+        let verifyStarted = Date()
         let (info, trusted) = try await verifiedInfo(server)
+        emitLifecycle("verify_info", "ok", elapsedSince: verifyStarted)
         guard runID == run, info.instance_id == profile.instanceID, info.environment == profile.environment else { throw AgentError.wrongServer }
         registration?.signedProfile = info.signed_profile; registration?.channel = trusted.channel
         try persist()
@@ -749,9 +756,12 @@ import IOKit.ps
         let channel = try Network.serverTransport().webSocketTask(with: server.webSocket)
         channel.maximumMessageSize = 2 * 1024 * 1024
         socket = channel; channel.resume()
+        lifecyclePhase = "challenge"
+        let challengeStarted = Date()
         let challenge = try JSONDecoder().decode(
             Challenge.self, from: await receive(channel, timeoutNanoseconds: 20_000_000_000)
         )
+        emitLifecycle("challenge", "ok", elapsedSince: challengeStarted)
         guard runID == run, !Task.isCancelled else { throw CancellationError() }
         let key = try P256.Signing.PrivateKey(rawRepresentation: profile.privateKey)
         let signature = try challenge.sign(key: key, environment: profile.environment, instanceID: profile.instanceID)
@@ -766,6 +776,8 @@ import IOKit.ps
         try bindTrackerLogin(accepted["owner_tracker_login"] as? String)
         try persist()
         _ = await verifyCorporateSession(force: true)
+        lifecyclePhase = "authenticated"
+        emitLifecycle("authenticated", "ok")
         generation = nextGeneration
         let capabilities = accepted["supports"] as? [String] ?? []
         managedProbes = capabilities.contains("managed_probes")
@@ -801,6 +813,8 @@ import IOKit.ps
                     }
                 }
                 catch {
+                    self.emitLifecycle("heartbeat", "error",
+                        code: self.lifecycleErrorCode(error, channel: channel))
                     self.invalidateConnection(run: run, generation: nextGeneration,
                                               channel: channel, signal: liveness)
                     return
@@ -834,6 +848,8 @@ import IOKit.ps
             catch { return }
             guard let self, self.runID == run, self.generation == generation,
                   self.connectionWatchdog.expire(pulse) else { return }
+            self.emitLifecycle("heartbeat", "timeout",
+                code: self.closeCode(channel, prefix: "ack_timeout"))
             self.invalidateConnection(run: run, generation: generation,
                                       channel: channel, signal: signal)
         }
@@ -852,6 +868,8 @@ import IOKit.ps
             livenessTimeout?.cancel(); livenessTimeout = nil
         } else if connectionWatchdog.expire(pulse) {
             livenessTimeout?.cancel(); livenessTimeout = nil
+            emitLifecycle("heartbeat", "error",
+                code: lifecycleErrorCode(error!, channel: channel))
             invalidateConnection(run: run, generation: generation,
                                  channel: channel, signal: signal)
         }
@@ -865,6 +883,18 @@ import IOKit.ps
         state = "Связь с сервером потеряна. Повторное подключение…"
         onChange?()
         signal.invalidate()
+    }
+    private func emitLifecycle(_ stage: String, _ status: String, code: String? = nil,
+                               elapsedSince started: Date? = nil) {
+        let elapsed = started.map { max(0, Int(Date().timeIntervalSince($0) * 1000)) }
+        onLifecycle?(stage, status, code, elapsed)
+    }
+    private func closeCode(_ channel: URLSessionWebSocketTask?, prefix: String) -> String {
+        "\(prefix).close.\(channel?.closeCode.rawValue ?? 0)"
+    }
+    private func lifecycleErrorCode(_ error: Error, channel: URLSessionWebSocketTask?) -> String {
+        let value = error as NSError
+        return "\(lifecyclePhase).ns.\(value.code).close.\(channel?.closeCode.rawValue ?? 0)"
     }
     private func sendHeartbeat() async throws {
         let power = powerState

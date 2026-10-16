@@ -86,7 +86,15 @@ import AgentCore
             self.compute.emergencyPriorityChanged()
             self.render()
         }
+        bridge.onLifecycle = { [weak self] stage, status, code, elapsedMs in
+            self?.diagnosticJournal.append(service: "emergency", stage: stage,
+                                           status: status, code: code, elapsedMs: elapsedMs)
+        }
         compute.onChange = { [weak self] in self?.render() }
+        compute.onLifecycle = { [weak self] stage, status, code, elapsedMs in
+            self?.diagnosticJournal.append(service: "compute", stage: stage,
+                                           status: status, code: code, elapsedMs: elapsedMs)
+        }
         updater.onChange = { [weak self] in self?.render() }
         notifications.onChange = { [weak self] in self?.render() }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(wake), name: NSWorkspace.didWakeNotification, object: nil)
