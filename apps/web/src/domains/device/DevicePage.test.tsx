@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
+import { StrictMode } from 'react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
-import type { DesktopAgentStatus } from './deviceClient'
+import { DiagnosticsUnavailableError, type DesktopAgentStatus, type DiagnosticClient } from './deviceClient'
 import { DevicePage } from './DevicePage'
+import { DiagnosticPanel } from './DiagnosticPanel'
 
 const status: DesktopAgentStatus = {
   version: 1,
@@ -16,6 +18,12 @@ const status: DesktopAgentStatus = {
   legacyWorkspaceAvailable: false,
   update: { state: 'current', currentVersion: '0.2.3-rc.5', availableVersion: null, message: null },
 }
+
+const diagnostics = (overrides: Partial<DiagnosticClient> = {}): DiagnosticClient => ({
+  snapshot: vi.fn(async () => ({ events: [], running: false, results: [] })),
+  run: vi.fn(async () => ({ events: [], running: false, results: [] })),
+  ...overrides,
+})
 
 it('lets an ordinary desktop user start corporate login without entering credentials into the web page', async () => {
   const action = vi.fn(async () => ({
@@ -148,4 +156,60 @@ it('pauses passive status polling in a hidden tab and refreshes on return', asyn
     await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await Promise.resolve() })
     expect(load).toHaveBeenCalledTimes(2)
   } finally { view.unmount(); visibility.mockRestore(); vi.useRealTimers() }
+})
+
+it('hides TEST diagnostics from a non-Royal desktop account', async () => {
+  render(<DevicePage client={{ status: async () => ({ ...status, account: { ...status.account, role: 'admin' } }), action: vi.fn() }} desktop diagnostics={diagnostics()} />)
+
+  expect(await screen.findByText('Test Royal · admin')).toBeVisible()
+  expect(screen.queryByText('Диагностика TEST')).not.toBeInTheDocument()
+})
+
+it('runs a read-only diagnostic with the selected service, route, and robot', async () => {
+  const run = vi.fn(async () => ({
+    running: false,
+    events: [{ id: 'done', time: '12:00:00', service: 'inventory', stage: 'response', status: 'success', elapsedMs: 123 }],
+    results: [{ service: 'inventory', route: 'server', robot: '1170', status: 'success', httpStatus: 200, elapsedMs: 123 }],
+  }))
+  render(<DevicePage client={{ status: async () => status, action: vi.fn() }} desktop diagnostics={diagnostics({ run })} />)
+
+  await userEvent.click(await screen.findByText('Открыть конструктор диагностики'))
+  await userEvent.selectOptions(screen.getByLabelText('Сервис'), 'inventory')
+  await userEvent.selectOptions(screen.getByLabelText('Маршрут'), 'server')
+  await userEvent.click(screen.getByRole('button', { name: 'Запустить проверку' }))
+
+  expect(run).toHaveBeenCalledWith({ service: 'inventory', route: 'server', robot: '1170' })
+  expect(await screen.findByText('Inventory · server · робот 1170 · успешно · HTTP 200 · 123 мс')).toBeVisible()
+  expect(screen.getByText(/этап response/)).toBeVisible()
+})
+
+it('explains that diagnostics require a newer TEST build when the endpoint is absent', async () => {
+  render(<DevicePage client={{ status: async () => status, action: vi.fn() }} desktop diagnostics={diagnostics({ snapshot: vi.fn(async () => { throw new DiagnosticsUnavailableError() }) })} />)
+
+  await userEvent.click(await screen.findByText('Открыть конструктор диагностики'))
+  expect(await screen.findByText('Диагностика доступна в новой тестовой сборке.')).toBeVisible()
+})
+
+it('loads diagnostics after the StrictMode effect replay', async () => {
+  const snapshot = vi.fn(async () => ({ running: false, events: [], results: [
+    { service: 'server', route: 'direct', status: 'failed', code: 'timeout' },
+  ] }))
+  render(<StrictMode><DiagnosticPanel client={diagnostics({ snapshot })} /></StrictMode>)
+  await userEvent.click(screen.getByText('Открыть конструктор диагностики'))
+  expect(await screen.findByText('Сервер TEST · direct · ошибка · timeout')).toBeVisible()
+})
+
+it('refreshes a diagnostic that finished while its panel was collapsed', async () => {
+  const snapshot = vi.fn()
+    .mockResolvedValueOnce({ running: true, events: [], results: [] })
+    .mockResolvedValue({ running: false, events: [], results: [
+      { service: 'server', route: 'direct', status: 'ok' },
+    ] })
+  render(<DiagnosticPanel client={diagnostics({ snapshot })} />)
+  const toggle = screen.getByText('Открыть конструктор диагностики')
+  await userEvent.click(toggle)
+  expect(await screen.findByText('Проверка выполняется…')).toBeVisible()
+  await userEvent.click(toggle)
+  await userEvent.click(toggle)
+  expect(await screen.findByText('Сервер TEST · direct · успешно')).toBeVisible()
 })

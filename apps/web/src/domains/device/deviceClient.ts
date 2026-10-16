@@ -47,6 +47,50 @@ export type DeviceClient = {
   action: (action: DesktopAgentAction) => Promise<DesktopAgentStatus>
 }
 
+export type DiagnosticService = 'server' | 'emergency' | 'inventory' | 'tracker'
+export type DiagnosticRoute = 'direct' | 'server'
+export type DiagnosticRequest = { service: DiagnosticService; route: DiagnosticRoute; robot: string }
+export type DiagnosticEvent = {
+  id: string | number; time: string; service: string; stage: string; status: string; code?: string; elapsedMs?: number
+}
+export type DiagnosticResult = {
+  service: string; route: string; robot?: string; status: string; httpStatus?: number; code?: string; elapsedMs?: number
+}
+export type DiagnosticSnapshot = { events: DiagnosticEvent[]; running: boolean; results: DiagnosticResult[] }
+export type DiagnosticClient = {
+  snapshot: () => Promise<DiagnosticSnapshot>
+  run: (request: DiagnosticRequest) => Promise<DiagnosticSnapshot>
+}
+
+export class DiagnosticsUnavailableError extends Error {
+  constructor() { super('desktop_diagnostics_unavailable'); this.name = 'DiagnosticsUnavailableError' }
+}
+
+async function readDiagnostics(response: Response): Promise<DiagnosticSnapshot> {
+  if (response.status === 404) throw new DiagnosticsUnavailableError()
+  if (!response.ok) throw new Error(`desktop_diagnostics_http_${response.status}`)
+  const value = await response.json() as Partial<DiagnosticSnapshot>
+  if (typeof value.running !== 'boolean' || !Array.isArray(value.events) || !Array.isArray(value.results)) {
+    throw new Error('desktop_diagnostics_invalid')
+  }
+  return value as DiagnosticSnapshot
+}
+
+export const diagnosticClient: DiagnosticClient = {
+  snapshot() {
+    return fetchWithTimeout('/__robopark/agent/diagnostics', {
+      credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' },
+    }, 10_000, readDiagnostics, { authFailureScope: 'mutation' })
+  },
+  run(request) {
+    return fetchWithTimeout('/__robopark/agent/diagnostics', {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    }, 10_000, readDiagnostics, { authFailureScope: 'mutation' })
+  },
+}
+
 async function readStatus(response: Response): Promise<DesktopAgentStatus> {
   if (!response.ok) throw new Error(`desktop_agent_http_${response.status}`)
   const value = await response.json() as Partial<DesktopAgentStatus>

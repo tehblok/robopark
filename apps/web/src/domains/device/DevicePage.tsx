@@ -3,7 +3,8 @@ import { Alert, PageShell, Panel } from '../../components/PageShell'
 import { Button } from '../../design-system/actions/Button'
 import { LoadingState } from '../../design-system/feedback/AsyncState'
 import { desktopRuntime } from '../../pwa/desktopRuntime'
-import { deviceClient, type DesktopAgentAction, type DesktopAgentStatus, type DeviceClient } from './deviceClient'
+import { diagnosticClient, deviceClient, type DesktopAgentAction, type DesktopAgentStatus, type DeviceClient, type DiagnosticClient } from './deviceClient'
+import { DiagnosticPanel } from './DiagnosticPanel'
 import './device.css'
 
 const serverLabels: Record<DesktopAgentStatus['server']['state'], string> = {
@@ -25,8 +26,9 @@ function CorporateState({ corporate }: { corporate: DesktopAgentStatus['corporat
 
 export function DevicePage({
   client = deviceClient,
+  diagnostics = diagnosticClient,
   desktop = desktopRuntime() !== null,
-}: { client?: DeviceClient; desktop?: boolean }) {
+}: { client?: DeviceClient; diagnostics?: DiagnosticClient; desktop?: boolean }) {
   const [status, setStatus] = useState<DesktopAgentStatus | null>(null)
   const [failed, setFailed] = useState(false)
   const [busy, setBusy] = useState<DesktopAgentAction['action'] | null>(null)
@@ -121,6 +123,7 @@ export function DevicePage({
             <Button busy={busy === 'pause'} onClick={() => void act({ action: 'pause', enabled: !status.work.paused })} variant="secondary">{status.work.paused ? 'Возобновить работу' : 'Приостановить работу'}</Button>
           </div>
         </Panel>
+        {status.account.role === 'royal' ? <DiagnosticPanel client={diagnostics} /> : null}
         {status.legacyWorkspaceAvailable === true && <Panel title="Черновики предыдущей версии">
           <Alert tone="warning">На этом Mac найдены офлайн-данные из встроенного окна Robopark RC5. Они не переносятся в системный браузер автоматически.</Alert>
           <p>Откройте прежнее рабочее окно, дождитесь синхронизации черновиков и только после этого продолжайте работу в браузере.</p>

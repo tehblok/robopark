@@ -25,6 +25,8 @@ import AgentCore
     var updateStatusTimer: Timer?
     var probeTimer: Timer?
     var workspace: WorkspaceServer?
+    private let diagnosticJournal = DiagnosticJournal(capacity: 100)
+    private var diagnosticRunner: DiagnosticRunner?
     private var enrollmentTask: Task<Void, Never>?
     private struct EnrollmentIdentity: Equatable {
         let userID: Int
@@ -120,6 +122,29 @@ import AgentCore
         server.agentAction = { [weak self] body in
             guard let self else { return .json(["detail": "agent_stopped"], status: 503) }
             return await self.handleAgentAction(body)
+        }
+        let diagnostics = DiagnosticRunner(journal: diagnosticJournal, bridge: bridge,
+                                           session: server.session)
+        diagnosticRunner = diagnostics
+        server.agentDiagnostics = { [weak self, weak diagnostics] method, body in
+            guard let self, let diagnostics else {
+                return .json(["detail": "agent_stopped"], status: 503)
+            }
+            guard self.accountActive, self.accountRole == "royal",
+                  let owner = self.bridge.registration?.ownerUserID,
+                  owner == self.activeAccountID,
+                  owner == self.workspace?.session.profile?.accountID else {
+                return .json(["detail": "royal_owner_required"], status: 403)
+            }
+            if method == "POST" {
+                guard let body else { return .json(["detail": "invalid_diagnostic_request"], status: 422) }
+                let wasRunning = diagnostics.running
+                guard diagnostics.start(body: body) else {
+                    return .json(["detail": wasRunning ? "diagnostic_running" : "invalid_diagnostic_request"],
+                                 status: wasRunning ? 409 : 422)
+                }
+            }
+            return .json(diagnostics.snapshot())
         }
         workspace = server
     }

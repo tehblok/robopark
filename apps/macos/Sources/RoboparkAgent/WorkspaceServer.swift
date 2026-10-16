@@ -12,6 +12,7 @@ import AgentCore
     var sessionToken: String { token }
     var agentStatus: (() -> LocalHTTPResponse)?
     var agentAction: (([String: Any]) async -> LocalHTTPResponse)?
+    var agentDiagnostics: ((String, [String: Any]?) async -> LocalHTTPResponse)?
     private var server: LoopbackHTTPServer?
     private var starting: Task<UInt16, Error>?
     var initialURL: URL { URL(string: "http://127.0.0.1:\(port)/")! }
@@ -148,6 +149,21 @@ import AgentCore
                 return .json(["detail": "invalid_agent_action"], status: 422)
             }
             return await agentAction?(object) ?? .json(["detail": "agent_starting"], status: 503)
+        }
+        if request.path == "/__robopark/agent/diagnostics" {
+            guard ["GET", "POST"].contains(request.method) else {
+                return .json(["detail": "method_not_allowed"], status: 405)
+            }
+            var object: [String: Any]?
+            if request.method == "POST" {
+                guard request.body.count <= 1024,
+                      let parsed = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
+                    return .json(["detail": "invalid_diagnostic_request"], status: 422)
+                }
+                object = parsed
+            }
+            return await agentDiagnostics?(request.method, object)
+                ?? .json(["detail": "agent_starting"], status: 503)
         }
         guard ["GET", "HEAD"].contains(request.method) else { return .json(["detail": "method_not_allowed"], status: 405) }
         if request.path == "/__robopark/storage-key" {

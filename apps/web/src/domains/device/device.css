@@ -6,3 +6,9 @@
 .rp-device-access > div { padding: var(--rp-compact-row-padding); border: 1px solid var(--rp-divider); border-radius: var(--rp-radius-card); }
 .rp-device-access dt { color: var(--rp-text-muted); }
 .rp-device-access dd { margin: var(--rp-space-1) 0 0; font-weight: var(--rp-font-weight-medium); }
+.rp-device-diagnostics summary { cursor: pointer; font-weight: var(--rp-font-weight-medium); }
+.rp-device-diagnostics__body { display: grid; gap: var(--rp-card-gap); padding-block-start: var(--rp-card-gap); }
+.rp-device-diagnostics__fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: var(--rp-form-gap); }
+.rp-device-diagnostics__snapshot { display: grid; gap: var(--rp-space-2); padding: var(--rp-card-padding); border: 1px solid var(--rp-divider); border-radius: var(--rp-radius-card); }
+.rp-device-diagnostics__snapshot :is(ul, ol) { margin: 0; padding-inline-start: var(--rp-space-5); }
+.rp-device-diagnostics__events { display: grid; gap: var(--rp-space-1); margin-block-start: var(--rp-space-2) !important; color: var(--rp-text-muted); }
