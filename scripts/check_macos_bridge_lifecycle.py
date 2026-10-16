@@ -89,6 +89,7 @@ enum Network {
  static var inventoryStatus = CorporateInventoryStatus.ready
  static var inventoryCalls = 0
  static let session=URLSession(configuration:.ephemeral)
+ static func serverTransport() throws -> URLSession { session }
  static func request(_ url:URL, method:String="GET", object:[String:Any]?=nil, cookie:String?=nil, limit:Int=131072, timeout:Double=12) async throws -> (Data,HTTPURLResponse) {
   if url.path.hasSuffix("/claim") { return try await Claims.shared.begin(object ?? [:]) }
   infoCalls += 1
@@ -500,8 +501,9 @@ func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"http
  Network.corporateStatus=200; Network.corporateBody=["dismissed":false]
  let malformedCookieIdentity=await authenticated.verifyCorporateSession(force:true)
  try check(malformedCookieIdentity == .accessDenied
-           && authenticated.registration?.corporateCookieVerifiedAt == nil,
-           "malformed identity success fails closed and clears cookie readiness")
+           && authenticated.registration?.corporateIdentityStatus == "access_denied"
+           && authenticated.registration?.corporateCookieVerifiedAt != nil,
+           "malformed identity success fails closed while retaining the owner-bound session for recheck")
  Network.corporateStatus=500
  let noGraceAfterDenial=await authenticated.verifyCorporateSession(force:true)
  try check(noGraceAfterDenial == .networkUnavailable,
@@ -535,9 +537,21 @@ func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"http
            && authenticated.registration?.cookie.isEmpty == true,"401 expires and clears corporate session")
  try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login")
  Network.corporateStatus=403
+ let lastForbiddenCookieVerification=authenticated.registration?.corporateCookieVerifiedAt
  let forbidden=await authenticated.verifyCorporateSession(force:true)
  try check(forbidden == .accessDenied
            && authenticated.registration?.corporateIdentityStatus == "access_denied","403 remains distinct access denied")
+ let forbiddenRestart=Bridge()
+ try check(forbiddenRestart.registration?.cookie == "Session_id=present"
+           && forbiddenRestart.registration?.corporateCookieVerifiedAt == lastForbiddenCookieVerification
+           && forbiddenRestart.registration?.corporateIdentityStatus == "access_denied",
+           "403 keeps the owner-bound Emergency session reusable across restart without advertising readiness")
+ Network.corporateStatus=200
+ let recoveredForbidden=await forbiddenRestart.verifyCorporateSession(force:true)
+ try check(recoveredForbidden == .ready
+           && forbiddenRestart.registration?.cookie == "Session_id=present"
+           && forbiddenRestart.registration?.corporateIdentityStatus == "ready",
+           "a retained denied Emergency session recovers after a later successful owner check")
  Network.corporateStatus=500
  let unavailable=await authenticated.verifyCorporateSession(force:true)
  try check(unavailable == .networkUnavailable,

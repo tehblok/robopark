@@ -45,6 +45,7 @@ struct WorkspaceProfile: Codable {
             config.httpCookieStorage = nil; config.httpShouldSetCookies = false; config.urlCache = nil
             config.timeoutIntervalForRequest = 30; config.timeoutIntervalForResource = 90
             config.httpMaximumConnectionsPerHost = 6
+            try TestOriginTransport.shared.configure(config)
             transport = URLSession(configuration: config, delegate: Network.policy, delegateQueue: nil)
         }
     }

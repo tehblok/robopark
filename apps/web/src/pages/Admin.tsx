@@ -134,11 +134,11 @@ async function loadAdminBootstrap(
   }
 }
 
-function worksBadge(ok: boolean) {
+function credentialBadge(ok: boolean) {
   return ok ? (
-    <StatusBadge tone="success">работает</StatusBadge>
+    <StatusBadge tone="success">сохранён</StatusBadge>
   ) : (
-    <StatusBadge tone="warning">нет</StatusBadge>
+    <StatusBadge tone="warning">не задан</StatusBadge>
   )
 }
 
@@ -593,8 +593,8 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
         >
           {settings && (
             <div className="rp-management-metrics">
-              <MetricCard label="Tracker OAuth" value={worksBadge(Boolean(settings.tracker_token_masked))} />
-              <MetricCard label="Проверка cookie" value={emergencyCookieStatus(settings)} />
+              <MetricCard label="Tracker OAuth" value={credentialBadge(Boolean(settings.tracker_token_masked))} />
+              <MetricCard label="Проверка серверной cookie" value={emergencyCookieStatus(settings)} />
             </div>
           )}
 
@@ -631,9 +631,10 @@ function AdminWorkspace({ bootstrapKey }: { bootstrapKey: string }) {
             </div>
           </form>
 
+          <p className="panel-hint">Эта cookie используется только для прямого доступа с сервера. Корпоративный вход на Mac хранится отдельно; отсутствие серверной cookie не мешает проверке через подключённый Mac с доступом.</p>
           <form className="form-grid" onSubmit={saveEmergencyCookie}>
             <label className="field">
-              <span className="field-label">Cookie диагностики робота</span>
+              <span className="field-label">Cookie Emergency на сервере</span>
               <input
                 disabled={emergencyBusy}
                 onChange={(event) => setEmergencyCookie(event.target.value)}

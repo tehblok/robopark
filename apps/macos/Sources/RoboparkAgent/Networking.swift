@@ -33,6 +33,27 @@ final class NetworkPolicy: NSObject, URLSessionTaskDelegate {
 
 enum Network {
     static let policy = NetworkPolicy()
+    private static let serverTransportLock = NSLock()
+    private static var cachedServerTransport: URLSession?
+
+    static func serverTransport() throws -> URLSession {
+        serverTransportLock.lock()
+        defer { serverTransportLock.unlock() }
+        if let cachedServerTransport { return cachedServerTransport }
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.urlCache = nil
+        config.timeoutIntervalForRequest = 12
+        config.timeoutIntervalForResource = 120
+        config.httpMaximumConnectionsPerHost = 4
+        try TestOriginTransport.shared.configure(config)
+        let transport = URLSession(configuration: config, delegate: policy, delegateQueue: nil)
+        cachedServerTransport = transport
+        return transport
+    }
+
+    // Corporate services retain their own direct transport and internal CA policy.
     static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
@@ -57,6 +78,9 @@ enum Network {
             guard url.host == EmergencyTarget.host else { throw AgentError.invalidJob }
             request.setValue(cookie, forHTTPHeaderField: "Cookie")
             request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+        }
+        if url.host?.lowercased() == TestOriginTransport.testHost, url.port == nil || url.port == 443 {
+            return try await BoundedHTTPReader.read(request, using: serverTransport(), timeout: timeout, limit: limit)
         }
         let configuration = session.configuration
         configuration.timeoutIntervalForResource = timeout

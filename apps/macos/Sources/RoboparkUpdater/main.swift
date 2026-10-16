@@ -238,29 +238,26 @@ private func installedVersion() throws -> String {
     return version
 }
 
+private enum UpdateTransport {
+    static let result: Result<URLSession, Error> = Result {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.timeoutIntervalForResource = 300
+        configuration.httpMaximumConnectionsPerHost = 1
+        try TestOriginTransport.shared.configure(configuration)
+        return URLSession(configuration: configuration, delegate: RedirectDeny(), delegateQueue: nil)
+    }
+}
+
 private func boundedGET(_ url: URL, origin: ServerOrigin, limit: Int, timeout: Double) async throws -> (Data, HTTPURLResponse) {
     guard url.scheme == "https", url.host?.lowercased() == origin.url.host?.lowercased(),
           url.port == origin.url.port, limit > 0, limit <= 512 * 1024 * 1024 else { throw AgentError.invalidCatalog }
     var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     request.setValue("RoboparkUpdateHelper/1", forHTTPHeaderField: "User-Agent")
-    let configuration = URLSessionConfiguration.ephemeral
-    configuration.httpCookieStorage = nil
-    configuration.urlCache = nil
-    configuration.timeoutIntervalForResource = timeout
-    configuration.httpMaximumConnectionsPerHost = 1
-    let session = URLSession(configuration: configuration, delegate: RedirectDeny(), delegateQueue: nil)
-    defer { session.invalidateAndCancel() }
-    let (stream, rawResponse) = try await session.bytes(for: request)
-    guard let response = rawResponse as? HTTPURLResponse,
-          response.expectedContentLength <= Int64(limit) else { throw AgentError.invalidCatalog }
-    var data = Data()
-    data.reserveCapacity(min(limit, max(0, Int(response.expectedContentLength))))
-    for try await byte in stream {
-        guard data.count < limit else { throw AgentError.invalidCatalog }
-        data.append(byte)
-    }
-    return (data, response)
+    return try await BoundedHTTPReader.read(request, using: UpdateTransport.result.get(), timeout: timeout, limit: limit)
 }
 
 private func runInstaller(_ package: URL) throws {

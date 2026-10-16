@@ -636,9 +636,9 @@ import IOKit.ps
         if status == .ready { registration?.corporateCookieVerifiedAt = now }
         else {
             resetSessionVerification()
-            registration?.corporateCookieVerifiedAt = nil
             readyUntil = .distantPast
             if status == .reauthRequired || status == .ownerMismatch {
+                registration?.corporateCookieVerifiedAt = nil
                 registration?.cookie = ""
             }
         }
@@ -746,7 +746,7 @@ import IOKit.ps
         registration?.signedProfile = info.signed_profile; registration?.channel = trusted.channel
         try persist()
         state = "Подключение…"; onChange?()
-        let channel = Network.session.webSocketTask(with: server.webSocket)
+        let channel = try Network.serverTransport().webSocketTask(with: server.webSocket)
         channel.maximumMessageSize = 2 * 1024 * 1024
         socket = channel; channel.resume()
         let challenge = try JSONDecoder().decode(

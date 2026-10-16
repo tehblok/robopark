@@ -158,7 +158,7 @@ import IOKit.ps
         guard let profile = bridge.registration else { return }
         try bridge.requireTrust()
         let server = try ServerOrigin(profile.origin)
-        let channel = Network.session.webSocketTask(with: server.computeWebSocket)
+        let channel = try Network.serverTransport().webSocketTask(with: server.computeWebSocket)
         channel.maximumMessageSize = 12 * 1024 * 1024
         socket = channel; channel.resume()
         let challenge = try JSONDecoder().decode(

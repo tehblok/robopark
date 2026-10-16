@@ -106,7 +106,7 @@ describe('Admin Emergency cookie validation', () => {
     })
 
     expect(await screen.findByText('Tracker OAuth')).toBeVisible()
-    expect(screen.getByText('работает')).toBeVisible()
+    expect(screen.getByText('сохранён')).toBeVisible()
     expect(await screen.findByText(/Не удалось загрузить: Политика Tracker/)).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Политика Tracker' })).not.toBeInTheDocument()
     expect(await screen.findByRole('checkbox', { name: 'Запрет скриншотов — Оператор' })).toBeEnabled()
@@ -140,14 +140,14 @@ describe('Admin Emergency cookie validation', () => {
 
   it('keeps the last confirmed integration status when its revalidation fails', async () => {
     const first = setup({ tracker_token_masked: 'configured' })
-    await screen.findByText('работает')
+    await screen.findByText('сохранён')
     first.unmount()
     vi.mocked(api.integrationSettings).mockRejectedValue(new ApiError(503, 'upstream_unavailable'))
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001)
 
     renderApp('/admin/settings', testUser({ role: 'admin', permissions: ['nav.admin'] }))
     await screen.findByText(/Не удалось загрузить: Интеграции/)
-    expect(screen.getByText('работает')).toBeVisible()
+    expect(screen.getByText('сохранён')).toBeVisible()
   })
 
   it('drops protected settings when one bootstrap request is denied', async () => {
@@ -156,19 +156,19 @@ describe('Admin Emergency cookie validation', () => {
     })
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Недостаточно прав')
-    expect(screen.queryByText('работает')).not.toBeInTheDocument()
+    expect(screen.queryByText('сохранён')).not.toBeInTheDocument()
   })
 
   it('drops a cached integration status after revalidation is denied', async () => {
     const first = setup({ tracker_token_masked: 'configured' })
-    await screen.findByText('работает')
+    await screen.findByText('сохранён')
     first.unmount()
     vi.mocked(api.trackerPolicy).mockRejectedValue(new ApiError(403, 'forbidden'))
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001)
 
     renderApp('/admin/settings', testUser({ role: 'admin', permissions: ['nav.admin'] }))
     await screen.findByRole('alert')
-    expect(screen.queryByText('работает')).not.toBeInTheDocument()
+    expect(screen.queryByText('сохранён')).not.toBeInTheDocument()
   })
 
   it('links directly to error mapping and ignoring from administration', async () => {
@@ -388,14 +388,14 @@ describe('Admin Emergency cookie validation', () => {
       emergency_cookie_valid: code === 401 ? false : true,
       emergency_cookie_checked_robot: '448',
     }))
-    await actor.type(screen.getByLabelText('Cookie диагностики робота'), 'candidate-fixture')
+    await actor.type(screen.getByLabelText('Cookie Emergency на сервере'), 'candidate-fixture')
     await actor.click(screen.getByRole('button', { name: 'Проверить текущую' }))
 
     expect(await screen.findByText(label)).toBeVisible()
     expect(screen.queryByText('Действительна')).not.toBeInTheDocument()
     expect(screen.getByText(/робот 448/)).toBeVisible()
     if (code === 503) expect(screen.getByText(/Проверка сейчас недоступна/)).toBeVisible()
-    expect(screen.getByLabelText('Cookie диагностики робота')).toHaveValue('candidate-fixture')
+    expect(screen.getByLabelText('Cookie Emergency на сервере')).toHaveValue('candidate-fixture')
   })
 
   it('keeps a completed mutation in the UI and cache after a late bootstrap', async () => {
@@ -530,9 +530,9 @@ describe('Admin Emergency cookie validation', () => {
     vi.mocked(api.parks).mockResolvedValue(parks)
     renderApp('/admin/settings?park=7', testUser({ role: 'admin', permissions: ['nav.admin'], parks }))
     await screen.findByRole('button', { name: 'Сменить парк' })
-    await screen.findByLabelText('Cookie диагностики робота')
+    await screen.findByLabelText('Cookie Emergency на сервере')
     await screen.findByText('Действительна')
-    await actor.type(screen.getByLabelText('Cookie диагностики робота'), 'candidate-fixture')
+    await actor.type(screen.getByLabelText('Cookie Emergency на сервере'), 'candidate-fixture')
     const next = deferred<IntegrationSettings>()
     vi.mocked(api.integrationSettings).mockReturnValue(next.promise)
     await actor.click(screen.getByRole('button', { name: 'Сменить парк' }))
@@ -541,7 +541,7 @@ describe('Admin Emergency cookie validation', () => {
     expect(screen.queryByText('Действительна')).not.toBeInTheDocument()
     await act(async () => next.resolve(settings({ emergency_cookie_status: 'invalid' })))
     expect(await screen.findByText('Недействительна')).toBeVisible()
-    expect(screen.getByLabelText('Cookie диагностики робота')).toHaveValue('')
+    expect(screen.getByLabelText('Cookie Emergency на сервере')).toHaveValue('')
   })
 
   it('asks for a robot when no saved probe is available', async () => {
@@ -578,7 +578,7 @@ describe('Admin Emergency cookie validation', () => {
     setup()
 
     const save = await screen.findByRole('button', { name: 'Сохранить cookie' })
-    const cookie = screen.getByLabelText('Cookie диагностики робота')
+    const cookie = screen.getByLabelText('Cookie Emergency на сервере')
     expect(save).toBeDisabled()
 
     await user.type(cookie, 'candidate-cookie')
@@ -596,14 +596,14 @@ describe('Admin Emergency cookie validation', () => {
     )
     setup()
 
-    await user.type(await screen.findByLabelText('Cookie диагностики робота'), 'candidate-cookie')
+    await user.type(await screen.findByLabelText('Cookie Emergency на сервере'), 'candidate-cookie')
     await user.type(screen.getByLabelText('Робот для проверки'), '447')
     await user.click(screen.getByRole('button', { name: 'Сохранить cookie' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Cookie проверки робота отклонена. Скопируйте свежую сессию и повторите.',
     )
-    expect(screen.getByLabelText('Cookie диагностики робота')).toHaveValue('candidate-cookie')
+    expect(screen.getByLabelText('Cookie Emergency на сервере')).toHaveValue('candidate-cookie')
   })
 
   it('keeps cookie validation available while the Tracker token is saving', async () => {
@@ -613,7 +613,7 @@ describe('Admin Emergency cookie validation', () => {
     setup()
 
     await user.type(await screen.findByLabelText('Tracker OAuth-токен'), 'tracker-token')
-    await user.type(screen.getByLabelText('Cookie диагностики робота'), 'candidate-cookie')
+    await user.type(screen.getByLabelText('Cookie Emergency на сервере'), 'candidate-cookie')
     await user.type(screen.getByLabelText('Робот для проверки'), '447')
     await user.click(screen.getByRole('button', { name: 'Сохранить токен' }))
 
@@ -645,7 +645,7 @@ describe('Admin Emergency cookie validation', () => {
 
     tracker.resolve(settings({ tracker_token_masked: 'tracker-masked' }))
 
-    await waitFor(() => expect(screen.getByText('работает')).toBeVisible())
+    await waitFor(() => expect(screen.getByText('сохранён')).toBeVisible())
     expect(screen.getByText('Действительна')).toBeVisible()
     expect(screen.getByText(/робот 447/i)).toBeVisible()
   })
@@ -664,7 +664,7 @@ describe('Admin Emergency cookie validation', () => {
     await waitFor(() => expect(api.checkEmergencyCookie).toHaveBeenCalledWith(undefined))
 
     tracker.resolve(settings({ tracker_token_masked: 'tracker-masked' }))
-    expect(await screen.findByText('работает')).toBeVisible()
+    expect(await screen.findByText('сохранён')).toBeVisible()
 
     emergency.resolve(settings({
       emergency_cookie_status: 'valid',
@@ -674,6 +674,6 @@ describe('Admin Emergency cookie validation', () => {
     }))
 
     expect(await screen.findByText('Действительна')).toBeVisible()
-    expect(screen.getByText('работает')).toBeVisible()
+    expect(screen.getByText('сохранён')).toBeVisible()
   })
 })
