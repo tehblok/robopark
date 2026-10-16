@@ -65,13 +65,15 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
     let retryAt = 0
     const automatic = () => current && !document.hidden && navigator.onLine && !denied.current
     const clear = () => window.clearTimeout(timer)
-    const publish = (value: RobotRegistry) => {
-      if (!current) return
+    let networkPublished = false
+    const publish = (value: RobotRegistry, prepared = false) => {
+      if (!current || denied.current || (prepared && networkPublished)) return
+      if (!prepared) networkPublished = true
       if (offset > 0 && offset >= value.total) {
         replaceOffset(Math.max(0, Math.floor((value.total - 1) / 50) * 50))
         return
       }
-      setData(value); setError(null); setOfflineUnavailable(false)
+      setData(value); if (!prepared) setError(null); setOfflineUnavailable(false)
     }
     const preparedSnapshot = !query && state === 'all' && !activeErrors && !openTasks && offset === 0 && user && parkId != null
     const showOfflineUnavailable = () => {
@@ -80,7 +82,7 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
     if (preparedSnapshot) {
       const deviceStore = currentDeviceResourceCache()
       if (deviceStore) void deviceStore.get<RobotRegistry>(offlinePreparedRobotsKey(user.id, parkId))
-        .then(value => { if (value?.park_id === parkId) publish(value); else showOfflineUnavailable() })
+        .then(value => { if (value?.park_id === parkId) publish(value, true); else showOfflineUnavailable() })
         .catch(showOfflineUnavailable)
       else showOfflineUnavailable()
     } else {
@@ -151,6 +153,7 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
   const visible = resultPark === parkId && !scopePending
   const classifiedError = error ? classifyApiError(error, 'Не удалось загрузить реестр роботов.') : null
   const failure = classifiedError && (visible || classifiedError.kind === 'unauthorized') ? classifiedError : null
+  const retainedSnapshot = visible && data && failure && ['offline', 'timeout', 'server'].includes(failure.kind)
   const href = (vin: string, tab?: string) => {
     const next = new URLSearchParams()
     if (parkId != null) next.set('park', String(parkId))
@@ -166,8 +169,9 @@ function RegistryOwner({ apiClient, parkId, scopeLoading }: { apiClient: Partial
       <label className="rp-robot-registry__check"><input type="checkbox" checked={activeErrors} onChange={event => change('active_errors', event.target.checked ? 'true' : '')} />Активные ошибки</label>
       <label className="rp-robot-registry__check"><input type="checkbox" checked={openTasks} onChange={event => change('open_tasks', event.target.checked ? 'true' : '')} />Открытые задачи</label>
     </div>
+    {retainedSnapshot && <div role="status"><p>Показаны сохранённые данные. Не удалось обновить список.</p><Button variant="secondary" onClick={() => setRetry(value => value + 1)}>Повторить</Button></div>}
     {!allowed ? <EmptyState title="Реестр недоступен" description="Для реестра нужен доступ к задачам Tracker. Можно открыть робота по номеру ниже." />
-      : failure ? <ErrorState {...failure} onRetry={failure.retryable ? () => setRetry(value => value + 1) : undefined} />
+      : failure && !retainedSnapshot ? <ErrorState {...failure} onRetry={failure.retryable ? () => setRetry(value => value + 1) : undefined} />
         : offlineUnavailable ? <EmptyState title="Данные не подготовлены для работы без сети" description="Подключитесь к сети и подготовьте офлайн-набор. Робота можно открыть по номеру выше." />
         : !apiClient.robotRegistry ? null : !visible || !data ? <LoadingState label="Загружаем реестр роботов" /> : <>
           <div className="rp-robot-registry__summary"><p>Найдено: {data.total}</p></div>

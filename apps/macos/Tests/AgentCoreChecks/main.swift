@@ -11,6 +11,39 @@ func rejects(_ name: String, _ body: () throws -> Void) {
     do { try body() } catch { checks += 1; return }; fatalError("FAIL: \(name)")
 }
 
+final class ReceiveCallbackHarness<Value: Sendable>: @unchecked Sendable {
+    typealias Callback = @Sendable (Result<Value, Error>) -> Void
+    private let lock = NSLock()
+    private var callbacks: [Callback] = []
+    private var cancellations = 0
+
+    var callbackCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return callbacks.count
+    }
+
+    var cancellationCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return cancellations
+    }
+
+    func retain(_ callback: @escaping Callback) {
+        lock.lock(); callbacks.append(callback); lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock(); cancellations += 1; lock.unlock()
+    }
+
+    func completeRetained(with result: Result<Value, Error>) {
+        lock.lock()
+        let retained = callbacks
+        callbacks.removeAll()
+        lock.unlock()
+        retained.forEach { $0(result) }
+    }
+}
+
 for origin in ["http://example.com", "https://u:p@example.com", "https://example.com/api", "https://example.com?q=1", "https://example.com/#x"] {
     rejects("invalid origin") { _ = try ServerOrigin(origin) }
 }
@@ -847,6 +880,19 @@ try check(watchdog.end(run: watchdogRun, generation: "generation-5"),
           "current cleanup clears its own socket")
 try check(!watchdog.expire(replacementHeartbeat), "cleaned up socket cannot expire later")
 
+watchdog.begin(run: watchdogRun, generation: "reused-generation")
+guard let reusedOldHeartbeat = watchdog.heartbeatSent(run: watchdogRun, generation: "reused-generation") else {
+    fatalError("FAIL: watchdog did not arm old reused generation")
+}
+watchdog.begin(run: watchdogRun, generation: "reused-generation")
+guard let reusedCurrentHeartbeat = watchdog.heartbeatSent(run: watchdogRun, generation: "reused-generation") else {
+    fatalError("FAIL: watchdog did not arm current reused generation")
+}
+try check(!watchdog.acknowledge(reusedOldHeartbeat, run: watchdogRun, generation: "reused-generation"),
+          "old socket callback cannot acknowledge a reused generation")
+try check(watchdog.acknowledge(reusedCurrentHeartbeat, run: watchdogRun, generation: "reused-generation"),
+          "current legacy ping acknowledges its own heartbeat")
+
 let deadlineStarted = Date()
 do {
     _ = try await AsyncDeadline.run(nanoseconds: 25_000_000) {
@@ -859,4 +905,122 @@ do {
     fatalError("FAIL: handshake deadline accepted a stalled receive")
 } catch is AsyncDeadlineError { checks += 1 }
 try check(Date().timeIntervalSince(deadlineStarted) < 1.0, "handshake deadline fails promptly")
+
+let handshakeOwnership = CallbackReceiveOwnership()
+let stalledHandshake = ReceiveCallbackHarness<Int>()
+do {
+    _ = try await CallbackReceiveGate.run(
+        nanoseconds: 25_000_000,
+        onCancel: { stalledHandshake.cancel() }, ownership: handshakeOwnership,
+        start: { stalledHandshake.retain($0) }
+    )
+    fatalError("FAIL: callback handshake deadline accepted a stalled receive")
+} catch is AsyncDeadlineError { checks += 1 }
+try check(stalledHandshake.cancellationCount == 1,
+          "handshake timeout cancels the concrete channel before returning")
+try check(handshakeOwnership.activeCount == 0,
+          "handshake timeout releases ownership of a callback that never fires")
+stalledHandshake.completeRetained(with: .success(1))
+try check(handshakeOwnership.activeCount == 0, "a late handshake callback is ignored")
+
+let preCancelledOwnership = CallbackReceiveOwnership()
+let preCancelledHarness = ReceiveCallbackHarness<Int>()
+let preCancelledReceive = Task {
+    withUnsafeCurrentTask { $0?.cancel() }
+    return try await CallbackReceiveGate.run(
+        nanoseconds: 1_000_000_000,
+        onCancel: { preCancelledHarness.cancel() }, ownership: preCancelledOwnership,
+        start: { preCancelledHarness.retain($0) }
+    )
+}
+do {
+    _ = try await preCancelledReceive.value
+    fatalError("FAIL: a pre-cancelled receive started")
+} catch is CancellationError { checks += 1 }
+try check(preCancelledHarness.cancellationCount == 1,
+          "pre-cancelled receive cancels its concrete channel")
+try check(preCancelledHarness.callbackCount == 0,
+          "pre-cancelled receive does not install a callback after channel cancellation")
+try check(preCancelledOwnership.activeCount == 0, "pre-cancelled receive leaves no owned gate")
+
+let livenessOwnership = CallbackReceiveOwnership()
+let livenessSignal = ConnectionLivenessSignal()
+let stalledHarness = ReceiveCallbackHarness<Int>()
+let livenessStarted = Date()
+let stalledReceive = Task {
+    try await CallbackReceiveGate.run(
+        interruptedBy: livenessSignal,
+        onCancel: { stalledHarness.cancel() },
+        ownership: livenessOwnership,
+        start: { stalledHarness.retain($0) }
+    )
+}
+while stalledHarness.callbackCount == 0 { try await Task.sleep(nanoseconds: 1_000_000) }
+livenessSignal.invalidate()
+do {
+    _ = try await stalledReceive.value
+    fatalError("FAIL: expired heartbeat accepted a stalled established receive")
+} catch is ConnectionLivenessError { checks += 1 }
+try check(Date().timeIntervalSince(livenessStarted) < 1.0,
+          "expired heartbeat releases a callback receive even when the callback never fires")
+try check(stalledHarness.cancellationCount == 1,
+          "heartbeat expiry cancels the concrete channel before returning")
+try check(livenessOwnership.activeCount == 0,
+          "heartbeat expiry releases ownership of a callback that never fires")
+stalledHarness.completeRetained(with: .success(1))
+try check(livenessOwnership.activeCount == 0, "a late callback after expiry is ignored")
+
+let cancellationOwnership = CallbackReceiveOwnership()
+let cancellationSignal = ConnectionLivenessSignal()
+for attempt in 0..<4 {
+    let harness = ReceiveCallbackHarness<Int>()
+    let cancelledReceive = Task {
+        try await CallbackReceiveGate.run(
+            interruptedBy: cancellationSignal,
+            onCancel: { harness.cancel() },
+            ownership: cancellationOwnership,
+            start: { harness.retain($0) }
+        )
+    }
+    while harness.callbackCount == 0 { try await Task.sleep(nanoseconds: 1_000_000) }
+    cancelledReceive.cancel()
+    do {
+        _ = try await cancelledReceive.value
+        fatalError("FAIL: cancelled established receive did not return")
+    } catch is CancellationError { checks += 1 }
+    try check(harness.cancellationCount == 1,
+              "cancellation closes the concrete channel for attempt \(attempt)")
+    try check(cancellationOwnership.activeCount == 0,
+              "cancelled receive does not retain an owned gate for attempt \(attempt)")
+    harness.completeRetained(with: .success(attempt))
+    try check(cancellationOwnership.activeCount == 0,
+              "late callback cannot revive cancelled attempt \(attempt)")
+}
+
+let reusableLiveness = ConnectionLivenessSignal()
+let reusableOwnership = CallbackReceiveOwnership()
+for expected in 1...3 {
+    let received = try await CallbackReceiveGate.run(
+        interruptedBy: reusableLiveness,
+        onCancel: {}, ownership: reusableOwnership,
+        start: { $0(.success(expected)) }
+    )
+    try check(received == expected, "a completed callback does not invalidate the next receive")
+    try check(reusableOwnership.activeCount == 0, "a completed callback releases its gate")
+}
+reusableLiveness.invalidate()
+let invalidatedHarness = ReceiveCallbackHarness<Int>()
+do {
+    _ = try await CallbackReceiveGate.run(
+        interruptedBy: reusableLiveness,
+        onCancel: { invalidatedHarness.cancel() }, ownership: reusableOwnership,
+        start: { invalidatedHarness.retain($0) }
+    )
+    fatalError("FAIL: invalidated reusable liveness accepted another receive")
+} catch is ConnectionLivenessError { checks += 1 }
+try check(invalidatedHarness.cancellationCount == 1,
+          "an already-invalidated signal cancels the concrete channel")
+try check(reusableOwnership.activeCount == 0, "invalidated signal leaves no active receive gate")
+invalidatedHarness.completeRetained(with: .success(4))
+try check(reusableOwnership.activeCount == 0, "late callback after signal invalidation is ignored")
 print("PASS: \(checks) protocol, scope, update signature and artifact integrity checks")

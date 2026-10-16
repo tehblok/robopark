@@ -76,6 +76,31 @@ def require_committed_source(repository: Path) -> None:
         raise ReleaseBuildError("commit_reviewed_release_before_build")
 
 
+def require_compatible_from_version(repository: Path, from_version: str) -> None:
+    """Require an explicitly reviewed upgrade source before packaging."""
+
+    try:
+        document = json.loads(
+            (Path(repository) / "deploy/release-metadata.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        compatible = document["compatible_from_versions"]
+        if (
+            not isinstance(document, dict)
+            or not isinstance(compatible, list)
+            or not compatible
+            or any(
+                not isinstance(version, str) or not version for version in compatible
+            )
+        ):
+            raise ValueError
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+        raise ReleaseBuildError("invalid_release_metadata") from error
+    if from_version not in compatible:
+        raise ReleaseBuildError("incompatible_from_version")
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -449,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("output", type=Path)
     parser.add_argument("--macos-pkg", type=Path)
     parser.add_argument("--macos-update-root", type=Path)
+    parser.add_argument("--from-version", required=True)
     parser.add_argument("--skip-gate", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
@@ -456,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ReleaseBuildError("macos_update_root_required")
         output = validate_output_directory(ROOT, args.output)
         require_committed_source(ROOT)
+        require_compatible_from_version(ROOT, args.from_version)
         if not args.skip_gate:
             _run_gate(ROOT)
         git_sha = _git(ROOT, "rev-parse", "HEAD").decode("ascii").strip()

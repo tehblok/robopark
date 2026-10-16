@@ -30,16 +30,23 @@ Orin. Любое из устройств можно назначить тест�
 этого компонента требует отдельной версии и миграции существующих записей.
 
 ```bash
-apps/api/.venv/bin/python scripts/build_test_release.py /absolute/path/to/output
+apps/api/.venv/bin/python scripts/build_test_release.py /absolute/path/to/output --from-version <INSTALLED_VERSION>
 ```
 
 Когда тестовый macOS `.pkg` готов, его можно включить в тот же комплект:
 
 ```bash
 apps/api/.venv/bin/python scripts/build_test_release.py /absolute/path/to/output \
+  --from-version <INSTALLED_VERSION> \
   --macos-pkg /absolute/path/to/Robopark-<VERSION>-arm64.pkg \
   --macos-update-root /absolute/path/to/update-root.json
 ```
+
+Перед сборкой укажите фактически установленную версию TEST через `--from-version`.
+Она должна уже присутствовать в проверенном `compatible_from_versions` файла
+`deploy/release-metadata.json`; сборщик прекращает работу до упаковки при
+несовместимости. Перед публикацией повторно проверьте этот список во внутреннем
+manifest готового `.ota`.
 
 Файл должен называться `Robopark-<VERSION>-arm64.pkg`. Рядом с ним обязателен
 подписанный `catalog.json`; Ed25519 проверяется по явно переданному публичному

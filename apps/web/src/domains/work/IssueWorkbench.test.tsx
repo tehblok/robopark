@@ -1055,7 +1055,7 @@ it('shows only attention tasks for the shareable sync attention state', async ()
     selectedIssue: '', currentState: { ...state, sync: 'needs_attention' },
   })
   expect(await screen.findByText(/Показаны только задачи, требующие внимания/)).toBeVisible()
-  expect(screen.getByRole('button', { name: /ROBOPARK-ATTENTION/ })).toBeVisible()
+  expect(await screen.findByRole('button', { name: /ROBOPARK-ATTENTION/ })).toBeVisible()
   expect(screen.queryByRole('button', { name: /ROBOPARK-SAVED/ })).not.toBeInTheDocument()
   expect(trackerIssues).toHaveBeenCalledWith(expect.objectContaining({ sync_state: 'needs_attention' }))
 })

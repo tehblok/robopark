@@ -20,6 +20,7 @@ from scripts import build_test_release
 from scripts.build_test_release import (
     ReleaseBuildError,
     require_committed_source,
+    require_compatible_from_version,
     require_reviewed_workspace,
     stage_release_source,
     write_delivery_metadata,
@@ -249,6 +250,31 @@ def test_reviewed_workspace_accepts_staged_changes_but_rejects_unstaged_or_untra
     (repository / "scripts/untracked.py").write_text("not reviewed\n")
     with pytest.raises(ReleaseBuildError, match="untracked_files"):
         require_reviewed_workspace(repository)
+
+
+def test_release_requires_explicit_reviewed_compatible_source_version(tmp_path: Path):
+    repository = tmp_path / "repository"
+    metadata = repository / "deploy/release-metadata.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(
+        json.dumps({"compatible_from_versions": ["0.2.3-rc.15", "0.2.3-rc.16"]})
+    )
+
+    require_compatible_from_version(repository, "0.2.3-rc.15")
+
+    with pytest.raises(ReleaseBuildError, match="incompatible_from_version"):
+        require_compatible_from_version(repository, "0.2.3-rc.14")
+    assert json.loads(metadata.read_text())["compatible_from_versions"] == [
+        "0.2.3-rc.15",
+        "0.2.3-rc.16",
+    ]
+
+
+def test_release_builder_requires_from_version_argument(tmp_path: Path):
+    with pytest.raises(SystemExit) as error:
+        build_test_release.main([str(tmp_path / "release"), "--skip-gate"])
+
+    assert error.value.code == 2
 
 
 def test_delivery_metadata_binds_server_and_optional_mac_artifacts(tmp_path: Path):

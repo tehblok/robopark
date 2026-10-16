@@ -256,7 +256,7 @@ describe('ParkScopeProvider', () => {
 
     await waitFor(() => expect(screen.getByTestId('loading')).toHaveTextContent('false'))
     expect(screen.getByTestId('parks')).toHaveTextContent('7,9')
-    expect(screen.getByTestId('park-id')).toHaveTextContent('7')
+    await waitFor(() => expect(screen.getByTestId('park-id')).toHaveTextContent('7'))
     expect(screen.getByTestId('load-error')).toHaveTextContent('none')
   })
 

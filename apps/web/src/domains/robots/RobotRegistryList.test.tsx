@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Profiler } from 'react'
 import { MemoryRouter, useSearchParams } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, type RobotRegistry, type User } from '../../api'
+import { ApiError, ApiTimeoutError, type RobotRegistry, type User } from '../../api'
 import { AuthContext } from '../../auth-context'
 import * as deviceResourceCache from '../../lib/deviceResourceCache'
 import { RobotRegistryList } from './RobotRegistryList'
@@ -186,3 +186,43 @@ it('loads the registry after connectivity returns from an unprepared offline sta
 
 // Existing lifecycle assertions use the minimum jitter; capacity tests cover dispersion.
 beforeEach(() => { vi.spyOn(Math, 'random').mockReturnValue(0) })
+
+
+it('keeps prepared robots visible when the server times out despite an online browser', async () => {
+  vi.spyOn(deviceResourceCache, 'currentDeviceResourceCache').mockReturnValue({
+    get: vi.fn(async () => ({ ...empty, items: [row], total: 1 })),
+  } as unknown as ReturnType<typeof deviceResourceCache.currentDeviceResourceCache>)
+  let reject!: (reason: unknown) => void
+  const client = { robotRegistry: vi.fn(() => new Promise<RobotRegistry>((_, fail) => { reject = fail })) }
+  render(tree(client))
+  expect(await screen.findByRole('link', { name: 'Открыть робота 447' })).toBeVisible()
+  await act(async () => reject(new ApiTimeoutError(30_000)))
+  expect(screen.getByRole('link', { name: 'Открыть робота 447' })).toBeVisible()
+  expect(screen.getByText('Показаны сохранённые данные. Не удалось обновить список.')).toBeVisible()
+})
+
+it('does not restore a delayed prepared snapshot after the server revoked access', async () => {
+  let restore!: (value: RobotRegistry) => void
+  vi.spyOn(deviceResourceCache, 'currentDeviceResourceCache').mockReturnValue({
+    get: vi.fn(() => new Promise<RobotRegistry>(done => { restore = done })),
+  } as unknown as ReturnType<typeof deviceResourceCache.currentDeviceResourceCache>)
+  const client = { robotRegistry: vi.fn().mockRejectedValue(new ApiError(403, 'forbidden')) }
+  render(tree(client))
+  expect(await screen.findByRole('heading', { name: 'Нет доступа' })).toBeVisible()
+  await act(async () => restore({ ...empty, items: [row], total: 1 }))
+  expect(screen.getByRole('heading', { name: 'Нет доступа' })).toBeVisible()
+  expect(screen.queryByRole('link', { name: 'Открыть робота 447' })).not.toBeInTheDocument()
+})
+
+
+it('does not replace a fresh server list with a delayed preparation snapshot', async () => {
+  let restore!: (value: RobotRegistry) => void
+  vi.spyOn(deviceResourceCache, 'currentDeviceResourceCache').mockReturnValue({
+    get: vi.fn(() => new Promise<RobotRegistry>(done => { restore = done })),
+  } as unknown as ReturnType<typeof deviceResourceCache.currentDeviceResourceCache>)
+  const client = { robotRegistry: vi.fn().mockResolvedValue(empty) }
+  render(tree(client))
+  expect(await screen.findByRole('heading', { name: 'Роботы не найдены' })).toBeVisible()
+  await act(async () => restore({ ...empty, items: [row], total: 1 }))
+  expect(screen.queryByRole('link', { name: 'Открыть робота 447' })).not.toBeInTheDocument()
+})
