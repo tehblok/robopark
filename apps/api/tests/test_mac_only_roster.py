@@ -53,7 +53,7 @@ def test_registry_uses_requester_mac_when_server_has_no_tracker_token(
     _enable_mac_only_tracker(monkeypatch)
     seen = []
 
-    def search_issues(*, token, **_kwargs):
+    def fetch_park_blockers(*, token, **_kwargs):
         seen.append(token)
         return [
             {
@@ -64,7 +64,7 @@ def test_registry_uses_requester_mac_when_server_has_no_tracker_token(
             }
         ]
 
-    monkeypatch.setattr(tracker_client, "search_issues", search_issues)
+    monkeypatch.setattr(tracker_client, "fetch_park_blockers", fetch_park_blockers)
 
     result = robot_registry.registry_rows(
         db_session,
@@ -171,11 +171,11 @@ def test_feature_off_roster_keeps_plain_server_service_identity(
     monkeypatch.setattr(platform_settings, "get_tracker_token", lambda _db: "bot-token")
     seen = []
 
-    def search_issues(*, token, **_kwargs):
+    def fetch_park_blockers(*, token, **_kwargs):
         seen.append(token)
         return []
 
-    monkeypatch.setattr(tracker_client, "search_issues", search_issues)
+    monkeypatch.setattr(tracker_client, "fetch_park_blockers", fetch_park_blockers)
 
     result = robot_registry.registry_rows(
         db_session,

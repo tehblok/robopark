@@ -73,7 +73,10 @@ def harness_class(name: str, heartbeat: str, helpers: str, emergency: bool) -> s
     emergency_fields = """
     var managedProbes = true
     func probeIfNeeded() async {}
-""" if emergency else ""
+""" if emergency else """
+    var corporateRefreshCount = 0
+    func refreshCorporateReadiness(run: UUID, generation: String) { corporateRefreshCount += 1 }
+"""
     return f"""
 @MainActor final class {name} {{
     var heartbeat: Task<Void, Never>?
@@ -177,6 +180,8 @@ import AgentCore
     let bridge = ComputeHeartbeatHarness(), channel = ControlledChannel()
     bridge.start(run: run, nextGeneration: generation, channel: channel)
     try await waitUntil("Compute did not send its first heartbeat") {{ bridge.heartbeatCount == 1 }}
+    guard bridge.corporateRefreshCount == 1 else {{ throw NSError(domain: "HeartbeatRecovery", code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Compute did not schedule corporate readiness after transport heartbeat"]) }}
     try await Task.sleep(nanoseconds: 55_000_000)
     bridge.acknowledge(run: run, generation: generation)
     try await waitUntil("Compute late ACK did not permit a second heartbeat") {{ bridge.heartbeatCount >= 2 }}

@@ -15,6 +15,8 @@ export function RobotCheckPanel({
   const query = robot?.trim() ?? ''
   const [checking, setChecking] = useState(false)
   const [findings, setFindings] = useState<string[] | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   const inspectRef = useRef(inspect)
   useEffect(() => { inspectRef.current = inspect }, [inspect])
 
@@ -22,18 +24,20 @@ export function RobotCheckPanel({
     if (!query) {
       setFindings(null)
       setChecking(false)
+      setFailed(false)
       return
     }
     let cancelled = false
     setChecking(true)
     setFindings(null)
+    setFailed(false)
     void inspectRef
       .current(query)
       .then((next) => {
         if (!cancelled) setFindings(next)
       })
       .catch(() => {
-        if (!cancelled) setFindings(null)
+        if (!cancelled) { setFindings(null); setFailed(true) }
       })
       .finally(() => {
         if (!cancelled) setChecking(false)
@@ -41,7 +45,7 @@ export function RobotCheckPanel({
     return () => {
       cancelled = true
     }
-  }, [query])
+  }, [query, attempt])
 
   if (!query) return null
 
@@ -57,6 +61,14 @@ export function RobotCheckPanel({
         <p className="issue-muted">
           <Spinner label={ru.tracker.robotCheck.checking} />
         </p>
+      )}
+      {!checking && failed && (
+        <Alert tone="error">
+          <p>{ru.tracker.robotCheck.failed}</p>
+          <button className="btn" onClick={() => setAttempt((value) => value + 1)}>
+            {ru.tracker.robotCheck.retry}
+          </button>
+        </Alert>
       )}
       {!checking && findings && findings.length === 0 && (
         <Alert tone="success">{ru.tracker.robotCheck.noCritical}</Alert>

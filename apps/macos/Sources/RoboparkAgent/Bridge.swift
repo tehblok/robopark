@@ -4,7 +4,23 @@ import AgentCore
 import IOKit.ps
 
 @MainActor final class Bridge {
-    var registration: Registration?
+    var registration: Registration? {
+        didSet {
+            let bindingChanged = oldValue?.origin != registration?.origin
+                || oldValue?.instanceID != registration?.instanceID
+                || oldValue?.deviceID != registration?.deviceID
+                || oldValue?.ownerUserID != registration?.ownerUserID
+                || oldValue?.ownerTrackerLogin != registration?.ownerTrackerLogin
+                || oldValue?.corporateLogin != registration?.corporateLogin
+            if bindingChanged || oldValue?.trackerOAuthToken != registration?.trackerOAuthToken
+                || oldValue?.trackerOAuthExpiresAt != registration?.trackerOAuthExpiresAt {
+                resetOAuthVerification()
+            }
+            if bindingChanged || oldValue?.cookie != registration?.cookie {
+                resetSessionVerification()
+            }
+        }
+    }
     var onChange: (() -> Void)?
     private(set) var state = "Не зарегистрирован"
     private(set) var upstreamState = "Ожидание проверочного робота"
@@ -37,7 +53,69 @@ import IOKit.ps
     private var connectionWatchdog = ConnectionWatchdog()
     private var runID = UUID()
     private var previousCPUTicks: [UInt64]?
+    private struct InventoryVerificationKey: Equatable {
+        let epoch: UUID
+        let origin: String
+        let instanceID: String
+        let deviceID: String
+        let ownerUserID: Int?
+        let token: String
+        let vin: String
+    }
+    private var inventoryVerification: (id: UUID, key: InventoryVerificationKey,
+                                       task: Task<CorporateInventoryStatus, Never>)?
+    private struct CorporateOAuthIdentityKey: Equatable {
+        let epoch: UUID
+        let origin: String
+        let instanceID: String
+        let deviceID: String
+        let ownerUserID: Int?
+        let ownerLogin: String
+        let token: String
+    }
+    private var corporateOAuthRetry: (key: CorporateOAuthIdentityKey, notBefore: Date)?
+    private var corporateOAuthEpoch = UUID()
+    private enum CorporateIdentityFetchResult {
+        case response(Data, HTTPURLResponse)
+        case cancelled
+        case invalid
+        case auth
+        case transport
+        case other
+    }
+    private var corporateOAuthVerification: (
+        id: UUID, key: CorporateOAuthIdentityKey, task: Task<CorporateIdentityFetchResult, Never>
+    )?
+    private struct CorporateSessionIdentityKey: Equatable {
+        let epoch: UUID
+        let origin: String
+        let instanceID: String
+        let deviceID: String
+        let ownerUserID: Int?
+        let ownerLogin: String
+        let cookie: String
+    }
+    private var corporateSessionRetry: (key: CorporateSessionIdentityKey, notBefore: Date)?
+    private var corporateSessionEpoch = UUID()
+    private var corporateSessionVerification: (
+        id: UUID, key: CorporateSessionIdentityKey, task: Task<CorporateIdentityFetchResult, Never>
+    )?
+    private static let corporateOAuthFreshTTL: TimeInterval = 15 * 60
+    private static let corporateOAuthGraceTTL: TimeInterval = 60 * 60
+    private static let corporateOAuthRetryDelay: TimeInterval = 60
     var hasActiveEmergencyJobs: Bool { !jobs.isEmpty || probeTask != nil }
+
+    private func resetOAuthVerification() {
+        corporateOAuthEpoch = UUID()
+        corporateOAuthRetry = nil
+        corporateOAuthVerification?.task.cancel(); corporateOAuthVerification = nil
+        inventoryVerification?.task.cancel(); inventoryVerification = nil
+    }
+    private func resetSessionVerification() {
+        corporateSessionEpoch = UUID()
+        corporateSessionRetry = nil
+        corporateSessionVerification?.task.cancel(); corporateSessionVerification = nil
+    }
 
     init() {
         do {
@@ -114,6 +192,12 @@ import IOKit.ps
         }
         value.ownerTrackerLogin = incoming
         registration = value
+        if previous != incoming {
+            corporateOAuthRetry = nil
+            corporateSessionRetry = nil
+            corporateOAuthVerification?.task.cancel(); corporateOAuthVerification = nil
+            corporateSessionVerification?.task.cancel(); corporateSessionVerification = nil
+        }
     }
     func stop() {
         runID = UUID()
@@ -285,18 +369,24 @@ import IOKit.ps
         guard credential.isUsable(), let owner = CorporateAuthPolicy.normalizedLogin(registration?.ownerTrackerLogin),
               CorporateAuthPolicy.normalizedLogin(login) == owner else { throw AgentError.ownerMismatch }
         try requireTrust()
+        // A fresh login may return the same token. Its epoch must still fence
+        // completed identity requests whose other waiters have not resumed.
+        resetOAuthVerification()
         registration?.trackerOAuthToken = credential.token
         registration?.trackerOAuthExpiresAt = credential.expiresAt
         registration?.trackerOAuthVerifiedAt = Date()
         registration?.corporateLogin = owner
         registration?.inventoryOAuthVerifiedAt = nil
         registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+        corporateOAuthRetry = nil
+        corporateOAuthVerification?.task.cancel(); corporateOAuthVerification = nil
         try persist()
     }
     var hasVerifiedCorporateOAuth: Bool {
         guard let value = registration, let token = value.trackerOAuthToken, !token.isEmpty,
               value.trackerOAuthExpiresAt.map({ $0.timeIntervalSinceNow > 60 }) ?? true,
-              let checked = value.trackerOAuthVerifiedAt, Date().timeIntervalSince(checked) < 15 * 60,
+              let checked = value.trackerOAuthVerifiedAt,
+              (0..<Self.corporateOAuthGraceTTL).contains(Date().timeIntervalSince(checked)),
               let owner = CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin),
               CorporateAuthPolicy.normalizedLogin(value.corporateLogin) == owner else { return false }
         return true
@@ -306,34 +396,109 @@ import IOKit.ps
               value.trackerOAuthExpiresAt.map({ $0.timeIntervalSince(now) > 60 }) ?? true,
               let owner = CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin),
               CorporateAuthPolicy.normalizedLogin(value.corporateLogin) == owner else { return nil }
-        if !force, let checked = value.trackerOAuthVerifiedAt, now.timeIntervalSince(checked) < 15 * 60 {
+        let key = CorporateOAuthIdentityKey(epoch: corporateOAuthEpoch, origin: value.origin, instanceID: value.instanceID,
+            deviceID: value.deviceID, ownerUserID: value.ownerUserID, ownerLogin: owner, token: token)
+        let verifiedAge = value.trackerOAuthVerifiedAt.map { now.timeIntervalSince($0) }
+        if !force, let age = verifiedAge, (0..<Self.corporateOAuthFreshTTL).contains(age) {
             return (token, owner)
         }
-        do {
-            let (body, response) = try await Network.corporateIdentity(authorization: "OAuth \(token)")
-            guard let current = registration,
-                  current.origin == value.origin, current.deviceID == value.deviceID,
-                  current.instanceID == value.instanceID,
-                  current.trackerOAuthToken == token,
-                  CorporateAuthPolicy.normalizedLogin(current.ownerTrackerLogin) == owner,
-                  CorporateAuthPolicy.normalizedLogin(current.corporateLogin) == owner else { return nil }
+        if !force, let retry = corporateOAuthRetry, retry.key == key, now < retry.notBefore {
+            return verifiedAge.map({ (0..<Self.corporateOAuthGraceTTL).contains($0) }) == true
+                ? (token, owner) : nil
+        }
+        let verification: (
+            id: UUID, key: CorporateOAuthIdentityKey, task: Task<CorporateIdentityFetchResult, Never>
+        )
+        if let running = corporateOAuthVerification, running.key == key,
+           !running.task.isCancelled {
+            verification = running
+        } else {
+            corporateOAuthVerification?.task.cancel()
+            verification = (UUID(), key, corporateIdentityTask(authorization: "OAuth \(token)"))
+            corporateOAuthVerification = verification
+        }
+        let result = await verification.task.value
+        if corporateOAuthVerification?.id == verification.id { corporateOAuthVerification = nil }
+        guard !Task.isCancelled, corporateOAuthMatches(key) else { return nil }
+        switch result {
+        case let .response(body, response):
             let status = CorporateAuthPolicy.identityStatus(httpStatus: response.statusCode, body: body,
                                                              expectedLogin: owner)
-            guard status == .ready else {
-                if response.statusCode == 401 || response.statusCode == 403 || status == .ownerMismatch {
-                    invalidateCorporateOAuth()
-                }
+            if status == .ready {
+                corporateOAuthRetry = nil
+                registration?.trackerOAuthVerifiedAt = now; try? persist()
+                return (token, owner)
+            }
+            if response.statusCode == 401 || response.statusCode == 403
+                || status == .ownerMismatch || status == .reauthRequired {
+                invalidateCorporateOAuth()
                 return nil
             }
-            registration?.trackerOAuthVerifiedAt = now; try? persist()
-            return (token, owner)
-        } catch { return nil }
+            if status == .networkUnavailable,
+               response.statusCode == 408 || response.statusCode == 429
+                || (500...599).contains(response.statusCode) {
+                return corporateOAuthGrace(key: key, verifiedAge: verifiedAge, now: now)
+            }
+            markCorporateOAuthUnverified(key: key)
+            return nil
+        case .cancelled:
+            return nil
+        case .invalid, .other:
+            markCorporateOAuthUnverified(key: key)
+            return nil
+        case .auth:
+            invalidateCorporateOAuth()
+            return nil
+        case .transport:
+            return corporateOAuthGrace(key: key, verifiedAge: verifiedAge, now: now)
+        }
+    }
+    private func corporateIdentityTask(
+        authorization: String
+    ) -> Task<CorporateIdentityFetchResult, Never> {
+        Task {
+            do {
+                let (body, response) = try await Network.corporateIdentity(authorization: authorization)
+                guard !Task.isCancelled else { return .cancelled }
+                return .response(body, response)
+            } catch is CancellationError { return .cancelled }
+            catch NetworkFailure.invalid { return .invalid }
+            catch NetworkFailure.auth { return .auth }
+            catch NetworkFailure.network { return .transport }
+            catch is URLError { return Task.isCancelled ? .cancelled : .transport }
+            catch { return .other }
+        }
+    }
+    private func corporateOAuthMatches(_ key: CorporateOAuthIdentityKey) -> Bool {
+        guard let current = registration else { return false }
+        return corporateOAuthEpoch == key.epoch
+            && current.origin == key.origin && current.instanceID == key.instanceID
+            && current.deviceID == key.deviceID && current.ownerUserID == key.ownerUserID
+            && current.trackerOAuthToken == key.token
+            && CorporateAuthPolicy.normalizedLogin(current.ownerTrackerLogin) == key.ownerLogin
+            && CorporateAuthPolicy.normalizedLogin(current.corporateLogin) == key.ownerLogin
+    }
+    private func corporateOAuthGrace(key: CorporateOAuthIdentityKey, verifiedAge: TimeInterval?,
+                                     now: Date) -> (token: String, login: String)? {
+        guard corporateOAuthMatches(key) else { return nil }
+        corporateOAuthRetry = (key, now.addingTimeInterval(Self.corporateOAuthRetryDelay))
+        guard verifiedAge.map({ (0..<Self.corporateOAuthGraceTTL).contains($0) }) == true else { return nil }
+        return (key.token, key.ownerLogin)
+    }
+    private func markCorporateOAuthUnverified(key: CorporateOAuthIdentityKey) {
+        guard corporateOAuthMatches(key) else { return }
+        resetOAuthVerification()
+        registration?.trackerOAuthVerifiedAt = nil
+        registration?.inventoryOAuthVerifiedAt = nil
+        registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+        try? persist()
     }
     var inventoryReadiness: CorporateInventoryStatus {
         CorporateInventoryStatus(rawValue: registration?.inventoryOAuthStatus ?? "") ?? .unverifiedHostACL
     }
     func verifyInventoryReadiness(force: Bool = false, now: Date = Date()) async -> CorporateInventoryStatus {
-        guard let credential = await verifiedCorporateOAuth(), let vin = registration?.probeVIN, !vin.isEmpty else {
+        guard let credential = await verifiedCorporateOAuth(), let value = registration,
+              !value.probeVIN.isEmpty else {
             if registration?.inventoryOAuthVerifiedAt != nil || inventoryReadiness != .unverifiedHostACL {
                 registration?.inventoryOAuthVerifiedAt = nil
                 registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
@@ -341,12 +506,35 @@ import IOKit.ps
             }
             return .unverifiedHostACL
         }
+        let vin = value.probeVIN
         let ttl: TimeInterval = inventoryReadiness == .unreachable ? 60 : 15 * 60
         if !force, let checked = registration?.inventoryOAuthVerifiedAt,
            now.timeIntervalSince(checked) < ttl { return inventoryReadiness }
-        let status = await Network.corporateInventoryReadiness(serverAuthorizedVIN: vin,
-                                                               oauthToken: credential.token)
-        guard registration?.trackerOAuthToken == credential.token,
+        let key = InventoryVerificationKey(epoch: corporateOAuthEpoch, origin: value.origin, instanceID: value.instanceID,
+            deviceID: value.deviceID, ownerUserID: value.ownerUserID, token: credential.token, vin: vin)
+        let verification: (id: UUID, key: InventoryVerificationKey, task: Task<CorporateInventoryStatus, Never>)
+        if let running = inventoryVerification, running.key == key, !running.task.isCancelled {
+            verification = running
+        } else {
+            inventoryVerification?.task.cancel()
+            verification = (UUID(), key, Task {
+                await Network.corporateInventoryReadiness(serverAuthorizedVIN: vin, oauthToken: credential.token)
+            })
+            inventoryVerification = verification
+        }
+        defer { if inventoryVerification?.id == verification.id { inventoryVerification = nil } }
+        let status = await withTaskCancellationHandler {
+            await verification.task.value
+        } onCancel: {
+            verification.task.cancel()
+        }
+        guard !Task.isCancelled, !verification.task.isCancelled,
+              corporateOAuthEpoch == key.epoch,
+              registration?.origin == value.origin,
+              registration?.deviceID == value.deviceID,
+              registration?.instanceID == value.instanceID,
+              registration?.ownerUserID == value.ownerUserID,
+              registration?.trackerOAuthToken == credential.token,
               registration?.probeVIN == vin else { return .unverifiedHostACL }
         registration?.inventoryOAuthStatus = status.rawValue
         registration?.inventoryOAuthVerifiedAt = now
@@ -359,6 +547,7 @@ import IOKit.ps
         try persist()
     }
     func invalidateCorporateOAuth() {
+        resetOAuthVerification()
         registration?.trackerOAuthToken = nil
         registration?.trackerOAuthExpiresAt = nil
         registration?.trackerOAuthVerifiedAt = nil
@@ -376,10 +565,13 @@ import IOKit.ps
             throw AgentError.ownerMismatch
         }
         try requireTrust()
+        resetSessionVerification()
         registration?.cookie = cookie
         registration?.corporateLogin = owner
         registration?.corporateCookieVerifiedAt = verifiedAt
         registration?.corporateIdentityStatus = CorporateIdentityStatus.ready.rawValue
+        corporateSessionRetry = nil
+        corporateSessionVerification?.task.cancel(); corporateSessionVerification = nil
         readyUntil = .distantPast; lastProbe = .distantPast
         try persist()
     }
@@ -388,25 +580,88 @@ import IOKit.ps
               let owner = CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin),
               CorporateAuthPolicy.normalizedLogin(value.corporateLogin) == owner,
               !value.cookie.isEmpty else { return .reauthRequired }
-        if !force, let checked = value.corporateCookieVerifiedAt, now.timeIntervalSince(checked) < 15 * 60,
+        let key = CorporateSessionIdentityKey(epoch: corporateSessionEpoch, origin: value.origin, instanceID: value.instanceID,
+            deviceID: value.deviceID, ownerUserID: value.ownerUserID, ownerLogin: owner,
+            cookie: value.cookie)
+        let verifiedAge = value.corporateCookieVerifiedAt.map { now.timeIntervalSince($0) }
+        if !force, let age = verifiedAge, (0..<Self.corporateOAuthFreshTTL).contains(age),
            value.corporateIdentityStatus == CorporateIdentityStatus.ready.rawValue { return .ready }
+        if !force, let retry = corporateSessionRetry, retry.key == key, now < retry.notBefore {
+            return value.corporateIdentityStatus == CorporateIdentityStatus.ready.rawValue
+                && verifiedAge.map({ (0..<Self.corporateOAuthGraceTTL).contains($0) }) == true
+                ? .ready : .networkUnavailable
+        }
+        let verification: (
+            id: UUID, key: CorporateSessionIdentityKey, task: Task<CorporateIdentityFetchResult, Never>
+        )
+        if let running = corporateSessionVerification, running.key == key,
+           !running.task.isCancelled {
+            verification = running
+        } else {
+            corporateSessionVerification?.task.cancel()
+            verification = (UUID(), key, corporateIdentityTask(authorization: value.cookie))
+            corporateSessionVerification = verification
+        }
+        let result = await verification.task.value
+        if corporateSessionVerification?.id == verification.id { corporateSessionVerification = nil }
+        guard !Task.isCancelled else { return .networkUnavailable }
+        guard corporateSessionMatches(key) else { return .ownerMismatch }
         let status: CorporateIdentityStatus
-        do {
-            let (body, response) = try await Network.corporateIdentity(authorization: value.cookie)
+        let responseStatus: Int?
+        switch result {
+        case let .response(body, response):
             status = CorporateAuthPolicy.identityStatus(httpStatus: response.statusCode, body: body, expectedLogin: owner)
-        } catch { status = .networkUnavailable }
-        guard registration?.cookie == value.cookie,
-              CorporateAuthPolicy.normalizedLogin(registration?.ownerTrackerLogin) == owner else { return .ownerMismatch }
+            responseStatus = response.statusCode
+        case .cancelled:
+            return .networkUnavailable
+        case .invalid, .other:
+            corporateSessionRetry = nil
+            status = .accessDenied; responseStatus = nil
+        case .auth:
+            corporateSessionRetry = nil
+            status = .reauthRequired; responseStatus = nil
+        case .transport:
+            return corporateSessionGrace(key: key, verifiedAge: verifiedAge, now: now)
+        }
+        if status == .networkUnavailable,
+           responseStatus == 408 || responseStatus == 429
+            || responseStatus.map({ (500...599).contains($0) }) == true {
+            return corporateSessionGrace(key: key, verifiedAge: verifiedAge, now: now)
+        }
+        corporateSessionRetry = nil
         registration?.corporateIdentityStatus = status.rawValue
         if status == .ready { registration?.corporateCookieVerifiedAt = now }
         else {
+            resetSessionVerification()
+            registration?.corporateCookieVerifiedAt = nil
             readyUntil = .distantPast
             if status == .reauthRequired || status == .ownerMismatch {
-                registration?.cookie = ""; registration?.corporateCookieVerifiedAt = nil
+                registration?.cookie = ""
             }
         }
         try? persist()
         return status
+    }
+    private func corporateSessionMatches(_ key: CorporateSessionIdentityKey) -> Bool {
+        guard let current = registration else { return false }
+        return corporateSessionEpoch == key.epoch
+            && current.origin == key.origin && current.instanceID == key.instanceID
+            && current.deviceID == key.deviceID && current.ownerUserID == key.ownerUserID
+            && current.cookie == key.cookie
+            && CorporateAuthPolicy.normalizedLogin(current.ownerTrackerLogin) == key.ownerLogin
+            && CorporateAuthPolicy.normalizedLogin(current.corporateLogin) == key.ownerLogin
+    }
+    private func corporateSessionGrace(key: CorporateSessionIdentityKey, verifiedAge: TimeInterval?,
+                                       now: Date) -> CorporateIdentityStatus {
+        guard corporateSessionMatches(key) else { return .ownerMismatch }
+        corporateSessionRetry = (key, now.addingTimeInterval(Self.corporateOAuthRetryDelay))
+        guard registration?.corporateIdentityStatus == CorporateIdentityStatus.ready.rawValue,
+              verifiedAge.map({ (0..<Self.corporateOAuthGraceTTL).contains($0) }) == true else {
+            registration?.corporateIdentityStatus = CorporateIdentityStatus.networkUnavailable.rawValue
+            readyUntil = .distantPast; try? persist()
+            return .networkUnavailable
+        }
+        return .ready
     }
     func setProbe(_ value: String) throws {
         let normalized = try EmergencyTarget.normalizeRobot(value)
@@ -416,6 +671,10 @@ import IOKit.ps
         registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
         readyUntil = .distantPast; lastProbe = .distantPast
         try persist()
+    }
+    func refreshInventoryReadiness(forProbe value: String) async throws -> CorporateInventoryStatus {
+        try setProbe(value)
+        return await verifyInventoryReadiness()
     }
     func clearProbe() throws {
         registration?.probeVIN = ""

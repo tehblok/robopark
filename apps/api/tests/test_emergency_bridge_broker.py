@@ -98,6 +98,32 @@ class GateReplySocket(ReplySocket):
         )
 
 
+class ReconnectReplySocket(Socket):
+    def __init__(self, registry, channel):
+        super().__init__()
+        self.registry = registry
+        self.channel = channel
+        self.replacement = None
+
+    async def send_json(self, value):
+        await super().send_json(value)
+        self.registry.remove(self.channel)
+
+        async def reconnect():
+            await asyncio.sleep(0.02)
+            replacement = _channel(
+                self.channel.device_id,
+                1,
+                generation="reconnected-generation",
+            )
+            replacement.capacity = 1
+            replacement.websocket = ReplySocket(self.registry, replacement.device_id)
+            self.replacement = replacement
+            self.registry.replace(replacement)
+
+        asyncio.create_task(reconnect())
+
+
 def _channel(
     device: str,
     latency: float,
@@ -637,6 +663,116 @@ def test_corporate_upstream_budget_caps_hundred_unique_dispatches_at_eight(monke
     assert sum(channel.upstream_dispatches for channel in channels) == 8
 
 
+def test_capacity_waiters_are_fifo_even_when_newcomer_runs_before_awakened_waiter():
+    async def scenario():
+        registry = BrokerRegistry(max_connections=1, max_inflight_per_device=1)
+        channel = _channel("mac", 1, inflight=1)
+        channel.capacity = 1
+        registry.replace(channel)
+        order = []
+        release_oldest = asyncio.Event()
+
+        async def claim(label: str):
+            selected = await registry.wait_for_available(
+                {channel.device_id},
+                excluded_device_ids=set(),
+                excluded_generations=set(),
+                deadline=time.monotonic() + 1,
+                wait_through_empty=False,
+            )
+            assert selected is channel
+            assert registry.reserve_queue_slot(selected)
+            order.append(label)
+            if label == "oldest":
+                await release_oldest.wait()
+            registry.release_queue_slot(selected)
+
+        oldest = asyncio.create_task(claim("oldest"))
+        await asyncio.sleep(0)
+        channel.inflight = 0
+        registry.capacity_changed()
+
+        loop = asyncio.get_running_loop()
+        prior_factory = loop.get_task_factory()
+        loop.set_task_factory(asyncio.eager_task_factory)
+        try:
+            newcomer = asyncio.create_task(claim("newcomer"))
+        finally:
+            loop.set_task_factory(prior_factory)
+
+        await asyncio.sleep(0)
+        assert order == ["oldest"]
+        release_oldest.set()
+        await asyncio.gather(oldest, newcomer)
+        assert order == ["oldest", "newcomer"]
+
+    asyncio.run(scenario())
+
+
+def test_waiting_for_first_slot_survives_sole_mac_disconnect():
+    async def scenario():
+        registry = BrokerRegistry(max_connections=1, max_inflight_per_device=1)
+        channel = _channel("mac", 1, inflight=1)
+        channel.capacity = 1
+        registry.replace(channel)
+        waiting = asyncio.create_task(
+            registry.wait_for_available(
+                {"mac"},
+                excluded_device_ids=set(),
+                excluded_generations=set(),
+                deadline=time.monotonic() + 1,
+                wait_through_empty=False,
+            )
+        )
+        await asyncio.sleep(0)
+        registry.remove(channel)
+        await asyncio.sleep(0.02)
+        assert not waiting.done()
+        replacement = _channel("mac", 1)
+        replacement.capacity = 1
+        registry.replace(replacement)
+        assert await waiting is replacement
+        assert not registry._capacity_waiters
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_oldest_capacity_waiter_unblocks_next_waiter():
+    async def scenario():
+        registry = BrokerRegistry(max_connections=1, max_inflight_per_device=1)
+        channel = _channel("mac", 1, inflight=1)
+        channel.capacity = 1
+        registry.replace(channel)
+        deadline = time.monotonic() + 1
+        oldest = asyncio.create_task(
+            registry.wait_for_available(
+                {channel.device_id},
+                excluded_device_ids=set(),
+                excluded_generations=set(),
+                deadline=deadline,
+                wait_through_empty=False,
+            )
+        )
+        next_waiter = asyncio.create_task(
+            registry.wait_for_available(
+                {channel.device_id},
+                excluded_device_ids=set(),
+                excluded_generations=set(),
+                deadline=deadline,
+                wait_through_empty=False,
+            )
+        )
+        await asyncio.sleep(0)
+        oldest.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await oldest
+        channel.inflight = 0
+        registry.capacity_changed()
+        assert await next_waiter is channel
+
+    asyncio.run(scenario())
+
+
 def test_pending_overflow_clears_device_singleflight(db_engine, db_session, seed_admin):
     device = AgentDevice(
         id=str(uuid4()),
@@ -689,7 +825,10 @@ def test_pending_overflow_clears_device_singleflight(db_engine, db_session, seed
     assert registry.loads == {}
 
 
-def test_silent_first_agent_reserves_time_for_second_attempt(db_engine, db_session, seed_admin):
+@pytest.mark.parametrize("capacity", [1, 2])
+def test_silent_first_agent_reserves_time_for_second_attempt(
+    db_engine, db_session, seed_admin, capacity
+):
     settings = Settings(
         _env_file=None,
         database_url=str(db_engine.url),
@@ -716,6 +855,7 @@ def test_silent_first_agent_reserves_time_for_second_attempt(db_engine, db_sessi
     registry = app.state.registry
     silent = _channel(devices[0].id, 1)
     responsive = _channel(devices[1].id, 2)
+    silent.capacity = responsive.capacity = capacity
     responsive.websocket = ReplySocket(registry, responsive.device_id)
     registry.replace(silent)
     registry.replace(responsive)
@@ -746,8 +886,71 @@ def test_silent_first_agent_reserves_time_for_second_attempt(db_engine, db_sessi
     assert response.status_code == 200
     assert response.json()["device_id"] == responsive.device_id
     assert response.json()["attempts_used"] == 2
+    assert silent.queued == responsive.queued == 0
+    assert silent.inflight == responsive.inflight == 0
     assert silent.websocket.sent[0]["timeout_ms"] <= 400
     assert elapsed < 0.8
+
+
+def test_single_mac_reconnects_with_new_generation_during_retry_deadline(
+    db_engine, db_session, seed_admin
+):
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="bridge-secret",
+        emergency_bridge_enabled=True,
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    device = AgentDevice(
+        id=str(uuid4()),
+        owner_user_id=seed_admin.id,
+        label="Reconnecting Mac",
+        public_key_x963=b"\x04" + b"r" * 64,
+        environment="production",
+        instance_id=str(settings.robopark_instance_id),
+        approved_at=datetime.now(UTC),
+        approved_by_user_id=seed_admin.id,
+    )
+    db_session.add(device)
+    db_session.commit()
+    app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
+    registry = app.state.registry
+    first = _channel(device.id, 1, generation="first-generation")
+    first.capacity = 1
+    reconnecting_socket = ReconnectReplySocket(registry, first)
+    first.websocket = reconnecting_socket
+    registry.replace(first)
+    body = json.dumps(
+        {
+            "vin": "YASADR00000000447",
+            "requester_user_id": seed_admin.id,
+            "attempt_budget": 2,
+            "deadline_ms": 1000,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    timestamp = str(int(time.time()))
+    nonce = "single-mac-reconnect"
+    headers = {
+        "X-Robopark-Timestamp": timestamp,
+        "X-Robopark-Nonce": nonce,
+        "X-Robopark-Signature": body_signature(settings.secret_key, timestamp, nonce, body),
+        "Content-Type": "application/json",
+    }
+
+    with TestClient(app) as client:
+        response = client.post("/internal/v1/robot-payload", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["device_id"] == device.id
+    assert response.json()["attempts_used"] == 2
+    assert len(first.websocket.sent) == 1
+    assert reconnecting_socket.replacement is not None
+    assert len(reconnecting_socket.replacement.websocket.sent) == 1
+    assert registry.pending == {}
+    assert registry.loads == {}
 
 
 def test_device_singleflight_denial_does_not_send_replacement_job(
@@ -1017,6 +1220,55 @@ def test_websocket_authenticates_registered_p256_device(db_engine, db_session, s
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_json()
         assert closed.value.code == 1008
+
+
+def test_emergency_websocket_reopens_after_same_app_lifespan_restart(
+    db_engine, db_session, seed_admin
+):
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    device = AgentDevice(
+        id=str(uuid4()),
+        owner_user_id=seed_admin.id,
+        label="Restarted Emergency Mac",
+        public_key_x963=private_key.public_key().public_bytes(
+            Encoding.X962, PublicFormat.UncompressedPoint
+        ),
+        environment="test",
+        instance_id="11111111-1111-1111-1111-111111111111",
+        approved_at=datetime.now(UTC),
+        approved_by_user_id=seed_admin.id,
+    )
+    db_session.add(device)
+    db_session.commit()
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="bridge-secret",
+        emergency_bridge_enabled=True,
+        robopark_environment="test",
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
+
+    for _ in range(2):
+        with (
+            TestClient(app) as client,
+            client.websocket_connect("/emergency/bridge/ws") as ws,
+        ):
+            challenge = ws.receive_json()
+            signed = (
+                f"robopark-bridge-v1\n{challenge['instance_id']}\n"
+                f"{challenge['environment']}\n{challenge['nonce']}"
+            ).encode()
+            signature = private_key.sign(signed, ec.ECDSA(hashes.SHA256()))
+            ws.send_json(
+                {
+                    "type": "auth",
+                    "device_id": device.id,
+                    "signature": base64.b64encode(signature).decode(),
+                }
+            )
+            assert ws.receive_json()["type"] == "ready"
 
 
 def test_legacy_pending_device_of_approved_account_is_trusted_on_bridge_login(

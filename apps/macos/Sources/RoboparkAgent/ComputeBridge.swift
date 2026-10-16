@@ -20,6 +20,8 @@ import IOKit.ps
     private(set) var outputBytes = 0
     private var loop: Task<Void, Never>?
     private var heartbeat: Task<Void, Never>?
+    private var corporateRefresh: Task<Void, Never>?
+    private var corporateRefreshLease = UUID()
     private var livenessTimeout: Task<Void, Never>?
     private var socket: URLSessionWebSocketTask?
     private var jobs: [String: Task<Void, Never>] = [:]
@@ -91,6 +93,8 @@ import IOKit.ps
 
     private func cleanupConnection() {
         heartbeat?.cancel(); heartbeat = nil
+        corporateRefreshLease = UUID()
+        corporateRefresh?.cancel(); corporateRefresh = nil
         livenessTimeout?.cancel(); livenessTimeout = nil; connectionWatchdog.cancel()
         jobs.values.forEach { $0.cancel() }; jobs.removeAll(); jobTokens.removeAll()
         corporateJobs.values.forEach { $0.cancel() }; corporateJobs.removeAll(); corporateJobTokens.removeAll()
@@ -158,6 +162,7 @@ import IOKit.ps
                 }
                 do {
                     try await self.sendHeartbeat()
+                    self.refreshCorporateReadiness(run: run, generation: nextGeneration)
                     if !self.heartbeatAcknowledgements {
                         channel.sendPing { [weak self] error in
                             Task { @MainActor in
@@ -246,10 +251,9 @@ import IOKit.ps
         let resources = telemetry()
         let paused = bridge.registration?.paused == true
         let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
-        _ = await bridge.verifiedCorporateOAuth()
         let corporateReady = bridge.hasVerifiedCorporateOAuth && !paused
         let inventoryStatus = corporateReady
-            ? await bridge.verifyInventoryReadiness()
+            ? bridge.inventoryReadiness
             : CorporateInventoryStatus.unverifiedHostACL
         let computeCapacity = resources.computeCapacity(activeJobs: active, ready: true,
             paused: paused || bridge.hasActiveEmergencyJobs, lowPower: lowPower)
@@ -270,6 +274,28 @@ import IOKit.ps
                         "supports": supports,
                         "corporate_inventory_status": inventoryStatus.rawValue,
                         "version": Bundle.main.object(forInfoDictionaryKey: "RoboparkReleaseVersion") as? String ?? "development"])
+    }
+
+    private func refreshCorporateReadiness(run: UUID, generation: String) {
+        guard corporateRefresh == nil, runID == run, self.generation == generation else { return }
+        let lease = UUID()
+        corporateRefreshLease = lease
+        corporateRefresh = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.corporateRefreshLease == lease { self.corporateRefresh = nil }
+            }
+            do {
+                try await AsyncDeadline.run(nanoseconds: 22_000_000_000) { @MainActor [weak self] in
+                    guard let self, !Task.isCancelled, self.runID == run,
+                          self.generation == generation else { throw CancellationError() }
+                    _ = await self.bridge.verifiedCorporateOAuth()
+                    guard !Task.isCancelled, self.runID == run, self.generation == generation,
+                          self.bridge.hasVerifiedCorporateOAuth else { return }
+                    _ = await self.bridge.verifyInventoryReadiness()
+                }
+            } catch { return }
+        }
     }
 
     private func acceptJob(_ message: [String: Any]) throws {

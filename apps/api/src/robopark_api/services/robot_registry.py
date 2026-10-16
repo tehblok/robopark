@@ -1,4 +1,4 @@
-"""Tracker-derived registry: one paginated search, cache-only diagnostics."""
+"""Current scoped Tracker blockers, aggregated by robot with cache-only diagnostics."""
 
 import re
 from dataclasses import dataclass
@@ -160,22 +160,29 @@ def registry_rows(
         token = tracker_gateway_transport.credential(db, user)
         if not token:
             raise HTTPException(503, detail="tracker_token_not_configured")
-        # The existing client drains all upstream pages. Group/count/filter only
-        # after the full batch; offset/limit paginate robots, never Tracker issues.
+        # fetch_park_blockers builds the authoritative queue/tag/priority/open
+        # query before the SDK drains its iterator. Never scan closed history to
+        # build the current roster; issue history has a separate bounded API.
         try:
-            for tracker_query in _tracker_queries(access):
+            seen_scopes: set[tuple[str, str]] = set()
+            for _, queue, tag in access.parks:
+                scope = (queue, tag)
+                if scope in seen_scopes:
+                    continue
+                seen_scopes.add(scope)
                 issues.extend(
-                    tracker_cache.search_issues(
+                    tracker_cache.fetch_park_blockers(
                         token=token,
-                        query=tracker_query,
-                        filter_open=False,
-                        projection="registry",
+                        queue=queue,
+                        park_tag=tag,
                     )
                 )
         except tracker_client.TrackerError as exc:
             raise HTTPException(502, detail="tracker_upstream_error") from exc
     rows: dict[str, dict] = {}
     for issue in issues:
+        if not tracker_client.is_issue_open_item(issue):
+            continue
         matches = access.matching_parks(issue)
         if not matches:
             continue

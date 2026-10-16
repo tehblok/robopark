@@ -8,7 +8,9 @@ import math
 import re
 import time
 import zlib
+from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -40,6 +42,29 @@ _PAYLOAD_MAX_NODES = 20_000
 _PAYLOAD_MAX_COLLECTION = 2_000
 _PAYLOAD_MAX_STRING = 128 * 1024
 _PAYLOAD_MIN_TIMESTAMP_MS = 946_684_800_000
+
+
+@dataclass
+class _ControlAuthorityLane:
+    executor: ThreadPoolExecutor
+    slots: asyncio.Semaphore
+    waiters: int = 0
+    closed: bool = False
+
+    @classmethod
+    def create(cls) -> _ControlAuthorityLane:
+        return cls(
+            executor=ThreadPoolExecutor(
+                max_workers=4, thread_name_prefix="robopark-emergency-control"
+            ),
+            slots=asyncio.Semaphore(4),
+        )
+
+    def shutdown(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self.executor.shutdown(wait=False, cancel_futures=True)
 
 
 class RpcRequest(BaseModel):
@@ -438,6 +463,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
         upstream_reads_per_second=settings.emergency_bridge_upstream_reads_per_second,
     )
     compute_router = create_compute_router(session_factory, settings)
+    control_authority_lane = _ControlAuthorityLane.create()
 
     async def probe_scheduler() -> None:
         while True:
@@ -467,6 +493,10 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        nonlocal control_authority_lane
+        if control_authority_lane.closed:
+            control_authority_lane = _ControlAuthorityLane.create()
+        compute_router.startup()
         task = asyncio.create_task(probe_scheduler())
         try:
             yield
@@ -475,6 +505,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
             with suppress(asyncio.CancelledError):
                 await task
             await compute_router.shutdown()
+            control_authority_lane.shutdown()
 
     app = FastAPI(
         title="Robopark Emergency Bridge",
@@ -484,7 +515,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
     )
     used_nonces: dict[str, float] = {}
     authority_slots = asyncio.Semaphore(16)
-    authority_waiters = 0
+    authority_waiters = {"request": 0}
     app.state.registry = registry
     app.include_router(compute_router)
     app.state.compute_registry = compute_router.registry
@@ -510,24 +541,34 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
             raise HTTPException(401, "invalid_signature")
         used_nonces[nonce] = now + 60
 
-    async def bounded_authority_call(deadline: float, fn, *args):
-        nonlocal authority_waiters
-        if authority_waiters >= 384 or deadline <= time.monotonic():
+    async def run_bounded_authority_call(
+        deadline: float,
+        fn,
+        *args,
+        slots: asyncio.Semaphore,
+        lane: str,
+        max_waiters: int,
+        executor: Executor | None = None,
+    ):
+        if authority_waiters[lane] >= max_waiters or deadline <= time.monotonic():
             raise TimeoutError("authority_capacity")
         # A reconnect burst must wait for the bounded DB worker pool rather
         # than reject every device after the first sixteen. Waiting counts
         # against the caller's original deadline and cannot grow without bound.
-        authority_waiters += 1
+        authority_waiters[lane] += 1
         try:
-            await asyncio.wait_for(
-                authority_slots.acquire(), timeout=max(0.001, deadline - time.monotonic())
-            )
+            await asyncio.wait_for(slots.acquire(), timeout=max(0.001, deadline - time.monotonic()))
         finally:
-            authority_waiters -= 1
-        task = asyncio.create_task(asyncio.to_thread(fn, *args))
+            authority_waiters[lane] -= 1
+        if executor is None:
+            task = asyncio.create_task(asyncio.to_thread(fn, *args))
+        else:
+            task = asyncio.ensure_future(
+                asyncio.get_running_loop().run_in_executor(executor, fn, *args)
+            )
 
         def release_when_finished(completed):
-            authority_slots.release()
+            slots.release()
             if not completed.cancelled():
                 completed.exception()
 
@@ -540,7 +581,51 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
             # its slot until completion on both timeout and caller cancellation.
             task.add_done_callback(release_when_finished)
             raise
-        authority_slots.release()
+        slots.release()
+        return result
+
+    async def bounded_authority_call(deadline: float, fn, *args):
+        return await run_bounded_authority_call(
+            deadline,
+            fn,
+            *args,
+            slots=authority_slots,
+            lane="request",
+            max_waiters=384,
+        )
+
+    async def bounded_control_authority_call(deadline: float, fn, *args):
+        lane = control_authority_lane
+        if lane.closed or lane.waiters >= 100 or deadline <= time.monotonic():
+            raise TimeoutError("authority_capacity")
+        lane.waiters += 1
+        try:
+            await asyncio.wait_for(
+                lane.slots.acquire(), timeout=max(0.001, deadline - time.monotonic())
+            )
+        finally:
+            lane.waiters -= 1
+        try:
+            task = asyncio.ensure_future(
+                asyncio.get_running_loop().run_in_executor(lane.executor, fn, *args)
+            )
+        except BaseException:
+            lane.slots.release()
+            raise
+
+        def release_when_finished(completed):
+            lane.slots.release()
+            if not completed.cancelled():
+                completed.exception()
+
+        try:
+            result = await asyncio.wait_for(
+                asyncio.shield(task), timeout=max(0.001, deadline - time.monotonic())
+            )
+        except BaseException:
+            task.add_done_callback(release_when_finished)
+            raise
+        lane.slots.release()
         return result
 
     @app.get("/health")
@@ -578,7 +663,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                 + "\n"
                 + nonce
             ).encode("utf-8")
-            device_id, owner_user_id, owner_tracker_login = await bounded_authority_call(
+            device_id, owner_user_id, owner_tracker_login = await bounded_control_authority_call(
                 time.monotonic() + 10,
                 _authenticate_device,
                 session_factory,
@@ -607,7 +692,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
             )
             while True:
                 message = await _receive_json(websocket)
-                if not await bounded_authority_call(
+                if not await bounded_control_authority_call(
                     time.monotonic() + 5,
                     _device_still_valid,
                     session_factory,
@@ -673,6 +758,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                         {"type": "heartbeat_ack", "generation": channel.generation}
                     )
                     channel.ready = heartbeat_ready
+                    registry.capacity_changed()
                     if registry.reserve_probe(channel):
                         await channel.send_json(
                             {
@@ -733,14 +819,17 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                         message.pop("payload_bytes", None)
                         message.pop("encoded_bytes", None)
                         message.pop("encoding", None)
-                    if pending.requester_user_id is not None and await bounded_authority_call(
-                        pending.deadline_monotonic or time.monotonic() + 20,
-                        _job_authority_valid,
-                        session_factory,
-                        settings,
-                        channel.device_id,
-                        pending.requester_user_id,
-                        pending.vin,
+                    if (
+                        pending.requester_user_id is not None
+                        and await bounded_control_authority_call(
+                            pending.deadline_monotonic or time.monotonic() + 20,
+                            _job_authority_valid,
+                            session_factory,
+                            settings,
+                            channel.device_id,
+                            pending.requester_user_id,
+                            pending.vin,
+                        )
                     ):
                         LOG.info(
                             "Emergency bridge delivered result",
@@ -802,13 +891,20 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
             except TimeoutError:
                 return False
 
-        excluded: set[str] = set()
+        excluded_device_ids: set[str] = set()
+        excluded_generations: set[tuple[str, str]] = set()
         attempts = 0
         source_checks = 0
         terminal_detail = "upstream_failed"
-        max_source_checks = min(len(candidates), max(2, payload.attempt_budget * 2))
+        max_source_checks = max(2, payload.attempt_budget * 2)
         while attempts < payload.attempt_budget and source_checks < max_source_checks:
-            channel = registry.choose(candidates, excluded=excluded)
+            channel = await registry.wait_for_available(
+                candidates,
+                excluded_device_ids=excluded_device_ids,
+                excluded_generations=excluded_generations,
+                deadline=deadline,
+                wait_through_empty=bool(excluded_generations),
+            )
             if channel is None:
                 return (
                     None,
@@ -823,7 +919,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
             # Reserve synchronously with selection. Otherwise every concurrent
             # caller picks the same idle Mac before awaiting its DB check.
             if not registry.reserve_queue_slot(channel):
-                excluded.add(channel.device_id)
+                excluded_generations.add((channel.device_id, channel.generation))
                 continue
             try:
                 try:
@@ -839,15 +935,18 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                 except TimeoutError:
                     break
                 if not source_allowed:
-                    excluded.add(channel.device_id)
+                    excluded_device_ids.add(channel.device_id)
                     continue
                 if not await registry.wait_for_upstream(channel, deadline=deadline):
                     return None, attempts, "upstream_busy", None
-                if not registry.channel_available(channel):
-                    excluded.add(channel.device_id)
-                    continue
             finally:
                 registry.release_queue_slot(channel)
+            # The queued slot belongs to this request. Release it before the
+            # final capacity check, otherwise a one-slot Mac rejects its own
+            # reservation. No await separates this check from pending creation.
+            if not registry.channel_available(channel):
+                excluded_generations.add((channel.device_id, channel.generation))
+                continue
             load_future, is_load_leader = registry.begin_load(channel, payload.vin)
             if not is_load_leader:
                 try:
@@ -856,13 +955,13 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                     if isinstance(shared, dict):
                         if await final_authority(channel):
                             return shared, attempts, "", channel.device_id
-                        excluded.add(channel.device_id)
+                        excluded_device_ids.add(channel.device_id)
                         continue
                 except (TimeoutError, ConnectionError):
-                    excluded.add(channel.device_id)
+                    excluded_generations.add((channel.device_id, channel.generation))
                     continue
             attempts += 1
-            excluded.add(channel.device_id)
+            excluded_generations.add((channel.device_id, channel.generation))
             try:
                 job = registry.new_pending(
                     channel,

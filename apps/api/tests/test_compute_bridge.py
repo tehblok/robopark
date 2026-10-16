@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import json
@@ -12,8 +13,10 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
+from starlette.websockets import WebSocketDisconnect
 
 from conftest import role_id_for
+from robopark_api import compute_bridge as compute_bridge_module
 from robopark_api.compute_bridge import _corporate_owner_candidates
 from robopark_api.config import Settings
 from robopark_api.emergency_bridge import create_broker_app
@@ -224,6 +227,84 @@ def test_compute_ws_uses_distinct_domain_and_dispatches_hashed_typed_job(db_engi
         assert response.json()["result"]["sha256"] == hashlib.sha256(output).hexdigest()
 
 
+def test_compute_heartbeat_keeps_control_authority_off_default_executor_and_rechecks_device(
+    db_engine, db_session, monkeypatch
+):
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="compute-secret",
+        emergency_bridge_enabled=True,
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    private_key, _owner, device = _device(db_session, settings, suffix="-control-lane")
+    app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
+    original_to_thread = asyncio.to_thread
+
+    async def saturated_default_executor(fn, *args, **kwargs):
+        if fn is compute_bridge_module._device_still_valid:
+            raise RuntimeError("default_executor_saturated")
+        return await original_to_thread(fn, *args, **kwargs)
+
+    with (
+        TestClient(app) as client,
+        client.websocket_connect("/emergency/bridge/compute/ws") as websocket,
+    ):
+        challenge = websocket.receive_json()
+        signed = (
+            f"robopark-compute-v1\n{settings.robopark_instance_id}\n"
+            f"{settings.robopark_environment}\n{challenge['nonce']}"
+        ).encode()
+        signature = base64.b64encode(private_key.sign(signed, ec.ECDSA(hashes.SHA256()))).decode()
+        websocket.send_json({"type": "auth", "device_id": device.id, "signature": signature})
+        ready = websocket.receive_json()
+        monkeypatch.setattr(asyncio, "to_thread", saturated_default_executor)
+        heartbeat = {
+            "type": "heartbeat",
+            "generation": ready["generation"],
+            "capacity": 1,
+            "active_jobs": 0,
+            "supports": ["heartbeat_ack"],
+        }
+        websocket.send_json(heartbeat)
+        _receive_heartbeat_ack(websocket, ready["generation"])
+
+        device.revoked_at = datetime.now(UTC)
+        db_session.commit()
+        websocket.send_json(heartbeat)
+        with pytest.raises(WebSocketDisconnect) as closed:
+            websocket.receive_json()
+        assert closed.value.code == 1008
+
+
+def test_compute_websocket_reopens_after_same_app_lifespan_restart(db_engine, db_session):
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="compute-secret",
+        emergency_bridge_enabled=True,
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    private_key, _owner, device = _device(db_session, settings, suffix="-restart")
+    app = create_broker_app(sessionmaker(bind=db_engine, future=True), settings)
+
+    for _ in range(2):
+        with (
+            TestClient(app) as client,
+            client.websocket_connect("/emergency/bridge/compute/ws") as websocket,
+        ):
+            challenge = websocket.receive_json()
+            signed = (
+                f"robopark-compute-v1\n{settings.robopark_instance_id}\n"
+                f"{settings.robopark_environment}\n{challenge['nonce']}"
+            ).encode()
+            signature = base64.b64encode(
+                private_key.sign(signed, ec.ECDSA(hashes.SHA256()))
+            ).decode()
+            websocket.send_json({"type": "auth", "device_id": device.id, "signature": signature})
+            assert websocket.receive_json()["type"] == "ready"
+
+
 def test_corporate_read_selects_owner_mac_and_rejects_identity_mismatch(db_engine, db_session):
     settings = Settings(
         _env_file=None,
@@ -334,6 +415,9 @@ def test_corporate_read_selects_owner_mac_and_rejects_identity_mismatch(db_engin
         assert holder["response"].status_code == 200
         assert holder["response"].json()["payload"] == {"name": "a664"}
 
+        # A different resource bypasses the short-lived, immutable Inventory
+        # cache so this phase still exercises validation of a fresh Mac reply.
+        request["resource"] = "a665"
         thread = threading.Thread(target=send_request)
         thread.start()
         job = websocket.receive_json()
@@ -348,18 +432,48 @@ def test_corporate_read_selects_owner_mac_and_rejects_identity_mismatch(db_engin
                 "result": {
                     "service": "inventory",
                     "action": "rover_card",
-                    "resource": "a664",
+                    "resource": "a665",
                     "owner_user_id": owner.id + 1,
                     "identity_login": "owner.tracker",
                     "status_code": 200,
                     "headers": {},
-                    "payload": {"name": "a664"},
+                    "payload": {"name": "a665"},
                 },
             }
         )
         thread.join(2)
         assert holder["response"].status_code == 403
         assert holder["response"].json()["detail"] == "corporate_access_denied"
+
+        standby = ComputeChannel(
+            device_id="zzzz-standby-owner-mac",
+            owner_user_id=owner.id,
+            websocket=object(),
+            ready=True,
+            supports={"corporate_read_v1", "corporate_inventory_read_v1"},
+            corporate_read_capacity=1,
+            corporate_inventory_status="ready",
+        )
+        app.state.compute_registry.replace(standby)
+        request["resource"] = "a666"
+        thread = threading.Thread(target=send_request)
+        thread.start()
+        job = websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "compute_result",
+                "generation": ready["generation"],
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "payload_sha256": job["payload_sha256"],
+                "ok": False,
+                "error": "access_denied",
+            }
+        )
+        thread.join(2)
+        assert holder["response"].status_code == 403
+        assert holder["response"].json()["detail"] == "corporate_access_denied"
+        assert standby.last_selected == 0
 
 
 @pytest.mark.parametrize("revoked", ["account", "device"])

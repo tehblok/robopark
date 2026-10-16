@@ -27,6 +27,7 @@ import AgentCore
     var workspace: WorkspaceServer?
     private var enrollmentTask: Task<Void, Never>?
     private var probeRefreshTask: Task<Void, Never>?
+    private var probeRefreshRun = UUID()
     private var identityRestoreTask: Task<Void, Never>?
     private var workspaceSetupTask: Task<Void, Error>?
     private var enrollmentRun = UUID()
@@ -218,6 +219,7 @@ import AgentCore
             activeAccountID = nil
             accountRole = nil
             UserDefaults.standard.set(false, forKey: accountPresentKey)
+            cancelProbeRefresh()
             bridge.stop()
             compute.stop()
             notifications.stop(removeDelivered: true)
@@ -227,15 +229,17 @@ import AgentCore
         if accountActive, activeAccountID == userID,
            bridge.registration?.origin == profile.origin,
            bridge.registration?.instanceID == profile.instanceID {
+            if emergencyAuthorized && canUseEmergency { bridge.startIfNeeded() }
             if emergencyAuthorized != canUseEmergency {
                 emergencyAuthorized = canUseEmergency
                 if canUseEmergency { bridge.start(); refreshProbeTarget() }
-                else { bridge.stop(); try? bridge.clearProbe() }
+                else { cancelProbeRefresh(); bridge.stop(); try? bridge.clearProbe() }
             }
             notifications.start(accountID: userID, role: user["role"] as? String ?? "", session: session)
             render()
             return
         }
+        cancelProbeRefresh()
         let run = UUID(); enrollmentRun = run
         let task = Task { [weak self] in
             guard let self else { return }
@@ -283,7 +287,7 @@ import AgentCore
         activeAccountID = nil
         accountRole = nil
         UserDefaults.standard.set(false, forKey: accountPresentKey)
-        probeRefreshTask?.cancel(); probeRefreshTask = nil
+        cancelProbeRefresh()
         identityRestoreTask?.cancel(); identityRestoreTask = nil
         enrollmentRun = UUID(); enrollmentTask?.cancel(); enrollmentTask = nil
         // Signing out stops work but preserves the device key and owner binding.
@@ -303,17 +307,33 @@ import AgentCore
     }
     private func refreshProbeTarget() {
         guard accountActive, emergencyAuthorized, probeRefreshTask == nil, let session = workspace?.session,
+              let accountID = activeAccountID,
               bridge.registration != nil else { return }
+        let enrollment = enrollmentRun
+        let run = UUID()
+        probeRefreshRun = run
         probeRefreshTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.probeRefreshTask = nil }
+            defer { if self.probeRefreshRun == run { self.probeRefreshTask = nil } }
             guard let (data, response) = try? await session.call(path: "/api/agent-devices/probe-target", timeout: 5),
                   response.statusCode == 200,
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-            guard !Task.isCancelled, self.accountActive else { return }
-            if let vin = object["vin"] as? String, !vin.isEmpty { try? self.bridge.setProbe(vin) }
-            else { try? self.bridge.clearProbe() }
+            guard !Task.isCancelled, self.accountActive, self.emergencyAuthorized,
+                  self.activeAccountID == accountID, self.enrollmentRun == enrollment,
+                  self.workspace?.session === session else { return }
+            if let vin = object["vin"] as? String, !vin.isEmpty {
+                _ = try? await self.bridge.refreshInventoryReadiness(forProbe: vin)
+            } else { try? self.bridge.clearProbe() }
+            guard !Task.isCancelled, self.accountActive, self.emergencyAuthorized,
+                  self.activeAccountID == accountID, self.enrollmentRun == enrollment,
+                  self.workspace?.session === session else { return }
+            self.render()
         }
+    }
+    private func cancelProbeRefresh() {
+        probeRefreshRun = UUID()
+        probeRefreshTask?.cancel()
+        probeRefreshTask = nil
     }
     @objc func showPanel() {
         if window == nil {
@@ -488,7 +508,11 @@ import AgentCore
             updateMessage: updater.message
         ))
         var object = status.jsonObject
-        if accountActive && accountRole == "royal" { object["corporateNavigation"] = corporateNavigationEvents }
+        if accountActive && accountRole == "royal" {
+            object["corporateNavigation"] = corporateNavigationEvents
+            object["channels"] = ["emergency": bridge.state, "upstream": bridge.upstreamState,
+                                  "compute": compute.state, "emergencyAuthorized": emergencyAuthorized]
+        }
         return .json(object)
     }
     private func handleAgentAction(_ body: [String: Any]) async -> LocalHTTPResponse {

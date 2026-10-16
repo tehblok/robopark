@@ -65,6 +65,20 @@ actor CorporateIdentityGate {
  }
  func release(){ blocked=false; releaseWaiter?.resume(); releaseWaiter=nil }
 }
+actor InventoryGate {
+ static let shared=InventoryGate()
+ var blocked=false; var started=false
+ var startWaiter:CheckedContinuation<Void,Never>?; var releaseWaiter:CheckedContinuation<Void,Never>?
+ func reset(){ blocked=false; started=false; startWaiter?.resume(); startWaiter=nil; releaseWaiter?.resume(); releaseWaiter=nil }
+ func block(){ blocked=true; started=false }
+ func waitForRequest() async { if started { return }; await withCheckedContinuation { startWaiter=$0 } }
+ func pauseIfNeeded() async {
+  guard blocked else { return }
+  started=true; startWaiter?.resume(); startWaiter=nil
+  await withCheckedContinuation { releaseWaiter=$0 }
+ }
+ func release(){ blocked=false; releaseWaiter?.resume(); releaseWaiter=nil }
+}
 func response(_ status:Int)->HTTPURLResponse { HTTPURLResponse(url:URL(string:"https://roboparktest.ru.tuna.am/api/agent-devices/info")!,statusCode:status,httpVersion:"HTTP/1.1",headerFields:[:])! }
 enum Network {
  static var infoCalls=0
@@ -93,7 +107,7 @@ enum Network {
  }
  static func corporateInventoryReadiness(serverAuthorizedVIN:String,oauthToken:String,timeout:Double=10,
                                          sessionOverride:URLSession?=nil) async -> CorporateInventoryStatus {
-  inventoryCalls += 1; return inventoryStatus
+  inventoryCalls += 1; await InventoryGate.shared.pauseIfNeeded(); return inventoryStatus
  }
 }
 """
@@ -101,7 +115,7 @@ MAIN = r"""import Foundation
 import AgentCore
 var checks=0
 func check(_ v:@autoclosure() throws -> Bool,_ n:String)throws { guard try v() else { fatalError("FAIL: \(n)") }; checks+=1 }
-func reset() async { SecureStore.reset(); Network.infoCalls=0; Network.corporateStatus=200; Network.corporateBody=["login":"owner.login","dismissed":false]; Network.corporateCalls=0; Network.corporateThrows=false; Network.inventoryStatus = .ready; Network.inventoryCalls = 0; await Claims.shared.reset(); await CorporateIdentityGate.shared.reset() }
+func reset() async { SecureStore.reset(); Network.infoCalls=0; Network.corporateStatus=200; Network.corporateBody=["login":"owner.login","dismissed":false]; Network.corporateCalls=0; Network.corporateThrows=false; Network.inventoryStatus = .ready; Network.inventoryCalls = 0; await Claims.shared.reset(); await CorporateIdentityGate.shared.reset(); await InventoryGate.shared.reset() }
 func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"https://roboparktest.ru.tuna.am",code:"code",label:"Mac") }
 @main struct Run { static func main() async throws {
  let id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -152,12 +166,76 @@ func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"http
  let inventoryReady = await authenticated.verifyInventoryReadiness(force:true)
  try check(inventoryReady == .ready && Network.inventoryCalls == 1,
            "Inventory readiness verifies a server-authorized rover independently")
- Network.inventoryStatus = .denied
+ authenticated.registration?.inventoryOAuthVerifiedAt = nil
+ authenticated.registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+ try authenticated.persist(); Network.inventoryCalls = 0
+ let recoveredInventory = try await authenticated.refreshInventoryReadiness(forProbe:"YASADR00000000664")
+ try check(recoveredInventory == .ready && Network.inventoryCalls == 1,
+           "an unchanged refreshed probe recovers Inventory readiness without a compute heartbeat")
+ let cachedInventory = try await authenticated.refreshInventoryReadiness(forProbe:"YASADR00000000664")
+ try check(cachedInventory == .ready && Network.inventoryCalls == 1,
+           "periodic probe refresh reuses the Inventory readiness TTL")
+ authenticated.registration?.inventoryOAuthVerifiedAt = nil
+ Network.inventoryCalls = 0; await InventoryGate.shared.block()
+ let probeRefresh = Task { try await authenticated.refreshInventoryReadiness(forProbe:"YASADR00000000664") }
+ await InventoryGate.shared.waitForRequest()
+ let computeRefresh = Task { await authenticated.verifyInventoryReadiness() }
+ try await Task.sleep(nanoseconds:20_000_000)
+ try check(Network.inventoryCalls == 1, "probe and compute refresh share one Inventory HTTP request")
+ await InventoryGate.shared.release()
+ let probeResult = try await probeRefresh.value
+ let computeResult = await computeRefresh.value
+ try check(probeResult == .ready && computeResult == .ready && authenticated.inventoryReadiness == .ready,
+           "shared Inventory verification publishes one consistent result")
+ authenticated.registration?.inventoryOAuthVerifiedAt = nil
+ authenticated.registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+ try authenticated.persist(); Network.inventoryCalls = 0; await InventoryGate.shared.block()
+ let cancellingWaiter = Task { await authenticated.verifyInventoryReadiness(force:true) }
+ await InventoryGate.shared.waitForRequest()
+ let joinedWaiter = Task { await authenticated.verifyInventoryReadiness(force:true) }
+ try await Task.sleep(nanoseconds:20_000_000)
+ try check(Network.inventoryCalls == 1, "two Inventory waiters share the gated request before cancellation")
+ cancellingWaiter.cancel(); await InventoryGate.shared.release()
+ let cancelledWaiterResult = await cancellingWaiter.value
+ let joinedWaiterResult = await joinedWaiter.value
+ try check(cancelledWaiterResult == .unverifiedHostACL
+           && joinedWaiterResult == .unverifiedHostACL
+           && authenticated.registration?.inventoryOAuthVerifiedAt == nil
+           && authenticated.inventoryReadiness == .unverifiedHostACL,
+           "cancelling one shared waiter prevents the late Inventory result from being persisted")
+ let recoveredAfterCancellation = await authenticated.verifyInventoryReadiness(force:true)
+ try check(recoveredAfterCancellation == .ready
+           && authenticated.inventoryReadiness == .ready
+           && authenticated.registration?.inventoryOAuthVerifiedAt != nil
+           && Network.inventoryCalls == 2,
+           "a fresh Inventory verification recovers after shared-flight cancellation")
+ authenticated.registration?.inventoryOAuthVerifiedAt = nil
+ authenticated.registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+ try authenticated.persist(); await InventoryGate.shared.block()
+ let staleInventory = Task { await authenticated.verifyInventoryReadiness(force:true) }
+ await InventoryGate.shared.waitForRequest()
+ authenticated.registration?.deviceID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+ try authenticated.persist(); await InventoryGate.shared.release()
+ let staleInventoryResult = await staleInventory.value
+ try check(staleInventoryResult == .unverifiedHostACL
+           && authenticated.registration?.inventoryOAuthVerifiedAt == nil,
+           "late Inventory response cannot cross a changed device binding")
+ authenticated.registration?.deviceID = id
+ authenticated.registration?.inventoryOAuthVerifiedAt = nil
+ authenticated.registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
+ try authenticated.persist(); await InventoryGate.shared.block()
+ let cancelledInventory = Task { await authenticated.verifyInventoryReadiness(force:true) }
+ await InventoryGate.shared.waitForRequest(); cancelledInventory.cancel(); await InventoryGate.shared.release()
+ let cancelledInventoryResult = await cancelledInventory.value
+ try check(cancelledInventoryResult == .unverifiedHostACL
+           && authenticated.registration?.inventoryOAuthVerifiedAt == nil,
+           "cancelled Inventory refresh cannot persist a late readiness result")
+ Network.inventoryStatus = .denied; Network.inventoryCalls = 0
  try authenticated.setProbe("YASADR00000000665")
  let inventoryInvalidated = authenticated.inventoryReadiness
  let inventoryDenied = await authenticated.verifyInventoryReadiness()
  try check(inventoryInvalidated == .unverifiedHostACL
-           && inventoryDenied == .denied && Network.inventoryCalls == 2,
+           && inventoryDenied == .denied && Network.inventoryCalls == 1,
            "a changed server probe invalidates and refreshes Inventory ACL readiness")
  try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login")
  try check(!authenticated.needsCorporateLogin,"verified owner cookie enables corporate services")
@@ -176,19 +254,117 @@ func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"http
            && undatedRestart.hasVerifiedCorporateOAuth,
            "undated OAuth is rechecked after the fifteen minute identity TTL")
  for transientStatus in [500,429] {
-  undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+  let lastOwnerVerification=Date(timeIntervalSinceNow:-901)
+  undatedRestart.registration?.trackerOAuthVerifiedAt=lastOwnerVerification
   Network.corporateStatus=transientStatus
-  let transient=await undatedRestart.verifiedCorporateOAuth()
-  try check(transient == nil && undatedRestart.registration?.trackerOAuthToken == "token"
-            && !undatedRestart.hasVerifiedCorporateOAuth,
-            "transient HTTP identity failure preserves OAuth without advertising readiness")
+  let transient=await undatedRestart.verifiedCorporateOAuth(force:true)
+  try check(transient?.token == "token" && undatedRestart.registration?.trackerOAuthToken == "token"
+            && undatedRestart.registration?.trackerOAuthVerifiedAt == lastOwnerVerification
+            && undatedRestart.hasVerifiedCorporateOAuth,
+            "transient HTTP identity failure uses bounded owner grace without renewing it")
  }
- undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ let lastOfflineVerification=Date(timeIntervalSinceNow:-901)
+ undatedRestart.registration?.trackerOAuthVerifiedAt=lastOfflineVerification
  Network.corporateThrows=true
- let offline=await undatedRestart.verifiedCorporateOAuth()
- try check(offline == nil && undatedRestart.registration?.trackerOAuthToken == "token"
+ let offline=await undatedRestart.verifiedCorporateOAuth(force:true)
+ try check(offline?.token == "token" && undatedRestart.registration?.trackerOAuthToken == "token"
+           && undatedRestart.registration?.trackerOAuthVerifiedAt == lastOfflineVerification
+           && undatedRestart.hasVerifiedCorporateOAuth,
+           "network identity failure uses bounded owner grace without renewing it")
+ let callsBeforeBackoff=Network.corporateCalls
+ let backedOff=await undatedRestart.verifiedCorporateOAuth()
+ try check(backedOff?.token == "token" && Network.corporateCalls == callsBeforeBackoff,
+           "availability grace backs off identity retries during an outage")
+ Network.corporateThrows=false; Network.corporateStatus=500
+ undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-3601)
+ let expiredGrace=await undatedRestart.verifiedCorporateOAuth(force:true)
+ try check(expiredGrace == nil && undatedRestart.registration?.trackerOAuthToken == "token"
            && !undatedRestart.hasVerifiedCorporateOAuth,
-           "network identity failure preserves OAuth without advertising readiness")
+           "owner grace expires after one hour even when identity remains unavailable")
+ try undatedRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+ undatedRestart.registration?.trackerOAuthExpiresAt=nil
+ undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ try undatedRestart.persist(); Network.corporateStatus=500; await CorporateIdentityGate.shared.block()
+ let oauthCallsBeforeShared=Network.corporateCalls
+ let sharedOAuthFirst=Task { await undatedRestart.verifiedCorporateOAuth(force:true) }
+ await CorporateIdentityGate.shared.waitForRequest()
+ let sharedOAuthSecond=Task { await undatedRestart.verifiedCorporateOAuth(force:true) }
+ try await Task.sleep(nanoseconds:20_000_000)
+ try check(Network.corporateCalls == oauthCallsBeforeShared + 1,
+           "same-binding OAuth verification is a single shared identity request")
+ await CorporateIdentityGate.shared.release()
+ let sharedOAuthFirstResult=await sharedOAuthFirst.value
+ let sharedOAuthSecondResult=await sharedOAuthSecond.value
+ try check(sharedOAuthFirstResult?.token == "token" && sharedOAuthSecondResult?.token == "token",
+           "same-binding OAuth waiters share one availability-grace outcome")
+ try undatedRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+ Network.corporateStatus=401; await CorporateIdentityGate.shared.block()
+ let oldOAuthFirst=Task { await undatedRestart.verifiedCorporateOAuth(force:true) }
+ await CorporateIdentityGate.shared.waitForRequest()
+ let oldOAuthSecond=Task { await undatedRestart.verifiedCorporateOAuth(force:true) }
+ try await Task.sleep(nanoseconds:20_000_000)
+ undatedRestart.onChange = {
+  if undatedRestart.registration?.trackerOAuthToken == nil {
+   undatedRestart.onChange=nil
+   try! undatedRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+  }
+ }
+ await CorporateIdentityGate.shared.release()
+ _ = await oldOAuthFirst.value; _ = await oldOAuthSecond.value
+ try check(undatedRestart.registration?.trackerOAuthToken == "token"
+           && undatedRestart.hasVerifiedCorporateOAuth,
+           "late shared denial cannot invalidate a newly stored identical OAuth token")
+ try undatedRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+ undatedRestart.registration?.trackerOAuthExpiresAt=nil
+ undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ try undatedRestart.persist(); Network.corporateStatus=200; await CorporateIdentityGate.shared.block()
+ let cancelledSharedOAuth=Task { await undatedRestart.verifiedCorporateOAuth(force:true) }
+ await CorporateIdentityGate.shared.waitForRequest()
+ let survivingSharedOAuth=Task { await undatedRestart.verifiedCorporateOAuth(force:true) }
+ cancelledSharedOAuth.cancel(); await CorporateIdentityGate.shared.release()
+ let cancelledSharedOAuthResult=await cancelledSharedOAuth.value
+ let survivingSharedOAuthResult=await survivingSharedOAuth.value
+ try check(cancelledSharedOAuthResult == nil && survivingSharedOAuthResult?.token == "token",
+           "cancelling one OAuth waiter does not cancel the shared identity verification")
+ try undatedRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+ undatedRestart.registration?.trackerOAuthExpiresAt=nil
+ undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ try undatedRestart.persist(); await CorporateIdentityGate.shared.block()
+ let cancelledGrace=Task { await undatedRestart.verifiedCorporateOAuth() }
+ await CorporateIdentityGate.shared.waitForRequest(); cancelledGrace.cancel(); await CorporateIdentityGate.shared.release()
+ let cancelledGraceResult=await cancelledGrace.value
+ try check(cancelledGraceResult == nil
+           && undatedRestart.registration?.trackerOAuthVerifiedAt != nil,
+           "cancelled identity refresh cannot consume owner grace")
+ undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ try undatedRestart.persist(); await CorporateIdentityGate.shared.block()
+ let reboundGrace=Task { await undatedRestart.verifiedCorporateOAuth() }
+ await CorporateIdentityGate.shared.waitForRequest()
+ undatedRestart.registration?.deviceID="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+ await CorporateIdentityGate.shared.release()
+ let reboundGraceResult=await reboundGrace.value
+ try check(reboundGraceResult == nil
+           && undatedRestart.registration?.trackerOAuthToken == "token",
+           "late transient identity result cannot cross a changed device binding")
+ undatedRestart.registration?.deviceID=id
+ undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ try undatedRestart.persist()
+ Network.corporateThrows=false; Network.corporateStatus=200; Network.corporateBody=["dismissed":false]
+ let malformedOAuthIdentity=await undatedRestart.verifiedCorporateOAuth(force:true)
+ try check(malformedOAuthIdentity == nil
+           && undatedRestart.registration?.trackerOAuthToken == "token"
+           && undatedRestart.registration?.trackerOAuthVerifiedAt == nil
+           && !undatedRestart.hasVerifiedCorporateOAuth,
+           "malformed OAuth identity success fails closed without consuming the reusable token")
+ Network.corporateStatus=500
+ let noOAuthGraceAfterDenial=await undatedRestart.verifiedCorporateOAuth(force:true)
+ try check(noOAuthGraceAfterDenial == nil,
+           "a malformed OAuth identity response cannot be hidden by later availability grace")
+ Network.corporateBody=["login":"owner.login","dismissed":false]
+ try undatedRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+ undatedRestart.registration?.trackerOAuthExpiresAt=nil
+ undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ try undatedRestart.persist()
  Network.corporateThrows=false; Network.corporateStatus=401
  let revoked=await undatedRestart.verifiedCorporateOAuth(force:true)
  try check(revoked == nil && undatedRestart.registration?.trackerOAuthToken == nil,
@@ -259,6 +435,100 @@ func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"http
            && expiredRestart.registration?.deviceID == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
            "late forbidden response cannot mutate a replaced registration")
  do { try authenticated.storeVerifiedSession("Session_id=other",login:"other.login"); fatalError("FAIL: wrong corporate owner accepted") } catch { checks+=1 }
+ let lastCookieVerification=Date(timeIntervalSinceNow:-901)
+ try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login",verifiedAt:lastCookieVerification)
+ Network.corporateStatus=500; Network.corporateCalls=0
+ let transientCookie=await authenticated.verifyCorporateSession(force:true)
+ try check(transientCookie == .ready
+           && authenticated.registration?.corporateCookieVerifiedAt == lastCookieVerification
+           && authenticated.registration?.corporateIdentityStatus == "ready",
+           "transient HTTP identity failure uses bounded cookie owner grace without renewing it")
+ let cookieCallsBeforeBackoff=Network.corporateCalls
+ let backedOffCookie=await authenticated.verifyCorporateSession()
+ try check(backedOffCookie == .ready && Network.corporateCalls == cookieCallsBeforeBackoff,
+           "cookie owner grace backs off identity retries during an outage")
+ let lastOfflineCookieVerification=Date(timeIntervalSinceNow:-901)
+ try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login",verifiedAt:lastOfflineCookieVerification)
+ Network.corporateThrows=true
+ let offlineCookie=await authenticated.verifyCorporateSession(force:true)
+ try check(offlineCookie == .ready
+           && authenticated.registration?.corporateCookieVerifiedAt == lastOfflineCookieVerification,
+           "network identity failure uses bounded cookie owner grace without renewing it")
+ let sharedCookieVerification=Date(timeIntervalSinceNow:-901)
+ try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login",
+                                        verifiedAt:sharedCookieVerification)
+ Network.corporateThrows=false; Network.corporateStatus=500; await CorporateIdentityGate.shared.block()
+ let cookieCallsBeforeShared=Network.corporateCalls
+ let sharedCookieFirst=Task { await authenticated.verifyCorporateSession(force:true) }
+ await CorporateIdentityGate.shared.waitForRequest()
+ let sharedCookieSecond=Task { await authenticated.verifyCorporateSession(force:true) }
+ try await Task.sleep(nanoseconds:20_000_000)
+ try check(Network.corporateCalls == cookieCallsBeforeShared + 1,
+           "same-binding cookie verification is a single shared identity request")
+ await CorporateIdentityGate.shared.release()
+ let sharedCookieFirstResult=await sharedCookieFirst.value
+ let sharedCookieSecondResult=await sharedCookieSecond.value
+ try check(sharedCookieFirstResult == .ready && sharedCookieSecondResult == .ready
+           && authenticated.registration?.corporateCookieVerifiedAt == sharedCookieVerification,
+           "same-binding cookie waiters cannot overwrite readiness with a late result")
+ Network.corporateStatus=401; await CorporateIdentityGate.shared.block()
+ let oldCookieFirst=Task { await authenticated.verifyCorporateSession(force:true) }
+ await CorporateIdentityGate.shared.waitForRequest()
+ let oldCookieSecond=Task { await authenticated.verifyCorporateSession(force:true) }
+ try await Task.sleep(nanoseconds:20_000_000)
+ authenticated.onChange = {
+  if authenticated.registration?.cookie == "" {
+   authenticated.onChange=nil
+   try! authenticated.storeVerifiedSession("Session_id=present",login:"owner.login")
+  }
+ }
+ await CorporateIdentityGate.shared.release()
+ _ = await oldCookieFirst.value; _ = await oldCookieSecond.value
+ try check(authenticated.registration?.cookie == "Session_id=present"
+           && authenticated.registration?.corporateIdentityStatus == "ready",
+           "late shared denial cannot invalidate a newly stored identical cookie")
+ Network.corporateThrows=false; Network.corporateStatus=500
+ try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login",
+                                        verifiedAt:Date(timeIntervalSinceNow:-3601))
+ let expiredCookieGrace=await authenticated.verifyCorporateSession(force:true)
+ try check(expiredCookieGrace == .networkUnavailable
+           && authenticated.registration?.corporateIdentityStatus == "network_unavailable"
+           && authenticated.registration?.corporateCookieVerifiedAt != nil,
+           "cookie owner grace expires after one hour without erasing the reusable session")
+ try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login",
+                                        verifiedAt:Date(timeIntervalSinceNow:-901))
+ Network.corporateStatus=200; Network.corporateBody=["dismissed":false]
+ let malformedCookieIdentity=await authenticated.verifyCorporateSession(force:true)
+ try check(malformedCookieIdentity == .accessDenied
+           && authenticated.registration?.corporateCookieVerifiedAt == nil,
+           "malformed identity success fails closed and clears cookie readiness")
+ Network.corporateStatus=500
+ let noGraceAfterDenial=await authenticated.verifyCorporateSession(force:true)
+ try check(noGraceAfterDenial == .networkUnavailable,
+           "a malformed identity response cannot be hidden by later availability grace")
+ Network.corporateBody=["login":"owner.login","dismissed":false]
+ try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login",
+                                        verifiedAt:Date(timeIntervalSinceNow:-901))
+ await CorporateIdentityGate.shared.block()
+ let cancelledCookieGrace=Task { await authenticated.verifyCorporateSession() }
+ await CorporateIdentityGate.shared.waitForRequest(); cancelledCookieGrace.cancel(); await CorporateIdentityGate.shared.release()
+ let cancelledCookieResult=await cancelledCookieGrace.value
+ try check(cancelledCookieResult == .networkUnavailable
+           && authenticated.registration?.corporateIdentityStatus == "ready",
+           "cancelled cookie identity refresh cannot consume or replace owner grace")
+ try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login",
+                                        verifiedAt:Date(timeIntervalSinceNow:-901))
+ await CorporateIdentityGate.shared.block()
+ let reboundCookieGrace=Task { await authenticated.verifyCorporateSession() }
+ await CorporateIdentityGate.shared.waitForRequest()
+ authenticated.registration?.deviceID="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+ await CorporateIdentityGate.shared.release()
+ let reboundCookieResult=await reboundCookieGrace.value
+ try check(reboundCookieResult == .ownerMismatch
+           && authenticated.registration?.corporateIdentityStatus == "ready",
+           "late cookie identity result cannot cross a changed device binding")
+ authenticated.registration?.deviceID=id
+ try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login")
  Network.corporateStatus=401
  let unauthorized=await authenticated.verifyCorporateSession(force:true)
  try check(unauthorized == .reauthRequired
@@ -353,6 +623,8 @@ def main() -> int:
     fast_path = identity.split("if accountActive, activeAccountID == userID", 1)[1].split("let run = UUID()", 1)[0]
     if "compute.start()" in fast_path or "claimAuthenticated" in fast_path or "notifications.start" not in fast_path:
         raise SystemExit("FAIL: repeated same-account identity refresh restarts the compute lease")
+    if "if emergencyAuthorized && canUseEmergency { bridge.startIfNeeded() }" not in fast_path:
+        raise SystemExit("FAIL: repeated same-account identity refresh cannot recover a missing Emergency loop")
     if "if granted && managedProbes" in bridge_source:
         raise SystemExit("FAIL: managed readiness bypasses the real Emergency request")
     accept_probe = bridge_source.split("private func acceptProbe", 1)[1].split("private func probeIfNeeded", 1)[0]
@@ -364,6 +636,19 @@ def main() -> int:
         )
     if "else { try? self.bridge.clearProbe() }" not in refresh_probe:
         raise SystemExit("FAIL: a null managed probe target retains stale readiness")
+    if (
+        "self.emergencyAuthorized" not in refresh_probe
+        or "self.activeAccountID == accountID" not in refresh_probe
+        or "self.enrollmentRun == enrollment" not in refresh_probe
+        or "self.workspace?.session === session" not in refresh_probe
+        or "if self.probeRefreshRun == run { self.probeRefreshTask = nil }" not in refresh_probe
+    ):
+        raise SystemExit("FAIL: probe refresh is not bound to its account/session generation")
+    revoked_path = identity.split("if emergencyAuthorized != canUseEmergency", 1)[1].split(
+        "notifications.start", 1
+    )[0]
+    if "else { cancelProbeRefresh(); bridge.stop(); try? bridge.clearProbe() }" not in revoked_path:
+        raise SystemExit("FAIL: revoking Emergency access does not cancel an in-flight probe refresh")
     with tempfile.TemporaryDirectory(prefix="robopark-bridge-lifecycle-") as raw:
         root = Path(raw)
         (root / "Sources/BridgeLifecycleChecks").mkdir(parents=True)

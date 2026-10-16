@@ -1724,7 +1724,7 @@ wheels = [
 
 [[package]]
 name = "robopark-api"
-version = "0.2.3-rc.14"
+version = "0.2.3-rc.15"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },

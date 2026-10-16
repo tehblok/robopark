@@ -61,7 +61,8 @@
     "0.2.3-rc.10",
     "0.2.3-rc.11",
     "0.2.3-rc.12",
-    "0.2.3-rc.13"
+    "0.2.3-rc.13",
+    "0.2.3-rc.14"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -79,5 +80,5 @@
       65536
     ]
   },
-  "update_notes": "TEST Mac corporate OAuth authorize-page completion with WebKit regression coverage."
+  "update_notes": "TEST current park blockers, adaptive owner-Mac read queues, reconnect recovery, Inventory readiness, session continuity and Mac updater registration."
 }

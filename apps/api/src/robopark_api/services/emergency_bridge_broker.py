@@ -70,6 +70,14 @@ class PendingJob:
     future: asyncio.Future
 
 
+@dataclass(frozen=True, eq=False)
+class CapacityWaiter:
+    eligible_device_ids: frozenset[str]
+    excluded_device_ids: frozenset[str]
+    excluded_generations: frozenset[tuple[str, str]]
+    deadline: float
+
+
 class BrokerRegistry:
     def __init__(
         self,
@@ -116,18 +124,101 @@ class BrokerRegistry:
         }
         self._probe_tokens = 2.0
         self._probe_refilled_at = time.monotonic()
-        self._request_tokens = 128.0
+        self._request_tokens = 256.0
         self._request_refilled_at = time.monotonic()
         self._upstream_tokens = upstream_reads_per_second
         self._upstream_refilled_at = time.monotonic()
         self._active_requests: dict[int, int] = {}
         self.max_active_requests = 256
         self.max_active_per_requester = 16
+        self._capacity_changed = asyncio.Event()
+        self._capacity_waiters: list[CapacityWaiter] = []
+
+    def capacity_changed(self) -> None:
+        previous = self._capacity_changed
+        self._capacity_changed = asyncio.Event()
+        previous.set()
+
+    async def wait_for_available(
+        self,
+        eligible_device_ids: set[str],
+        *,
+        excluded_device_ids: set[str],
+        excluded_generations: set[tuple[str, str]],
+        deadline: float,
+        wait_through_empty: bool,
+    ) -> Channel | None:
+        # Admission bounds waiting callers; the per-device queue remains a
+        # reservation for an imminent dispatch, not another unbounded buffer.
+        if len(self._capacity_waiters) >= self.max_active_requests:
+            return None
+        waiter = CapacityWaiter(
+            eligible_device_ids=frozenset(eligible_device_ids),
+            excluded_device_ids=frozenset(excluded_device_ids),
+            excluded_generations=frozenset(excluded_generations),
+            deadline=deadline,
+        )
+        self._capacity_waiters.append(waiter)
+        has_seen_eligible = wait_through_empty
+        try:
+            while True:
+                changed = self._capacity_changed
+                selection_exclusions = set(waiter.excluded_device_ids)
+                channel = None
+                while True:
+                    candidate = self.choose(
+                        set(waiter.eligible_device_ids),
+                        excluded=selection_exclusions,
+                        excluded_generations=set(waiter.excluded_generations),
+                    )
+                    if candidate is None:
+                        break
+                    waiter_index = self._capacity_waiters.index(waiter)
+                    older_waiters = self._capacity_waiters[:waiter_index]
+                    if any(self._waiter_accepts(item, candidate) for item in older_waiters):
+                        selection_exclusions.add(candidate.device_id)
+                        continue
+                    channel = candidate
+                    break
+                if channel is not None:
+                    return channel
+                live_eligible = any(
+                    device_id in waiter.eligible_device_ids
+                    and device_id not in waiter.excluded_device_ids
+                    for device_id in self.channels
+                )
+                if not (waiter.eligible_device_ids - waiter.excluded_device_ids):
+                    return None
+                # A request already queued behind a Mac must survive its
+                # reconnect, even if it has not made its first attempt yet.
+                has_seen_eligible = has_seen_eligible or live_eligible
+                if not has_seen_eligible:
+                    return None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                try:
+                    await asyncio.wait_for(changed.wait(), timeout=remaining)
+                except TimeoutError:
+                    return None
+        finally:
+            if waiter in self._capacity_waiters:
+                self._capacity_waiters.remove(waiter)
+                self.capacity_changed()
+
+    @staticmethod
+    def _waiter_accepts(waiter: CapacityWaiter, channel: Channel) -> bool:
+        return (
+            time.monotonic() < waiter.deadline
+            and channel.device_id in waiter.eligible_device_ids
+            and channel.device_id not in waiter.excluded_device_ids
+            and (channel.device_id, channel.generation) not in waiter.excluded_generations
+        )
 
     def admit_request(self, requester_user_id: int, *, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
         elapsed = max(0.0, now - self._request_refilled_at)
-        self._request_tokens = min(128.0, self._request_tokens + elapsed * 64.0)
+        self._request_tokens = min(256.0, self._request_tokens + elapsed * 64.0)
         self._request_refilled_at = now
         active_global = sum(self._active_requests.values())
         active_owner = self._active_requests.get(requester_user_id, 0)
@@ -205,6 +296,7 @@ class BrokerRegistry:
                     self.pending.pop(key, None)
                     if not job.future.done():
                         job.future.set_exception(ConnectionError("channel_replaced"))
+        self.capacity_changed()
         return old
 
     def remove(self, channel: Channel) -> None:
@@ -215,15 +307,24 @@ class BrokerRegistry:
                 self.pending.pop(key, None)
                 if not job.future.done():
                     job.future.set_exception(ConnectionError("channel_dropped"))
+        self.capacity_changed()
 
-    def choose(self, eligible_device_ids: set[str], *, excluded: set[str] | None = None):
+    def choose(
+        self,
+        eligible_device_ids: set[str],
+        *,
+        excluded: set[str] | None = None,
+        excluded_generations: set[tuple[str, str]] | None = None,
+    ):
         now = time.monotonic()
         excluded = excluded or set()
+        excluded_generations = excluded_generations or set()
         candidates = [
             channel
             for device_id, channel in self.channels.items()
             if device_id in eligible_device_ids
             and device_id not in excluded
+            and (device_id, channel.generation) not in excluded_generations
             and channel.ready
             and not channel.paused
             and channel.thermal_state != "critical"
@@ -288,6 +389,7 @@ class BrokerRegistry:
 
     def release_queue_slot(self, channel: Channel) -> None:
         channel.queued = max(0, channel.queued - 1)
+        self.capacity_changed()
 
     def channel_available(self, channel: Channel) -> bool:
         now = time.monotonic()
@@ -332,6 +434,7 @@ class BrokerRegistry:
     def finish(self, channel: Channel, job: PendingJob) -> None:
         self.pending.pop((job.device_id, job.generation, job.job_id, job.attempt_id), None)
         channel.inflight = max(0, channel.inflight - 1)
+        self.capacity_changed()
 
     def record_success(
         self,
@@ -440,6 +543,7 @@ class BrokerRegistry:
         if not ready:
             channel.probes_failed += 1
             self.metrics["probes_failed"] += 1
+        self.capacity_changed()
         return True
 
     def status(self, *, owner_user_id: int | None = None) -> dict:

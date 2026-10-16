@@ -7,9 +7,11 @@ import json
 import math
 import secrets
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any, Literal
 
 from cryptography.exceptions import InvalidSignature
@@ -47,6 +49,11 @@ from robopark_api.services.compute_broker import (
     ComputeRegistry,
     validate_result,
 )
+from robopark_api.services.corporate_read_pool import (
+    BoundedThreadCalls,
+    CorporateReadPool,
+    send_json_before,
+)
 from robopark_api.services.emergency_bridge_auth import verify_body_signature
 from robopark_api.services.image_bounds import image_dimensions
 
@@ -54,6 +61,29 @@ MAX_PAYLOAD_BYTES = 6 * 1024 * 1024
 MAX_FRAME_BYTES = 12 * 1024 * 1024  # 8 MiB decoded output plus base64/JSON envelope
 DIRECT_RECEIPT_TTL_SECONDS = 120.0
 DIRECT_RECEIPT_LIMIT = 256
+
+
+@dataclass
+class _ControlAuthorityLane:
+    executor: ThreadPoolExecutor
+    slots: asyncio.Semaphore
+    waiters: int = 0
+    closed: bool = False
+
+    @classmethod
+    def create(cls) -> _ControlAuthorityLane:
+        return cls(
+            executor=ThreadPoolExecutor(
+                max_workers=4, thread_name_prefix="robopark-compute-control"
+            ),
+            slots=asyncio.Semaphore(4),
+        )
+
+    def shutdown(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self.executor.shutdown(wait=False, cancel_futures=True)
 
 
 class CorporateDispatchError(RuntimeError):
@@ -562,10 +592,50 @@ def _pool_projection(
 def create_compute_router(session_factory: sessionmaker, settings: Settings) -> APIRouter:
     router = APIRouter()
     registry = ComputeRegistry()
+    corporate_reads = CorporateReadPool()
+    corporate_authority = BoundedThreadCalls()
+    control_authority_lane = _ControlAuthorityLane.create()
     used_nonces: dict[str, float] = {}
     direct_timeout_tasks: dict[str, asyncio.Task] = {}
     direct_receipts: dict[str, DirectReceipt] = {}
     write_receipts_replayed: set[str] = set()
+
+    async def control_authority_call(deadline: float, fn, *args, **kwargs):
+        lane = control_authority_lane
+        if lane.closed or lane.waiters >= 100 or deadline <= time.monotonic():
+            raise TimeoutError("control_authority_capacity")
+        lane.waiters += 1
+        try:
+            await asyncio.wait_for(
+                lane.slots.acquire(),
+                timeout=max(0.001, deadline - time.monotonic()),
+            )
+        finally:
+            lane.waiters -= 1
+        try:
+            future = asyncio.ensure_future(
+                asyncio.get_running_loop().run_in_executor(
+                    lane.executor, partial(fn, *args, **kwargs)
+                )
+            )
+        except BaseException:
+            lane.slots.release()
+            raise
+
+        def release_when_finished(completed):
+            lane.slots.release()
+            if not completed.cancelled():
+                completed.exception()
+
+        try:
+            result = await asyncio.wait_for(
+                asyncio.shield(future), timeout=max(0.001, deadline - time.monotonic())
+            )
+        except BaseException:
+            future.add_done_callback(release_when_finished)
+            raise
+        lane.slots.release()
+        return result
 
     def prune_direct_receipts() -> None:
         now = time.monotonic()
@@ -672,7 +742,8 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                 + "\n"
                 + nonce
             ).encode()
-            device_id, owner_user_id, owner_tracker_login = await asyncio.to_thread(
+            device_id, owner_user_id, owner_tracker_login = await control_authority_call(
+                time.monotonic() + 10,
                 _authenticate_device,
                 session_factory,
                 settings,
@@ -709,14 +780,22 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                 try:
                     message = await asyncio.wait_for(_receive_json(websocket), timeout=15)
                 except TimeoutError:
-                    if not await asyncio.to_thread(
-                        _device_still_valid, session_factory, settings, channel.device_id
+                    if not await control_authority_call(
+                        time.monotonic() + 5,
+                        _device_still_valid,
+                        session_factory,
+                        settings,
+                        channel.device_id,
                     ):
                         await websocket.close(code=1008)
                         return
                     continue
-                if not await asyncio.to_thread(
-                    _device_still_valid, session_factory, settings, channel.device_id
+                if not await control_authority_call(
+                    time.monotonic() + 5,
+                    _device_still_valid,
+                    session_factory,
+                    settings,
+                    channel.device_id,
                 ):
                     await websocket.close(code=1008)
                     return
@@ -793,9 +872,11 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         {"type": "heartbeat_ack", "generation": channel.generation}
                     )
                     channel.ready = True
+                    registry.capacity_changed()
                     if channel.generation not in write_receipts_replayed:
                         write_receipts_replayed.add(channel.generation)
-                        acknowledgements = await asyncio.to_thread(
+                        acknowledgements = await control_authority_call(
+                            time.monotonic() + 5,
                             _completed_write_receipts,
                             session_factory,
                             device_id=channel.device_id,
@@ -838,8 +919,11 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         "busy",
                     }:
                         continue
-                    if not await asyncio.to_thread(
-                        _requester_active, session_factory, lease.requester_user_id
+                    if not await control_authority_call(
+                        lease.deadline_monotonic or time.monotonic() + 5,
+                        _requester_active,
+                        session_factory,
+                        lease.requester_user_id,
                     ):
                         continue
                     accepted = registry.resolve_result(
@@ -878,8 +962,11 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         or not 1 <= len(answer["sdp"].encode()) <= 64 * 1024
                     ):
                         continue
-                    if not await asyncio.to_thread(
-                        _requester_active, session_factory, lease.requester_user_id
+                    if not await control_authority_call(
+                        lease.deadline_monotonic or time.monotonic() + 5,
+                        _requester_active,
+                        session_factory,
+                        lease.requester_user_id,
                     ):
                         continue
                     registry.resolve_result(
@@ -915,8 +1002,11 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         or not 0 <= output_bytes <= 8 * 1024 * 1024
                         or not 0 <= duration_ms <= 30_000
                         or type(message.get("ok")) is not bool
-                        or not await asyncio.to_thread(
-                            _requester_active, session_factory, lease.requester_user_id
+                        or not await control_authority_call(
+                            lease.deadline_monotonic or time.monotonic() + 5,
+                            _requester_active,
+                            session_factory,
+                            lease.requester_user_id,
                         )
                     ):
                         continue
@@ -981,7 +1071,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                     return outcome["result"], channel.device_id, attempts
             except (TimeoutError, ConnectionError, WebSocketDisconnect):
                 channel.failed += 1
-                with suppress(RuntimeError, WebSocketDisconnect):
+                with suppress(TimeoutError, ConnectionError, RuntimeError, WebSocketDisconnect):
                     await channel.send_json(
                         {
                             "type": "cancel",
@@ -1008,81 +1098,82 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
 
     async def dispatch_corporate(
         payload: CorporateReadRequest,
+        *,
+        deadline: float,
+        owners: dict[int, str],
     ) -> tuple[corporate_gateway_contract.CorporateReadResponse, str, int]:
-        deadline = time.monotonic() + payload.deadline_ms / 1000
-        excluded: set[str] = set()
+        excluded: set[tuple[str, str]] = set()
         attempts = 0
         last_error = "corporate_unavailable"
         while attempts < 2 and time.monotonic() < deadline:
-            owners = await asyncio.to_thread(
-                _corporate_owner_candidates,
-                session_factory,
-                settings,
-                requester_user_id=payload.requester_user_id,
-                service=payload.service,
-                action=payload.action,
-                resource=payload.resource,
-                park_id=payload.park_id,
-            )
-            if owners is None:
-                raise CorporateDispatchError(403, "corporate_access_denied")
-            if not owners:
-                break
             routing_key = f"{payload.service}:{payload.action}"
-            channel = registry.choose(
-                corporate_gateway_contract.OPERATION,
-                excluded=excluded,
+            channel = await registry.wait_for_read_slot(
+                requester_user_id=payload.requester_user_id,
+                deadline=deadline,
+                excluded_generations=excluded,
                 required_supports={corporate_gateway_contract.SERVICE_CAPABILITY[payload.service]},
                 eligible_owner_ids=frozenset(owners),
                 routing_key=routing_key,
+                wait_through_empty=bool(excluded),
             )
             if channel is None:
                 break
-            excluded.add(channel.device_id)
+            excluded.add((channel.device_id, channel.generation))
             attempts += 1
-            exact = await asyncio.to_thread(
-                _corporate_owner_candidates,
-                session_factory,
-                settings,
-                requester_user_id=payload.requester_user_id,
-                service=payload.service,
-                action=payload.action,
-                resource=payload.resource,
-                park_id=payload.park_id,
-                device_id=channel.device_id,
-                owner_user_id=channel.owner_user_id,
-            )
-            owner_tracker_login = exact.get(channel.owner_user_id) if exact is not None else None
-            if owner_tracker_login is None:
-                continue
-            job_payload = {
-                "service": payload.service,
-                "action": payload.action,
-                "resource": payload.resource,
-                "params": payload.params,
-                "owner_user_id": channel.owner_user_id,
-                "owner_tracker_login": owner_tracker_login,
-                "requester_user_id": payload.requester_user_id,
-            }
-            raw_payload = json.dumps(
-                job_payload,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode()
-            if len(raw_payload) > corporate_gateway_contract.MAX_REQUEST_BYTES:
-                raise CorporateDispatchError(422, "corporate_request_too_large")
-            lease = registry.new_lease(
-                channel,
-                operation=corporate_gateway_contract.OPERATION,
-                payload_bytes=raw_payload,
-                requester_user_id=payload.requester_user_id,
-                deadline_monotonic=deadline,
-                routing_key=routing_key,
-            )
             try:
-                timeout = max(0.001, (deadline - time.monotonic()) / (3 - attempts))
-                await channel.send_json(
+                owner_tracker_login = owners.get(channel.owner_user_id)
+                if owner_tracker_login is None:
+                    continue
+                job_payload = {
+                    "service": payload.service,
+                    "action": payload.action,
+                    "resource": payload.resource,
+                    "params": payload.params,
+                    "owner_user_id": channel.owner_user_id,
+                    "owner_tracker_login": owner_tracker_login,
+                    "requester_user_id": payload.requester_user_id,
+                }
+                raw_payload = json.dumps(
+                    job_payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode()
+                if len(raw_payload) > corporate_gateway_contract.MAX_REQUEST_BYTES:
+                    raise CorporateDispatchError(422, "corporate_request_too_large")
+                lease = registry.new_lease(
+                    channel,
+                    operation=corporate_gateway_contract.OPERATION,
+                    payload_bytes=raw_payload,
+                    requester_user_id=payload.requester_user_id,
+                    deadline_monotonic=deadline,
+                    routing_key=routing_key,
+                )
+            finally:
+                registry.release_read_slot(channel, payload.requester_user_id)
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                exact = await corporate_authority.run(
+                    deadline,
+                    _corporate_owner_candidates,
+                    session_factory,
+                    settings,
+                    requester_user_id=payload.requester_user_id,
+                    service=payload.service,
+                    action=payload.action,
+                    resource=payload.resource,
+                    park_id=payload.park_id,
+                    device_id=channel.device_id,
+                    owner_user_id=channel.owner_user_id,
+                )
+                if exact is None or exact.get(channel.owner_user_id) != owner_tracker_login:
+                    last_error = "corporate_access_denied"
+                    continue
+                attempt_timeout = max(0.001, (deadline - time.monotonic()) / (3 - attempts))
+                await send_json_before(
+                    channel,
                     {
                         "type": "compute_job",
                         "generation": channel.generation,
@@ -1091,20 +1182,33 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         "operation": corporate_gateway_contract.OPERATION,
                         "payload_base64": base64.b64encode(raw_payload).decode(),
                         "payload_sha256": lease.payload_sha256,
-                        "timeout_ms": max(1, int(timeout * 1000)),
-                    }
+                        "timeout_ms": max(1, int(attempt_timeout * 1000)),
+                    },
+                    deadline=deadline,
                 )
-                outcome = await asyncio.wait_for(asyncio.shield(lease.future), timeout=timeout)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                outcome = await asyncio.wait_for(
+                    asyncio.shield(lease.future), timeout=min(attempt_timeout, remaining)
+                )
                 if outcome.get("ok") is not True:
                     error = outcome.get("error")
-                    last_error = {
-                        "not_found": "corporate_not_found",
-                        "auth": "corporate_authentication",
-                        "access_denied": "corporate_access_denied",
-                        "rate_limited": "corporate_rate_limited",
-                    }.get(error, "corporate_unavailable")
+                    typed = {
+                        "not_found": (404, "corporate_not_found"),
+                        "auth": (401, "corporate_authentication"),
+                        "access_denied": (403, "corporate_access_denied"),
+                        "rate_limited": (429, "corporate_rate_limited"),
+                    }.get(error)
+                    if typed is not None:
+                        raise CorporateDispatchError(*typed)
+                    last_error = "corporate_unavailable"
                     continue
-                exact = await asyncio.to_thread(
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                exact = await corporate_authority.run(
+                    deadline,
                     _corporate_owner_candidates,
                     session_factory,
                     settings,
@@ -1129,7 +1233,8 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         owner_tracker_login=owner_tracker_login,
                     )
                     if payload.service == "tracker":
-                        scoped_payload = await asyncio.to_thread(
+                        scoped_payload = await corporate_authority.run(
+                            deadline,
                             _authorize_tracker_result,
                             session_factory,
                             requester_user_id=payload.requester_user_id,
@@ -1140,10 +1245,11 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                         response = corporate_gateway_contract.CorporateReadResponse(
                             response.status_code, response.headers, scoped_payload
                         )
-                except (corporate_gateway_contract.ContractError, PermissionError):
+                except (corporate_gateway_contract.ContractError, PermissionError) as exc:
                     channel.failed += 1
-                    last_error = "corporate_access_denied"
-                    continue
+                    # A malformed or identity-mismatched owner response is a
+                    # security denial, not a transient availability failure.
+                    raise CorporateDispatchError(403, "corporate_access_denied") from exc
                 return response, channel.device_id, attempts
             except (TimeoutError, ConnectionError, WebSocketDisconnect) as exc:
                 channel.failed += 1
@@ -1153,24 +1259,28 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
                     ok=False,
                     error="timeout" if isinstance(exc, TimeoutError) else "connection",
                 )
-                with suppress(RuntimeError, WebSocketDisconnect):
-                    await channel.send_json(
+                with suppress(TimeoutError, ConnectionError, RuntimeError, WebSocketDisconnect):
+                    await send_json_before(
+                        channel,
                         {
                             "type": "cancel",
                             "generation": channel.generation,
                             "job_id": lease.job_id,
                             "attempt_id": lease.attempt_id,
-                        }
+                        },
+                        deadline=deadline,
                     )
             except asyncio.CancelledError:
-                with suppress(RuntimeError, WebSocketDisconnect):
-                    await channel.send_json(
+                with suppress(TimeoutError, ConnectionError, RuntimeError, WebSocketDisconnect):
+                    await send_json_before(
+                        channel,
                         {
                             "type": "cancel",
                             "generation": channel.generation,
                             "job_id": lease.job_id,
                             "attempt_id": lease.attempt_id,
-                        }
+                        },
+                        deadline=deadline,
                     )
                 raise
             finally:
@@ -1377,6 +1487,7 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
 
     @router.post("/internal/v1/corporate-read")
     async def corporate_read(request: Request):
+        started_at = time.monotonic()
         body = await _bounded_request_body(
             request,
             corporate_gateway_contract.MAX_REQUEST_BYTES,
@@ -1399,10 +1510,103 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
             )
         except (ValidationError, corporate_gateway_contract.ContractError) as exc:
             raise HTTPException(422, "corporate_request_invalid") from exc
+        deadline = started_at + payload.deadline_ms / 1000
+        if not corporate_reads.admit(payload.requester_user_id):
+            raise HTTPException(503, "corporate_gateway_busy")
         try:
-            response, _device_id, _attempts = await dispatch_corporate(payload)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CorporateDispatchError(503, "corporate_unavailable")
+            owners = await corporate_authority.run(
+                deadline,
+                _corporate_owner_candidates,
+                session_factory,
+                settings,
+                requester_user_id=payload.requester_user_id,
+                service=payload.service,
+                action=payload.action,
+                resource=payload.resource,
+                park_id=payload.park_id,
+            )
+            if owners is None:
+                raise CorporateDispatchError(403, "corporate_access_denied")
+            if not owners:
+                raise CorporateDispatchError(503, "corporate_unavailable")
+
+            async def load_inventory() -> bytes:
+                response, device_id, attempts = await dispatch_corporate(
+                    payload, deadline=deadline, owners=owners
+                )
+                channel = registry.channels.get(device_id)
+                if channel is None or channel.owner_user_id not in owners:
+                    raise CorporateDispatchError(403, "corporate_access_denied")
+                value = {
+                    "status_code": response.status_code,
+                    "headers": response.headers,
+                    "payload": response.payload,
+                    "device_id": device_id,
+                    "attempts": attempts,
+                    "owner_user_id": channel.owner_user_id,
+                    "owner_tracker_login": owners[channel.owner_user_id],
+                }
+                encoded = json.dumps(
+                    value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+                ).encode()
+                if len(encoded) > corporate_reads.max_item_bytes:
+                    raise CorporateDispatchError(503, "corporate_response_too_large")
+                return encoded
+
+            if payload.service == "inventory":
+                canonical = json.dumps(
+                    {
+                        "owners": sorted(owners.items()),
+                        "service": payload.service,
+                        "action": payload.action,
+                        "resource": payload.resource,
+                        "params": payload.params,
+                        "park_id": payload.park_id,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode()
+                key = hashlib.sha256(canonical).hexdigest()
+                encoded = await corporate_reads.read(key, load_inventory, deadline=deadline)
+                shared = json.loads(encoded)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CorporateDispatchError(503, "corporate_unavailable")
+                exact = await corporate_authority.run(
+                    deadline,
+                    _corporate_owner_candidates,
+                    session_factory,
+                    settings,
+                    requester_user_id=payload.requester_user_id,
+                    service=payload.service,
+                    action=payload.action,
+                    resource=payload.resource,
+                    park_id=payload.park_id,
+                    device_id=shared["device_id"],
+                    owner_user_id=shared["owner_user_id"],
+                )
+                if (
+                    exact is None
+                    or exact.get(shared["owner_user_id"]) != shared["owner_tracker_login"]
+                ):
+                    raise CorporateDispatchError(403, "corporate_access_denied")
+                response = corporate_gateway_contract.CorporateReadResponse(
+                    shared["status_code"], shared["headers"], shared["payload"]
+                )
+            else:
+                response, _device_id, _attempts = await dispatch_corporate(
+                    payload, deadline=deadline, owners=owners
+                )
+        except (TimeoutError, ConnectionError) as exc:
+            raise HTTPException(503, "corporate_unavailable") from exc
         except CorporateDispatchError as exc:
             raise HTTPException(exc.status_code, exc.code) from exc
+        finally:
+            corporate_reads.release(payload.requester_user_id)
         return {
             "status_code": response.status_code,
             "headers": response.headers,
@@ -1995,6 +2199,11 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
         )
         return {**result, "status": "cancelled"}
 
+    def startup() -> None:
+        nonlocal control_authority_lane
+        if control_authority_lane.closed:
+            control_authority_lane = _ControlAuthorityLane.create()
+
     async def shutdown() -> None:
         tasks = list(direct_timeout_tasks.values())
         direct_timeout_tasks.clear()
@@ -2002,7 +2211,11 @@ def create_compute_router(session_factory: sessionmaker, settings: Settings) -> 
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        control_authority_lane.shutdown()
 
     router.registry = registry
+    router.corporate_reads = corporate_reads
+    router.corporate_authority = corporate_authority
+    router.startup = startup
     router.shutdown = shutdown
     return router

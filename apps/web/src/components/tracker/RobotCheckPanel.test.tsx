@@ -1,10 +1,20 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ru } from '../../i18n/ru'
 import { RobotCheckPanel } from './RobotCheckPanel'
 
 describe('RobotCheckPanel', () => {
+  it('reports a failed inspection and allows retry without claiming a healthy robot', async () => {
+    const inspect = vi.fn().mockRejectedValueOnce(new Error('upstream failed')).mockResolvedValueOnce([])
+    render(<MemoryRouter><RobotCheckPanel inspect={inspect} robot="447" /></MemoryRouter>)
+    expect(await screen.findByText(ru.tracker.robotCheck.failed)).toBeInTheDocument()
+    expect(screen.queryByText(ru.tracker.robotCheck.noCritical)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: ru.tracker.robotCheck.retry }))
+    expect(await screen.findByText(ru.tracker.robotCheck.noCritical)).toBeInTheDocument()
+    expect(screen.queryByText(ru.tracker.robotCheck.failed)).not.toBeInTheDocument()
+    expect(inspect).toHaveBeenCalledTimes(2)
+  })
   it('renders nothing without a robot number', () => {
     const { container } = render(
       <MemoryRouter>

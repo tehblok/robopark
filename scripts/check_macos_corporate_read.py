@@ -163,14 +163,17 @@ def main() -> int:
     ):
         raise SystemExit("FAIL: one-slot receipt-before-HTTP or outcome-unknown write gate regressed")
     if (
-        "await bridge.verifyInventoryReadiness()" not in compute
+        "bridge.verifyInventoryReadiness()" not in compute
         or '"corporate_inventory_status": inventoryStatus.rawValue' not in compute
         or "registration?.inventoryOAuthVerifiedAt = nil" not in bridge.split("func setProbe", 1)[1].split("func pause", 1)[0]
     ):
         raise SystemExit("FAIL: Inventory ACL readiness heartbeat or probe invalidation regressed")
     heartbeat = compute.split("private func sendHeartbeat", 1)[1].split("private func acceptJob", 1)[0]
     if (
-        '"active_jobs": active' not in heartbeat
+        "await bridge.verifiedCorporateOAuth()" in heartbeat
+        or "await bridge.verifyInventoryReadiness()" in heartbeat
+        or "bridge.inventoryReadiness" not in heartbeat
+        or '"active_jobs": active' not in heartbeat
         or '"corporate_read_capacity": corporateReady ? 2 : 0' not in heartbeat
         or '"corporate_write_capacity": corporateReady ? 1 : 0' not in heartbeat
         or '"corporate_active_jobs": corporateJobs.count' not in heartbeat
@@ -179,6 +182,16 @@ def main() -> int:
         or "max(computeCapacity, 2)" in heartbeat
     ):
         raise SystemExit("FAIL: CPU and corporate I/O heartbeat capacities are conflated")
+    refresh = compute.split("private func refreshCorporateReadiness", 1)[1].split("private func acceptJob", 1)[0]
+    if (
+        "corporateRefresh == nil" not in refresh
+        or "AsyncDeadline.run(nanoseconds: 22_000_000_000)" not in refresh
+        or "await self.bridge.verifiedCorporateOAuth()" not in refresh
+        or "await self.bridge.verifyInventoryReadiness()" not in refresh
+        or "self.runID == run" not in refresh
+        or "self.generation == generation" not in refresh
+    ):
+        raise SystemExit("FAIL: corporate readiness refresh is not bounded, single-flight, or generation-bound")
     with tempfile.TemporaryDirectory(prefix="robopark-corporate-read-") as raw:
         root = Path(raw)
         (root / "Sources/CorporateReadChecks").mkdir(parents=True)

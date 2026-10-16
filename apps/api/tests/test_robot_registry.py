@@ -34,7 +34,9 @@ def registry(client, db_session, seed_mechanic, seed_park_with_tracker):
         yield seed_park_with_tracker
 
 
-def test_registry_one_tracker_batch_no_emergency_and_unique_exact_robot_counts(client, registry):
+def test_registry_reads_only_current_scoped_blockers_and_unique_exact_robot_counts(
+    client, registry
+):
     items = [
         issue("ROBOPARK-1"),
         issue("ROBOPARK-1"),
@@ -45,7 +47,9 @@ def test_registry_one_tracker_batch_no_emergency_and_unique_exact_robot_counts(c
         issue("ROBOPARK-6", "other447"),
     ]
     with (
-        patch("robopark_api.services.tracker_client.search_issues", return_value=items) as batch,
+        patch(
+            "robopark_api.services.tracker_cache.fetch_park_blockers", return_value=items
+        ) as batch,
         patch("robopark_api.services.emergency_client.fetch_robot_payload") as emergency,
     ):
         response = client.get(f"/robots?park_id={registry.id}&query=447")
@@ -59,10 +63,8 @@ def test_registry_one_tracker_batch_no_emergency_and_unique_exact_robot_counts(c
     assert data["partial"] is True
     assert data["source_complete"] is True
     batch.assert_called_once()
-    assert batch.call_args.kwargs["filter_open"] is False
-    assert batch.call_args.kwargs["projection"] == "registry"
-    assert '"ROBOPARK"' in batch.call_args.kwargs["query"]
-    assert 'Tags: "Alpha"' in batch.call_args.kwargs["query"]
+    assert batch.call_args.kwargs["queue"] == "ROBOPARK"
+    assert batch.call_args.kwargs["park_tag"] == "Alpha"
     emergency.assert_not_called()
 
 
@@ -74,14 +76,15 @@ def test_registry_scopes_upstream_query_to_each_authorized_queue_tag_pair(
     db_session.flush()
     db_session.add(UserPark(user_id=seed_mechanic.id, park_id=second.id))
     db_session.commit()
-    with patch("robopark_api.services.tracker_cache.search_issues", return_value=[]) as batch:
+    with patch("robopark_api.services.tracker_cache.fetch_park_blockers", return_value=[]) as batch:
         assert client.get("/robots").status_code == 200
-    upstream_query = batch.call_args.kwargs["query"]
-    assert '(Queue: "ROBOPARK" Tags: "Alpha")' in upstream_query
-    assert '(Queue: "ROBOLAB" Tags: "Beta")' in upstream_query
+    assert [(call.kwargs["queue"], call.kwargs["park_tag"]) for call in batch.call_args_list] == [
+        ("ROBOPARK", "Alpha"),
+        ("ROBOLAB", "Beta"),
+    ]
 
 
-def test_registry_chunks_long_authorized_scope_and_deduplicates_issues(
+def test_registry_reads_each_authorized_pair_and_deduplicates_issues(
     client, db_session, registry, seed_mechanic
 ):
     for index in range(24):
@@ -96,39 +99,37 @@ def test_registry_chunks_long_authorized_scope_and_deduplicates_issues(
         db_session.flush()
         db_session.add(UserPark(user_id=seed_mechanic.id, park_id=park.id))
     db_session.commit()
-    queries = []
+    scopes = []
 
     def batch(**kwargs):
-        queries.append(kwargs["query"])
+        scopes.append((kwargs["queue"], kwargs["park_tag"]))
         return [issue("ROBOPARK-1")]
 
-    with patch("robopark_api.services.tracker_cache.search_issues", side_effect=batch):
+    with patch("robopark_api.services.tracker_cache.fetch_park_blockers", side_effect=batch):
         response = client.get("/robots")
 
     assert response.status_code == 200
-    assert len(queries) >= 2
-    assert all(1 <= len(query) <= 4096 for query in queries)
-    assert sum(query.count("Queue:") for query in queries) == 25
+    assert len(scopes) == 25
+    assert len(set(scopes)) == 25
     assert response.json()["items"][0]["task_count"] == 1
 
 
-def test_registry_minimal_projection_keeps_robot_with_only_closed_task(client, registry):
+def test_registry_excludes_closed_task_even_if_upstream_contract_regresses(client, registry):
     with patch(
-        "robopark_api.services.tracker_cache.search_issues",
+        "robopark_api.services.tracker_cache.fetch_park_blockers",
         return_value=[issue("ROBOPARK-5", status="closed")],
-    ) as batch:
+    ):
         response = client.get(f"/robots?park_id={registry.id}")
     assert response.status_code == 200
-    assert response.json()["items"][0]["vin"] == VIN
-    assert response.json()["items"][0]["task_count"] == 0
-    assert batch.call_args.kwargs["filter_open"] is False
-    assert batch.call_args.kwargs["projection"] == "registry"
+    assert response.json()["items"] == []
+    assert response.json()["total"] == 0
 
 
 @pytest.mark.parametrize("query", [VIN.lower(), "ROBOPARK-1", "0447"])
 def test_registry_search_vin_key_and_short_number(client, registry, query):
     with patch(
-        "robopark_api.services.tracker_client.search_issues", return_value=[issue("ROBOPARK-1")]
+        "robopark_api.services.tracker_cache.fetch_park_blockers",
+        return_value=[issue("ROBOPARK-1")],
     ):
         response = client.get("/robots", params={"query": query})
     assert response.status_code == 200
@@ -144,7 +145,7 @@ def test_registry_aggregates_supported_robot_aliases_without_substring_matches(
     items = [issue(f"ROBOPARK-{index}", alias) for index, alias in enumerate(aliases)]
     items.extend(issue(f"OTHER-{index}", raw) for index, raw in enumerate(unrelated))
     items.append(issue("FOREIGN-1", "A447", tag="Foreign"))
-    with patch("robopark_api.services.tracker_cache.search_issues", return_value=items):
+    with patch("robopark_api.services.tracker_cache.fetch_park_blockers", return_value=items):
         response = client.get("/robots", params={"park_id": registry.id, "query": query})
     assert response.status_code == 200
     assert response.json()["total"] == 1
@@ -178,7 +179,8 @@ def test_registry_cache_is_read_only_identity_bound_and_expires(
             "robopark_api.services.emergency_client.fetch_robot_payload", return_value=payload
         ) as emergency,
         patch(
-            "robopark_api.services.tracker_client.search_issues", return_value=[issue("ROBOPARK-1")]
+            "robopark_api.services.tracker_cache.fetch_park_blockers",
+            return_value=[issue("ROBOPARK-1")],
         ),
     ):
         emergency_cache.get_robot_payload(db=db_session, vin=VIN)
@@ -201,7 +203,7 @@ def test_registry_cache_is_read_only_identity_bound_and_expires(
 
 def test_registry_pagination_after_aggregation_filters_without_count_truncation(client, registry):
     with patch(
-        "robopark_api.services.tracker_client.search_issues",
+        "robopark_api.services.tracker_cache.fetch_park_blockers",
         return_value=[
             issue("ROBOPARK-1"),
             issue("ROBOPARK-2"),
@@ -221,7 +223,7 @@ def test_registry_foreign_park_denied_before_network(client, db_session, registr
     foreign = Park(name="Foreign", tag="Foreign", tracker_queue="ROBOPARK")
     db_session.add(foreign)
     db_session.commit()
-    with patch("robopark_api.services.tracker_client.search_issues") as batch:
+    with patch("robopark_api.services.tracker_cache.fetch_park_blockers") as batch:
         assert client.get(f"/robots?park_id={foreign.id}").status_code == 403
         batch.assert_not_called()
 
@@ -240,7 +242,7 @@ def test_registry_driver_only_exact_new_and_moving_workflow_status(client, db_se
     db_session.commit()
     login_as(client, "driver-reg", "secret")
     with patch(
-        "robopark_api.services.tracker_client.search_issues",
+        "robopark_api.services.tracker_cache.fetch_park_blockers",
         return_value=[
             issue("ROBOPARK-1", status="new"),
             issue("ROBOPARK-2", status="moving"),
@@ -256,7 +258,8 @@ def test_registry_driver_only_exact_new_and_moving_workflow_status(client, db_se
 
 def test_registry_upstream_failure_and_invalid_filters(client, registry):
     with patch(
-        "robopark_api.services.tracker_client.search_issues", side_effect=TrackerError("offline")
+        "robopark_api.services.tracker_cache.fetch_park_blockers",
+        side_effect=TrackerError("offline"),
     ):
         assert client.get("/robots").status_code == 502
     assert client.get("/robots?state=invalid").status_code == 422
@@ -270,9 +273,9 @@ def test_registry_shared_upstream_failure_keeps_public_error_contract(
     from robopark_api.services.live_merge import LiveMergeStore
 
     shared = LiveMergeStore(tmp_path / "shared")
-    monkeypatch.setattr(tracker_cache._issues_cache, "_shared", shared)
+    monkeypatch.setattr(tracker_cache._blockers_cache, "_shared", shared)
     with patch(
-        "robopark_api.services.tracker_client.search_issues",
+        "robopark_api.services.tracker_client.fetch_park_blockers",
         side_effect=TrackerError("private upstream failure"),
     ) as upstream:
         for _ in range(2):
@@ -289,7 +292,7 @@ def test_registry_shared_wait_timeout_keeps_public_error_contract(
     from robopark_api.services.live_merge import LiveMergeStore, LiveMergeTimeout
 
     shared = LiveMergeStore(tmp_path / "shared")
-    monkeypatch.setattr(tracker_cache._issues_cache, "_shared", shared)
+    monkeypatch.setattr(tracker_cache._blockers_cache, "_shared", shared)
     with patch.object(shared, "merge_load", side_effect=LiveMergeTimeout("private cache key")):
         response = client.get("/robots")
     assert response.status_code == 502
@@ -302,38 +305,45 @@ def test_registry_requires_authentication(client):
 
 def test_unknown_telemetry_remains_partial_even_when_error_filter_hides_rows(client, registry):
     with patch(
-        "robopark_api.services.tracker_client.search_issues", return_value=[issue("ROBOPARK-1")]
+        "robopark_api.services.tracker_cache.fetch_park_blockers",
+        return_value=[issue("ROBOPARK-1")],
     ):
         data = client.get("/robots?active_errors=true").json()
     assert data["items"] == []
     assert data["partial"] is True
 
 
-def test_registry_all_assigned_parks_share_one_batch(client, db_session, registry, seed_mechanic):
+def test_registry_all_assigned_parks_union_scoped_blocker_batches(
+    client, db_session, registry, seed_mechanic
+):
     second = Park(name="Beta", tag="Beta", tracker_queue="ROBOLAB", is_active=True)
     db_session.add(second)
     db_session.flush()
     db_session.add(UserPark(user_id=seed_mechanic.id, park_id=second.id))
     db_session.commit()
-    issues = [
-        issue("ROBOPARK-1"),
-        {**issue("ROBOLAB-2", tag="Beta"), "queue": "ROBOLAB"},
-        {**issue("FOREIGN-3", "448"), "queue": "FOREIGN"},
-    ]
-    with patch("robopark_api.services.tracker_client.search_issues", return_value=issues) as batch:
+
+    def scoped(*, park_tag, **_kwargs):
+        if park_tag == "Alpha":
+            return [issue("ROBOPARK-1")]
+        return [{**issue("ROBOLAB-2", tag="Beta"), "queue": "ROBOLAB"}]
+
+    with patch(
+        "robopark_api.services.tracker_cache.fetch_park_blockers", side_effect=scoped
+    ) as batch:
         data = client.get("/robots").json()
     assert data["total"] == 1
     assert data["items"][0]["task_count"] == 2
     assert data["items"][0]["park_ids"] == [registry.id, second.id]
-    batch.assert_called_once()
-    assert '"ROBOLAB"' in batch.call_args.kwargs["query"]
-    assert '"ROBOPARK"' in batch.call_args.kwargs["query"]
+    assert [(call.kwargs["queue"], call.kwargs["park_tag"]) for call in batch.call_args_list] == [
+        ("ROBOPARK", "Alpha"),
+        ("ROBOLAB", "Beta"),
+    ]
 
 
 def test_registry_pending_user_denied_before_tracker(client, db_session, registry, seed_mechanic):
     seed_mechanic.access_status = "pending"
     db_session.commit()
-    with patch("robopark_api.services.tracker_client.search_issues") as batch:
+    with patch("robopark_api.services.tracker_cache.fetch_park_blockers") as batch:
         assert client.get("/robots").status_code == 403
         batch.assert_not_called()
 
@@ -351,7 +361,7 @@ def test_registry_all_parks_excludes_inactive_identities_tasks_and_cache_lookups
     login_as(client, "mech1", "secret")
     with (
         patch(
-            "robopark_api.services.tracker_cache.search_issues",
+            "robopark_api.services.tracker_cache.fetch_park_blockers",
             return_value=[
                 issue("ROBOPARK-1"),
                 issue("ROBOPARK-2", "448", tag="Inactive"),
@@ -385,7 +395,7 @@ def test_registry_requires_active_queue_and_tag_pair_even_without_selected_park(
     db_session.commit()
     with (
         patch(
-            "robopark_api.services.tracker_cache.search_issues",
+            "robopark_api.services.tracker_cache.fetch_park_blockers",
             return_value=[issue("ROBOPARK-1"), issue("ROBOPARK-2", "448", tag="Beta")],
         ),
         patch("robopark_api.services.emergency_cache.peek_robot_payloads", return_value={}) as peek,
@@ -406,7 +416,7 @@ def test_registry_authorization_sql_is_constant_for_one_hundred_and_thousand_iss
 
     event.listen(db_engine, "before_cursor_execute", record_sql)
     try:
-        with patch("robopark_api.services.tracker_cache.search_issues") as batch:
+        with patch("robopark_api.services.tracker_cache.fetch_park_blockers") as batch:
             batch.return_value = [issue("ROBOPARK-1")]
             assert client.get("/robots").status_code == 200  # Warm ORM relationships consistently.
             counts = []
@@ -434,7 +444,8 @@ def test_registry_preserves_effective_permission_overrides(
     db_session.commit()
     with (
         patch(
-            "robopark_api.services.tracker_cache.search_issues", return_value=[issue("ROBOPARK-1")]
+            "robopark_api.services.tracker_cache.fetch_park_blockers",
+            return_value=[issue("ROBOPARK-1")],
         ) as batch,
         patch("robopark_api.services.emergency_cache.peek_robot_payloads") as peek,
     ):

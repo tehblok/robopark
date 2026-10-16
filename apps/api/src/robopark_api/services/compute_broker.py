@@ -7,6 +7,7 @@ import secrets
 import time
 from collections import deque
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -289,6 +290,17 @@ class ComputeLease:
     direct_payload_size: int = 0
 
 
+@dataclass(frozen=True)
+class CorporateReadWaiter:
+    requester_user_id: int
+    required_supports: frozenset[str]
+    eligible_owner_ids: frozenset[int]
+    excluded_device_ids: frozenset[str]
+    excluded_generations: frozenset[tuple[str, str]]
+    routing_key: str
+    deadline: float
+
+
 class ComputeRegistry:
     def __init__(
         self,
@@ -303,12 +315,19 @@ class ComputeRegistry:
         self.max_pending = max_pending
         self.max_requester_pending = max_requester_pending
         self.max_payload_bytes = max_payload_bytes
+        self.max_corporate_pending = 128
+        self.max_corporate_requester_pending = 16
+        self.max_corporate_payload_bytes = 4 * 1024 * 1024
+        self.corporate_pending_payload_bytes = 0
         self.readiness_timeout_seconds = readiness_timeout_seconds
         self.channels: dict[str, ComputeChannel] = {}
         self.pending: dict[tuple[str, str, str, str], ComputeLease] = {}
         self.pending_payload_bytes = 0
         self.relay_admission = RelayAdmissionPool()
         self.routing_health = RoutingHealth()
+        self._capacity_changed = asyncio.Event()
+        self._read_waiters: list[CorporateReadWaiter] = []
+        self._read_reservations: dict[tuple[str, str, int], int] = {}
         self.metrics = {
             "direct_input_bytes": 0,
             "direct_output_bytes": 0,
@@ -320,6 +339,146 @@ class ComputeRegistry:
             "direct_fallback": 0,
         }
 
+    def capacity_changed(self) -> None:
+        previous = self._capacity_changed
+        self._capacity_changed = asyncio.Event()
+        previous.set()
+
+    async def wait_for_read_slot(
+        self,
+        *,
+        requester_user_id: int,
+        deadline: float,
+        required_supports: set[str],
+        eligible_owner_ids: set[int] | frozenset[int],
+        routing_key: str,
+        excluded: set[str] | None = None,
+        excluded_generations: set[tuple[str, str]] | None = None,
+        wait_through_empty: bool = False,
+    ) -> ComputeChannel | None:
+        waiter = CorporateReadWaiter(
+            requester_user_id=requester_user_id,
+            required_supports=frozenset(required_supports),
+            eligible_owner_ids=frozenset(eligible_owner_ids),
+            excluded_device_ids=frozenset(excluded or set()),
+            excluded_generations=frozenset(excluded_generations or set()),
+            routing_key=routing_key,
+            deadline=deadline,
+        )
+        self._read_waiters.append(waiter)
+        has_seen_eligible = wait_through_empty
+        try:
+            while True:
+                changed = self._capacity_changed
+                selection_exclusions = set(waiter.excluded_device_ids)
+                selection_exclusions.update(
+                    device_id
+                    for device_id, generation in waiter.excluded_generations
+                    if self.channels.get(device_id) is not None
+                    and self.channels[device_id].generation == generation
+                )
+                channel = None
+                while True:
+                    candidate = self.choose(
+                        corporate_gateway_contract.OPERATION,
+                        excluded=selection_exclusions,
+                        required_supports=set(waiter.required_supports),
+                        eligible_owner_ids=waiter.eligible_owner_ids,
+                        routing_key=waiter.routing_key,
+                    )
+                    if candidate is None:
+                        break
+                    waiter_index = self._read_waiters.index(waiter)
+                    if any(
+                        self._read_waiter_accepts(older, candidate)
+                        for older in self._read_waiters[:waiter_index]
+                    ):
+                        selection_exclusions.add(candidate.device_id)
+                        continue
+                    channel = candidate
+                    break
+                corporate = [
+                    item
+                    for item in self.pending.values()
+                    if item.operation == corporate_gateway_contract.OPERATION
+                ]
+                reserved = sum(self._read_reservations.values())
+                requester_pending = sum(
+                    item.requester_user_id == requester_user_id for item in corporate
+                ) + sum(
+                    count
+                    for (_, _, reserved_requester), count in self._read_reservations.items()
+                    if reserved_requester == requester_user_id
+                )
+                if (
+                    channel is not None
+                    and len(corporate) + reserved < self.max_corporate_pending
+                    and requester_pending < self.max_corporate_requester_pending
+                    and self.corporate_pending_payload_bytes
+                    + (reserved + 1) * corporate_gateway_contract.MAX_REQUEST_BYTES
+                    <= self.max_corporate_payload_bytes
+                ):
+                    key = (channel.device_id, channel.generation, requester_user_id)
+                    self._read_reservations[key] = self._read_reservations.get(key, 0) + 1
+                    return channel
+                live_eligible = any(
+                    channel.owner_user_id in waiter.eligible_owner_ids
+                    and waiter.required_supports.issubset(channel.supports)
+                    and channel.device_id not in waiter.excluded_device_ids
+                    and (channel.device_id, channel.generation) not in waiter.excluded_generations
+                    for channel in self.channels.values()
+                )
+                has_seen_eligible = has_seen_eligible or live_eligible
+                if not has_seen_eligible:
+                    return None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                # A timed wake covers routing-health cooldown expiry.
+                try:
+                    await asyncio.wait_for(changed.wait(), timeout=min(remaining, 1.0))
+                except TimeoutError:
+                    continue
+        finally:
+            with suppress(ValueError):
+                self._read_waiters.remove(waiter)
+            self.capacity_changed()
+
+    def _read_waiter_accepts(self, waiter: CorporateReadWaiter, channel: ComputeChannel) -> bool:
+        requester_pending = sum(
+            lease.operation == corporate_gateway_contract.OPERATION
+            and lease.requester_user_id == waiter.requester_user_id
+            for lease in self.pending.values()
+        ) + sum(
+            count
+            for (_, _, requester_user_id), count in self._read_reservations.items()
+            if requester_user_id == waiter.requester_user_id
+        )
+        return (
+            time.monotonic() < waiter.deadline
+            and requester_pending < self.max_corporate_requester_pending
+            and channel.owner_user_id in waiter.eligible_owner_ids
+            and channel.ready
+            and waiter.required_supports.issubset(channel.supports)
+            and (
+                "corporate_inventory_read_v1" not in waiter.required_supports
+                or channel.corporate_inventory_status in {"ready", "unverified_host_acl"}
+            )
+            and self.routing_health.available(channel.device_id, waiter.routing_key)
+            and time.monotonic() - channel.last_heartbeat <= self.readiness_timeout_seconds
+            and channel.device_id not in waiter.excluded_device_ids
+            and (channel.device_id, channel.generation) not in waiter.excluded_generations
+        )
+
+    def release_read_slot(self, channel: ComputeChannel, requester_user_id: int) -> None:
+        key = (channel.device_id, channel.generation, requester_user_id)
+        count = self._read_reservations.get(key, 0)
+        if count <= 1:
+            self._read_reservations.pop(key, None)
+        else:
+            self._read_reservations[key] = count - 1
+        self.capacity_changed()
+
     def replace(self, channel: ComputeChannel) -> ComputeChannel | None:
         old = self.channels.get(channel.device_id)
         if old is None and len(self.channels) >= self.max_connections:
@@ -327,12 +486,20 @@ class ComputeRegistry:
         self.channels[channel.device_id] = channel
         if old is not None:
             self._fail_channel(old, "channel_replaced")
+            for key in list(self._read_reservations):
+                if key[:2] == (old.device_id, old.generation):
+                    self._read_reservations.pop(key, None)
+        self.capacity_changed()
         return old
 
     def remove(self, channel: ComputeChannel) -> None:
         if self.channels.get(channel.device_id) is channel:
             self.channels.pop(channel.device_id, None)
         self._fail_channel(channel, "channel_dropped")
+        for key in list(self._read_reservations):
+            if key[:2] == (channel.device_id, channel.generation):
+                self._read_reservations.pop(key, None)
+        self.capacity_changed()
 
     def _fail_channel(self, channel: ComputeChannel, reason: str) -> None:
         for lease in list(self.pending.values()):
@@ -380,7 +547,16 @@ class ComputeRegistry:
                 if operation == corporate_gateway_contract.OPERATION
                 else channel.reported_corporate_active_writes
             )
-            return max(reported, sum(item.operation == operation for item in leases))
+            reservations = (
+                sum(
+                    count
+                    for (device_id, generation, _), count in self._read_reservations.items()
+                    if (device_id, generation) == (channel.device_id, channel.generation)
+                )
+                if operation == corporate_gateway_contract.OPERATION
+                else 0
+            )
+            return max(reported, sum(item.operation == operation for item in leases) + reservations)
         return max(
             channel.reported_active_jobs,
             max(0, channel.inflight - sum(item.operation in corporate for item in leases)),
@@ -459,14 +635,28 @@ class ComputeRegistry:
     ) -> ComputeLease:
         if operation not in OPERATIONS:
             raise ValueError("unsupported_operation")
-        if len(self.pending) >= self.max_pending:
-            raise OverflowError("pending_limit")
-        requester_pending = sum(
-            item.requester_user_id == requester_user_id for item in self.pending.values()
+        corporate_read = operation == corporate_gateway_contract.OPERATION
+        scoped = [
+            item
+            for item in self.pending.values()
+            if (item.operation == corporate_gateway_contract.OPERATION) == corporate_read
+        ]
+        pending_limit = self.max_corporate_pending if corporate_read else self.max_pending
+        requester_limit = (
+            self.max_corporate_requester_pending if corporate_read else self.max_requester_pending
         )
-        if requester_pending >= self.max_requester_pending:
+        payload_used = (
+            self.corporate_pending_payload_bytes if corporate_read else self.pending_payload_bytes
+        )
+        payload_limit = (
+            self.max_corporate_payload_bytes if corporate_read else self.max_payload_bytes
+        )
+        if len(scoped) >= pending_limit:
+            raise OverflowError("pending_limit")
+        requester_pending = sum(item.requester_user_id == requester_user_id for item in scoped)
+        if requester_pending >= requester_limit:
             raise OverflowError("requester_pending_limit")
-        if self.pending_payload_bytes + len(payload_bytes) > self.max_payload_bytes:
+        if payload_used + len(payload_bytes) > payload_limit:
             raise OverflowError("payload_memory_limit")
         lease = ComputeLease(
             job_id=str(uuid4()),
@@ -483,7 +673,10 @@ class ComputeRegistry:
             routing_key=routing_key or operation,
         )
         self.pending[(lease.device_id, lease.generation, lease.job_id, lease.attempt_id)] = lease
-        self.pending_payload_bytes += lease.payload_size
+        if corporate_read:
+            self.corporate_pending_payload_bytes += lease.payload_size
+        else:
+            self.pending_payload_bytes += lease.payload_size
         channel.inflight += 1
         channel.last_selected = time.monotonic()
         return lease
@@ -501,11 +694,14 @@ class ComputeRegistry:
     ) -> ComputeLease:
         if operation != "image_resize_v1" or len(payload_sha256) != 64:
             raise ValueError("invalid_direct_operation")
-        if len(self.pending) >= self.max_pending:
+        heavy = [
+            item
+            for item in self.pending.values()
+            if item.operation != corporate_gateway_contract.OPERATION
+        ]
+        if len(heavy) >= self.max_pending:
             raise OverflowError("pending_limit")
-        requester_pending = sum(
-            item.requester_user_id == requester_user_id for item in self.pending.values()
-        )
+        requester_pending = sum(item.requester_user_id == requester_user_id for item in heavy)
         if requester_pending >= self.max_requester_pending:
             raise OverflowError("requester_pending_limit")
         lease = ComputeLease(
@@ -532,8 +728,14 @@ class ComputeRegistry:
     def finish(self, channel: ComputeChannel, lease: ComputeLease) -> None:
         key = (lease.device_id, lease.generation, lease.job_id, lease.attempt_id)
         if self.pending.pop(key, None) is not None:
-            self.pending_payload_bytes = max(0, self.pending_payload_bytes - lease.payload_size)
+            if lease.operation == corporate_gateway_contract.OPERATION:
+                self.corporate_pending_payload_bytes = max(
+                    0, self.corporate_pending_payload_bytes - lease.payload_size
+                )
+            else:
+                self.pending_payload_bytes = max(0, self.pending_payload_bytes - lease.payload_size)
             channel.inflight = max(0, channel.inflight - 1)
+            self.capacity_changed()
 
     def pending_lease(
         self, *, device_id: str, generation: str, job_id: str, attempt_id: str
