@@ -6,7 +6,7 @@
   if (window !== window.top || location.protocol !== 'https:' ||
       location.hostname !== 'oauth.yandex-team.ru' ||
       (location.port && location.port !== '443') ||
-      !['/', '/verification_code'].includes(location.pathname)) return;
+      !['/', '/authorize', '/verification_code'].includes(location.pathname)) return;
   const run = '__ROBOPARK_LOGIN_RUN__';
   let done = false;
   let timer;
@@ -31,7 +31,7 @@
       if (!input.getClientRects().length || getComputedStyle(input).visibility === 'hidden') continue;
       tokens.add(value);
     }
-    if (tokens.size === 1) send({kind: 'displayed', token: [...tokens][0]});
+    if (tokens.size === 1) send({kind: 'displayed', token: [...tokens][0], url: location.href});
   }
   observer.observe(document.documentElement, {childList: true, subtree: true, attributes: true});
   window.addEventListener('hashchange', scan);

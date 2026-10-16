@@ -177,6 +177,53 @@ let modalCredential = try CorporateAuthPolicy.displayedOAuthCredential(token: mo
     pageURL: URL(string: "https://oauth.yandex-team.ru/")!, expectedState: oauthState)
 try check(modalCredential.token == modalToken && modalCredential.expiresAt == nil
     && modalCredential.isUsable(), "provider modal yields an undated credential requiring owner verification")
+let authorizeModalURL = try CorporateAuthPolicy.authorizationURL(state: oauthState)
+let authorizeModalCredential = try CorporateAuthPolicy.displayedOAuthCredential(token: modalToken,
+    pageURL: authorizeModalURL, expectedState: oauthState)
+try check(authorizeModalCredential.token == modalToken && authorizeModalCredential.expiresAt == nil,
+    "provider modal on the live authorize page yields an undated credential")
+for completionPage in [authorizeModalURL,
+                       URL(string: "https://oauth.yandex-team.ru/")!,
+                       URL(string: "https://oauth.yandex-team.ru/verification_code")!] {
+    try check(CorporateAuthPolicy.isOAuthCompletionPage(completionPage),
+        "only an exact provider completion origin and route can host a credential")
+}
+for nonCompletionPage in ["http://oauth.yandex-team.ru/authorize", "https://oauth.yandex-team.ru:444/authorize",
+                          "https://user@oauth.yandex-team.ru/authorize", "https://passport.yandex-team.ru/authorize",
+                          "https://oauth.yandex-team.ru/other"] {
+    try check(!CorporateAuthPolicy.isOAuthCompletionPage(URL(string: nonCompletionPage)!),
+        "unsafe origins and unrelated provider routes are not completion pages")
+}
+let authorizeQueryFailures = [
+    "response_type=token&client_id=\(CorporateAuthPolicy.oauthClientID)&state=wrong",
+    "response_type=token&client_id=\(CorporateAuthPolicy.oauthClientID)&state=\(oauthState)&state=\(oauthState)",
+    "response_type=token&client_id=wrong&state=\(oauthState)",
+    "response_type=token&client_id=\(CorporateAuthPolicy.oauthClientID)&client_id=\(CorporateAuthPolicy.oauthClientID)&state=\(oauthState)",
+    "response_type=code&client_id=\(CorporateAuthPolicy.oauthClientID)&state=\(oauthState)",
+    "response_type=token&response_type=token&client_id=\(CorporateAuthPolicy.oauthClientID)&state=\(oauthState)",
+    "response_type=token&client_id=\(CorporateAuthPolicy.oauthClientID)&state=\(oauthState)&error=access_denied",
+]
+for query in authorizeQueryFailures {
+    rejects("authorize token modal rejects mismatched, duplicate or error identity metadata") {
+        _ = try CorporateAuthPolicy.displayedOAuthCredential(token: modalToken,
+            pageURL: URL(string: "https://oauth.yandex-team.ru/authorize?\(query)")!, expectedState: oauthState)
+    }
+}
+let authorizeFragmentURL = URL(string: authorizeModalURL.absoluteString
+    + "#access_token=\(modalToken)&expires_in=3600&state=\(oauthState)")!
+let authorizeFragmentCredential = try CorporateAuthPolicy.displayedOAuthCredential(token: modalToken,
+    pageURL: authorizeFragmentURL, expectedState: oauthState)
+try check(authorizeFragmentCredential.token == modalToken && authorizeFragmentCredential.expiresAt != nil,
+    "authorize page accepts a valid fragment only with its original bound query metadata")
+for invalidAuthorizeFragment in [
+    "https://oauth.yandex-team.ru/authorize?response_type=token&client_id=wrong&state=\(oauthState)#access_token=\(modalToken)&expires_in=3600&state=\(oauthState)",
+    authorizeModalURL.absoluteString + "#access_token=\(modalToken)&expires_in=3600&state=wrong",
+] {
+    rejects("authorize fragment rejects bad query or fragment identity metadata") {
+        _ = try CorporateAuthPolicy.displayedOAuthCredential(token: modalToken,
+            pageURL: URL(string: invalidAuthorizeFragment)!, expectedState: oauthState)
+    }
+}
 let rootCallback = URL(string: "https://oauth.yandex-team.ru/#access_token=token-123&expires_in=3600&state=\(oauthState)")!
 try check(try CorporateAuthPolicy.oauthCredential(from: rootCallback, expectedState: oauthState).token == "token-123",
     "current provider root callback and legacy verification callback are both supported")

@@ -15,7 +15,7 @@ from robopark_api.db import get_engine
 from robopark_api.services.ops.runner import OpsContext
 
 _REPO_ROOT = _API_ROOT.parent.parent
-APP_VERSION = "0.2.3-rc.13"
+APP_VERSION = "0.2.3-rc.14"
 
 
 def _migration_head() -> str:

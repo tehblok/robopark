@@ -706,17 +706,17 @@ import AgentCore
               message.frameInfo.securityOrigin.protocol == "https",
               message.frameInfo.securityOrigin.host.lowercased() == CorporateAuthPolicy.oauthHost,
               [0, 443].contains(message.frameInfo.securityOrigin.port),
-              let page = view.url, page.scheme == "https", page.host?.lowercased() == CorporateAuthPolicy.oauthHost,
-              ["/", CorporateAuthPolicy.callbackURL.path].contains(page.path),
+              let page = view.url, CorporateAuthPolicy.isOAuthCompletionPage(page),
               let body = message.body as? [String: Any], body["run"] as? String == corporateLoginRun.uuidString,
+              let source = body["url"] as? String, source.utf8.count <= 20 * 1024,
+              let sourcePage = URL(string: source), CorporateAuthPolicy.isOAuthCompletionPage(sourcePage),
               let state = corporateOAuthState else { return }
         do {
             let credential: CorporateOAuthCredential
-            if body["kind"] as? String == "callback", let value = body["url"] as? String,
-               value.utf8.count <= 20 * 1024, let url = URL(string: value) {
-                credential = try CorporateAuthPolicy.oauthCredential(from: url, expectedState: state)
+            if body["kind"] as? String == "callback" {
+                credential = try CorporateAuthPolicy.oauthCredential(from: sourcePage, expectedState: state)
             } else if body["kind"] as? String == "displayed", let token = body["token"] as? String {
-                credential = try CorporateAuthPolicy.displayedOAuthCredential(token: token, pageURL: page, expectedState: state)
+                credential = try CorporateAuthPolicy.displayedOAuthCredential(token: token, pageURL: sourcePage, expectedState: state)
             } else { return }
             finishCorporateOAuth(credential, in: view)
         } catch { showCorporateFailure(.reauthRequired) }
@@ -921,7 +921,7 @@ import AgentCore
             }
             if isCorporateView(webView), navigationAction.targetFrame?.isMainFrame != false, url.scheme == "https",
                url.host?.lowercased() == CorporateAuthPolicy.oauthHost,
-               ["/", CorporateAuthPolicy.callbackURL.path].contains(url.path),
+               CorporateAuthPolicy.isOAuthCompletionPage(url),
                url.fragment?.contains("access_token=") == true {
                 decisionHandler(.cancel)
                 guard let state = corporateOAuthState else { showCorporateFailure(.reauthRequired); return }

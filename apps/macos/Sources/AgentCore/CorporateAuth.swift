@@ -140,12 +140,39 @@ public enum CorporateAuthPolicy {
         return url
     }
 
+    public static func isOAuthCompletionPage(_ url: URL) -> Bool {
+        url.scheme == "https" && url.host?.lowercased() == oauthHost
+            && (url.port == nil || url.port == 443)
+            && url.user == nil && url.password == nil
+            && ["/", "/authorize", callbackURL.path].contains(url.path)
+    }
+
+    private static func validateAuthorizeQuery(_ url: URL, expectedState: String) throws {
+        guard url.path == "/authorize", (url.query?.utf8.count ?? 0) <= 16 * 1024 else {
+            throw AgentError.invalidJob
+        }
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let recognized = Set(["state", "client_id", "response_type", "error"])
+        let metadata = Dictionary(grouping: query.filter { recognized.contains($0.name) }, by: \.name)
+        guard metadata["error"] == nil,
+              metadata["state"]?.count == 1, metadata["state"]?.first?.value == expectedState,
+              metadata["client_id"]?.count == 1,
+              metadata["client_id"]?.first?.value == oauthClientID,
+              metadata["response_type"]?.count == 1,
+              metadata["response_type"]?.first?.value == "token" else {
+            throw AgentError.invalidJob
+        }
+    }
+
     public static func oauthCredential(from url: URL, expectedState: String,
                                        now: Date = Date()) throws -> CorporateOAuthCredential {
-        guard url.scheme == "https", url.host?.lowercased() == oauthHost,
-              url.port == nil || url.port == 443, url.user == nil, url.password == nil,
-              ["/", callbackURL.path].contains(url.path), url.query == nil,
+        guard isOAuthCompletionPage(url),
               let fragment = url.fragment, fragment.utf8.count <= 16 * 1024 else {
+            throw AgentError.invalidJob
+        }
+        if url.path == "/authorize" {
+            try validateAuthorizeQuery(url, expectedState: expectedState)
+        } else if url.query != nil {
             throw AgentError.invalidJob
         }
         var values: [String: String] = [:]
@@ -165,15 +192,12 @@ public enum CorporateAuthPolicy {
         return CorporateOAuthCredential(token: token, expiresAt: now.addingTimeInterval(lifetime))
     }
 
-    /// The provider also returns to its root page and displays a token dialog
-    /// instead of redirecting. Only the active, run-bound native login window
-    /// may call this; the returned candidate is NOT an authenticated identity.
+    /// The provider may keep its root or authorize page open and display a
+    /// token dialog instead of redirecting. Only the active, run-bound native
+    /// login window may call this; the candidate is NOT an authenticated identity.
     public static func displayedOAuthCredential(token: String, pageURL: URL,
                                                 expectedState: String) throws -> CorporateOAuthCredential {
-        guard pageURL.scheme == "https", pageURL.host?.lowercased() == oauthHost,
-              pageURL.port == nil || pageURL.port == 443,
-              pageURL.user == nil, pageURL.password == nil,
-              ["/", callbackURL.path].contains(pageURL.path),
+        guard isOAuthCompletionPage(pageURL),
               expectedState.range(of: "^[A-Za-z0-9_-]{32,128}$", options: .regularExpression) != nil,
               token.utf8.count <= 8192,
               token.range(of: "^(?:y[0-9]+_[A-Za-z0-9_-]{20,}|[a-fA-F0-9]{32,128})$", options: .regularExpression) != nil,
@@ -188,6 +212,10 @@ public enum CorporateAuthPolicy {
             return credential
         }
         let query = URLComponents(url: pageURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        if pageURL.path == "/authorize" {
+            try validateAuthorizeQuery(pageURL, expectedState: expectedState)
+            return CorporateOAuthCredential(token: token, expiresAt: nil)
+        }
         guard query.allSatisfy({ $0.name == "state" && $0.value == expectedState }), query.count <= 1 else {
             throw AgentError.invalidJob
         }

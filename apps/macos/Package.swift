@@ -20,6 +20,7 @@ let package = Package(
         .executableTarget(name: "RoboparkUpdater", dependencies: ["AgentCore"]),
         .executableTarget(name: "RoboparkComputeWorker", dependencies: ["AgentCore"]),
         .executableTarget(name: "AgentCoreChecks", dependencies: ["AgentCore"], path: "Tests/AgentCoreChecks"),
+        .executableTarget(name: "CorporateOAuthWebKitChecks", dependencies: ["AgentCore"], path: "Tests/CorporateOAuthWebKitChecks"),
         .executableTarget(name: "DesktopChecks", dependencies: ["AgentCore"], path: "Tests/DesktopChecks"),
         .executableTarget(name: "ComputePeerChecks", dependencies: ["AgentCore", "ComputePeerCore"], path: "Tests/ComputePeerChecks"),
         .executableTarget(name: "KeychainBrokerChecks", dependencies: ["KeychainBrokerIPC"], path: "Tests/KeychainBrokerChecks"),
