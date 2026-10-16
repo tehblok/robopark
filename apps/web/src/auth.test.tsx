@@ -219,7 +219,7 @@ describe('AuthProvider session boundaries', () => {
     act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'robopark:auth-transition', newValue: 'another-tab-transition' })))
     expect(await screen.findByText('anonymous')).toBeVisible()
   })
-  it.each([new ApiError(503), new SyntaxError('Invalid JSON')])('retains a confirmed identity through a transient proxy or parse failure', async failure => {
+  it.each([new ApiError(408), new ApiError(425), new ApiError(429), new ApiError(503), new SyntaxError('Invalid JSON')])('retains a confirmed identity through a transient proxy or parse failure', async failure => {
     vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockRejectedValueOnce(failure)
     const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
     await screen.findByText('old-account')
@@ -238,6 +238,43 @@ describe('AuthProvider session boundaries', () => {
     vi.mocked(api.me).mockResolvedValueOnce(oldAccount)
     await act(async () => { await currentAuth!.refreshUser() })
     expect(currentAuth!.offlineSession).toBe(false)
+  })
+
+  it('keeps a saved identity fenced while online verification is pending and restores it on transient failure', async () => {
+    const me = vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount)
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    first.unmount()
+
+    const pending = deferred<User>()
+    me.mockImplementation(() => pending.promise)
+    const restarted = render(<StrictMode><AuthProvider><AuthProbe /></AuthProvider></StrictMode>)
+    expect(screen.getByText('loading')).toBeVisible()
+    expect(screen.queryByText('old-account')).not.toBeInTheDocument()
+    await act(async () => { pending.reject(new TypeError('Failed to fetch')) })
+    expect(await screen.findByText('old-account')).toBeVisible()
+    expect(currentAuth!.offlineSession).toBe(true)
+
+    restarted.unmount()
+  })
+
+  it('retires eager offline data when delayed verification returns another authorization', async () => {
+    const me = vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount)
+    const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
+    await screen.findByText('old-account')
+    seedProtectedState()
+    first.unmount()
+
+    const verified = deferred<User>()
+    me.mockImplementationOnce(() => verified.promise)
+    render(<AuthProvider><AuthProbe /></AuthProvider>)
+    expect(screen.getByText('loading')).toBeVisible()
+    expect(screen.queryByText('old-account')).not.toBeInTheDocument()
+    expectProtectedStateRetained()
+
+    await act(async () => { verified.resolve(replacementAccount) })
+    expect(await screen.findByText('replacement-account')).toBeVisible()
+    expectProtectedStateCleared()
   })
 
   it.each([false, true])('settles a disconnected cold start immediately (saved identity: %s) and revalidates on reconnect', async saved => {
@@ -328,8 +365,8 @@ describe('AuthProvider session boundaries', () => {
     expect(currentAuth!.user).toBeNull()
   })
 
-  it('does not restore an offline identity after an authoritative session denial', async () => {
-    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockRejectedValueOnce(new ApiError(401)).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  it.each([401, 403])('does not restore an offline identity after an authoritative %s session denial', async status => {
+    vi.spyOn(api, 'me').mockResolvedValueOnce(oldAccount).mockRejectedValueOnce(new ApiError(status)).mockRejectedValueOnce(new TypeError('Failed to fetch'))
     const first = render(<AuthProvider><AuthProbe /></AuthProvider>)
     await screen.findByText('old-account')
     first.unmount()
@@ -660,8 +697,8 @@ describe('AuthProvider session boundaries', () => {
     vi.unstubAllGlobals()
   })
 
-  it('clears the authenticated session before refreshUser rethrows a 401', async () => {
-    const denial = new ApiError(401, 'session_expired')
+  it.each([401, 403])('clears the authenticated session before refreshUser rethrows an authoritative %s', async status => {
+    const denial = new ApiError(status, 'session_expired')
     vi.spyOn(api, 'me')
       .mockResolvedValueOnce(oldAccount)
       .mockRejectedValueOnce(denial)

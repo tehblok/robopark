@@ -112,7 +112,7 @@ function validateSnapshot(raw: string): User | null {
   } catch { return null }
 }
 
-export async function hydrateDesktopOfflineIdentity(): Promise<void> {
+export async function hydrateDesktopOfflineIdentity(options: { propagateFailure?: boolean } = {}): Promise<void> {
   const runtime = desktopRuntime()
   if (!runtime || typeof indexedDB === 'undefined') return
   const generation = ++desktopIdentityGeneration
@@ -127,7 +127,14 @@ export async function hydrateDesktopOfflineIdentity(): Promise<void> {
     const raw = JSON.stringify(snapshot)
     if (raw.length > MAX_SNAPSHOT_CHARS) return
     if (generation === desktopIdentityGeneration) desktopIdentity = validateSnapshot(raw)
-  } catch { if (generation === desktopIdentityGeneration) desktopIdentity = null }
+  } catch (error) {
+    if (generation === desktopIdentityGeneration) desktopIdentity = null
+    const invalidSnapshot = error instanceof Error
+      && ['desktop_storage_envelope_invalid', 'desktop_storage_decryption_failed'].includes(error.message)
+    // A corrupt or stale record grants no authority and must not make the
+    // public login screen unreachable. Service/key failures remain retryable.
+    if (options.propagateFailure && !invalidSnapshot) throw error
+  }
 }
 
 export async function clearDesktopOfflineIdentity(): Promise<void> {

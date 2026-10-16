@@ -85,6 +85,7 @@ async function storageKey(runtime: DesktopBootstrap): Promise<CryptoKey> {
       cachedKey = { instanceId: runtime.instanceId, key }
       return key
     } catch (error) {
+      if (error instanceof Error && error.name === 'DesktopSessionRequiredError') throw error
       if (error instanceof Error && error.message.startsWith('desktop_storage_key_')) throw error
       throw new Error('desktop_storage_key_unavailable')
     } finally { pendingKey = null }
@@ -124,6 +125,7 @@ export async function unsealDesktopJson(value: unknown, options?: RuntimeOptions
     )
     return JSON.parse(new TextDecoder().decode(plaintext))
   } catch (error) {
+    if (error instanceof Error && error.name === 'DesktopSessionRequiredError') throw error
     if (error instanceof Error && error.message.startsWith('desktop_storage_key_')) throw error
     throw new Error('desktop_storage_decryption_failed')
   }

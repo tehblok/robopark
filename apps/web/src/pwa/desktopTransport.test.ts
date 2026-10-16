@@ -45,6 +45,30 @@ describe('desktop browser capability transport', () => {
     expect(document.cookie).not.toContain(token)
   })
 
+  it('keeps concurrent StrictMode initialization behind one slow nonce bootstrap', async () => {
+    vi.stubGlobal('location', new URL(`${origin}/#rp-launch=${nonce}`))
+    vi.spyOn(window.history, 'replaceState').mockImplementation(() => undefined)
+    let finishBootstrap!: (response: Response) => void
+    const native = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => input === '/__robopark/bootstrap'
+      ? new Promise<Response>(resolve => { finishBootstrap = resolve })
+      : json({}))
+    vi.stubGlobal('fetch', native)
+
+    const first = initializeDesktopTransport()
+    const second = initializeDesktopTransport()
+    let secondReady = false
+    void second.then(() => { secondReady = true })
+    await Promise.resolve()
+    expect(native).toHaveBeenCalledOnce()
+    expect(secondReady).toBe(false)
+
+    finishBootstrap(json({ session: token }))
+    await Promise.all([first, second])
+    expect(secondReady).toBe(true)
+    await fetch('/api/tasks')
+    expect(new Headers(native.mock.calls[1][1]?.headers).get('X-Robopark-Session')).toBe(token)
+  })
+
   it('never sends capabilities to another port, another host or a redirected response', async () => {
     sessionStorage.setItem(key, token)
     const native = vi.fn(async () => json({}))

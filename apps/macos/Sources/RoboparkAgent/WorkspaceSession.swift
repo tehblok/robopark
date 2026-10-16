@@ -128,10 +128,12 @@ struct WorkspaceProfile: Codable {
         if object != nil { headers["content-type"] = "application/json" }
         return try await request(target: path, method: method, headers: headers, body: body, timeout: timeout)
     }
+    var hasStoredIdentity: Bool {
+        guard let current = profile, !SecureStore.isSignedOut("workspace") else { return false }
+        return !current.cookies.isEmpty || (current.accountID != nil && current.accountID == deviceAuthMaterial?.ownerUserID)
+    }
     func restoreIdentity() async -> Bool {
-        guard let current = profile,
-              (!current.cookies.isEmpty || (current.accountID != nil && current.accountID == deviceAuthMaterial?.ownerUserID)),
-              !SecureStore.isSignedOut("workspace") else { return false }
+        guard hasStoredIdentity, let current = profile else { return false }
         do {
             let (bytes, response) = try await call(path: "/api/auth/me", timeout: 10)
             guard response.statusCode == 200,
@@ -237,17 +239,11 @@ struct WorkspaceProfile: Codable {
         var request = try WorkspaceProxyPolicy.request(origin: origin, target: target, method: method, headers: headers, body: body, cookies: current.cookies)
         request.timeoutInterval = min(30, max(1, timeout))
         let url = request.url!
-        let stream: URLSession.AsyncBytes
-        let raw: URLResponse
-        do { (stream, raw) = try await transport.bytes(for: request) }
-        catch { if generation == run { connectionState = "offline" }; throw error }
-        guard let response = raw as? HTTPURLResponse, response.expectedContentLength <= 32 * 1024 * 1024 else { throw NetworkFailure.invalid }
-        var data = Data()
+        let data: Data
+        let response: HTTPURLResponse
         do {
-            for try await byte in stream {
-                guard data.count < 32 * 1024 * 1024 else { throw NetworkFailure.invalid }
-                data.append(byte)
-            }
+            (data, response) = try await BoundedHTTPReader.read(request, using: transport,
+                timeout: request.timeoutInterval, limit: 32 * 1024 * 1024)
         } catch { if generation == run { connectionState = "offline" }; throw error }
         guard !Task.isCancelled, generation == run else { throw CancellationError() }
         // Redirects are blocked by NetworkPolicy. Never convert one into a local
@@ -268,8 +264,9 @@ struct WorkspaceProfile: Codable {
         }
         guard (profile?.cookies.count ?? 0) <= 16 else { profile?.cookies = []; try persist(); throw NetworkFailure.invalid }
         if !incoming.isEmpty { try persist() }
-        if response.statusCode < 500 { lastSuccessAt = Date() }
-        connectionState = response.statusCode >= 500 ? "error" : "connected"
+        let transientFailure = response.statusCode >= 500 || [408, 425, 429].contains(response.statusCode)
+        if !transientFailure { lastSuccessAt = Date() }
+        connectionState = transientFailure ? "error" : "connected"
         return (data, response)
     }
     func proxy(_ local: LocalHTTPRequest) async -> LocalHTTPResponse {

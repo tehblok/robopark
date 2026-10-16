@@ -5,6 +5,7 @@ const CAPABILITY = /^[a-f0-9]{64}$/
 const SESSION_HEADER = 'X-Robopark-Session'
 const LAUNCH_HEADER = 'X-Robopark-Launch'
 let restoreFetch: (() => void) | undefined
+let pendingInitialization: Promise<void> | undefined
 
 export class DesktopSessionRequiredError extends TypeError {
   constructor() {
@@ -16,8 +17,18 @@ export class DesktopSessionRequiredError extends TypeError {
 // HTTP cookies do not isolate localhost ports. Only explicit requests to this
 // exact origin carry the owner-session capability handed off by the native app.
 // It survives service updates/restarts and rotates on account changes/revocation.
-export async function initializeDesktopTransport(): Promise<void> {
-  if (!desktopRuntime() || restoreFetch) return
+export function initializeDesktopTransport(): Promise<void> {
+  if (!desktopRuntime() || (restoreFetch && !pendingInitialization)) return Promise.resolve()
+  if (pendingInitialization) return pendingInitialization
+  const initialization = installDesktopTransport()
+  const tracked = initialization.finally(() => {
+    if (pendingInitialization === tracked) pendingInitialization = undefined
+  })
+  pendingInitialization = tracked
+  return pendingInitialization
+}
+
+async function installDesktopTransport(): Promise<void> {
   const origin = window.location.origin
   const originalFetch = globalThis.fetch
   let capability: string | null = null
@@ -96,4 +107,5 @@ export async function initializeDesktopTransport(): Promise<void> {
 export function resetDesktopTransportForTests(): void {
   if (import.meta.env.MODE !== 'test') throw new Error('desktop_transport_test_override_forbidden')
   restoreFetch?.()
+  pendingInitialization = undefined
 }

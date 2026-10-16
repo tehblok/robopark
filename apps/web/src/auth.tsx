@@ -134,24 +134,31 @@ export function AuthProvider({ children }: PropsWithChildren) {
       })
       return () => { advanceSessionGeneration() }
     }
+    const saved = readOfflineIdentity()
+    let authoritativeIdentitySettled = false
+    const publishSavedIdentity = async () => {
+      if (!saved) return
+      // The snapshot was verified previously and is age/shape checked when
+      // read. Make it available while the localhost proxy waits on an
+      // unreachable upstream, but let any authoritative response win.
+      authorizedUser.current = saved
+      await activateDeviceResourceCache(saved)
+      if (generation !== sessionGeneration.current || authoritativeIdentitySettled) return
+      activateDraftScopes(saved)
+      interfaceModeStore.setAccount(saved.id)
+      authorizedUser.current = saved
+      setUser(saved)
+      setLoading(false)
+    }
     if (navigator.onLine === false) {
       // A known disconnected device cannot complete /auth/me. Publish only a
       // validated saved identity (or the login screen) without a network timeout.
       // Keep SW activation unverified until the normal online identity check.
       crossTabVerificationPending.current = true
-      const saved = readOfflineIdentity()
       // Record the prior authority before asynchronous storage work so reconnect
       // can retire it even when IndexedDB has not finished opening.
       authorizedUser.current = saved
-      void (async () => {
-        if (!saved) return
-        await activateDeviceResourceCache(saved)
-        if (generation !== sessionGeneration.current) return
-        activateDraftScopes(saved)
-        interfaceModeStore.setAccount(saved.id)
-        authorizedUser.current = saved
-        setUser(saved)
-      })().catch(() => undefined).finally(() => {
+      void publishSavedIdentity().catch(() => undefined).finally(() => {
         if (generation === sessionGeneration.current) setLoading(false)
       })
       return () => { advanceSessionGeneration() }
@@ -160,6 +167,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
       .me()
       .then(async (nextUser) => {
         if (generation !== sessionGeneration.current) return
+        authoritativeIdentitySettled = true
+        const authorizationChanged = Boolean(saved && authorizationIdentity(saved) !== authorizationIdentity(nextUser))
+        if (authorizationChanged && saved) {
+          retireDraftScopes(saved)
+          await clearShareTargetInbox(saved.id).catch(() => {})
+          if (generation !== sessionGeneration.current) return
+          clearProtectedBrowserStorage()
+          void clearDesktopOfflineIdentity()
+          resourceStore.clearAll()
+          clearApiValidators()
+        }
         await activateDeviceResourceCache(nextUser)
         if (generation === sessionGeneration.current) {
           activateDraftScopes(nextUser)
@@ -172,20 +190,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
       })
       .catch(async (error) => {
         if (generation !== sessionGeneration.current) return
-        if (error instanceof ApiError && error.status === 401) {
+        if (error instanceof ApiError && [401, 403].includes(error.status)) {
+          authoritativeIdentitySettled = true
           await Promise.all([purgeOfflineScope().catch(() => {}), clearShareTargetInbox(authorizedUser.current?.id ?? null).catch(() => {})])
           clearSessionState()
           setIdentityVerified(true)
         } else if (error instanceof TypeError || error instanceof ApiTimeoutError || error instanceof SyntaxError
-          || (error instanceof ApiError && error.status >= 500)) {
-          const saved = readOfflineIdentity()
+          || (error instanceof ApiError && ([408, 425, 429].includes(error.status) || error.status >= 500))) {
           if (!saved) return
-          await activateDeviceResourceCache(saved)
-          if (generation !== sessionGeneration.current) return
-          activateDraftScopes(saved)
-          interfaceModeStore.setAccount(saved.id)
-          authorizedUser.current = saved
-          setUser(saved)
+          await publishSavedIdentity().catch(() => undefined)
         }
       })
       .finally(() => {
@@ -258,7 +271,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       return authenticatedUser
     } catch (error) {
       if (generation === sessionGeneration.current) {
-        if (error instanceof ApiError && error.status === 401) {
+        if (error instanceof ApiError && [401, 403].includes(error.status)) {
           const previousAccountId = authorizedUser.current?.id ?? null
           const clearedGeneration = clearSessionState()
           await Promise.all([purgeOfflineScope().catch(() => {}), clearShareTargetInbox(previousAccountId).catch(() => {})])

@@ -64,7 +64,8 @@
     "0.2.3-rc.13",
     "0.2.3-rc.14",
     "0.2.3-rc.15",
-    "0.2.3-rc.16"
+    "0.2.3-rc.16",
+    "0.2.3-rc.17"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -82,5 +83,5 @@
       65536
     ]
   },
-  "update_notes": "TEST current park blockers, adaptive owner-Mac read queues, reconnect recovery, Inventory readiness, session continuity and Mac updater registration."
+  "update_notes": "TEST Mac startup without a blank screen, cached account continuity, bounded upstream requests and background device registration."
 }

@@ -84,10 +84,13 @@ import AgentCore
 import CryptoKit
 
 final class MockURLProtocol: URLProtocol {
-    struct Reply { let status: Int; let headers: [String: String]; let body: Data; let delay: TimeInterval }
+    struct Reply { let status: Int; let headers: [String: String]; let body: Data; let delay: TimeInterval; var chunkDelay: TimeInterval = 0 }
     static var replies: [String: Reply] = [:]
     static var seen: [URLRequest] = []
     static var afterRenewIdentity: Reply?
+    private let stopLock = NSLock()
+    private var stopped = false
+    private var active: Bool { stopLock.lock(); defer { stopLock.unlock() }; return !stopped }
     static func reset() { replies = [:]; seen = []; afterRenewIdentity = nil }
     override class func canInit(with request: URLRequest) -> Bool { request.url?.scheme == "https" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -101,16 +104,26 @@ final class MockURLProtocol: URLProtocol {
         Self.seen.append(request)
         Task { await RequestLatch.shared.signal() }
         let deliver = { [weak self] in
-            guard let self, let client = self.client else { return }
+            guard let self, self.active, let client = self.client else { return }
             let response = HTTPURLResponse(url: url, statusCode: reply.status, httpVersion: "HTTP/1.1", headerFields: reply.headers)!
             client.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            if reply.chunkDelay > 0 {
+                for (index, byte) in reply.body.enumerated() {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + reply.chunkDelay * Double(index + 1)) { [weak self] in
+                        guard let self, self.active, let client = self.client else { return }
+                        client.urlProtocol(self, didLoad: Data([byte]))
+                        if index == reply.body.count - 1 { client.urlProtocolDidFinishLoading(self) }
+                    }
+                }
+                return
+            }
             if !reply.body.isEmpty { client.urlProtocol(self, didLoad: reply.body) }
             client.urlProtocolDidFinishLoading(self)
         }
         if reply.delay > 0 { DispatchQueue.global().asyncAfter(deadline: .now() + reply.delay, execute: deliver) }
         else { DispatchQueue.global().async(execute: deliver) }
     }
-    override func stopLoading() {}
+    override func stopLoading() { stopLock.lock(); stopped = true; stopLock.unlock() }
 }
 
 actor RequestLatch {
@@ -180,6 +193,14 @@ func testTransport() -> URLSession {
             body: Data("{\"id\":7,\"access_status\":\"approved\",\"permissions\":[\"nav.emergency\"]}".utf8), delay: 0)
         let didRestoreIdentity = await restored.restoreIdentity()
         try check(didRestoreIdentity && restoredIdentity == 1, "authenticated restart restores native identity before pool activation")
+        let lastIdentitySuccess = restored.lastSuccessAt
+        for status in [408, 425, 429, 503] {
+            MockURLProtocol.replies["GET /api/auth/me?"] = .init(status: status, headers: [:], body: Data("{}".utf8), delay: 0)
+            let recovered = await restored.restoreIdentity()
+            try check(!recovered && restored.hasStoredIdentity && restored.connectionState == "error"
+                      && restored.lastSuccessAt == lastIdentitySuccess,
+                      "transient identity failure retains the account without reporting a healthy connection")
+        }
         MockURLProtocol.replies["GET /api/tasks?"] = .init(status: 200, headers: [:], body: Data("[]".utf8), delay: 0)
         _ = try await restored.request(target: "/api/tasks", method: "GET", headers: [:], body: Data())
         try check(MockURLProtocol.seen.last?.value(forHTTPHeaderField: "Cookie")?.hasPrefix("native_session=") == true, "persisted cookie restored natively")
@@ -408,6 +429,23 @@ func testTransport() -> URLSession {
         try check(!staleRenewed && pendingRenewal.profile == nil
                   && !MockURLProtocol.seen.contains { $0.url?.path == "/api/auth/device-auth/renew" },
                   "logout while challenge is pending prevents a late signed renewal")
+        SecureStore.reset(); MockURLProtocol.reset()
+        let deadlineSession = try WorkspaceSession(transport: testTransport())
+        try deadlineSession.configure(origin: originA, info: infoA)
+        MockURLProtocol.replies["GET /api/slow?"] = .init(status: 200, headers: [:],
+            body: Data(repeating: 65, count: 20), delay: 0, chunkDelay: 0.2)
+        let deadlineStarted = Date()
+        do {
+            _ = try await deadlineSession.request(target: "/api/slow", method: "GET", headers: [:], body: Data(), timeout: 1)
+            fatalError("FAIL: stalled upstream exceeded the workspace deadline")
+        } catch {
+            try check(error is AsyncDeadlineError || (error as? URLError)?.code == .timedOut, "deadline reports a timeout, not an unrelated failure")
+            try check(Date().timeIntervalSince(deadlineStarted) < 2, "workspace deadline also bounds continuously trickling bodies")
+        }
+        MockURLProtocol.replies["GET /api/fast?"] = .init(status: 200, headers: [:], body: Data("ok".utf8), delay: 0)
+        let fastResult = try await deadlineSession.request(target: "/api/fast", method: "GET", headers: [:], body: Data())
+        try check(fastResult.1.statusCode == 200 && fastResult.0 == Data("ok".utf8), "timeout does not invalidate shared HTTP transport")
+
         print("PASS: \(checks) production WorkspaceSession lifecycle, cookie isolation and generation checks")
     }
 }

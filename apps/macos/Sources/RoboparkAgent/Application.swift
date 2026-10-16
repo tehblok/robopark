@@ -26,6 +26,14 @@ import AgentCore
     var probeTimer: Timer?
     var workspace: WorkspaceServer?
     private var enrollmentTask: Task<Void, Never>?
+    private struct EnrollmentIdentity: Equatable {
+        let userID: Int
+        let origin: String
+        let instanceID: String
+        let role: String
+        let canUseEmergency: Bool
+    }
+    private var enrollmentIdentity: EnrollmentIdentity?
     private var probeRefreshTask: Task<Void, Never>?
     private var probeRefreshRun = UUID()
     private var identityRestoreTask: Task<Void, Never>?
@@ -206,7 +214,6 @@ import AgentCore
         }
     }
     private func accountVerified(_ user: [String: Any]) async {
-        if let enrollmentTask { await enrollmentTask.value; return }
         guard let session = workspace?.session,
               let profile = session.profile, let userID = user["id"] as? Int,
               TestDeploymentAssignment.matches(origin: profile.origin, instanceID: profile.instanceID,
@@ -214,6 +221,7 @@ import AgentCore
         accountLabel = (user["display_name"] as? String) ?? (user["username"] as? String) ?? "Аккаунт Robopark"
         accountRole = user["role"] as? String
         guard user["access_status"] as? String == "approved", user["must_change_password"] as? Bool != true else {
+            enrollmentRun = UUID(); enrollmentTask?.cancel(); enrollmentTask = nil
             accountActive = false
             emergencyAuthorized = false
             activeAccountID = nil
@@ -225,7 +233,17 @@ import AgentCore
             notifications.stop(removeDelivered: true)
             return
         }
+        // The server has already verified the workspace identity. Registering
+        // the worker channel must not delay /auth/me and the browser shell.
         let canUseEmergency = (user["permissions"] as? [String] ?? []).contains("nav.emergency")
+        let identity = EnrollmentIdentity(userID: userID, origin: profile.origin,
+            instanceID: profile.instanceID, role: user["role"] as? String ?? "",
+            canUseEmergency: canUseEmergency)
+        if enrollmentTask != nil {
+            guard enrollmentIdentity != identity else { return }
+            enrollmentRun = UUID(); enrollmentTask?.cancel(); enrollmentTask = nil
+            bridge.stop(); compute.stop(); cancelProbeRefresh()
+        }
         if accountActive, activeAccountID == userID,
            bridge.registration?.origin == profile.origin,
            bridge.registration?.instanceID == profile.instanceID {
@@ -240,7 +258,7 @@ import AgentCore
             return
         }
         cancelProbeRefresh()
-        let run = UUID(); enrollmentRun = run
+        let run = UUID(); enrollmentRun = run; enrollmentIdentity = identity
         let task = Task { [weak self] in
             guard let self else { return }
             defer { if self.enrollmentRun == run { self.enrollmentTask = nil; self.render() } }
@@ -254,14 +272,19 @@ import AgentCore
                 let label = String((Host.current().localizedName ?? "Mac").prefix(80))
                 try await self.bridge.claimAuthenticated(origin: profile.origin, label: label,
                                                           expectedOwnerUserID: userID,
-                                                          startEmergency: canUseEmergency) { object in
+                                                          startEmergency: false) { object in
                     try await session.call(path: "/api/agent-devices/claim-auth", method: "POST", object: object)
                 }
+                guard !Task.isCancelled, self.enrollmentRun == run,
+                      self.workspace?.session === session,
+                      session.profile?.accountID == userID,
+                      session.profile?.ownerUserID == userID,
+                      !SecureStore.isSignedOut("workspace") else { return }
                 self.accountActive = true
                 self.emergencyAuthorized = canUseEmergency
                 self.activeAccountID = userID
                 UserDefaults.standard.set(true, forKey: self.accountPresentKey)
-                if canUseEmergency { self.refreshProbeTarget() }
+                if canUseEmergency { self.bridge.start(); self.refreshProbeTarget() }
                 self.compute.start()
                 self.notifications.start(accountID: userID, role: user["role"] as? String ?? "", session: session)
                 Task { @MainActor [weak self] in await self?.updater.check() }
@@ -278,7 +301,6 @@ import AgentCore
             }
         }
         enrollmentTask = task
-        await task.value
     }
     private func accountLogout() async {
         accountLabel = "Не выполнен вход"
@@ -467,10 +489,12 @@ import AgentCore
     private func agentStatusResponse() -> LocalHTTPResponse {
         let profile = bridge.registration
         let session = workspace?.session
+        let storedAccountOffline = !accountActive && session?.hasStoredIdentity == true
+            && ["offline", "error"].contains(session?.connectionState ?? "")
         let accountState: String
         if accountActive { accountState = "signed_in" }
         else if identityRestoreTask != nil || enrollmentTask != nil { accountState = "checking" }
-        else if UserDefaults.standard.bool(forKey: accountPresentKey), !lastError.isEmpty { accountState = "error" }
+        else if storedAccountOffline || (UserDefaults.standard.bool(forKey: accountPresentKey) && !lastError.isEmpty) { accountState = "error" }
         else { accountState = "signed_out" }
         let ownerLoginConfigured = CorporateAuthPolicy.normalizedLogin(profile?.ownerTrackerLogin) != nil
         let ownerBound = accountActive && activeAccountID != nil && activeAccountID == profile?.ownerUserID
@@ -478,14 +502,15 @@ import AgentCore
         let serverState = session?.profile == nil && workspaceSetupTask == nil &&
             lastError.contains("Тестовый сервер пока недоступен") ? "offline" : (session?.connectionState ?? "offline")
         let message: String?
-        if !accountActive { message = "Войдите в аккаунт Robopark на этом Mac." }
+        if storedAccountOffline { message = "Аккаунт сохранён. Проверим подключение автоматически, когда сервер станет доступен." }
+        else if !accountActive { message = "Войдите в аккаунт Robopark на этом Mac." }
         else if !ownerLoginConfigured { message = "Для владельца Mac не назначен корпоративный логин." }
         else if let corporateLoginMessage { message = corporateLoginMessage }
         else if [services.tracker, services.inventory, services.emergency].allSatisfy({ $0 == "ready" }) { message = nil }
         else { message = "Часть корпоративных сервисов требует входа или повторной проверки." }
         let status = DesktopAgentStatus(snapshot: AgentStatusSnapshot(
             accountState: accountState,
-            accountLabel: accountLabel,
+            accountLabel: storedAccountOffline ? "Аккаунт сохранён — нет связи с сервером" : accountLabel,
             accountRole: accountRole,
             registered: profile != nil,
             serverState: serverState,
