@@ -416,7 +416,7 @@ import AgentCore
             tracker = "login_required"
         } else if bridge.hasVerifiedCorporateOAuth, login == owner {
             tracker = "ready"
-        } else if (profile.trackerOAuthExpiresAt?.timeIntervalSinceNow ?? 0) <= 60 {
+        } else if profile.trackerOAuthExpiresAt.map({ $0.timeIntervalSinceNow <= 60 }) ?? false {
             tracker = "login_required"
         } else {
             tracker = "unverified"
@@ -574,6 +574,9 @@ import AgentCore
         panel?.evaluateJavaScript("window.render(\(json))", completionHandler: nil)
     }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "corporateOAuthCompletion" {
+            receiveCorporateCompletion(message); return
+        }
         guard message.webView === panel, message.frameInfo.isMainFrame,
               message.frameInfo.request.url?.standardizedFileURL == panelURL?.standardizedFileURL,
               let body = message.body as? [String: Any], let action = body["action"] as? String, !working else { return }
@@ -641,6 +644,7 @@ import AgentCore
         // step need not be repeated after a network timeout.
         if let loginView, let loginWindow {
             loginView.stopLoading()
+            guard installCorporateCompletion(in: loginView.configuration.userContentController) else { return }
             if let url = try? CorporateAuthPolicy.authorizationURL(state: state) {
                 loginView.load(URLRequest(url: url, timeoutInterval: 40))
             }
@@ -652,6 +656,7 @@ import AgentCore
         // Passport can finish an asynchronous login step by opening a child.
         // The UI delegate still enforces the trusted opener, destination and cap.
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        guard installCorporateCompletion(in: config.userContentController) else { return }
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = self; view.uiDelegate = self
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 740),
@@ -682,6 +687,62 @@ import AgentCore
     private func isCorporateView(_ view: WKWebView) -> Bool {
         view === loginView || loginPopups.contains { $0.view === view }
     }
+    private func installCorporateCompletion(in controller: WKUserContentController) -> Bool {
+        guard let sourceURL = Bundle.main.url(forResource: "corporate-oauth", withExtension: "js"),
+              let source = try? String(contentsOf: sourceURL, encoding: .utf8) else {
+            failCorporateNavigation("Не удалось загрузить завершение входа. Переустановите обновление Robopark.")
+            return false
+        }
+        controller.removeAllUserScripts()
+        controller.removeScriptMessageHandler(forName: "corporateOAuthCompletion", contentWorld: .defaultClient)
+        controller.add(self, contentWorld: .defaultClient, name: "corporateOAuthCompletion")
+        controller.addUserScript(WKUserScript(source: source.replacingOccurrences(
+            of: "__ROBOPARK_LOGIN_RUN__", with: corporateLoginRun.uuidString),
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
+        return true
+    }
+    private func receiveCorporateCompletion(_ message: WKScriptMessage) {
+        guard let view = message.webView, isCorporateView(view), message.frameInfo.isMainFrame,
+              message.frameInfo.securityOrigin.protocol == "https",
+              message.frameInfo.securityOrigin.host.lowercased() == CorporateAuthPolicy.oauthHost,
+              [0, 443].contains(message.frameInfo.securityOrigin.port),
+              let page = view.url, page.scheme == "https", page.host?.lowercased() == CorporateAuthPolicy.oauthHost,
+              ["/", CorporateAuthPolicy.callbackURL.path].contains(page.path),
+              let body = message.body as? [String: Any], body["run"] as? String == corporateLoginRun.uuidString,
+              let state = corporateOAuthState else { return }
+        do {
+            let credential: CorporateOAuthCredential
+            if body["kind"] as? String == "callback", let value = body["url"] as? String,
+               value.utf8.count <= 20 * 1024, let url = URL(string: value) {
+                credential = try CorporateAuthPolicy.oauthCredential(from: url, expectedState: state)
+            } else if body["kind"] as? String == "displayed", let token = body["token"] as? String {
+                credential = try CorporateAuthPolicy.displayedOAuthCredential(token: token, pageURL: page, expectedState: state)
+            } else { return }
+            finishCorporateOAuth(credential, in: view)
+        } catch { showCorporateFailure(.reauthRequired) }
+    }
+    private func finishCorporateOAuth(_ credential: CorporateOAuthCredential, in view: WKWebView) {
+        guard corporateOAuthState != nil else { return }
+        corporateOAuthState = nil // Exactly one candidate per login attempt, including child windows.
+        corporateNavigationTimer?.invalidate(); corporateNavigationTimer = nil
+        recordCorporateNavigation(.callback, url: view.url)
+        setCorporateLoginMessage("Подключаю Tracker, Inventory и Emergency…")
+        let run = corporateLoginRun
+        Task { @MainActor [weak self, weak view] in
+            guard let self, let view else { return }
+            let (status, login) = await self.verifyCorporateIdentity(authorization: "OAuth \(credential.token)", run: run)
+            guard self.corporateLoginRun == run, self.isCorporateView(view) else { return }
+            guard status == .ready, let login else { self.showCorporateFailure(status); return }
+            do {
+                try self.bridge.storeVerifiedOAuth(credential, login: login)
+                // The same in-memory Passport session supplies Emergency's
+                // cookie. OAuth is sent only to the OAuth-enabled API hosts.
+                view.load(URLRequest(url: URL(string: "https://\(EmergencyTarget.host)/")!))
+                _ = await self.bridge.verifyInventoryReadiness(force: true)
+                self.render()
+            } catch { self.showCorporateFailure(.ownerMismatch) }
+        }
+    }
     private func recordCorporateNavigation(_ phase: CorporateLoginDiagnostic.Phase, url: URL?,
                                             mainFrame: Bool = true, code: Int? = nil) {
         corporateNavigationEvents.append(CorporateLoginDiagnostic.event(phase, url: url, mainFrame: mainFrame, code: code))
@@ -711,6 +772,8 @@ import AgentCore
         guard closing === loginWindow else { return }
         closeCorporatePopups()
         corporateLoginRun = UUID(); corporateOAuthState = nil
+        loginView?.configuration.userContentController.removeScriptMessageHandler(
+            forName: "corporateOAuthCompletion", contentWorld: .defaultClient)
         corporateNavigationTimer?.invalidate(); corporateNavigationTimer = nil
         corporateLoginLabel = nil
         loginWindow = nil; loginView = nil
@@ -793,8 +856,9 @@ import AgentCore
               accountActive,
               let ownerUserID = bridge.registration?.ownerUserID,
               activeAccountID == ownerUserID else { return }
+        let run = corporateLoginRun
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
-            guard let self, self.accountActive,
+            guard let self, self.corporateLoginRun == run, self.isCorporateView(webView), self.accountActive,
                   let ownerUserID = self.bridge.registration?.ownerUserID,
                   self.activeAccountID == ownerUserID else { return }
             let candidates = cookies.map { cookie in
@@ -805,7 +869,6 @@ import AgentCore
                 self.failCorporateNavigation("Корпоративная сессия не подтверждена. Нажмите «Повторить».")
                 return
             }
-            let run = self.corporateLoginRun
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let (status, login) = await self.verifyCorporateIdentity(authorization: header, run: run)
@@ -856,30 +919,16 @@ import AgentCore
             if isCorporateView(webView) {
                 recordCorporateNavigation(.requested, url: url, mainFrame: navigationAction.targetFrame?.isMainFrame != false)
             }
-            if isCorporateView(webView), url.scheme == "https",
+            if isCorporateView(webView), navigationAction.targetFrame?.isMainFrame != false, url.scheme == "https",
                url.host?.lowercased() == CorporateAuthPolicy.oauthHost,
-               url.path == CorporateAuthPolicy.callbackURL.path {
+               ["/", CorporateAuthPolicy.callbackURL.path].contains(url.path),
+               url.fragment?.contains("access_token=") == true {
                 decisionHandler(.cancel)
-                recordCorporateNavigation(.callback, url: url)
-                corporateNavigationTimer?.invalidate(); corporateNavigationTimer = nil
-                setCorporateLoginMessage("Проверяю корпоративный аккаунт…")
                 guard let state = corporateOAuthState else { showCorporateFailure(.reauthRequired); return }
-                corporateOAuthState = nil
-                let run = corporateLoginRun
                 guard let credential = try? CorporateAuthPolicy.oauthCredential(from: url, expectedState: state) else {
                     showCorporateFailure(.reauthRequired); return
                 }
-                Task { @MainActor [weak self, weak webView] in
-                    guard let self, let webView else { return }
-                    let (status, login) = await self.verifyCorporateIdentity(
-                        authorization: "OAuth \(credential.token)", run: run)
-                    guard self.corporateLoginRun == run, self.isCorporateView(webView) else { return }
-                    guard status == .ready, let login else { self.showCorporateFailure(status); return }
-                    do {
-                        try self.bridge.storeVerifiedOAuth(credential, login: login)
-                        webView.load(URLRequest(url: URL(string: "https://\(EmergencyTarget.host)/")!))
-                    } catch { self.showCorporateFailure(.ownerMismatch) }
-                }
+                finishCorporateOAuth(credential, in: webView)
                 return
             }
             let origin = navigationAction.sourceFrame.securityOrigin

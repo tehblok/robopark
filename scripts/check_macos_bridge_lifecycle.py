@@ -51,11 +51,27 @@ actor Claims {
  func keys() -> [String] { calls.compactMap { $0["public_key"] } }
  func response(_ status:Int) -> HTTPURLResponse { HTTPURLResponse(url:URL(string:"https://roboparktest.ru.tuna.am/api/agent-devices/claim")!,statusCode:status,httpVersion:"HTTP/1.1",headerFields:[:])! }
 }
+actor CorporateIdentityGate {
+ static let shared=CorporateIdentityGate()
+ var blocked=false; var started=false
+ var startWaiter:CheckedContinuation<Void,Never>?; var releaseWaiter:CheckedContinuation<Void,Never>?
+ func reset(){ blocked=false; started=false; startWaiter?.resume(); startWaiter=nil; releaseWaiter?.resume(); releaseWaiter=nil }
+ func block(){ blocked=true; started=false }
+ func waitForRequest() async { if started { return }; await withCheckedContinuation { startWaiter=$0 } }
+ func pauseIfNeeded() async {
+  guard blocked else { return }
+  started=true; startWaiter?.resume(); startWaiter=nil
+  await withCheckedContinuation { releaseWaiter=$0 }
+ }
+ func release(){ blocked=false; releaseWaiter?.resume(); releaseWaiter=nil }
+}
 func response(_ status:Int)->HTTPURLResponse { HTTPURLResponse(url:URL(string:"https://roboparktest.ru.tuna.am/api/agent-devices/info")!,statusCode:status,httpVersion:"HTTP/1.1",headerFields:[:])! }
 enum Network {
  static var infoCalls=0
  static var corporateStatus=200
  static var corporateBody:[String:Any] = ["login":"owner.login","dismissed":false]
+ static var corporateCalls=0
+ static var corporateThrows=false
  static var inventoryStatus = CorporateInventoryStatus.ready
  static var inventoryCalls = 0
  static let session=URLSession(configuration:.ephemeral)
@@ -68,6 +84,9 @@ enum Network {
  }
  static func emergency(vin:String,cookie:String,timeout:Double=10) async throws -> [String:Any] { throw NetworkFailure.network }
  static func corporateIdentity(authorization:String,timeout:Double=10) async throws -> (Data,HTTPURLResponse) {
+  corporateCalls += 1
+  await CorporateIdentityGate.shared.pauseIfNeeded()
+  if corporateThrows { throw NetworkFailure.network }
   let body=try JSONSerialization.data(withJSONObject:corporateBody)
   let url=URL(string:"https://st-api.yandex-team.ru/v3/myself")!
   return (body,HTTPURLResponse(url:url,statusCode:corporateStatus,httpVersion:"HTTP/1.1",headerFields:[:])!)
@@ -82,7 +101,7 @@ MAIN = r"""import Foundation
 import AgentCore
 var checks=0
 func check(_ v:@autoclosure() throws -> Bool,_ n:String)throws { guard try v() else { fatalError("FAIL: \(n)") }; checks+=1 }
-func reset() async { SecureStore.reset(); Network.infoCalls=0; Network.corporateStatus=200; Network.corporateBody=["login":"owner.login","dismissed":false]; Network.inventoryStatus = .ready; Network.inventoryCalls = 0; await Claims.shared.reset() }
+func reset() async { SecureStore.reset(); Network.infoCalls=0; Network.corporateStatus=200; Network.corporateBody=["login":"owner.login","dismissed":false]; Network.corporateCalls=0; Network.corporateThrows=false; Network.inventoryStatus = .ready; Network.inventoryCalls = 0; await Claims.shared.reset(); await CorporateIdentityGate.shared.reset() }
 func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"https://roboparktest.ru.tuna.am",code:"code",label:"Mac") }
 @main struct Run { static func main() async throws {
  let id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -142,6 +161,103 @@ func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"http
            "a changed server probe invalidates and refreshes Inventory ACL readiness")
  try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login")
  try check(!authenticated.needsCorporateLogin,"verified owner cookie enables corporate services")
+ authenticated.registration?.trackerOAuthExpiresAt=nil
+ authenticated.registration?.trackerOAuthVerifiedAt=Date()
+ try authenticated.persist()
+ let undatedRestart=Bridge()
+ try check(undatedRestart.registration?.trackerOAuthToken == "token"
+           && undatedRestart.hasVerifiedCorporateOAuth && !undatedRestart.needsCorporateLogin,
+           "verified undated OAuth survives restart and remains ready for fifteen minutes")
+ undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ try undatedRestart.persist()
+ Network.corporateCalls=0
+ let refreshedUndated=await undatedRestart.verifiedCorporateOAuth()
+ try check(refreshedUndated?.token == "token" && Network.corporateCalls == 1
+           && undatedRestart.hasVerifiedCorporateOAuth,
+           "undated OAuth is rechecked after the fifteen minute identity TTL")
+ for transientStatus in [500,429] {
+  undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+  Network.corporateStatus=transientStatus
+  let transient=await undatedRestart.verifiedCorporateOAuth()
+  try check(transient == nil && undatedRestart.registration?.trackerOAuthToken == "token"
+            && !undatedRestart.hasVerifiedCorporateOAuth,
+            "transient HTTP identity failure preserves OAuth without advertising readiness")
+ }
+ undatedRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ Network.corporateThrows=true
+ let offline=await undatedRestart.verifiedCorporateOAuth()
+ try check(offline == nil && undatedRestart.registration?.trackerOAuthToken == "token"
+           && !undatedRestart.hasVerifiedCorporateOAuth,
+           "network identity failure preserves OAuth without advertising readiness")
+ Network.corporateThrows=false; Network.corporateStatus=401
+ let revoked=await undatedRestart.verifiedCorporateOAuth(force:true)
+ try check(revoked == nil && undatedRestart.registration?.trackerOAuthToken == nil,
+           "401 identity response invalidates OAuth")
+ try undatedRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+ undatedRestart.registration?.trackerOAuthExpiresAt=nil
+ Network.corporateStatus=403
+ let forbiddenOAuth=await undatedRestart.verifiedCorporateOAuth(force:true)
+ try check(forbiddenOAuth == nil && undatedRestart.registration?.trackerOAuthToken == nil,
+           "403 identity response invalidates OAuth")
+ try undatedRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+ undatedRestart.registration?.trackerOAuthExpiresAt=nil
+ Network.corporateStatus=200; Network.corporateBody=["login":"other.login","dismissed":false]
+ let mismatchedOAuth=await undatedRestart.verifiedCorporateOAuth(force:true)
+ try check(mismatchedOAuth == nil && undatedRestart.registration?.trackerOAuthToken == nil,
+           "owner mismatch invalidates OAuth")
+ Network.corporateBody=["login":"owner.login","dismissed":false]
+ try undatedRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+ undatedRestart.registration?.trackerOAuthExpiresAt=Date(timeIntervalSinceNow:-1)
+ try undatedRestart.persist()
+ let expiredRestart=Bridge()
+ let callsBeforeExpired=Network.corporateCalls
+ let expired=await expiredRestart.verifiedCorporateOAuth(force:true)
+ try check(expired == nil && expiredRestart.registration?.trackerOAuthToken == nil
+           && Network.corporateCalls == callsBeforeExpired,
+           "known expired OAuth is rejected before identity traffic")
+ try expiredRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+ expiredRestart.registration?.trackerOAuthExpiresAt=nil
+ expiredRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ try expiredRestart.persist()
+ Network.corporateStatus=401
+ await CorporateIdentityGate.shared.block()
+ let staleTokenCheck=Task { await expiredRestart.verifiedCorporateOAuth() }
+ await CorporateIdentityGate.shared.waitForRequest()
+ expiredRestart.registration?.trackerOAuthToken="replacement-token"
+ await CorporateIdentityGate.shared.release()
+ let staleTokenResult=await staleTokenCheck.value
+ try check(staleTokenResult == nil && expiredRestart.registration?.trackerOAuthToken == "replacement-token",
+           "late revoked response cannot erase a changed OAuth token")
+ Network.corporateStatus=401
+ try expiredRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+ expiredRestart.registration?.trackerOAuthExpiresAt=nil
+ expiredRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ try expiredRestart.persist()
+ await CorporateIdentityGate.shared.block()
+ let staleOwnerCheck=Task { await expiredRestart.verifiedCorporateOAuth() }
+ await CorporateIdentityGate.shared.waitForRequest()
+ expiredRestart.registration?.ownerTrackerLogin="new.owner"
+ await CorporateIdentityGate.shared.release()
+ let staleOwnerResult=await staleOwnerCheck.value
+ try check(staleOwnerResult == nil && expiredRestart.registration?.trackerOAuthToken == "token"
+           && expiredRestart.registration?.ownerTrackerLogin == "new.owner",
+           "late revoked response cannot mutate a changed owner binding")
+ expiredRestart.registration?.ownerTrackerLogin="owner.login"
+ Network.corporateStatus=403
+ try expiredRestart.storeVerifiedOAuth(oauth,login:"owner.login")
+ expiredRestart.registration?.trackerOAuthExpiresAt=nil
+ expiredRestart.registration?.trackerOAuthVerifiedAt=Date(timeIntervalSinceNow:-901)
+ try expiredRestart.persist()
+ await CorporateIdentityGate.shared.block()
+ let staleRegistrationCheck=Task { await expiredRestart.verifiedCorporateOAuth() }
+ await CorporateIdentityGate.shared.waitForRequest()
+ expiredRestart.registration?.deviceID="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+ await CorporateIdentityGate.shared.release()
+ let staleRegistrationResult=await staleRegistrationCheck.value
+ try check(staleRegistrationResult == nil
+           && expiredRestart.registration?.trackerOAuthToken == "token"
+           && expiredRestart.registration?.deviceID == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+           "late forbidden response cannot mutate a replaced registration")
  do { try authenticated.storeVerifiedSession("Session_id=other",login:"other.login"); fatalError("FAIL: wrong corporate owner accepted") } catch { checks+=1 }
  Network.corporateStatus=401
  let unauthorized=await authenticated.verifyCorporateSession(force:true)

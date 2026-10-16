@@ -484,6 +484,7 @@ def build(
         subprocess.run(["strip", "-S", str(executable)], check=True)
         shutil.copy2(ROOT / "apps/macos/Resources/panel.html", resources / "panel.html")
         shutil.copy2(ROOT / "apps/macos/Resources/compute-peer.html", resources / "compute-peer.html")
+        shutil.copy2(ROOT / "apps/macos/Resources/corporate-oauth.js", resources / "corporate-oauth.js")
         shutil.copy2(ROOT / "scripts/macos_uninstall.sh", resources / "uninstall.command")
         (resources / "uninstall.command").chmod(0o755)
         compute_worker = executable.parent / "RoboparkComputeWorker"

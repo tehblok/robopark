@@ -14,7 +14,7 @@ import IOKit.ps
             || CorporateAuthPolicy.normalizedLogin(value.corporateLogin) != CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin)
             || value.corporateIdentityStatus != CorporateIdentityStatus.ready.rawValue
             || value.trackerOAuthToken?.isEmpty != false
-            || (value.trackerOAuthExpiresAt?.timeIntervalSinceNow ?? 0) <= 60
+            || value.trackerOAuthExpiresAt.map { $0.timeIntervalSinceNow <= 60 } == true
             || value.trackerOAuthVerifiedAt == nil
     }
     private(set) var completed = 0
@@ -295,15 +295,15 @@ import IOKit.ps
     }
     var hasVerifiedCorporateOAuth: Bool {
         guard let value = registration, let token = value.trackerOAuthToken, !token.isEmpty,
-              let expiry = value.trackerOAuthExpiresAt, expiry.timeIntervalSinceNow > 60,
+              value.trackerOAuthExpiresAt.map({ $0.timeIntervalSinceNow > 60 }) ?? true,
               let checked = value.trackerOAuthVerifiedAt, Date().timeIntervalSince(checked) < 15 * 60,
               let owner = CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin),
               CorporateAuthPolicy.normalizedLogin(value.corporateLogin) == owner else { return false }
         return true
     }
     func verifiedCorporateOAuth(force: Bool = false, now: Date = Date()) async -> (token: String, login: String)? {
-        guard let value = registration, let token = value.trackerOAuthToken,
-              let expiry = value.trackerOAuthExpiresAt, expiry.timeIntervalSince(now) > 60,
+        guard let value = registration, let token = value.trackerOAuthToken, !token.isEmpty,
+              value.trackerOAuthExpiresAt.map({ $0.timeIntervalSince(now) > 60 }) ?? true,
               let owner = CorporateAuthPolicy.normalizedLogin(value.ownerTrackerLogin),
               CorporateAuthPolicy.normalizedLogin(value.corporateLogin) == owner else { return nil }
         if !force, let checked = value.trackerOAuthVerifiedAt, now.timeIntervalSince(checked) < 15 * 60 {
@@ -311,13 +311,19 @@ import IOKit.ps
         }
         do {
             let (body, response) = try await Network.corporateIdentity(authorization: "OAuth \(token)")
-            guard CorporateAuthPolicy.identityStatus(httpStatus: response.statusCode, body: body,
-                                                      expectedLogin: owner) == .ready else {
-                registration?.trackerOAuthToken = nil; registration?.trackerOAuthExpiresAt = nil
-                registration?.trackerOAuthVerifiedAt = nil; readyUntil = .distantPast
-                registration?.inventoryOAuthVerifiedAt = nil
-                registration?.inventoryOAuthStatus = CorporateInventoryStatus.unverifiedHostACL.rawValue
-                try? persist(); return nil
+            guard let current = registration,
+                  current.origin == value.origin, current.deviceID == value.deviceID,
+                  current.instanceID == value.instanceID,
+                  current.trackerOAuthToken == token,
+                  CorporateAuthPolicy.normalizedLogin(current.ownerTrackerLogin) == owner,
+                  CorporateAuthPolicy.normalizedLogin(current.corporateLogin) == owner else { return nil }
+            let status = CorporateAuthPolicy.identityStatus(httpStatus: response.statusCode, body: body,
+                                                             expectedLogin: owner)
+            guard status == .ready else {
+                if response.statusCode == 401 || response.statusCode == 403 || status == .ownerMismatch {
+                    invalidateCorporateOAuth()
+                }
+                return nil
             }
             registration?.trackerOAuthVerifiedAt = now; try? persist()
             return (token, owner)

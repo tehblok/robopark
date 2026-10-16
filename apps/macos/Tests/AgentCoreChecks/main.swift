@@ -172,6 +172,27 @@ for callback in [
                                                      now: Date(timeIntervalSince1970: 1_000))
     }
 }
+let modalToken = "y1__" + String(repeating: "a", count: 70)
+let modalCredential = try CorporateAuthPolicy.displayedOAuthCredential(token: modalToken,
+    pageURL: URL(string: "https://oauth.yandex-team.ru/")!, expectedState: oauthState)
+try check(modalCredential.token == modalToken && modalCredential.expiresAt == nil
+    && modalCredential.isUsable(), "provider modal yields an undated credential requiring owner verification")
+let rootCallback = URL(string: "https://oauth.yandex-team.ru/#access_token=token-123&expires_in=3600&state=\(oauthState)")!
+try check(try CorporateAuthPolicy.oauthCredential(from: rootCallback, expectedState: oauthState).token == "token-123",
+    "current provider root callback and legacy verification callback are both supported")
+for page in ["http://oauth.yandex-team.ru/", "https://oauth.yandex-team.ru:444/",
+             "https://passport.yandex-team.ru/", "https://oauth.yandex-team.ru/authorize",
+             "https://oauth.yandex-team.ru/?state=wrong", "https://oauth.yandex-team.ru/#access_token=x&state=wrong"] {
+    rejects("token modal outside completion page or with mismatched state") {
+        _ = try CorporateAuthPolicy.displayedOAuthCredential(token: modalToken, pageURL: URL(string: page)!, expectedState: oauthState)
+    }
+}
+for token in ["password", "y1__short", modalToken + "\n", String(repeating: "a", count: 8193), modalToken + "…"] {
+    rejects("not a complete provider token") {
+        _ = try CorporateAuthPolicy.displayedOAuthCredential(token: token,
+            pageURL: URL(string: "https://oauth.yandex-team.ru/")!, expectedState: oauthState)
+    }
+}
 let sessionCandidate = CorporateCookieCandidate(name: "Session_id", value: "session-value",
     domain: ".yandex-team.ru", path: "/", secure: true,
     expires: Date(timeIntervalSince1970: 10_000))

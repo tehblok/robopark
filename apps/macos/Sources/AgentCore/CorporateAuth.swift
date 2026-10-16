@@ -83,10 +83,12 @@ public enum CorporateInventoryStatus: String, Codable {
 
 public struct CorporateOAuthCredential: Equatable {
     public let token: String
-    public let expiresAt: Date
+    /// Nil means the provider displayed a token without expiry metadata. It is
+    /// still checked against the owner's identity before use and periodically.
+    public let expiresAt: Date?
 
     public func isUsable(now: Date = Date()) -> Bool {
-        expiresAt.timeIntervalSince(now) > 60
+        expiresAt.map { $0.timeIntervalSince(now) > 60 } ?? true
     }
 }
 
@@ -142,7 +144,7 @@ public enum CorporateAuthPolicy {
                                        now: Date = Date()) throws -> CorporateOAuthCredential {
         guard url.scheme == "https", url.host?.lowercased() == oauthHost,
               url.port == nil || url.port == 443, url.user == nil, url.password == nil,
-              url.path == callbackURL.path, url.query == nil,
+              ["/", callbackURL.path].contains(url.path), url.query == nil,
               let fragment = url.fragment, fragment.utf8.count <= 16 * 1024 else {
             throw AgentError.invalidJob
         }
@@ -161,6 +163,35 @@ public enum CorporateAuthPolicy {
               let lifetimeText = values["expires_in"], let lifetime = TimeInterval(lifetimeText),
               lifetime > 60, lifetime <= 31_536_000 else { throw AgentError.invalidJob }
         return CorporateOAuthCredential(token: token, expiresAt: now.addingTimeInterval(lifetime))
+    }
+
+    /// The provider also returns to its root page and displays a token dialog
+    /// instead of redirecting. Only the active, run-bound native login window
+    /// may call this; the returned candidate is NOT an authenticated identity.
+    public static func displayedOAuthCredential(token: String, pageURL: URL,
+                                                expectedState: String) throws -> CorporateOAuthCredential {
+        guard pageURL.scheme == "https", pageURL.host?.lowercased() == oauthHost,
+              pageURL.port == nil || pageURL.port == 443,
+              pageURL.user == nil, pageURL.password == nil,
+              ["/", callbackURL.path].contains(pageURL.path),
+              expectedState.range(of: "^[A-Za-z0-9_-]{32,128}$", options: .regularExpression) != nil,
+              token.utf8.count <= 8192,
+              token.range(of: "^(?:y[0-9]+_[A-Za-z0-9_-]{20,}|[a-fA-F0-9]{32,128})$", options: .regularExpression) != nil,
+              !token.contains("\n"), !token.contains("\r"),
+              (pageURL.query?.utf8.count ?? 0) <= 16 * 1024,
+              (pageURL.fragment?.utf8.count ?? 0) <= 16 * 1024 else { throw AgentError.invalidJob }
+        // If the provider supplies protocol metadata, never downgrade a bad
+        // callback into a token-only success (state, expiry or error).
+        if let fragment = pageURL.fragment, !fragment.isEmpty {
+            let credential = try oauthCredential(from: pageURL, expectedState: expectedState)
+            guard credential.token == token else { throw AgentError.invalidJob }
+            return credential
+        }
+        let query = URLComponents(url: pageURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard query.allSatisfy({ $0.name == "state" && $0.value == expectedState }), query.count <= 1 else {
+            throw AgentError.invalidJob
+        }
+        return CorporateOAuthCredential(token: token, expiresAt: nil)
     }
 
     public static func sessionCookie(from cookies: [CorporateCookieCandidate],
