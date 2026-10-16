@@ -91,6 +91,88 @@ describe('TerminalConnection', () => {
     vi.useRealTimers()
   })
 
+  it('retries an initial socket close with a fresh ticket and becomes active', async () => {
+    vi.useFakeTimers()
+    FakeSocket.instances = []
+    const state = vi.fn()
+    const ticket = vi.fn()
+      .mockResolvedValueOnce({ ticket: 'first', expires_in: 15 })
+      .mockResolvedValueOnce({ ticket: 'second', expires_in: 15 })
+    const connection = new TerminalConnection({
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+      ticket, onOutput: vi.fn(), onState: state,
+    })
+
+    const connecting = connection.connect(session)
+    await Promise.resolve()
+    FakeSocket.instances[0].disconnect()
+    await expect(connecting).rejects.toThrow('terminal_connection_closed')
+
+    await vi.advanceTimersByTimeAsync(250)
+    const retry = FakeSocket.instances[1]
+    retry.open()
+    expect(retry.sent).toEqual([JSON.stringify({ op: 'authenticate', ticket: 'second' })])
+    retry.message(JSON.stringify({ op: 'ready', session }))
+
+    expect(ticket).toHaveBeenCalledTimes(2)
+    expect(state).toHaveBeenLastCalledWith('active')
+    connection.close()
+    vi.useRealTimers()
+  })
+
+  it.each([
+    { status: 401, detail: 'terminal_login_expired' },
+    { status: 403, detail: 'terminal_forbidden' },
+  ])('does not retry after an initial close when the next ticket fails with $status', async failure => {
+    vi.useFakeTimers()
+    FakeSocket.instances = []
+    const revoked = vi.fn()
+    const ticket = vi.fn()
+      .mockResolvedValueOnce({ ticket: 'first', expires_in: 15 })
+      .mockRejectedValueOnce(failure)
+    const connection = new TerminalConnection({
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+      ticket, onOutput: vi.fn(), onAuthorizationFailure: revoked,
+    })
+
+    const connecting = connection.connect(session)
+    await Promise.resolve()
+    FakeSocket.instances[0].disconnect()
+    await expect(connecting).rejects.toThrow('terminal_connection_closed')
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    expect(revoked).toHaveBeenCalledOnce()
+    expect(ticket).toHaveBeenCalledTimes(2)
+    expect(FakeSocket.instances).toHaveLength(1)
+    vi.useRealTimers()
+  })
+
+  it('stops retrying an initial close when the reconnect window expires', async () => {
+    vi.useFakeTimers()
+    FakeSocket.instances = []
+    const state = vi.fn()
+    const ticket = vi.fn()
+      .mockResolvedValueOnce({ ticket: 'first', expires_in: 15 })
+      .mockRejectedValue(new Error('ticket_temporarily_unavailable'))
+    const connection = new TerminalConnection({
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+      ticket, onOutput: vi.fn(), onState: state,
+    })
+
+    const connecting = connection.connect(session)
+    await Promise.resolve()
+    FakeSocket.instances[0].disconnect()
+    await expect(connecting).rejects.toThrow('terminal_connection_closed')
+    await vi.advanceTimersByTimeAsync(16_000)
+    const attemptsAtTimeout = ticket.mock.calls.length
+    await vi.advanceTimersByTimeAsync(30_000)
+
+    expect(attemptsAtTimeout).toBeGreaterThan(1)
+    expect(ticket).toHaveBeenCalledTimes(attemptsAtTimeout)
+    expect(state).toHaveBeenLastCalledWith('ended', 'reconnect_timeout')
+    vi.useRealTimers()
+  })
+
   it('rejects oversized input and clamps resize to the protocol limits', async () => {
     FakeSocket.instances = []
     const connection = new TerminalConnection({

@@ -131,7 +131,7 @@ export class TerminalConnection {
         this.stopHeartbeat(socket)
         this.socket = null
         if (!wasReady) reject(new Error('terminal_connection_closed'))
-        else if (!this.explicitlyClosed && this.session?.state !== 'ended') this.scheduleReconnect()
+        if (!this.explicitlyClosed && this.session?.state !== 'ended') this.scheduleReconnect()
       }
     })
   }
@@ -173,7 +173,9 @@ export class TerminalConnection {
     const generation = ++this.connectGeneration
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null
-      void this.open(generation).catch(() => this.scheduleReconnect())
+      void this.open(generation).catch(() => {
+        if (generation === this.connectGeneration) this.scheduleReconnect()
+      })
     }, 250)
   }
 

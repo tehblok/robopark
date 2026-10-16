@@ -17,6 +17,9 @@ it('places a bounded no-store websocket proxy before the general API location', 
   expect(block).toContain('proxy_request_buffering off;')
   expect(block).toContain('proxy_read_timeout 45s;')
   expect(block).toContain('Cache-Control "no-store"')
+  expect(nginx).toContain('limit_conn_zone $server_name zone=robopark_terminal_inflight:1m;')
+  expect(block).toContain('limit_conn robopark_terminal_inflight 4;')
+  expect(block).not.toContain('limit_conn robopark_api_inflight')
 })
 
 it('serves terminal HTML exactly with no offline fallback and no clipboard permission', () => {
