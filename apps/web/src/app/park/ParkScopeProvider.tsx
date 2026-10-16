@@ -136,7 +136,11 @@ export function ParkScopeProvider({ children }: PropsWithChildren) {
     ) return
 
     if (remember && requestUser && requestFleetScope) {
-      resourceStore.set(directoryKey(requestUser, requestIncludeInactive), nextParks, false)
+      try {
+        resourceStore.set(directoryKey(requestUser, requestIncludeInactive), nextParks, false)
+      } catch {
+        // Offline persistence is optional; a confirmed server response remains authoritative.
+      }
     }
 
     setLoadState({

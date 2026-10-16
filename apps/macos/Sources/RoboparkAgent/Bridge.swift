@@ -49,7 +49,7 @@ import IOKit.ps
                 registration = value
             }
         }
-        catch { state = "Разблокируйте Keychain и откройте панель повторно" }
+        catch { state = SecureStore.failureMessage(error) }
     }
     func reloadRegistration() throws {
         guard registration == nil else { return }

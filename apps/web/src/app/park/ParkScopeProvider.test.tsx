@@ -246,6 +246,20 @@ describe('ParkScopeProvider', () => {
     expect(screen.getByTestId('load-error')).toHaveTextContent('none')
   })
 
+  it('keeps a successful fleet response when optional offline persistence fails', async () => {
+    vi.spyOn(api, 'parks').mockResolvedValue([park(7), park(9)])
+    vi.spyOn(resourceStore, 'set').mockImplementationOnce(() => {
+      throw new Error('desktop_storage_key_denied')
+    })
+
+    renderScope('/work?park=7', { ...scopeUser('operator', []), role: 'royal' })
+
+    await waitFor(() => expect(screen.getByTestId('loading')).toHaveTextContent('false'))
+    expect(screen.getByTestId('parks')).toHaveTextContent('7,9')
+    expect(screen.getByTestId('park-id')).toHaveTextContent('7')
+    expect(screen.getByTestId('load-error')).toHaveTextContent('none')
+  })
+
   it.each(['admin', 'royal'] as const)('loads active and inactive fleet parks for %s inventory export', async role => {
     vi.spyOn(api, 'parks').mockResolvedValue([park(7), { ...park(9), is_active: false }])
 

@@ -140,7 +140,7 @@ import AgentCore
         if request.path == "/__robopark/storage-key" {
             guard session.profile != nil else { return .json(["detail": "workspace_not_configured"], status: 503) }
             do { return .json(["key": try storageKey().base64EncodedString()]) }
-            catch { return .json(["detail": "keychain_locked"], status: 503) }
+            catch { return .json(["detail": "offline_key_unavailable"], status: 503) }
         }
         if request.path == "/__robopark/config.js" {
             guard let profile = session.profile else { return .json(["detail": "workspace_not_configured"], status: 503) }
@@ -150,7 +150,11 @@ import AgentCore
         }
         if request.path.hasPrefix("/__robopark/") { return .json(["detail": "not_found"], status: 404) }
         do {
-            guard let root = Bundle.main.resourceURL?.appendingPathComponent("workspace", isDirectory: true) else { throw NetworkFailure.invalid }
+            guard let resources = Bundle.main.resourceURL else { throw NetworkFailure.invalid }
+            // Resolve the existing directory before adding a possibly absent SPA
+            // route: /private/tmp and /tmp must use the same spelling on both sides.
+            let root = resources.appendingPathComponent("workspace", isDirectory: true)
+                .resolvingSymlinksInPath().standardizedFileURL
             let decoded = try LocalHTTPPolicy.decodedPath(request.target)
             let path = root.appendingPathComponent(String(decoded.dropFirst())).standardizedFileURL
             // Bundle resource URLs can retain a base URL. Compare normalized

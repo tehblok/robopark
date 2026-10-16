@@ -121,7 +121,7 @@ if [ "$mode" = --remove-data ] && [ "$console_uid" -ge 501 ]; then
   target_home=$(/usr/bin/dscl . -read "/Users/$console_user" NFSHomeDirectory | /usr/bin/sed 's/^NFSHomeDirectory: //')
   case "$target_home" in /Users/*) ;; *) echo 'Приложение удалено; пользовательские данные сохранены: неизвестный домашний каталог.'; exit 0;; esac
   [ -d "$target_home" ] && [ ! -L "$target_home" ] || { echo 'Приложение удалено; данные сохранены.'; exit 0; }
-  for relative in 'Library/WebKit/ru.robopark.agent' 'Library/Caches/ru.robopark.agent' 'Library/Application Support/ru.robopark.agent'; do
+  for relative in 'Library/WebKit/ru.robopark.agent' 'Library/Caches/ru.robopark.agent' 'Library/Application Support/ru.robopark.agent' 'Library/Application Support/RoboparkAgent'; do
     [ ! -L "$target_home/$relative" ] || continue
     /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /bin/rm -rf "$target_home/$relative"
   done
@@ -131,7 +131,7 @@ if [ "$mode" = --remove-data ] && [ "$console_uid" -ge 501 ]; then
     count=0
     while [ "$count" -lt 512 ] && /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/security delete-generic-password -s "$service" >/dev/null 2>&1; do count=$((count + 1)); done
   done
-  echo 'Robopark удалён. Keychain и данные прежнего встроенного окна удалены. Данные сайта 127.0.0.1 в системном браузере сохранены; при необходимости удалите их в настройках данных сайтов браузера.'
+  echo 'Robopark удалён. Локальные сессии и данные прежнего встроенного окна удалены; старые записи Keychain удаляются при доступности. Данные сайта 127.0.0.1 в системном браузере сохранены; при необходимости удалите их в настройках данных сайтов браузера.'
 else
   echo 'Robopark удалён. Данные приложения и сайта 127.0.0.1 в системном браузере сохранены для повторной установки.'
 fi

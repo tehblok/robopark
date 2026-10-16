@@ -65,69 +65,115 @@ enum SecureStore {
     private static func requiresReceiptMigration(_ account: String) -> Bool {
         account == receiptIndexAccount || isReceiptRow(account)
     }
-    private static func migrateLegacyValue(_ account: String) throws -> Data? {
-        if let value = try readRaw(query(account)) {
-            return try persistMigratedValue(value, account: account)
+    private static var deferredLegacyAccounts = Set<String>()
+    static var hasDeferredLegacyData: Bool { synchronized { !deferredLegacyAccounts.isEmpty } }
+    static func failureMessage(_ error: Error) -> String {
+        if (error as NSError).domain == "RoboparkKeychain" {
+            return "Не удалось перенести данные предыдущей версии. Они сохранены; повторный вход восстановит онлайн-работу. Старые офлайн-данные требуют отдельного переноса."
         }
-        var legacy = query(account); legacy[kSecAttrService as String] = legacyService
-        guard let value = try readRaw(legacy) else {
-            // A concurrent broker write/delete after the initial absent read is
-            // authoritative even though this process found no legacy source.
+        if error is PrivateSessionStoreError {
+            return "Не удалось прочитать или сохранить локальные данные Robopark. Проверьте свободное место и права папки приложения."
+        }
+        return (error as? LocalizedError)?.errorDescription ?? "Операция не завершилась. Повторите после проверки связи с сервером."
+    }
+
+    private static func legacyMetadataExists(_ account: String, service: String) throws -> Bool {
+        var request = query(account)
+        request[kSecAttrService as String] = service
+        request[kSecReturnAttributes as String] = true
+        request[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = perform { SecItemCopyMatching(request as CFDictionary, &item) }
+        if status == errSecItemNotFound { return false }
+        guard status == errSecSuccess else { throw NSError(domain: "RoboparkKeychain", code: Int(status)) }
+        return true
+    }
+    private static func legacyState(_ account: String) throws -> PrivateStoredState {
+        // The old broker is only a read-only migration source. A fresh install
+        // never needs its service; ordinary operation uses the private files.
+        let brokerService = "ru.robopark.keychain-broker-v1"
+        if try legacyMetadataExists(account, service: brokerService) {
             switch try KeychainBrokerClient.readState(account) {
-            case let .value(current): return current
+            case .value(let bytes): return .value(bytes)
+            case .deleted: return .deleted
+            case .absent: break
+            }
+        }
+        if isReceiptRow(account),
+           try legacyMetadataExists("internal-receipt-migration-sealed-v1", service: brokerService),
+           try KeychainBrokerClient.receiptMigrationSealed() { return .absent }
+        if let bytes = try readRaw(query(account)) { return .value(bytes) }
+        var old = query(account); old[kSecAttrService as String] = legacyService
+        if let bytes = try readRaw(old) { return .value(bytes) }
+        return .absent
+    }
+    private static func migrateLegacyValue(_ account: String) throws -> Data? {
+        switch try legacyState(account) {
+        case .value(let bytes): return try persistMigratedValue(bytes, account: account)
+        case .deleted:
+            switch try SessionStoreBackend.migrateDeletionIfAbsent(account) {
+            case .value(let value): return value
+            case .deleted, .absent: return nil
+            }
+        case .absent:
+            switch try SessionStoreBackend.readState(account) {
+            case .value(let value): return value
             case .absent, .deleted: return nil
             }
         }
-        return try persistMigratedValue(value, account: account)
+    }
+    private static func canRenewSession(_ account: String) -> Bool {
+        // A new login can replace an expired/inaccessible session. Encryption
+        // keys and uncertain write receipts cannot be replaced without data loss.
+        ["registration", "workspace-profile-v1", "workspace-browser-session-v1"].contains(account)
+            || account.hasPrefix("enrollment-key-v1-") || account.hasPrefix("account-claim-key-v1-")
     }
     private static func persistMigratedValue(_ value: Data, account: String) throws -> Data? {
-        // The source item deliberately remains in place. A verified broker
-        // copy is authoritative; a later delete writes a broker tombstone so
+        // The source item deliberately remains in place. A verified local
+        // copy is authoritative; a later delete writes a local tombstone so
         // that an inaccessible legacy item can never be resurrected.
-        let committed = try KeychainBrokerClient.migrateIfAbsent(value, account: account)
+        let committed = try SessionStoreBackend.migrateIfAbsent(value, account: account)
         switch committed {
         case .deleted:
             return nil
         case .absent:
             throw migrationError()
         case let .value(candidate):
-            switch try KeychainBrokerClient.readState(account) {
+            switch try SessionStoreBackend.readState(account) {
             case .deleted: return nil
             case let .value(stored) where stored == candidate: return stored
             case .absent, .value: throw migrationError()
             }
         }
     }
-    private static func migrateReceiptState(_ account: String) throws -> KeychainBrokerStoredState {
-        let current = try KeychainBrokerClient.readState(account)
+    private static func migrateReceiptState(_ account: String) throws -> PrivateStoredState {
+        let current = try SessionStoreBackend.readState(account)
         guard case .absent = current else { return current }
-        let source: Data?
-        if let stable = try readRaw(query(account)) {
-            source = stable
-        } else {
-            var legacy = query(account); legacy[kSecAttrService as String] = legacyService
-            source = try readRaw(legacy)
+        let source: Data
+        switch try legacyState(account) {
+        case .value(let bytes): source = bytes
+        case .deleted: return try SessionStoreBackend.migrateDeletionIfAbsent(account)
+        case .absent: return try SessionStoreBackend.readState(account)
         }
-        guard let source else { return try KeychainBrokerClient.readState(account) }
-        let committed = try KeychainBrokerClient.migrateIfAbsent(source, account: account)
+        let committed = try SessionStoreBackend.migrateIfAbsent(source, account: account)
         switch committed {
         case .absent:
             // Another process may have sealed row migration after our first
             // read. Once sealed, an absent row intentionally ignores legacy.
-            guard isReceiptRow(account), try KeychainBrokerClient.receiptMigrationSealed() else {
+            guard isReceiptRow(account), try SessionStoreBackend.receiptMigrationSealed() else {
                 throw migrationError()
             }
             return .absent
         case .deleted:
             return .deleted
         case let .value(candidate):
-            guard case let .value(stored) = try KeychainBrokerClient.readState(account),
+            guard case let .value(stored) = try SessionStoreBackend.readState(account),
                   stored == candidate else { throw migrationError() }
             return .value(stored)
         }
     }
     private static func ensureReceiptMigration() throws {
-        if try KeychainBrokerClient.receiptMigrationSealed() { return }
+        if try SessionStoreBackend.receiptMigrationSealed() { return }
         let indexState = try migrateReceiptState(receiptIndexAccount)
         switch indexState {
         case .absent, .deleted:
@@ -142,30 +188,45 @@ enum SecureStore {
             // between reserving an index slot and persisting its receipt.
             for account in Set(index.accounts).sorted() { _ = try migrateReceiptState(account) }
         }
-        try KeychainBrokerClient.sealReceiptMigration()
-        guard try KeychainBrokerClient.receiptMigrationSealed() else { throw migrationError() }
+        try SessionStoreBackend.sealReceiptMigration()
+        guard try SessionStoreBackend.receiptMigrationSealed() else { throw migrationError() }
     }
     static func readData(_ account: String) throws -> Data? {
         try synchronized {
             let receiptStorage = requiresReceiptMigration(account)
             if receiptStorage { try ensureReceiptMigration() }
-            switch try KeychainBrokerClient.readState(account) {
-            case let .value(value): return value
-            case .deleted: return nil
+            switch try SessionStoreBackend.readState(account) {
+            case let .value(value):
+                deferredLegacyAccounts.remove(account)
+                return value
+            case .deleted:
+                deferredLegacyAccounts.remove(account)
+                return nil
             case .absent:
                 if receiptStorage { return nil }
-                // Direct Keychain access exists only for lazy copy-before-use
-                // migration. At startup interaction is disabled, so a clean install
-                // returns nil while an inaccessible old record fails closed. The
-                // explicit foreground recovery action enables the one-time prompt.
-                return try migrateLegacyValue(account)
+                // Background reads never show system dialogs. Existing offline
+                // keys/receipts remain protected until a lossless import succeeds.
+                do {
+                    if deferredLegacyAccounts.contains(account), !interactive {
+                        throw migrationError()
+                    }
+                    let value = try migrateLegacyValue(account)
+                    deferredLegacyAccounts.remove(account)
+                    return value
+                } catch {
+                    guard (error as NSError).domain == "RoboparkKeychain" else { throw error }
+                    deferredLegacyAccounts.insert(account)
+                    if canRenewSession(account), !interactive { return nil }
+                    throw error
+                }
             }
         }
     }
     static func writeData(_ data: Data, account: String) throws {
         try synchronized {
             if requiresReceiptMigration(account) { try ensureReceiptMigration() }
-            try KeychainBrokerClient.write(data, account: account)
+            try SessionStoreBackend.write(data, account: account)
+            deferredLegacyAccounts.remove(account)
         }
     }
     static func deleteData(_ account: String) throws {
@@ -174,7 +235,8 @@ enum SecureStore {
         // one-time migration seal, so acknowledgements remain bounded.
         try synchronized {
             if requiresReceiptMigration(account) { try ensureReceiptMigration() }
-            try KeychainBrokerClient.delete(account)
+            try SessionStoreBackend.delete(account)
+            deferredLegacyAccounts.remove(account)
         }
     }
     static func migrateCorporateWriteReceipts() throws {

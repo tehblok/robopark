@@ -23,5 +23,6 @@ let package = Package(
         .executableTarget(name: "DesktopChecks", dependencies: ["AgentCore"], path: "Tests/DesktopChecks"),
         .executableTarget(name: "ComputePeerChecks", dependencies: ["AgentCore", "ComputePeerCore"], path: "Tests/ComputePeerChecks"),
         .executableTarget(name: "KeychainBrokerChecks", dependencies: ["KeychainBrokerIPC"], path: "Tests/KeychainBrokerChecks"),
+        .executableTarget(name: "PrivateSessionStoreChecks", dependencies: ["AgentCore"], path: "Tests/PrivateSessionStoreChecks"),
     ]
 )

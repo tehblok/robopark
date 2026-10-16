@@ -55,7 +55,7 @@ import AgentCore
         catch {
             NSLog("Robopark workspace initialization failed (keychain=%d, code=%ld)",
                 (error as NSError).domain == "RoboparkKeychain" ? 1 : 0, (error as NSError).code)
-            lastError = "Не удалось открыть защищённое хранилище рабочего интерфейса. Разблокируйте Keychain."
+            lastError = SecureStore.failureMessage(error)
         }
         if UserDefaults.standard.bool(forKey: accountPresentKey) { accountLabel = "Проверка аккаунта…" }
         let menu = NSMenu()
@@ -63,7 +63,7 @@ import AgentCore
         menu.addItem(withTitle: "Служба и подключение", action: #selector(showDevice), keyEquivalent: "")
         let legacyItem = menu.addItem(withTitle: "Черновики предыдущей версии…", action: #selector(showLegacyWorkspace), keyEquivalent: "")
         legacyItem.isEnabled = false; legacyMenuItem = legacyItem
-        menu.addItem(withTitle: "Подключить защищённое хранилище…", action: #selector(connectKeychain), keyEquivalent: "")
+        menu.addItem(withTitle: "Перенести данные предыдущей версии…", action: #selector(connectKeychain), keyEquivalent: "")
         menu.addItem(withTitle: "Проверить обновления", action: #selector(checkUpdate), keyEquivalent: "")
         menu.addItem(withTitle: "Удалить Robopark…", action: #selector(uninstall), keyEquivalent: "")
         menu.addItem(.separator())
@@ -358,7 +358,7 @@ import AgentCore
     @objc func uninstall() {
         let alert = NSAlert()
         alert.messageText = "Удалить Robopark?"
-        alert.informativeText = "Можно сохранить аккаунт и офлайн-данные для повторной установки. Полное удаление удалит Keychain и данные прежнего встроенного окна. Данные сайта 127.0.0.1 в системном браузере сохранятся."
+        alert.informativeText = "Можно сохранить аккаунт и офлайн-данные для повторной установки. Полное удаление удалит локальные сессии и данные прежнего встроенного окна. Данные сайта 127.0.0.1 в системном браузере сохранятся."
         alert.addButton(withTitle: "Отмена")
         alert.addButton(withTitle: "Удалить, сохранив данные")
         alert.addButton(withTitle: "Удалить все данные")
@@ -528,7 +528,7 @@ import AgentCore
             }
             return agentStatusResponse()
         } catch {
-            lastError = "Операция локальной службы не завершилась. Проверьте сеть и Keychain."
+            lastError = SecureStore.failureMessage(error)
             render()
             return .json(["detail": "agent_action_failed"], status: 409)
         }
@@ -538,7 +538,7 @@ import AgentCore
         // Give the foreground panel a run-loop turn before asking SecurityAgent.
         DispatchQueue.main.async { [weak self] in
             do { try self?.recoverKeychain() }
-            catch { self?.lastError = "Доступ к Keychain не предоставлен. Сохранённые данные оставлены на месте."; self?.render() }
+            catch { self?.lastError = SecureStore.failureMessage(error); self?.render() }
         }
     }
     private func recoverKeychain() throws {
@@ -557,6 +557,7 @@ import AgentCore
         let profile = bridge.registration
         let object: [String: Any] = [
             "registered": profile != nil, "environment": profile?.environment ?? "",
+            "legacyDataPending": SecureStore.hasDeferredLegacyData,
             "label": profile?.label ?? "", "state": bridge.state, "upstream": bridge.upstreamState,
             "needsCorporateLogin": bridge.needsCorporateLogin,
             "version": updater.version, "updates": updater.message,
@@ -608,7 +609,7 @@ import AgentCore
                 default: throw AgentError.invalidJob
                 }
             } catch {
-                lastError = (error as? AgentError)?.localizedDescription ?? "Операция не завершилась. Проверьте адрес, код регистрации, сеть и Keychain."
+                lastError = SecureStore.failureMessage(error)
             }
         }
     }

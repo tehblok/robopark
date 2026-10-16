@@ -21,6 +21,7 @@ import CryptoKit
 import AgentCore
 enum NetworkFailure: Error, Equatable { case auth, network, invalid; var wireCode: String { "network" } }
 enum SecureStore {
+    static func failureMessage(_ error: Error) -> String { "storage unavailable" }
  static var registration: Registration?; static var data: [String: Data] = [:]; static var signed = false; static var failSave = false
  static func reset() { registration=nil; data=[:]; signed=false; failSave=false }
  static func load() throws -> Registration? { signed ? nil : registration }

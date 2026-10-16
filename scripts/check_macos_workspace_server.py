@@ -351,7 +351,9 @@ def main() -> int:
         except ValueError as error:
             parser.error(str(error))
 
-    temporary = Path(tempfile.mkdtemp(prefix="robopark-workspace-server-"))
+    # Keep the /private/tmp spelling: Foundation canonicalizes an existing root
+    # to /tmp but not a nonexistent SPA route. This reproduces alias regressions.
+    temporary = Path(tempfile.mkdtemp(prefix="robopark-workspace-server-", dir="/private/tmp"))
     try:
         source_root = temporary / "Sources"
         shutil.copytree(MACOS / "Sources" / "AgentCore", source_root / "AgentCore")
