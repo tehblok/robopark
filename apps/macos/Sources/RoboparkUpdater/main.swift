@@ -8,6 +8,8 @@ private let appInfo = URL(fileURLWithPath: "/Applications/Robopark.app/Contents/
 private let retirement = support.appendingPathComponent("retiring")
 private let lifecycleLock = support.appendingPathComponent("lifecycle.lock", isDirectory: true)
 private let installLock = support.appendingPathComponent("install.lock", isDirectory: true)
+private let updaterPlist = URL(fileURLWithPath: "/Library/LaunchDaemons/ru.robopark.update-helper.plist")
+private let updaterService = "system/ru.robopark.update-helper"
 private let storage = SecureUpdateStorage(root: support, expectedOwner: 0, trustedAncestors: [
     URL(fileURLWithPath: "/Library", isDirectory: true),
     URL(fileURLWithPath: "/Library/Application Support", isDirectory: true),
@@ -280,9 +282,114 @@ private func runInstaller(_ package: URL) throws {
     guard process.terminationReason == .exit, process.terminationStatus == 0 else { throw AgentError.unsupportedRelease }
 }
 
+private struct LaunchctlResult {
+    let status: Int32
+    let output: String
+}
+
+private func launchctl(_ arguments: [String], captureOutput: Bool = false) throws -> LaunchctlResult {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    process.arguments = arguments
+    let output = Pipe()
+    process.standardOutput = captureOutput ? output : FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    let bytes = captureOutput ? output.fileHandleForReading.readDataToEndOfFile() : Data()
+    process.waitUntilExit()
+    guard process.terminationReason == .exit else { throw AgentError.invalidCatalog }
+    return LaunchctlResult(status: process.terminationStatus,
+                           output: String(data: bytes, encoding: .utf8) ?? "")
+}
+
+private func pathExistsNoFollow(_ url: URL) throws -> Bool {
+    var status = stat()
+    if lstat(url.path, &status) == 0 { return true }
+    guard errno == ENOENT else { throw AgentError.invalidCatalog }
+    return false
+}
+
+private func registrationIsBusy() throws -> Bool {
+    if anyInstallerRunning() { return true }
+    for lock in [installLock, lifecycleLock] {
+        if try pathExistsNoFollow(lock) {
+            try requireSecureDirectory(lock)
+            return true
+        }
+    }
+    return false
+}
+
+private func requireSecureUpdaterPlist() throws {
+    let values = try updaterPlist.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+    let attributes = try FileManager.default.attributesOfItem(atPath: updaterPlist.path)
+    guard values.isRegularFile == true, values.isSymbolicLink != true,
+          let size = values.fileSize, (1...64 * 1024).contains(size),
+          (attributes[.ownerAccountID] as? NSNumber)?.intValue == 0,
+          ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o022 == 0 else {
+        throw AgentError.invalidCatalog
+    }
+}
+
+private func writeRegistrationStatus(_ status: String) throws {
+    try requireSecureSupportPath()
+    let url = support.appendingPathComponent("registration.status")
+    let data = try JSONSerialization.data(withJSONObject: [
+        "status": status,
+        "checked_at": Int64(Date().timeIntervalSince1970),
+    ], options: [.sortedKeys])
+    try data.write(to: url, options: [.atomic])
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600, .ownerAccountID: 0, .groupOwnerAccountID: 0],
+        ofItemAtPath: url.path
+    )
+}
+
+private func registerUpdater() -> Bool {
+    do {
+        let outcome = try UpdaterRegistrationCoordinator.run(
+            maxAttempts: 600,
+            isRetiring: isRetiring,
+            acquireLock: { try storage.tryAcquireLock() },
+            releaseLock: { try $0.close() },
+            isBusy: registrationIsBusy,
+            isDisabled: {
+                try requireSecureUpdaterPlist()
+                let result = try launchctl(["print-disabled", "system"], captureOutput: true)
+                guard result.status == 0 else { throw AgentError.invalidCatalog }
+                return UpdaterRegistrationPolicy.isDisabled(
+                    result.output, label: "ru.robopark.update-helper"
+                )
+            },
+            isLoaded: { try launchctl(["print", updaterService]).status == 0 },
+            bootout: {
+                guard try launchctl(["bootout", updaterService]).status == 0 else {
+                    throw AgentError.invalidCatalog
+                }
+            },
+            bootstrap: {
+                guard try launchctl(["bootstrap", "system", updaterPlist.path]).status == 0 else {
+                    throw AgentError.invalidCatalog
+                }
+            },
+            pause: { sleep(1) }
+        )
+        try writeRegistrationStatus(outcome == .ready ? "ready" : "retired")
+        return true
+    } catch {
+        try? writeRegistrationStatus("failed")
+        return false
+    }
+}
+
 @main private struct RoboparkUpdater {
     static func main() async {
         guard getuid() == 0 else { return }
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments == ["--register-updater"] {
+            Darwin.exit(registerUpdater() ? 0 : 75)
+        }
+        guard arguments.isEmpty else { Darwin.exit(64) }
         let lock: FileHandle
         do { lock = try storage.acquireLock() }
         catch { return }

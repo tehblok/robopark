@@ -10,6 +10,66 @@ public enum ApplicationInstallPathPolicy {
     }
 }
 
+public enum UpdaterRegistrationPolicy {
+    public static func isDisabled(_ output: String, label: String) -> Bool {
+        output.split(whereSeparator: \.isNewline).contains { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard let separator = line.range(of: "=>") else { return false }
+            let key = line[..<separator.lowerBound].trimmingCharacters(in: .whitespaces)
+            let value = line[separator.upperBound...].trimmingCharacters(in: .whitespaces)
+            return key == "\"\(label)\"" && value == "true"
+        }
+    }
+}
+
+public enum UpdaterRegistrationOutcome: Equatable {
+    case ready
+    case retired
+}
+
+public enum UpdaterRegistrationCoordinator {
+    public static func run<Lock>(
+        maxAttempts: Int,
+        isRetiring: () -> Bool,
+        acquireLock: () throws -> Lock?,
+        releaseLock: (Lock) throws -> Void,
+        isBusy: () throws -> Bool,
+        isDisabled: () throws -> Bool,
+        isLoaded: () throws -> Bool,
+        bootout: () throws -> Void,
+        bootstrap: () throws -> Void,
+        pause: () -> Void
+    ) throws -> UpdaterRegistrationOutcome {
+        guard maxAttempts > 0 else { throw AgentError.invalidCatalog }
+        var lock: Lock?
+        defer {
+            if let lock { try? releaseLock(lock) }
+        }
+        var attempts = 0
+        while lock == nil {
+            if isRetiring() { return .retired }
+            lock = try acquireLock()
+            if lock == nil {
+                guard attempts < maxAttempts else { throw AgentError.invalidCatalog }
+                pause(); attempts += 1
+            }
+        }
+        while try isBusy() {
+            if isRetiring() { return .retired }
+            guard attempts < maxAttempts else { throw AgentError.invalidCatalog }
+            pause(); attempts += 1
+        }
+        guard !isRetiring() else { return .retired }
+        let disabled = try isDisabled()
+        if try isLoaded() { try bootout() }
+        guard !isRetiring() else { return .retired }
+        try releaseLock(lock!)
+        lock = nil
+        if !disabled { try bootstrap() }
+        return .ready
+    }
+}
+
 public struct SecureUpdateStorage {
     public let root: URL
     public let expectedOwner: uid_t
@@ -69,7 +129,7 @@ public struct SecureUpdateStorage {
         }
     }
 
-    public func acquireLock() throws -> FileHandle {
+    public func tryAcquireLock() throws -> FileHandle? {
         try validate()
         let url = root.appendingPathComponent("update.lock")
         let descriptor = open(url.path, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
@@ -78,12 +138,22 @@ public struct SecureUpdateStorage {
         guard fstat(descriptor, &status) == 0,
               status.st_mode & S_IFMT == S_IFREG,
               status.st_uid == expectedOwner,
-              status.st_mode & 0o077 == 0,
-              flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+              status.st_mode & 0o077 == 0 else {
             close(descriptor)
             throw AgentError.invalidCatalog
         }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            let lockError = errno
+            close(descriptor)
+            if lockError == EWOULDBLOCK || lockError == EAGAIN { return nil }
+            throw AgentError.invalidCatalog
+        }
         return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+
+    public func acquireLock() throws -> FileHandle {
+        guard let lock = try tryAcquireLock() else { throw AgentError.invalidCatalog }
+        return lock
     }
 
     private func removeRecoverableStaging(at url: URL) throws {

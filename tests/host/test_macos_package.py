@@ -197,6 +197,26 @@ def test_installer_preserves_disabled_autostart_without_process_name_kills():
     assert "update-helper" in script
 
 
+def test_postinstall_delegates_updater_reload_to_independent_root_job():
+    module = builder()
+    script = module.postinstall_script()
+    registration = module.macos_updater_registration
+    assert registration.schedule_registration_script().rstrip() in script
+    assert (
+        "/bin/launchctl bootstrap system /Library/LaunchDaemons/ru.robopark.update-helper.plist"
+        not in script
+    )
+    assert "ru.robopark.update-registration.plist" in script
+    assert "register-updater.sh" not in script
+
+
+def test_package_stages_fixed_native_registration_job():
+    source = (ROOT / "scripts/build_macos_pkg.py").read_text()
+    assert "macos_updater_registration.registration_daemon()" in source
+    assert "ru.robopark.update-registration.plist" in source
+    assert "register-updater.sh" not in source
+
+
 @pytest.mark.parametrize("disabled,running,bootstrap_error", [
     (False, True, False), (True, True, False), (True, False, False), (True, True, True),
 ])

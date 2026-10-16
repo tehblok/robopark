@@ -33,10 +33,11 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 try:
-    from scripts import macos_keychain_broker
+    from scripts import macos_keychain_broker, macos_updater_registration
     from scripts.macos_signing import ensure_test_signing_identity, isolated_test_signer
 except ModuleNotFoundError:  # Direct execution: scripts/ is sys.path[0].
     import macos_keychain_broker
+    import macos_updater_registration
     from macos_signing import ensure_test_signing_identity, isolated_test_signer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -294,6 +295,8 @@ chown root:wheel /Library/LaunchAgents/ru.robopark.agent.plist
 chmod 644 /Library/LaunchAgents/ru.robopark.agent.plist
 chown root:wheel /Library/LaunchDaemons/ru.robopark.update-helper.plist
 chmod 644 /Library/LaunchDaemons/ru.robopark.update-helper.plist
+chown root:wheel /Library/LaunchDaemons/ru.robopark.update-registration.plist
+chmod 644 /Library/LaunchDaemons/ru.robopark.update-registration.plist
 chown root:wheel /Library/PrivilegedHelperTools/RoboparkUpdater
 chmod 755 /Library/PrivilegedHelperTools/RoboparkUpdater
 chown root:wheel '/Library/Application Support/RoboparkUpdater'
@@ -301,7 +304,7 @@ chmod 755 '/Library/Application Support/RoboparkUpdater'
 chown root:wheel '/Library/Application Support/RoboparkUpdater/config.json' '/Library/Application Support/RoboparkUpdater/update-root.json'
 chmod 644 '/Library/Application Support/RoboparkUpdater/config.json' '/Library/Application Support/RoboparkUpdater/update-root.json'
 __ROBOPARK_BROKER_PERMISSIONS__
-/bin/launchctl bootstrap system /Library/LaunchDaemons/ru.robopark.update-helper.plist 2>/dev/null || true
+__ROBOPARK_UPDATER_REGISTRATION__
 install_lock='/Library/Application Support/RoboparkUpdater/install.lock'
 if [ -f "$install_lock/state" ] && [ ! -L "$install_lock/state" ] && [ "$(/usr/bin/stat -f %u "$install_lock/state")" = 0 ]; then
   mode=$(/usr/bin/awk -F= '$1 == "mode" { print $2 }' "$install_lock/state")
@@ -319,6 +322,9 @@ fi
     ).replace(
         "__ROBOPARK_LAUNCH_AGENT_REGISTRATION__",
         launch_agent_update_script().rstrip(),
+    ).replace(
+        "__ROBOPARK_UPDATER_REGISTRATION__",
+        macos_updater_registration.schedule_registration_script().rstrip(),
     )
 
 
@@ -569,6 +575,9 @@ def build(
         daemon_dir.mkdir(parents=True)
         (daemon_dir / "ru.robopark.update-helper.plist").write_bytes(
             plistlib.dumps(update_daemon())
+        )
+        (daemon_dir / "ru.robopark.update-registration.plist").write_bytes(
+            plistlib.dumps(macos_updater_registration.registration_daemon())
         )
         helper_support = payload / "Library/Application Support/RoboparkUpdater"
         helper_support.mkdir(parents=True)

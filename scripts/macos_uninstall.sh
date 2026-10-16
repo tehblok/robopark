@@ -6,6 +6,7 @@ case "$mode" in ''|--remove-data|--plan) ;; *) echo 'Usage: uninstall.command [-
 if [ "$mode" = --plan ]; then
   echo '/Applications/Robopark.app'
   echo '/Library/LaunchAgents/ru.robopark.agent.plist'
+  echo '/Library/LaunchDaemons/ru.robopark.update-registration.plist'
   echo '/Library/LaunchDaemons/ru.robopark.update-helper.plist'
   echo '/Library/PrivilegedHelperTools/RoboparkUpdater'
   echo '/Library/Application Support/RoboparkUpdater'
@@ -106,12 +107,13 @@ while :; do
   /bin/sleep 1
   attempt=$((attempt + 1))
 done
+/bin/launchctl bootout system /Library/LaunchDaemons/ru.robopark.update-registration.plist 2>/dev/null || true
 /bin/launchctl bootout system /Library/LaunchDaemons/ru.robopark.update-helper.plist 2>/dev/null || true
 if [ "$console_uid" -ge 501 ]; then
   /bin/launchctl bootout "gui/$console_uid" /Library/LaunchAgents/ru.robopark.agent.plist 2>/dev/null || true
   /bin/launchctl bootout "gui/$console_uid/ru.robopark.keychain-broker.v1" 2>/dev/null || true
 fi
-/bin/rm -f /Library/LaunchAgents/ru.robopark.agent.plist /Library/LaunchDaemons/ru.robopark.update-helper.plist /Library/PrivilegedHelperTools/RoboparkUpdater
+/bin/rm -f /Library/LaunchAgents/ru.robopark.agent.plist /Library/LaunchDaemons/ru.robopark.update-registration.plist /Library/LaunchDaemons/ru.robopark.update-helper.plist /Library/PrivilegedHelperTools/RoboparkUpdater
 /bin/rm -f /Library/LaunchAgents/ru.robopark.keychain-broker.v1.plist
 /bin/rm -rf '/Applications/Robopark.app' '/Library/Application Support/RoboparkUpdater'
 /bin/rm -rf '/Library/Application Support/RoboparkKeychainBroker'

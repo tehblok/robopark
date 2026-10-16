@@ -706,6 +706,55 @@ let bounded = ResourceTelemetry(cpuPercent: -10, memoryPercent: 400, thermalStat
 try check(bounded.cpuPercent == 0 && bounded.memoryPercent == 100 && bounded.thermalState == "normal", "telemetry is bounded before heartbeat")
 try check(nominal.capacity(base: 2, activeJobs: 2, ready: true, paused: false) == 2, "capacity reports total slots while inflight is separate")
 try check(nominal.capacity(base: 2, activeJobs: 0, ready: false, paused: false) == 0, "unready Mac exposes no capacity")
+let disabledLaunchdPolicy = """
+disabled services = {
+    "ru.robopark.update-helper" => true
+    "unrelated" => false
+}
+"""
+try check(UpdaterRegistrationPolicy.isDisabled(disabledLaunchdPolicy, label: "ru.robopark.update-helper"),
+          "updater registration preserves an explicit disabled policy")
+try check(!UpdaterRegistrationPolicy.isDisabled(disabledLaunchdPolicy, label: "ru.robopark.update"),
+          "updater disabled policy requires the exact launchd label")
+try check(!UpdaterRegistrationPolicy.isDisabled("\"ru.robopark.update-helper\" => false", label: "ru.robopark.update-helper"),
+          "enabled updater policy is not mistaken for disabled")
+var registrationEvents: [String] = []
+var registrationAcquireAttempts = 0
+var registrationBusyChecks = 0
+let registrationOutcome = try UpdaterRegistrationCoordinator.run(
+    maxAttempts: 4,
+    isRetiring: { false },
+    acquireLock: {
+        registrationAcquireAttempts += 1
+        registrationEvents.append("acquire")
+        return registrationAcquireAttempts == 1 ? nil : 1
+    },
+    releaseLock: { _ in registrationEvents.append("release") },
+    isBusy: {
+        registrationBusyChecks += 1
+        registrationEvents.append("idle-check")
+        return registrationBusyChecks == 1
+    },
+    isDisabled: { registrationEvents.append("policy"); return false },
+    isLoaded: { registrationEvents.append("loaded"); return true },
+    bootout: { registrationEvents.append("bootout") },
+    bootstrap: { registrationEvents.append("bootstrap") },
+    pause: { registrationEvents.append("pause") }
+)
+try check(registrationOutcome == .ready && registrationEvents == [
+    "acquire", "pause", "acquire", "idle-check", "pause", "idle-check",
+    "policy", "loaded", "bootout", "release", "bootstrap",
+], "registration holds its kernel fence through idle and bootout, then releases before bootstrap")
+registrationEvents = []
+let disabledRegistration = try UpdaterRegistrationCoordinator.run(
+    maxAttempts: 1, isRetiring: { false }, acquireLock: { 1 },
+    releaseLock: { _ in registrationEvents.append("release") }, isBusy: { false },
+    isDisabled: { true }, isLoaded: { true },
+    bootout: { registrationEvents.append("bootout") },
+    bootstrap: { registrationEvents.append("bootstrap") }, pause: {}
+)
+try check(disabledRegistration == .ready && registrationEvents == ["bootout", "release"],
+          "registration preserves disabled policy without bootstrapping")
 let storageParent = FileManager.default.temporaryDirectory.appendingPathComponent("robopark-update-storage-\(UUID().uuidString)")
 let storageURL = storageParent.appendingPathComponent("support")
 try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true,
@@ -730,6 +779,7 @@ rejects("installer cannot execute arbitrary package path") {
     _ = try VerifiedInstaller.command(package: storageParent.appendingPathComponent("attacker.pkg"), supportRoot: storageURL)
 }
 let firstLock = try storage.acquireLock()
+try check(try storage.tryAcquireLock() == nil, "registration can distinguish a busy updater lock")
 rejects("concurrent root updater is serialized") { _ = try storage.acquireLock() }
 try firstLock.close()
 let recoveredLock = try storage.acquireLock()
