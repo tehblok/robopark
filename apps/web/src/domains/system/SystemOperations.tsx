@@ -10,6 +10,9 @@ import { clearOperationReservation, readOperationReservation, safeOperationDraft
 
 const labels: Record<HostOperationKind, string> = {
   'ota-update': 'Установить OTA-пакет',
+  'support-ssh-prepare': 'Подготовить SSH',
+  'support-ssh-enable': 'Включить SSH-туннель',
+  'support-ssh-disable': 'Отключить SSH-доступ',
   rollback: 'Откатить версию',
   'package-inspect': 'Проверить пакет', 'package-update': 'Обновить пакет', 'service-restart': 'Перезапустить сервис',
   reboot: 'Перезагрузить хост', backup: 'Создать резервную копию', 'backup-verify': 'Проверить резервную копию',
@@ -24,6 +27,9 @@ const labels: Record<HostOperationKind, string> = {
 const fixedPhrases: Record<HostOperationKind, string> = Object.fromEntries(
   HOST_OPERATION_KINDS.map(kind => [kind, `ЗАПУСТИТЬ ${kind.toUpperCase()}`]),
 ) as Record<HostOperationKind, string>
+fixedPhrases['support-ssh-prepare'] = 'PREPARE SUPPORT SSH'
+fixedPhrases['support-ssh-enable'] = 'ENABLE SUPPORT SSH'
+fixedPhrases['support-ssh-disable'] = 'DISABLE SUPPORT SSH'
 fixedPhrases.rollback = 'ROLLBACK ROBOPARK'
 fixedPhrases.reboot = 'REBOOT ROBOPARK'
 fixedPhrases.backup = 'BACKUP ROBOPARK'
@@ -31,7 +37,7 @@ fixedPhrases['backup-restore'] = 'RESTORE ROBOPARK BACKUP'
 fixedPhrases['cleanup-execute'] = 'CLEAN ROBOPARK'
 fixedPhrases['docker-image-execute'] = 'CLEAN ROBOPARK IMAGES'
 fixedPhrases['builder-cache-execute'] = 'CLEAN ROBOPARK BUILD CACHE'
-const directlyRunnable = new Set<HostOperationKind>(['package-inspect', 'cleanup-preview', 'docker-image-preview', 'builder-cache-preview', 'diagnostics', 'usb-discover'])
+const directlyRunnable = new Set<HostOperationKind>(['support-ssh-prepare', 'support-ssh-enable', 'support-ssh-disable', 'package-inspect', 'cleanup-preview', 'docker-image-preview', 'builder-cache-preview', 'diagnostics', 'usb-discover'])
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
 const cleanupRoots = {
   diagnostics: '/var/lib/robopark/diagnostics/',
@@ -79,8 +85,11 @@ function operationResult(job: SystemJob, client: SystemClient, includeMaintenanc
   const backupResult = result?.backup_result
   const actionResult = result?.action_result
   const usbResult = result?.usb_result
+  const sshResult = result?.support_ssh_result
   const diagnosticReady = job.kind === 'diagnostics' && job.state === 'succeeded' && (job.artifact_ready || result?.diagnostics_ready)
   return <div className="rp-system-result">
+    {sshResult && <p>{sshResult.phase === 'prepared' ? 'Локальный SSH подготовлен.' : sshResult.phase === 'enabled' ? 'Служба SSH-туннеля запущена. Проверьте внешнее подключение.' : 'SSH-доступ отключён.'}</p>}
+    {sshResult?.host_fingerprint && <p>Ключ сервера: <code>{sshResult.host_fingerprint}</code></p>}
     {packageResult && <p>{packageResult.package}{packageResult.version ? ` · версия ${packageResult.version}` : packageResult.installed === false ? ' · не установлен' : ' · версия не определена'}{packageResult.updated ? ' · обновлён' : ''}</p>}
     {backupResult && <p>Резервная копия <code>{backupResult.backup_id}</code>{backupResult.restored ? ' восстановлена' : backupResult.verified ? ' проверена' : ' создана'}.</p>}
     {actionResult?.rolled_back && <p>Выполнен откат на версию <strong>{actionResult.release}</strong>.</p>}
@@ -400,6 +409,9 @@ export function SystemOperations({ actor, client, capabilities, context, history
         <p>К очистке только эта запись собственного BuildKit builder. Размер по Docker не равен гарантированно освобождённому месту.</p>
         <ul>{builderCachePreview.planned.map(item => <li key={item.id}><code>{item.id}</code><span>{new Intl.NumberFormat('ru-RU').format(item.reported_bytes)} байт по Docker</span></li>)}</ul>
       </div>}
+      {selected === 'support-ssh-prepare' && <Alert tone="info">Подготовит SSH на этом сервере без публикации внешнего туннеля. Сайты и приложение продолжат работу.</Alert>}
+      {selected === 'support-ssh-enable' && <Alert tone="warning">Перед включением отключите прежний SSH-туннель с тем же алиасом на другом сервере. Подключение будет опубликовано через существующую настройку Tuna.</Alert>}
+      {selected === 'support-ssh-disable' && <Alert tone="warning">Текущие подключения через SSH-туннель оборвутся. Веб-приложение продолжит работу.</Alert>}
       <label className="field"><span className="field-label">Введите {phrase}</span><input autoComplete="off" disabled={busy} onChange={event => setConfirmation(event.target.value)} ref={initialFocus} value={confirmation} /></label>
       <label className="field"><span className="field-label">Пароль</span><input autoComplete="current-password" disabled={busy} onChange={event => setPassword(event.target.value)} type="password" value={password} /></label>
       <label className="field"><span className="field-label">Код TOTP или восстановления</span><input autoComplete="one-time-code" disabled={busy} onChange={event => setCode(event.target.value)} value={code} /></label>

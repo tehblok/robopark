@@ -14,7 +14,8 @@ SAFE_KINDS = {
     "service-restart", "reboot", "usb-format",
 }
 UNAVAILABLE_KINDS = {
-    "rollback", "backup", "backup-restore",
+    "rollback", "backup", "backup-restore", "support-ssh-prepare",
+    "support-ssh-enable", "support-ssh-disable",
 }
 
 

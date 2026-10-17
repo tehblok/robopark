@@ -30,6 +30,10 @@ NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\Z")
 ACTIVE_NOTICE = (
     "support SSH and Tuna processes are active; verify public SSH externally"
 )
+TRANSITION_GUARD = (
+    "[Unit]\n"
+    "ConditionPathExists=/etc/robopark/NEVER_ENABLE_PROD_AUTOMATION\n"
+)
 
 
 class SecurityError(RuntimeError):
@@ -144,6 +148,13 @@ class Layout:
     def installed_helper(self) -> Path:
         return self.path("/usr/local/libexec/robopark-ssh-access.py")
 
+    @property
+    def transition_state(self) -> Path:
+        return self.state / "test-transition-guards.json"
+
+    def transition_guard(self, unit: str) -> Path:
+        return self.units / f"{unit}.d/90-test-transition.conf"
+
 
 class FileTransaction:
     def __init__(self):
@@ -173,6 +184,11 @@ class FileTransaction:
             os.chmod(temporary, mode)
             os.chown(temporary, uid, gid)
             os.replace(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
             try:
                 os.unlink(temporary)
@@ -198,6 +214,11 @@ class FileTransaction:
                 os.chmod(temporary, mode)
                 os.chown(temporary, uid, gid)
                 os.replace(temporary, path)
+                directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
             finally:
                 try:
                     os.unlink(temporary)
@@ -545,6 +566,264 @@ WantedBy=multi-user.target
             raise SecurityError("support SSH host key pair does not match")
         return derived
 
+    def _validate_root_file(
+        self, path: Path, mode: int, *, managed: bool = False
+    ) -> bytes:
+        validate_managed_path(
+            path, root=self.layout.root, expected_uid=self.expected_uid
+        )
+        info = path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != self.expected_uid
+            or stat.S_IMODE(info.st_mode) != mode
+            or info.st_nlink != 1
+        ):
+            raise SecurityError(f"unsafe support SSH file: {path}")
+        content = path.read_bytes()
+        if managed and not content.startswith(MANAGED.encode()):
+            raise SecurityError(f"unmanaged support SSH file: {path}")
+        return content
+
+    def _validate_unit_dropins(self, unit: str) -> None:
+        directories = (self.layout.units,) + tuple(
+            self.layout.path(base)
+            for base in (
+                "/run/systemd/system",
+                "/usr/local/lib/systemd/system",
+                "/usr/lib/systemd/system",
+                "/lib/systemd/system",
+            )
+        )
+        oneclick = re.compile(
+            rb"\[Unit\]\nConditionPathExists=/var/lib/robopark-oneclick/"
+            rb"khadas-\d{8}T\d{6}Z/allow-services\n?"
+        )
+        runtime_session = b"[Service]\nProtectHome=tmpfs\nBindPaths=/run/user\n"
+        dropin_names = (
+            f"{unit}.d",
+            "robopark-support-.service.d",
+            "robopark-.service.d",
+            "service.d",
+        )
+        for base in directories:
+            for dropin_name in dropin_names:
+                directory = base / dropin_name
+                if not directory.exists() and not directory.is_symlink():
+                    continue
+                validate_managed_path(
+                    directory, root=self.layout.root, expected_uid=self.expected_uid
+                )
+                info = directory.lstat()
+                if (
+                    not stat.S_ISDIR(info.st_mode)
+                    or stat.S_ISLNK(info.st_mode)
+                    or info.st_uid != self.expected_uid
+                    or info.st_mode & 0o022
+                ):
+                    raise SecurityError(
+                        f"unsafe support SSH drop-in directory: {directory}"
+                    )
+                for entry in directory.iterdir():
+                    content = self._validate_root_file(entry, 0o644)
+                    full_unit_dropin = dropin_name == f"{unit}.d"
+                    if (
+                        full_unit_dropin
+                        and base == self.layout.units
+                        and entry.name == "90-test-transition.conf"
+                    ):
+                        self._transition_guard_present(unit)
+                    elif (
+                        full_unit_dropin
+                        and entry.name == "90-oneclick-restore.conf"
+                        and oneclick.fullmatch(content)
+                    ):
+                        continue
+                    elif (
+                        full_unit_dropin
+                        and unit == SSHD_UNIT
+                        and entry.name == "95-runtime-session.conf"
+                        and content == runtime_session
+                    ):
+                        continue
+                    else:
+                        raise SecurityError(
+                            f"unexpected support SSH drop-in: {entry}"
+                        )
+
+    def validate_existing_install(self, *, fixed_transition_endpoint: bool = True) -> None:
+        """Validate the already installed fixed SSH/Tuna configuration without rewriting it."""
+
+        authorized = self._validate_root_file(
+            self.layout.etc / "authorized_keys", 0o644, managed=True
+        )
+        self._read_authorized_key(authorized.decode("utf-8"))
+        tuna_env = self._validate_root_file(
+            self.layout.etc / "tuna.env", 0o600, managed=True
+        )
+        extract_tuna_token(tuna_env.decode("utf-8"))
+        config_path = self.layout.etc / "sshd_config"
+        config = self._validate_root_file(config_path, 0o600, managed=True)
+        if config.decode("utf-8") != self._sshd_config():
+            raise SecurityError("unexpected support SSH configuration")
+        helper = self._validate_root_file(self.layout.installed_helper, 0o755)
+        if b"ROBOPARK_SSH_ACCESS_MANAGED" not in helper[:256]:
+            raise SecurityError("unmanaged installed support SSH helper")
+        private_key = self.layout.etc / "ssh_host_ed25519_key"
+        public_key = Path(str(private_key) + ".pub")
+        for path, forbidden in ((private_key, 0o077), (public_key, 0o022)):
+            validate_managed_path(
+                path, root=self.layout.root, expected_uid=self.expected_uid
+            )
+            info = path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != self.expected_uid
+                or info.st_nlink != 1
+                or info.st_mode & forbidden
+            ):
+                raise SecurityError(f"existing support SSH host key is unsafe: {path}")
+        self._verify_host_key_pair(private_key, public_key)
+        sshd = self._trusted_binary(
+            self.sshd_binary,
+            ("/usr/sbin/sshd", "/usr/local/sbin/sshd"),
+            "openssh-server",
+        )
+        tuna = self._trusted_binary(
+            self.tuna_binary,
+            ("/usr/local/bin/tuna", "/usr/bin/tuna", "/opt/tuna/bin/tuna"),
+            "Tuna",
+        )
+        tuna_unit_path = self.layout.units / TUNA_UNIT
+        tuna_unit = self._validate_root_file(tuna_unit_path, 0o644, managed=True)
+        if fixed_transition_endpoint:
+            expected_tuna = self._tuna_unit(tuna, "ssh", "ru").encode()
+        else:
+            command = re.search(
+                rb"^ExecStart="
+                + re.escape(tuna.encode())
+                + rb" tcp 127\.0\.0\.1:2222 --port=([a-z0-9-]+) "
+                rb"--location=([a-z0-9-]+)$",
+                tuna_unit,
+                re.MULTILINE,
+            )
+            if command is None:
+                raise SecurityError(f"unexpected support SSH unit: {TUNA_UNIT}")
+            alias, location = (value.decode() for value in command.groups())
+            if not NAME_RE.fullmatch(alias) or not NAME_RE.fullmatch(location):
+                raise SecurityError(f"unexpected support SSH unit: {TUNA_UNIT}")
+            expected_tuna = self._tuna_unit(tuna, alias, location).encode()
+        expected_units = {
+            SSHD_UNIT: self._sshd_unit(sshd).encode(),
+            TUNA_UNIT: expected_tuna,
+        }
+        for unit, expected in expected_units.items():
+            actual = (
+                tuna_unit
+                if unit == TUNA_UNIT
+                else self._validate_root_file(
+                    self.layout.units / unit, 0o644, managed=True
+                )
+            )
+            if actual != expected:
+                raise SecurityError(f"unexpected support SSH unit: {unit}")
+            self._validate_unit_dropins(unit)
+        self._mkdir(
+            self.layout.path("/run/sshd"),
+            0o755,
+            self.expected_uid,
+            self.expected_gid,
+            enforce_existing=False,
+        )
+        self._validate_candidate(sshd, config.decode("utf-8"))
+
+    def _load_transition_state(self) -> dict[str, bool]:
+        path = self.layout.transition_state
+        if not path.exists() and not path.is_symlink():
+            return {"sshd_guard_removed": False, "tuna_guard_removed": False}
+        content = self._validate_root_file(path, 0o600)
+        try:
+            value = json.loads(content)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SecurityError("invalid support SSH transition state") from exc
+        expected = {"schema", "sshd_guard_removed", "tuna_guard_removed"}
+        if (
+            not isinstance(value, dict)
+            or set(value) != expected
+            or value["schema"] != 1
+            or type(value["sshd_guard_removed"]) is not bool
+            or type(value["tuna_guard_removed"]) is not bool
+        ):
+            raise SecurityError("invalid support SSH transition state")
+        return {
+            "sshd_guard_removed": value["sshd_guard_removed"],
+            "tuna_guard_removed": value["tuna_guard_removed"],
+        }
+
+    def _write_transition_state(self, state: dict[str, bool]) -> None:
+        self._mkdir(
+            self.layout.state,
+            0o755,
+            self.expected_uid,
+            self.expected_gid,
+        )
+        content = json.dumps(
+            {"schema": 1, **state}, sort_keys=True, separators=(",", ":")
+        ).encode() + b"\n"
+        FileTransaction().write(
+            self.layout.transition_state,
+            content,
+            0o600,
+            self.expected_uid,
+            self.expected_gid,
+        )
+
+    def _transition_guard_present(self, unit: str) -> bool:
+        path = self.layout.transition_guard(unit)
+        if not path.exists() and not path.is_symlink():
+            return False
+        content = self._validate_root_file(path, 0o644)
+        if content.decode("utf-8") != TRANSITION_GUARD:
+            raise SecurityError(f"invalid support SSH transition guard: {path}")
+        return True
+
+    def _remove_transition_guard(self, unit: str) -> bool:
+        path = self.layout.transition_guard(unit)
+        if not self._transition_guard_present(unit):
+            return False
+        path.unlink()
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return True
+
+    def _restore_transition_guard(self, unit: str, required: bool) -> None:
+        if not required:
+            return
+        path = self.layout.transition_guard(unit)
+        if path.exists() or path.is_symlink():
+            content = self._validate_root_file(path, 0o644)
+            if content.decode("utf-8") != TRANSITION_GUARD:
+                raise SecurityError(f"invalid support SSH transition guard: {path}")
+            return
+        self._mkdir(
+            path.parent,
+            0o755,
+            self.expected_uid,
+            self.expected_gid,
+        )
+        FileTransaction().write(
+            path,
+            TRANSITION_GUARD.encode(),
+            0o644,
+            self.expected_uid,
+            self.expected_gid,
+        )
+
     def install(
         self,
         public_key_file: Path | None,
@@ -807,7 +1086,7 @@ WantedBy=multi-user.target
             )
             self._run(["systemctl", "daemon-reload"])
             if enable:
-                self.enable()
+                self.enable(validate=False)
         except Exception:
             transaction.rollback()
             self._run(["systemctl", "daemon-reload"], check=False)
@@ -870,6 +1149,8 @@ WantedBy=multi-user.target
                 ["systemctl", "start" if active else "stop", unit],
                 check=False,
             )
+        if self._snapshot_units() != before:
+            raise RuntimeError("support SSH unit rollback incomplete")
 
     @staticmethod
     def _listener_ready() -> bool:
@@ -886,9 +1167,93 @@ WantedBy=multi-user.target
             time.sleep(0.25)
         return False
 
-    def enable(self) -> None:
+    def _operation_result(self, phase: str, *, loopback_ready: bool) -> dict:
+        status = self.status()
+        return {
+            "phase": phase,
+            "sshd_enabled": status["sshd"]["enabled"],
+            "sshd_active": status["sshd"]["active"],
+            "tuna_enabled": status["tuna"]["enabled"],
+            "tuna_active": status["tuna"]["active"],
+            "loopback_ready": loopback_ready,
+            "public_reachability": "not_checked",
+            "host_fingerprint": status["host_fingerprint"],
+        }
+
+    def _rollback_transition(
+        self,
+        before: dict[str, tuple[bool, bool]],
+        unit: str,
+        transition: dict[str, bool],
+        original: dict[str, bool],
+        restore_guard: bool,
+    ) -> None:
+        failures = []
+        try:
+            self._restore_units(before)
+        except Exception as exc:
+            failures.append(exc)
+        if restore_guard:
+            try:
+                self._restore_transition_guard(unit, True)
+                self._run(["systemctl", "daemon-reload"])
+                if transition != original:
+                    self._write_transition_state(original)
+            except Exception as exc:
+                failures.append(exc)
+        if failures:
+            raise RuntimeError("support SSH rollback incomplete") from failures[0]
+
+    def prepare(self) -> dict:
+        self.validate_existing_install()
+        transition = self._load_transition_state()
+        original = dict(transition)
+        guard_present = self._transition_guard_present(SSHD_UNIT)
+        before = self._snapshot_units()
+        if before[TUNA_UNIT] != (False, False):
+            raise RuntimeError("support Tuna must be disabled before SSH preparation")
+        try:
+            if guard_present:
+                transition["sshd_guard_removed"] = True
+                self._write_transition_state(transition)
+                self._remove_transition_guard(SSHD_UNIT)
+                self._run(["systemctl", "daemon-reload"])
+            self._run(["systemctl", "enable", "--now", SSHD_UNIT])
+            if not self.listener_probe() or not self._stable_active(SSHD_UNIT):
+                raise RuntimeError(
+                    "support SSH did not become ready on 127.0.0.1:2222"
+                )
+            return self._operation_result("prepared", loopback_ready=True)
+        except Exception as exc:
+            try:
+                self._rollback_transition(
+                    before,
+                    SSHD_UNIT,
+                    transition,
+                    original,
+                    guard_present,
+                )
+            except Exception as rollback_exc:
+                raise rollback_exc from exc
+            raise
+
+    def enable(
+        self, *, validate: bool = True, fixed_transition_endpoint: bool = True
+    ) -> dict:
+        if validate:
+            self.validate_existing_install(
+                fixed_transition_endpoint=fixed_transition_endpoint
+            )
+        transition = self._load_transition_state()
+        original = dict(transition)
+        guard_present = self._transition_guard_present(TUNA_UNIT)
         before = self._snapshot_units()
         try:
+            if guard_present:
+                transition["tuna_guard_removed"] = True
+                self._write_transition_state(transition)
+                self._remove_transition_guard(TUNA_UNIT)
+                self._run(["systemctl", "daemon-reload"])
             self._run(["systemctl", "enable", "--now", SSHD_UNIT])
             if not self.listener_probe() or not self._stable_active(SSHD_UNIT):
                 raise RuntimeError("support SSH did not become ready on 127.0.0.1:2222")
@@ -898,22 +1263,48 @@ WantedBy=multi-user.target
                     "support Tuna process did not remain stable; public reachability "
                     "requires an external SSH check"
                 )
-        except Exception:
-            self._restore_units(before)
+            return self._operation_result("enabled", loopback_ready=True)
+        except Exception as exc:
+            try:
+                self._rollback_transition(
+                    before,
+                    TUNA_UNIT,
+                    transition,
+                    original,
+                    guard_present,
+                )
+            except Exception as rollback_exc:
+                raise rollback_exc from exc
             raise
 
-    def disable(self) -> None:
-        self._run(["systemctl", "disable", "--now", TUNA_UNIT, SSHD_UNIT])
+    def disable(self) -> dict:
+        for unit in (TUNA_UNIT, SSHD_UNIT):
+            self._run(["systemctl", "disable", "--now", unit], check=False)
+        stopped = self._snapshot_units()
+        try:
+            transition = self._load_transition_state()
+        except Exception as exc:
+            if any(enabled or active for enabled, active in stopped.values()):
+                raise RuntimeError("support SSH disable incomplete") from exc
+            raise
+        restored = any(transition.values())
+        for unit, key in (
+            (SSHD_UNIT, "sshd_guard_removed"),
+            (TUNA_UNIT, "tuna_guard_removed"),
+        ):
+            if transition[key]:
+                self._restore_transition_guard(unit, True)
+        if restored:
+            self._run(["systemctl", "daemon-reload"])
+            self._write_transition_state(
+                {"sshd_guard_removed": False, "tuna_guard_removed": False}
+            )
+        if any(enabled or active for enabled, active in stopped.values()):
+            raise RuntimeError("support SSH disable incomplete")
+        return self._operation_result("disabled", loopback_ready=False)
 
-    def status(self) -> dict:
-        result = {}
-        for label, unit in (("sshd", SSHD_UNIT), ("tuna", TUNA_UNIT)):
-            result[label] = {
-                "enabled": self._unit_state("is-enabled", unit),
-                "active": self._unit_state("is-active", unit),
-            }
+    def _host_fingerprint(self) -> str | None:
         private_host_key = self.layout.etc / "ssh_host_ed25519_key"
-        result["host_fingerprint"] = None
         validate_managed_path(
             private_host_key,
             root=self.layout.root,
@@ -936,7 +1327,17 @@ WantedBy=multi-user.target
                 )
                 if probe.returncode == 0:
                     fields = probe.stdout.split()
-                    result["host_fingerprint"] = fields[1] if len(fields) >= 2 else None
+                    return fields[1] if len(fields) >= 2 else None
+        return None
+
+    def status(self) -> dict:
+        result = {}
+        for label, unit in (("sshd", SSHD_UNIT), ("tuna", TUNA_UNIT)):
+            result[label] = {
+                "enabled": self._unit_state("is-enabled", unit),
+                "active": self._unit_state("is-active", unit),
+            }
+        result["host_fingerprint"] = self._host_fingerprint()
         return result
 
 
@@ -959,8 +1360,17 @@ def parser() -> argparse.ArgumentParser:
     install.add_argument(
         "--enable", action="store_true", help="activate only after preparation"
     )
-    commands.add_parser("enable", help="enable SSH first, then the Tuna tunnel")
-    commands.add_parser("disable", help="disable only the two support units")
+    prepare = commands.add_parser(
+        "prepare", help="validate existing files and enable loopback SSH only"
+    )
+    prepare.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+    enable = commands.add_parser("enable", help="enable SSH first, then the Tuna tunnel")
+    enable.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+    enable.add_argument(
+        "--test-transition", action="store_true", help=argparse.SUPPRESS
+    )
+    disable = commands.add_parser("disable", help="disable only the two support units")
+    disable.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     commands.add_parser("status", help="show unit state and host key fingerprint")
     return result
 
@@ -987,11 +1397,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if args.enable:
                 print(ACTIVE_NOTICE)
+        elif args.command == "prepare":
+            operation = manager.prepare()
+            if args.json:
+                print(json.dumps(operation, sort_keys=True))
         elif args.command == "enable":
-            manager.enable()
-            print(ACTIVE_NOTICE)
+            operation = manager.enable(
+                fixed_transition_endpoint=args.test_transition
+            )
+            print(
+                json.dumps(operation, sort_keys=True)
+                if args.json
+                else ACTIVE_NOTICE
+            )
         elif args.command == "disable":
-            manager.disable()
+            operation = manager.disable()
+            if args.json:
+                print(json.dumps(operation, sort_keys=True))
         else:
             print(json.dumps(manager.status(), sort_keys=True))
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:

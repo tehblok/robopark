@@ -5,6 +5,7 @@ import type { SessionOut } from './terminalApi'
 class FakeSocket {
   static instances: FakeSocket[] = []
   readonly sent: Array<string | ArrayBufferLike | Blob | ArrayBufferView> = []
+  closeCalls = 0
   binaryType = ''
   readyState: number = WebSocket.CONNECTING
   onopen: ((event: Event) => void) | null = null
@@ -15,7 +16,7 @@ class FakeSocket {
   readonly url: string
   constructor(url: string) { this.url = url; FakeSocket.instances.push(this) }
   send(value: string | ArrayBufferLike | Blob | ArrayBufferView) { this.sent.push(value) }
-  close() { this.readyState = WebSocket.CLOSED }
+  close() { this.closeCalls++; this.readyState = WebSocket.CLOSED }
   open() { this.readyState = WebSocket.OPEN; this.onopen?.(new Event('open')) }
   message(data: unknown) { this.onmessage?.(new MessageEvent('message', { data })) }
   disconnect() { this.readyState = WebSocket.CLOSED; this.onclose?.(new CloseEvent('close')) }
@@ -116,7 +117,144 @@ describe('TerminalConnection', () => {
 
     expect(ticket).toHaveBeenCalledTimes(2)
     expect(state).toHaveBeenLastCalledWith('active')
+    expect(vi.getTimerCount()).toBe(1)
     connection.close()
+    vi.useRealTimers()
+  })
+
+  it('times out a socket stalled in CONNECTING and retries with a fresh ticket', async () => {
+    vi.useFakeTimers()
+    FakeSocket.instances = []
+    const state = vi.fn()
+    const ticket = vi.fn()
+      .mockResolvedValueOnce({ ticket: 'first', expires_in: 15 })
+      .mockResolvedValueOnce({ ticket: 'second', expires_in: 15 })
+    const connection = new TerminalConnection({
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+      ticket, onOutput: vi.fn(), onState: state,
+    })
+
+    const connecting = connection.connect(session)
+    const timedOut = expect(connecting).rejects.toThrow('terminal_connection_timeout')
+    await Promise.resolve()
+    const stalled = FakeSocket.instances[0]
+    await vi.advanceTimersByTimeAsync(8_000)
+    await timedOut
+    expect(stalled.closeCalls).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(250)
+    const retry = FakeSocket.instances[1]
+    retry.open()
+    retry.message(JSON.stringify({ op: 'ready', session }))
+
+    expect(ticket).toHaveBeenCalledTimes(2)
+    expect(state).toHaveBeenLastCalledWith('active')
+    connection.close()
+    vi.useRealTimers()
+  })
+
+  it('times out an open socket that never sends ready', async () => {
+    vi.useFakeTimers()
+    FakeSocket.instances = []
+    const ticket = vi.fn()
+      .mockResolvedValueOnce({ ticket: 'first', expires_in: 15 })
+      .mockResolvedValueOnce({ ticket: 'second', expires_in: 15 })
+    const connection = new TerminalConnection({
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+      ticket, onOutput: vi.fn(),
+    })
+
+    const connecting = connection.connect(session)
+    const timedOut = expect(connecting).rejects.toThrow('terminal_connection_timeout')
+    await Promise.resolve()
+    const stalled = FakeSocket.instances[0]
+    stalled.open()
+    expect(stalled.sent).toEqual([JSON.stringify({ op: 'authenticate', ticket: 'first' })])
+    await vi.advanceTimersByTimeAsync(8_000)
+    await timedOut
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(stalled.closeCalls).toBe(1)
+    expect(ticket).toHaveBeenCalledTimes(2)
+    expect(FakeSocket.instances).toHaveLength(2)
+    connection.close()
+    vi.useRealTimers()
+  })
+
+  it('clears the open-to-ready timeout when explicitly closed', async () => {
+    vi.useFakeTimers()
+    FakeSocket.instances = []
+    const state = vi.fn()
+    const ticket = vi.fn().mockResolvedValue({ ticket: 'ticket', expires_in: 15 })
+    const connection = new TerminalConnection({
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+      ticket, onOutput: vi.fn(), onState: state,
+    })
+
+    void connection.connect(session)
+    await Promise.resolve()
+    const socket = FakeSocket.instances[0]
+    state.mockClear()
+    connection.close()
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(30_000)
+
+    expect(socket.closeCalls).toBe(1)
+    expect(ticket).toHaveBeenCalledOnce()
+    expect(FakeSocket.instances).toHaveLength(1)
+    expect(state).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('accepts ready after seven seconds without reconnecting', async () => {
+    vi.useFakeTimers()
+    FakeSocket.instances = []
+    const state = vi.fn()
+    const ticket = vi.fn().mockResolvedValue({ ticket: 'ticket', expires_in: 15 })
+    const connection = new TerminalConnection({
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+      ticket, onOutput: vi.fn(), onState: state,
+    })
+
+    const connecting = connection.connect(session)
+    await Promise.resolve()
+    const socket = FakeSocket.instances[0]
+    socket.open()
+    await vi.advanceTimersByTimeAsync(7_000)
+    socket.message(JSON.stringify({ op: 'ready', session }))
+    await connecting
+
+    expect(ticket).toHaveBeenCalledOnce()
+    expect(FakeSocket.instances).toHaveLength(1)
+    expect(state).toHaveBeenLastCalledWith('active')
+    connection.close()
+    vi.useRealTimers()
+  })
+
+  it('bounds repeated sockets that never become ready by the reconnect window', async () => {
+    vi.useFakeTimers()
+    FakeSocket.instances = []
+    const state = vi.fn()
+    const ticket = vi.fn().mockResolvedValue({ ticket: 'ticket', expires_in: 15 })
+    const connection = new TerminalConnection({
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+      ticket, onOutput: vi.fn(), onState: state,
+    })
+
+    const connecting = connection.connect(session)
+    const timedOut = expect(connecting).rejects.toThrow('terminal_connection_timeout')
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(22_999)
+    await timedOut
+    expect(state).not.toHaveBeenLastCalledWith('ended', 'reconnect_timeout')
+    await vi.advanceTimersByTimeAsync(1)
+    const attemptsAtTimeout = ticket.mock.calls.length
+    await vi.advanceTimersByTimeAsync(30_000)
+
+    expect(attemptsAtTimeout).toBeGreaterThan(1)
+    expect(ticket).toHaveBeenCalledTimes(attemptsAtTimeout)
+    expect(state).toHaveBeenLastCalledWith('ended', 'reconnect_timeout')
     vi.useRealTimers()
   })
 

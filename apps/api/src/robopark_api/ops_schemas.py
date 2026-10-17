@@ -217,6 +217,19 @@ class ActionResultOut(BaseModel):
     reboot_scheduled: bool | None = Field(default=None, strict=True)
 
 
+class SupportSshResultOut(BaseModel):
+    phase: Literal["prepared", "enabled", "disabled"]
+    sshd_enabled: bool = Field(strict=True)
+    sshd_active: bool = Field(strict=True)
+    tuna_enabled: bool = Field(strict=True)
+    tuna_active: bool = Field(strict=True)
+    loopback_ready: bool = Field(strict=True)
+    public_reachability: Literal["not_checked"]
+    host_fingerprint: str | None = Field(
+        default=None, pattern=r"^SHA256:[A-Za-z0-9+/]{20,64}$"
+    )
+
+
 class HostResultOut(BaseModel):
     before: list[CheckOut] = []
     after: list[CheckOut] = []
@@ -233,6 +246,7 @@ class HostResultOut(BaseModel):
     backup_result: BackupResultOut | None = None
     usb_result: UsbResultOut | None = None
     action_result: ActionResultOut | None = None
+    support_ssh_result: SupportSshResultOut | None = None
     diagnostics_ready: bool = False
 
 
@@ -545,6 +559,11 @@ def public_result(value):
         action_result=finite_result(
             "action_result", ActionResultOut, {"rollback", "service-restart", "reboot"}
         ),
+        support_ssh_result=finite_result(
+            "support_ssh_result",
+            SupportSshResultOut,
+            {"support-ssh-prepare", "support-ssh-enable", "support-ssh-disable"},
+        ),
         diagnostics_ready=value.get("diagnostics_ready") is True
         or (
             value.get("kind") == "diagnostics"
@@ -569,6 +588,9 @@ class HostOperationKind(StrEnum):
     PACKAGE_INSPECT = "package-inspect"
     PACKAGE_UPDATE = "package-update"
     SERVICE_RESTART = "service-restart"
+    SUPPORT_SSH_PREPARE = "support-ssh-prepare"
+    SUPPORT_SSH_ENABLE = "support-ssh-enable"
+    SUPPORT_SSH_DISABLE = "support-ssh-disable"
     REBOOT = "reboot"
     BACKUP = "backup"
     BACKUP_VERIFY = "backup-verify"
@@ -735,6 +757,9 @@ class HostNoArgumentIn(_HostOperationBase):
         HostOperationKind.USB_DISCOVER,
         HostOperationKind.DOCKER_IMAGE_PREVIEW,
         HostOperationKind.BUILDER_CACHE_PREVIEW,
+        HostOperationKind.SUPPORT_SSH_PREPARE,
+        HostOperationKind.SUPPORT_SSH_ENABLE,
+        HostOperationKind.SUPPORT_SSH_DISABLE,
     ]
 
 

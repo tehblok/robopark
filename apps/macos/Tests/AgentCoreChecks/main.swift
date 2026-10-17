@@ -838,6 +838,16 @@ do { _ = try await cancellable.value; fatalError("FAIL: cancelled compute child 
 try check(Date().timeIntervalSince(cancelStarted) < 1.5, "compute cancellation terminates child promptly")
 
 let watchdogRun = UUID()
+var reconnectBackoff = ConnectionRetryBackoff()
+try check((0..<8).map { _ in reconnectBackoff.nextDelay(afterEstablished: false) }
+    == [1, 2, 4, 8, 16, 32, 60, 60], "unavailable connection retries back off with a bounded delay")
+try check(reconnectBackoff.nextDelay(afterEstablished: true) == 1,
+          "an established connection resets reconnect delay after earlier failed attempts")
+try check(reconnectBackoff.nextDelay(afterEstablished: false) == 2,
+          "a failed reconnect starts a new backoff sequence")
+try check((0..<8).allSatisfy { _ in reconnectBackoff.nextDelay(afterEstablished: true) == 1 },
+          "separate established-connection outages do not accumulate retry delay")
+
 var watchdog = ConnectionWatchdog()
 watchdog.begin(run: watchdogRun, generation: "generation-1")
 guard let missedHeartbeat = watchdog.heartbeatSent(run: watchdogRun, generation: "generation-1") else {

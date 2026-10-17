@@ -252,7 +252,7 @@ def test_enable_starts_loopback_sshd_before_tuna_and_rolls_back_on_failure(
     )
 
     with pytest.raises(subprocess.CalledProcessError):
-        manager.enable()
+        manager.enable(validate=False)
 
     ssh_start = ["systemctl", "enable", "--now", "robopark-support-sshd.service"]
     tuna_start = ["systemctl", "enable", "--now", "robopark-support-tuna.service"]
@@ -273,15 +273,326 @@ def test_disable_touches_only_dedicated_units(tmp_path, ssh_access):
         root=tmp_path, runner=runner, expected_uid=os.getuid(), manage_account=False
     )
     manager.disable()
-    assert runner.calls == [
-        [
-            "systemctl",
-            "disable",
-            "--now",
-            "robopark-support-tuna.service",
-            "robopark-support-sshd.service",
-        ]
+    mutations = [call for call in runner.calls if call[:3] == ["systemctl", "disable", "--now"]]
+    assert mutations == [
+        ["systemctl", "disable", "--now", "robopark-support-tuna.service"],
+        ["systemctl", "disable", "--now", "robopark-support-sshd.service"],
     ]
+    assert all(
+        not call or not call[-1].startswith("robopark") or "support" in call[-1]
+        for call in runner.calls
+    )
+
+
+def test_prepare_enable_disable_manage_only_support_transition_guards(
+    tmp_path, ssh_access
+):
+    blocked = (
+        "[Unit]\n"
+        "ConditionPathExists=/etc/robopark/NEVER_ENABLE_PROD_AUTOMATION\n"
+    )
+    sshd_dropin = (
+        tmp_path
+        / "etc/systemd/system/robopark-support-sshd.service.d/90-test-transition.conf"
+    )
+    tuna_dropin = (
+        tmp_path
+        / "etc/systemd/system/robopark-support-tuna.service.d/90-test-transition.conf"
+    )
+    for path in (sshd_dropin, tuna_dropin):
+        path.parent.mkdir(parents=True)
+        path.write_text(blocked)
+
+    runner = RecordingRunner()
+    manager = ssh_access.SshAccessManager(
+        root=tmp_path,
+        runner=runner,
+        expected_uid=os.getuid(),
+        manage_account=False,
+        listener_probe=lambda: True,
+        stability_interval=0,
+    )
+    manager.validate_existing_install = lambda **_kwargs: None
+
+    prepared = manager.prepare()
+
+    assert prepared == {
+        "phase": "prepared",
+        "sshd_enabled": True,
+        "sshd_active": True,
+        "tuna_enabled": False,
+        "tuna_active": False,
+        "loopback_ready": True,
+        "public_reachability": "not_checked",
+        "host_fingerprint": None,
+    }
+    assert not sshd_dropin.exists()
+    assert tuna_dropin.read_text() == blocked
+    assert ["systemctl", "daemon-reload"] in runner.calls
+    assert [
+        "systemctl",
+        "enable",
+        "--now",
+        "robopark-support-sshd.service",
+    ] in runner.calls
+    assert not any(
+        call[:3] == ["systemctl", "enable", "--now"]
+        and call[-1] == "robopark-support-tuna.service"
+        for call in runner.calls
+    )
+
+    enabled = manager.enable()
+
+    assert enabled["phase"] == "enabled"
+    assert enabled["sshd_active"] is True
+    assert enabled["tuna_active"] is True
+    assert enabled["loopback_ready"] is True
+    assert enabled["public_reachability"] == "not_checked"
+    assert not tuna_dropin.exists()
+
+    disabled = manager.disable()
+
+    assert disabled == {
+        "phase": "disabled",
+        "sshd_enabled": False,
+        "sshd_active": False,
+        "tuna_enabled": False,
+        "tuna_active": False,
+        "loopback_ready": False,
+        "public_reachability": "not_checked",
+        "host_fingerprint": None,
+    }
+    assert sshd_dropin.read_text() == blocked
+    assert tuna_dropin.read_text() == blocked
+    assert not (
+        tmp_path / "etc/robopark/NEVER_ENABLE_PROD_AUTOMATION"
+    ).exists()
+
+
+def test_prepare_rejects_unowned_transition_guard_before_systemd_mutation(
+    tmp_path, ssh_access
+):
+    dropin = (
+        tmp_path
+        / "etc/systemd/system/robopark-support-sshd.service.d/90-test-transition.conf"
+    )
+    dropin.parent.mkdir(parents=True)
+    dropin.write_text("[Unit]\nConditionPathExists=/tmp/unrelated\n")
+    runner = RecordingRunner()
+    manager = ssh_access.SshAccessManager(
+        root=tmp_path,
+        runner=runner,
+        expected_uid=os.getuid(),
+        manage_account=False,
+        listener_probe=lambda: True,
+        stability_interval=0,
+    )
+    manager.validate_existing_install = lambda **_kwargs: None
+
+    with pytest.raises(ssh_access.SecurityError, match="transition guard"):
+        manager.prepare()
+
+    assert dropin.read_text() == "[Unit]\nConditionPathExists=/tmp/unrelated\n"
+    assert not runner.calls
+
+
+def test_prepare_persists_guard_intent_before_unlink(tmp_path, ssh_access):
+    dropin = (
+        tmp_path
+        / "etc/systemd/system/robopark-support-sshd.service.d/90-test-transition.conf"
+    )
+    dropin.parent.mkdir(parents=True)
+    dropin.write_text(ssh_access.TRANSITION_GUARD)
+    manager = ssh_access.SshAccessManager(
+        root=tmp_path,
+        runner=RecordingRunner(),
+        expected_uid=os.getuid(),
+        manage_account=False,
+    )
+    manager.validate_existing_install = lambda **_kwargs: None
+    manager._write_transition_state = lambda _state: (_ for _ in ()).throw(
+        OSError("simulated state write failure")
+    )
+
+    with pytest.raises(RuntimeError, match="rollback incomplete"):
+        manager.prepare()
+
+    assert dropin.read_text() == ssh_access.TRANSITION_GUARD
+
+
+def test_install_enable_remains_compatible_without_prepare(tmp_path, ssh_access):
+    key_file = tmp_path / "operator.pub"
+    key_file.write_text(ed25519_key())
+    source_env = tmp_path / "source.env"
+    source_env.write_text("TUNA_TOKEN=abc_DEF-123.456\n")
+    source_env.chmod(0o600)
+    runner = RecordingRunner()
+    manager = ssh_access.SshAccessManager(
+        root=tmp_path,
+        runner=runner,
+        expected_uid=os.getuid(),
+        sshd_binary="/usr/sbin/sshd",
+        tuna_binary="/usr/bin/tuna",
+        manage_account=False,
+        generate_host_key=False,
+        listener_probe=lambda: True,
+        stability_interval=0,
+    )
+
+    manager.install(key_file, tuna_env=source_env, enable=True)
+
+    assert runner.enabled == {
+        "robopark-support-sshd.service",
+        "robopark-support-tuna.service",
+    }
+    assert runner.active == runner.enabled
+
+
+def test_prepare_rejects_unknown_systemd_dropin(tmp_path, ssh_access):
+    key_file = tmp_path / "operator.pub"
+    key_file.write_text(ed25519_key())
+    source_env = tmp_path / "source.env"
+    source_env.write_text("TUNA_TOKEN=abc_DEF-123.456\n")
+    source_env.chmod(0o600)
+    manager = ssh_access.SshAccessManager(
+        root=tmp_path,
+        runner=RecordingRunner(),
+        expected_uid=os.getuid(),
+        sshd_binary="/usr/sbin/sshd",
+        tuna_binary="/usr/bin/tuna",
+        manage_account=False,
+        generate_host_key=False,
+        listener_probe=lambda: True,
+        stability_interval=0,
+    )
+    manager.install(key_file, tuna_env=source_env)
+    host_key = tmp_path / "etc/robopark-ssh/ssh_host_ed25519_key"
+    host_key.write_text("private")
+    host_key.chmod(0o600)
+    Path(str(host_key) + ".pub").write_text(ed25519_key())
+    manager._verify_host_key_pair = lambda *_args: ed25519_key().strip()
+    override = (
+        tmp_path
+        / "etc/systemd/system/robopark-support-tuna.service.d/50-override.conf"
+    )
+    override.parent.mkdir(parents=True)
+    override.write_text("[Service]\nExecStartPost=/bin/false\n")
+
+    with pytest.raises(ssh_access.SecurityError, match="unexpected support SSH drop-in"):
+        manager.prepare()
+
+
+@pytest.mark.parametrize(
+    ("base", "unit", "name", "content"),
+    [
+        (
+            "etc/systemd/system",
+            "robopark-support-sshd.service",
+            "90-oneclick-restore.conf",
+            "[Unit]\nConditionPathExists=/var/lib/robopark-oneclick/"
+            "khadas-20261014T071500Z/allow-services\n",
+        ),
+        (
+            "etc/systemd/system",
+            "robopark-support-sshd.service",
+            "95-runtime-session.conf",
+            "[Service]\nProtectHome=tmpfs\nBindPaths=/run/user\n",
+        ),
+        (
+            "run/systemd/system",
+            "robopark-support-tuna.service",
+            "90-oneclick-restore.conf",
+            "[Unit]\nConditionPathExists=/var/lib/robopark-oneclick/"
+            "khadas-20261014T071500Z/allow-services\n",
+        ),
+    ],
+)
+def test_validation_accepts_only_known_exact_support_dropins(
+    tmp_path, ssh_access, base, unit, name, content
+):
+    manager = ssh_access.SshAccessManager(
+        root=tmp_path,
+        runner=RecordingRunner(),
+        expected_uid=os.getuid(),
+        manage_account=False,
+    )
+    dropin = tmp_path / base / f"{unit}.d" / name
+    dropin.parent.mkdir(parents=True)
+    dropin.write_text(content)
+
+    manager._validate_unit_dropins(unit)
+
+
+def test_validation_rejects_systemd_prefix_dropin(tmp_path, ssh_access):
+    manager = ssh_access.SshAccessManager(
+        root=tmp_path,
+        runner=RecordingRunner(),
+        expected_uid=os.getuid(),
+        manage_account=False,
+    )
+    dropin = (
+        tmp_path
+        / "usr/lib/systemd/system/robopark-support-.service.d/50-override.conf"
+    )
+    dropin.parent.mkdir(parents=True)
+    dropin.write_text("[Service]\nExecStartPost=/bin/false\n")
+
+    with pytest.raises(ssh_access.SecurityError, match="unexpected support SSH drop-in"):
+        manager._validate_unit_dropins("robopark-support-sshd.service")
+
+
+def test_disable_stops_support_units_before_reporting_corrupt_transition_state(
+    tmp_path, ssh_access
+):
+    units = {
+        "robopark-support-sshd.service",
+        "robopark-support-tuna.service",
+    }
+    runner = RecordingRunner(active=units, enabled=units)
+    manager = ssh_access.SshAccessManager(
+        root=tmp_path,
+        runner=runner,
+        expected_uid=os.getuid(),
+        manage_account=False,
+    )
+    state = tmp_path / "var/lib/robopark-ssh/test-transition-guards.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("truncated")
+    state.chmod(0o600)
+
+    with pytest.raises(ssh_access.SecurityError):
+        manager.disable()
+
+    assert runner.enabled == set()
+    assert runner.active == set()
+
+
+def test_failed_enable_retry_does_not_restore_already_removed_guard(
+    tmp_path, ssh_access
+):
+    units = {
+        "robopark-support-sshd.service",
+        "robopark-support-tuna.service",
+    }
+    runner = RecordingRunner(active=units, enabled=units)
+    manager = ssh_access.SshAccessManager(
+        root=tmp_path,
+        runner=runner,
+        expected_uid=os.getuid(),
+        manage_account=False,
+        listener_probe=lambda: False,
+        stability_interval=0,
+    )
+    manager._write_transition_state(
+        {"sshd_guard_removed": True, "tuna_guard_removed": True}
+    )
+    guard = manager.layout.transition_guard("robopark-support-tuna.service")
+
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        manager.enable(validate=False)
+
+    assert not guard.exists()
+    assert manager._load_transition_state()["tuna_guard_removed"] is True
 
 
 def test_help_runs_on_non_linux_without_privileges():
@@ -384,7 +695,7 @@ def test_enable_failure_restores_both_units_exact_prior_state(tmp_path, ssh_acce
     )
 
     with pytest.raises(subprocess.CalledProcessError):
-        manager.enable()
+        manager.enable(validate=False)
 
     assert runner.active == {sshd}
     assert runner.enabled == {tuna}
@@ -420,7 +731,7 @@ def test_enable_rejects_tuna_that_exits_during_stability_window(tmp_path, ssh_ac
     )
 
     with pytest.raises(RuntimeError, match="external SSH check"):
-        manager.enable()
+        manager.enable(validate=False)
 
     assert runner.active == set()
     assert runner.enabled == set()

@@ -219,9 +219,9 @@ import IOKit.ps
         let currentRun = runID
         loop = Task { [weak self] in
             guard let self else { return }
-            var delay = 1.0
+            var retryBackoff = ConnectionRetryBackoff()
             while !Task.isCancelled {
-                do { try await self.connect(run: currentRun); delay = 1 }
+                do { try await self.connect(run: currentRun) }
                 catch {
                     guard self.runID == currentRun else { return }
                     self.emitLifecycle("closed", "error",
@@ -239,8 +239,8 @@ import IOKit.ps
                 self.managedProbes = false; self.compressedResults = false
                 self.heartbeatAcknowledgements = false
                 if Task.isCancelled { break }
+                let delay = retryBackoff.nextDelay(afterEstablished: self.lifecyclePhase == "authenticated")
                 try? await Task.sleep(nanoseconds: UInt64((delay + Double.random(in: 0...1)) * 1_000_000_000))
-                delay = min(60, delay * 2)
             }
         }
     }
@@ -858,6 +858,7 @@ import IOKit.ps
     private func acknowledgeLiveness(run: UUID, generation: String) {
         guard connectionWatchdog.acknowledge(run: run, generation: generation) else { return }
         livenessTimeout?.cancel(); livenessTimeout = nil
+        emitLifecycle("heartbeat", "ok")
     }
     private func finishLegacyPing(error: Error?, pulse: ConnectionHeartbeat, run: UUID,
                                   generation: String, channel: URLSessionWebSocketTask,
@@ -969,15 +970,27 @@ import IOKit.ps
               let id = message["probe_id"] as? String, UUID(uuidString: id) != nil,
               let timeout = message["timeout_ms"] as? Int, timeout > 0, timeout <= 10_000 else { throw AgentError.invalidJob }
         guard probeTask == nil else { return }
+        emitLifecycle("probe_received", "ok")
         let currentGeneration = generation
         probeTask = Task { [weak self] in
             guard let self else { return }
             defer { if self.generation == currentGeneration { self.probeTask = nil } }
             await self.probeIfNeeded(granted: true, timeout: Double(timeout) / 1000)
             guard !Task.isCancelled, self.generation == currentGeneration else { return }
-            try? await self.send(["type": "probe_result", "probe_id": id, "generation": currentGeneration,
-                "ready": Date() < self.readyUntil && self.registration?.paused == false && !self.thermallyPaused,
-                "latency_ms": self.latency], through: channel)
+            do {
+                try await self.send(["type": "probe_result", "probe_id": id, "generation": currentGeneration,
+                    "ready": Date() < self.readyUntil && self.registration?.paused == false && !self.thermallyPaused,
+                    "latency_ms": self.latency], through: channel)
+                guard !Task.isCancelled, self.generation == currentGeneration else { return }
+                // Readiness alone leaves the broker with the previous zero capacity
+                // until the next periodic heartbeat. Publish the new capacity now.
+                try await self.sendHeartbeat()
+                self.emitLifecycle("probe_result", Date() < self.readyUntil ? "ok" : "error")
+            } catch {
+                guard !Task.isCancelled, self.generation == currentGeneration else { return }
+                self.emitLifecycle("probe_result", "error",
+                    code: self.lifecycleErrorCode(error, channel: channel))
+            }
         }
         // Managed Emergency work preempts compute as soon as the probe lease is accepted.
         onChange?()
@@ -1023,8 +1036,10 @@ import IOKit.ps
         _ = try EmergencyTarget.url(vin: vin)
         try requireTrust()
         let jobGeneration = generation
+        emitLifecycle("job_received", "ok")
         jobs[attempt] = Task { [weak self] in
             guard let self else { return }
+            let jobStarted = Date()
             defer { self.jobs.removeValue(forKey: attempt); self.onChange?() }
             var answer: [String: Any] = ["type": "result", "job_id": id, "attempt_id": attempt, "generation": jobGeneration]
             do {
@@ -1032,6 +1047,7 @@ import IOKit.ps
                 let started = Date()
                 let payload = try await Network.emergency(vin: vin, cookie: profile.cookie, timeout: min(10, Double(timeout) / 1000))
                 guard !Task.isCancelled, self.registration?.cookie == profile.cookie, self.generation == jobGeneration else { throw CancellationError() }
+                self.emitLifecycle("job_upstream", "ok", elapsedSince: started)
                 self.readyUntil = Date().addingTimeInterval(self.managedProbes ? 120 : 30)
                 self.lastProbe = Date()
                 self.latency = self.latency * 0.7 + max(1, Date().timeIntervalSince(started) * 1000) * 0.3
@@ -1049,12 +1065,20 @@ import IOKit.ps
                 self.transmittedBytes += (try? JSONSerialization.data(withJSONObject: answer).count) ?? raw.count
                 self.completed += 1
             } catch {
+                self.emitLifecycle("job_upstream", "error",
+                    code: (error as? NetworkFailure)?.wireCode ?? "network", elapsedSince: jobStarted)
                 self.readyUntil = .distantPast
                 answer["ok"] = false; answer["error"] = (error as? NetworkFailure)?.wireCode ?? "network"
                 self.upstreamState = "Доступ требует повторной проверки"
             }
             guard !Task.isCancelled, self.generation == jobGeneration else { return }
-            try? await self.send(answer, through: channel)
+            do {
+                try await self.send(answer, through: channel)
+                self.emitLifecycle("job_result", "ok", elapsedSince: jobStarted)
+            } catch {
+                self.emitLifecycle("job_result", "error",
+                    code: self.lifecycleErrorCode(error, channel: channel), elapsedSince: jobStarted)
+            }
         }
         onChange?()
     }

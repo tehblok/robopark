@@ -1,5 +1,17 @@
 import Foundation
 
+/// Failed handshakes back off; an established channel starts a fresh sequence.
+public struct ConnectionRetryBackoff {
+    private var delay: TimeInterval = 1
+    public init() {}
+
+    public mutating func nextDelay(afterEstablished: Bool) -> TimeInterval {
+        let result: TimeInterval = afterEstablished ? 1 : delay
+        delay = min(60, result * 2)
+        return result
+    }
+}
+
 public enum AsyncDeadlineError: Error {
     case timedOut
 }

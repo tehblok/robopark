@@ -57,6 +57,9 @@ _DESTRUCTIVE_PHRASES = {
     HostOperationKind.CLEANUP_EXECUTE: "CLEAN ROBOPARK",
     HostOperationKind.DOCKER_IMAGE_EXECUTE: "CLEAN ROBOPARK IMAGES",
     HostOperationKind.BUILDER_CACHE_EXECUTE: "CLEAN ROBOPARK BUILD CACHE",
+    HostOperationKind.SUPPORT_SSH_PREPARE: "PREPARE SUPPORT SSH",
+    HostOperationKind.SUPPORT_SSH_ENABLE: "ENABLE SUPPORT SSH",
+    HostOperationKind.SUPPORT_SSH_DISABLE: "DISABLE SUPPORT SSH",
 }
 _SAFE_PHRASES = {
     kind: f"ЗАПУСТИТЬ {kind.value.upper()}"
@@ -98,6 +101,7 @@ _PUBLIC_OPERATION_ERRORS = frozenset(
         "unsafe_backup_receipt",
         "cleanup_plan_changed",
         "disk_space_low",
+        "support_ssh_failed",
     }
 )
 _PUBLIC_OTA_FAILURE_ERRORS = frozenset(

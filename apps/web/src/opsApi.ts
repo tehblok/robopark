@@ -23,6 +23,7 @@ export type SystemHistory = {
 }
 export const HOST_OPERATION_KINDS = [
   'ota-update', 'rollback', 'package-inspect', 'package-update',
+  'support-ssh-prepare', 'support-ssh-enable', 'support-ssh-disable',
   'service-restart', 'reboot', 'backup', 'backup-verify', 'backup-restore',
   'cleanup-preview', 'cleanup-execute', 'docker-image-preview', 'docker-image-execute',
   'builder-cache-preview', 'builder-cache-execute', 'diagnostics', 'usb-discover', 'usb-format',
@@ -47,6 +48,11 @@ export type SystemJob = {
   updated_at?: string
   progress_percent: number | null; error: string | null
   host_result?: {
+    support_ssh_result?: {
+      phase: 'prepared' | 'enabled' | 'disabled'
+      sshd_enabled: boolean; sshd_active: boolean; tuna_enabled: boolean; tuna_active: boolean
+      loopback_ready: boolean; public_reachability: 'not_checked'; host_fingerprint?: string | null
+    } | null
     devices?: Array<{ device_uuid: string; removable: boolean; mounted: boolean }>
     cleanup_preview?: {
       plan_id: string; blocked: boolean; total_bytes: number

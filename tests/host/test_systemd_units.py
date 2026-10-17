@@ -77,6 +77,18 @@ def test_command_consumer_can_open_the_shared_stable_host_lock():
     assert "-/run/lock/robopark" in service["ReadWritePaths"].split()
 
 
+def test_command_consumer_can_persist_only_the_support_ssh_guard_state():
+    service = unit("robopark-commands.service")["Service"]
+    writable = service["ReadWritePaths"].split()
+
+    assert "-/var/lib/robopark-ssh" in writable
+    assert "/etc/systemd/system" in writable
+    assert service["RuntimeDirectory"] == "sshd"
+    assert service["RuntimeDirectoryMode"] == "0755"
+    assert service["RuntimeDirectoryPreserve"] == "yes"
+    assert "/etc" not in writable
+
+
 def test_command_consumer_can_write_only_supported_backup_mount_roots():
     service = unit("robopark-commands.service")["Service"]
     writable = set(service["ReadWritePaths"].split())

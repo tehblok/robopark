@@ -35,6 +35,9 @@ class OperationKind(str, Enum):
     PACKAGE_INSPECT = "package-inspect"
     PACKAGE_UPDATE = "package-update"
     SERVICE_RESTART = "service-restart"
+    SUPPORT_SSH_PREPARE = "support-ssh-prepare"
+    SUPPORT_SSH_ENABLE = "support-ssh-enable"
+    SUPPORT_SSH_DISABLE = "support-ssh-disable"
     REBOOT = "reboot"
     BACKUP = "backup"
     BACKUP_VERIFY = "backup-verify"
@@ -59,6 +62,9 @@ DESTRUCTIVE_CONFIRMATIONS = {
     OperationKind.CLEANUP_EXECUTE: "CLEAN ROBOPARK",
     OperationKind.DOCKER_IMAGE_EXECUTE: "CLEAN ROBOPARK IMAGES",
     OperationKind.BUILDER_CACHE_EXECUTE: "CLEAN ROBOPARK BUILD CACHE",
+    OperationKind.SUPPORT_SSH_PREPARE: "PREPARE SUPPORT SSH",
+    OperationKind.SUPPORT_SSH_ENABLE: "ENABLE SUPPORT SSH",
+    OperationKind.SUPPORT_SSH_DISABLE: "DISABLE SUPPORT SSH",
 }
 _LOW_SPACE_OPERATION_KINDS = {
     OperationKind.CLEANUP_PREVIEW,
@@ -292,6 +298,15 @@ class TypedHostEffects:
     def service_restart(self, operation_id, service):
         raise ReleaseError("operation_unavailable")
 
+    def support_ssh_prepare(self, operation_id):
+        raise ReleaseError("operation_unavailable")
+
+    def support_ssh_enable(self, operation_id):
+        raise ReleaseError("operation_unavailable")
+
+    def support_ssh_disable(self, operation_id):
+        raise ReleaseError("operation_unavailable")
+
     def reboot(self, operation_id):
         raise ReleaseError("operation_unavailable")
 
@@ -370,6 +385,15 @@ class SystemTypedHostEffects(TypedHostEffects):
     def service_restart(self, operation_id, service):
         return self.system.service_restart(operation_id, service)
 
+    def support_ssh_prepare(self, operation_id):
+        return self.system.support_ssh_prepare(operation_id)
+
+    def support_ssh_enable(self, operation_id):
+        return self.system.support_ssh_enable(operation_id)
+
+    def support_ssh_disable(self, operation_id):
+        return self.system.support_ssh_disable(operation_id)
+
     def reboot(self, operation_id):
         return self.system.reboot(operation_id)
 
@@ -419,6 +443,9 @@ _TYPED_FIELDS = {
     OperationKind.PACKAGE_INSPECT: {"package"},
     OperationKind.PACKAGE_UPDATE: {"package"},
     OperationKind.SERVICE_RESTART: {"service"},
+    OperationKind.SUPPORT_SSH_PREPARE: set(),
+    OperationKind.SUPPORT_SSH_ENABLE: set(),
+    OperationKind.SUPPORT_SSH_DISABLE: set(),
     OperationKind.REBOOT: set(),
     OperationKind.BACKUP: {"device_uuid"},
     OperationKind.BACKUP_VERIFY: {"backup_id"},
@@ -612,6 +639,12 @@ def _perform_typed(effect, operation, devices):
         return effect.package_update(identity, value["package"])
     if kind is OperationKind.SERVICE_RESTART:
         return effect.service_restart(identity, value["service"])
+    if kind is OperationKind.SUPPORT_SSH_PREPARE:
+        return effect.support_ssh_prepare(identity)
+    if kind is OperationKind.SUPPORT_SSH_ENABLE:
+        return effect.support_ssh_enable(identity)
+    if kind is OperationKind.SUPPORT_SSH_DISABLE:
+        return effect.support_ssh_disable(identity)
     if kind is OperationKind.REBOOT:
         return effect.reboot(identity)
     if kind is OperationKind.BACKUP:
@@ -1460,6 +1493,9 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
             OperationKind.BACKUP_RESTORE,
             OperationKind.PACKAGE_UPDATE,
             OperationKind.SERVICE_RESTART,
+            OperationKind.SUPPORT_SSH_PREPARE,
+            OperationKind.SUPPORT_SSH_ENABLE,
+            OperationKind.SUPPORT_SSH_DISABLE,
             OperationKind.REBOOT,
             OperationKind.CLEANUP_PREVIEW,
             OperationKind.CLEANUP_EXECUTE,
@@ -1493,6 +1529,9 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
             supported = supported - {
                 OperationKind.PACKAGE_UPDATE,
                 OperationKind.SERVICE_RESTART,
+                OperationKind.SUPPORT_SSH_PREPARE,
+                OperationKind.SUPPORT_SSH_ENABLE,
+                OperationKind.SUPPORT_SSH_DISABLE,
                 OperationKind.REBOOT,
                 OperationKind.USB_FORMAT,
                 OperationKind.DOCKER_IMAGE_PREVIEW, OperationKind.DOCKER_IMAGE_EXECUTE,
@@ -1525,8 +1564,34 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
         if importlib.util.find_spec("cryptography") is None:
             supported = supported - backup_kinds
             reasons.update(dict.fromkeys(backup_kinds, "dependency_unavailable"))
+        support_ssh_kinds = {
+            OperationKind.SUPPORT_SSH_PREPARE,
+            OperationKind.SUPPORT_SSH_ENABLE,
+            OperationKind.SUPPORT_SSH_DISABLE,
+        }
+        if not self._support_ssh_context_available():
+            supported = supported - support_ssh_kinds
+            reasons.update(dict.fromkeys(support_ssh_kinds, "context_unavailable"))
         self.supported_kinds = frozenset(supported)
         self.unavailable_reasons = reasons
+
+    def _support_ssh_context_available(self):
+        required = (
+            self.paths.root / "etc/robopark-ssh/sshd_config",
+            self.paths.root / "etc/robopark-ssh/authorized_keys",
+            self.paths.root / "etc/robopark-ssh/tuna.env",
+            self.paths.root / "etc/robopark-ssh/ssh_host_ed25519_key",
+            self.paths.root / "etc/robopark-ssh/ssh_host_ed25519_key.pub",
+            self.paths.root
+            / "etc/systemd/system/robopark-support-sshd.service",
+            self.paths.root
+            / "etc/systemd/system/robopark-support-tuna.service",
+            self.paths.root / "usr/local/libexec/robopark-ssh-access.py",
+        )
+        try:
+            return all(path.is_file() and not path.is_symlink() for path in required)
+        except OSError:
+            return False
 
     @classmethod
     def unsupported_kinds(cls):
@@ -1608,6 +1673,99 @@ class SafeProductionTypedHostEffects(TypedHostEffects):
                     timeout=30,
                 )
         return {"service": service, "restarted": True}
+
+    def _support_ssh_operation(self, operation_id, command, phase):
+        _canonical_uuid(operation_id)
+        if command not in {"prepare", "enable", "disable"}:
+            raise ReleaseError("support_ssh_failed")
+        helper = Path(__file__).resolve().parents[2] / "support/ssh_access.py"
+        try:
+            info = helper.lstat()
+            content = helper.read_bytes()
+        except OSError as exc:
+            raise ReleaseError("support_ssh_failed") from exc
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid not in {0, os.geteuid()}
+            or info.st_mode & 0o022
+            or b"ROBOPARK_SSH_ACCESS_MANAGED" not in content[:256]
+        ):
+            raise ReleaseError("support_ssh_failed")
+        argv = ["/usr/bin/python3", "-I", str(helper), command, "--json"]
+        if command == "enable":
+            argv.append("--test-transition")
+        result = self._run(argv, timeout=90)
+        if getattr(result, "returncode", 1) != 0:
+            raise ReleaseError("support_ssh_failed")
+        raw = getattr(result, "stdout", "")
+        if not isinstance(raw, str) or len(raw) > 16 * 1024:
+            raise ReleaseError("support_ssh_failed")
+        try:
+            detail = json.loads(raw)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ReleaseError("support_ssh_failed") from exc
+        if not isinstance(detail, dict):
+            raise ReleaseError("support_ssh_failed")
+        expected = {
+            "phase",
+            "sshd_enabled",
+            "sshd_active",
+            "tuna_enabled",
+            "tuna_active",
+            "loopback_ready",
+            "public_reachability",
+            "host_fingerprint",
+        }
+        fingerprint = detail.get("host_fingerprint")
+        if (
+            set(detail) != expected
+            or detail.get("phase") != phase
+            or any(
+                type(detail.get(key)) is not bool
+                for key in (
+                    "sshd_enabled",
+                    "sshd_active",
+                    "tuna_enabled",
+                    "tuna_active",
+                    "loopback_ready",
+                )
+            )
+            or detail.get("public_reachability") != "not_checked"
+            or fingerprint is not None
+            and (
+                not isinstance(fingerprint, str)
+                or re.fullmatch(r"SHA256:[A-Za-z0-9+/]{20,64}", fingerprint) is None
+            )
+        ):
+            raise ReleaseError("support_ssh_failed")
+        expected_state = {
+            "prepared": (True, True, False, False, True),
+            "enabled": (True, True, True, True, True),
+            "disabled": (False, False, False, False, False),
+        }[phase]
+        observed = tuple(
+            detail[key]
+            for key in (
+                "sshd_enabled",
+                "sshd_active",
+                "tuna_enabled",
+                "tuna_active",
+                "loopback_ready",
+            )
+        )
+        if observed != expected_state:
+            raise ReleaseError("support_ssh_failed")
+        return detail
+
+    def support_ssh_prepare(self, operation_id):
+        return self._support_ssh_operation(operation_id, "prepare", "prepared")
+
+    def support_ssh_enable(self, operation_id):
+        return self._support_ssh_operation(operation_id, "enable", "enabled")
+
+    def support_ssh_disable(self, operation_id):
+        return self._support_ssh_operation(operation_id, "disable", "disabled")
 
     def reboot(self, operation_id):
         from .operation_capabilities import _boot_id

@@ -2,6 +2,7 @@ import type { SessionOut } from './terminalApi'
 
 const MAX_INPUT_BYTES = 16 * 1024
 const RECONNECT_WINDOW_MS = 15_000
+const READY_TIMEOUT_MS = 8_000
 const ACCESS_REVOCATION_ERRORS = new Set([
   'terminal_login_expired', 'terminal_forbidden', 'terminal_access_revoked',
   'terminal_access_expired', 'terminal_credentials_changed', 'terminal_capabilities_changed',
@@ -26,6 +27,8 @@ export class TerminalConnection {
   private reconnectTimer: number | null = null
   private heartbeatTimer: number | null = null
   private heartbeatSocket: WebSocket | null = null
+  private readyTimer: number | null = null
+  private readyTimerSocket: WebSocket | null = null
   private connectGeneration = 0
   private pendingResize: { cols: number; rows: number } | null = null
   private outputHandler: (bytes: Uint8Array) => void
@@ -46,6 +49,7 @@ export class TerminalConnection {
     this.socket = null
     this.readySocket = null
     this.stopHeartbeat(previous)
+    this.stopReadyTimer(previous)
     previous?.close()
     this.session = session
     this.explicitlyClosed = false
@@ -72,6 +76,18 @@ export class TerminalConnection {
     this.socket = socket
     await new Promise<void>((resolve, reject) => {
       let ready = false
+      this.stopReadyTimer(this.readyTimerSocket)
+      this.readyTimerSocket = socket
+      this.readyTimer = window.setTimeout(() => {
+        if (!this.isCurrent(socket, generation) || ready) return
+        this.readyTimer = null
+        this.readyTimerSocket = null
+        this.socket = null
+        this.readySocket = null
+        socket.close()
+        reject(new Error('terminal_connection_timeout'))
+        this.scheduleReconnect()
+      }, this.readyTimeoutMs())
       socket.onopen = () => {
         if (!this.isCurrent(socket, generation)) return
         socket.send(JSON.stringify({ op: 'authenticate', ticket }))
@@ -105,6 +121,7 @@ export class TerminalConnection {
           }
         } else if (value.op === 'ready' && value.session) {
           ready = true
+          this.stopReadyTimer(socket)
           this.readySocket = socket
           this.firstDetachedAt = 0
           this.session = value.session
@@ -127,6 +144,7 @@ export class TerminalConnection {
         if (!this.isCurrent(socket, generation)) return
         const wasReady = ready
         ready = false
+        this.stopReadyTimer(socket)
         this.readySocket = null
         this.stopHeartbeat(socket)
         this.socket = null
@@ -158,6 +176,7 @@ export class TerminalConnection {
     this.socket = null
     this.readySocket = null
     this.stopHeartbeat(socket)
+    this.stopReadyTimer(socket)
     socket?.close()
   }
 
@@ -196,6 +215,18 @@ export class TerminalConnection {
     this.heartbeatSocket = null
   }
 
+  private readyTimeoutMs(): number {
+    if (!this.firstDetachedAt) return READY_TIMEOUT_MS
+    return Math.max(0, Math.min(READY_TIMEOUT_MS, RECONNECT_WINDOW_MS - (Date.now() - this.firstDetachedAt)))
+  }
+
+  private stopReadyTimer(socket: WebSocket | null) {
+    if (socket !== this.readyTimerSocket) return
+    if (this.readyTimer !== null) window.clearTimeout(this.readyTimer)
+    this.readyTimer = null
+    this.readyTimerSocket = null
+  }
+
   private isCurrent(socket: WebSocket, generation: number): boolean {
     return !this.explicitlyClosed && this.socket === socket && this.connectGeneration === generation
   }
@@ -217,6 +248,7 @@ export class TerminalConnection {
     this.socket = null
     this.readySocket = null
     this.stopHeartbeat(socket)
+    this.stopReadyTimer(socket)
     socket?.close()
     this.options.onAuthorizationFailure?.()
   }

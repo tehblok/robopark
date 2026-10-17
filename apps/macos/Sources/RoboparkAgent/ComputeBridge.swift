@@ -68,9 +68,9 @@ import IOKit.ps
         stop(); let run = runID
         loop = Task { [weak self] in
             guard let self else { return }
-            var delay = 1.0
+            var retryBackoff = ConnectionRetryBackoff()
             while !Task.isCancelled, self.runID == run {
-                do { try await self.connect(run: run); delay = 1 }
+                do { try await self.connect(run: run) }
                 catch {
                     if self.runID == run {
                         self.emitLifecycle("closed", "error",
@@ -80,8 +80,8 @@ import IOKit.ps
                 }
                 if self.runID == run { self.cleanupConnection() }
                 if Task.isCancelled || self.runID != run { return }
+                let delay = retryBackoff.nextDelay(afterEstablished: self.lifecyclePhase == "authenticated")
                 try? await Task.sleep(nanoseconds: UInt64((delay + Double.random(in: 0...1)) * 1_000_000_000))
-                delay = min(60, delay * 2)
             }
         }
     }

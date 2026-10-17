@@ -10,6 +10,7 @@ import { operationReservationKey, readOperationReservation as readScopedOperatio
 const revision = 'a'.repeat(64)
 const kinds = [
   'ota-update', 'rollback', 'package-inspect', 'package-update',
+  'support-ssh-prepare', 'support-ssh-enable', 'support-ssh-disable',
   'service-restart', 'reboot', 'backup', 'backup-verify', 'backup-restore',
   'cleanup-preview', 'cleanup-execute', 'docker-image-preview', 'docker-image-execute',
   'builder-cache-preview', 'builder-cache-execute', 'diagnostics', 'usb-discover', 'usb-format',
@@ -457,8 +458,8 @@ describe('SystemPage', () => {
     const operations = await screen.findByRole('region', { name: 'Управляемые операции' })
     expect(within(operations).getByRole('button', { name: 'Предпросмотр очистки' })).toBeEnabled()
     expect(within(operations).getByRole('button', { name: 'Выполнить очистку' })).toBeDisabled()
-    expect(within(operations).getByText('Недоступные действия (7)')).toBeVisible()
-    expect(within(operations).getAllByText('Недоступно на этом хосте').length).toBe(7)
+    expect(within(operations).getByText('Недоступные действия (10)')).toBeVisible()
+    expect(within(operations).getAllByText('Недоступно на этом хосте').length).toBe(10)
     expect(within(operations).queryByLabelText(/команд|argv/i)).not.toBeInTheDocument()
   })
 
@@ -621,6 +622,9 @@ describe('SystemPage', () => {
   })
 
   it.each([
+    ['Подготовить SSH', 'PREPARE SUPPORT SSH', { kind: 'support-ssh-prepare' }],
+    ['Включить SSH-туннель', 'ENABLE SUPPORT SSH', { kind: 'support-ssh-enable' }],
+    ['Отключить SSH-доступ', 'DISABLE SUPPORT SSH', { kind: 'support-ssh-disable' }],
     ['Откатить версию', 'ROLLBACK ROBOPARK', { kind: 'rollback', release: '0.2.0-rc.10' }],
     ['Перезапустить сервис', 'RESTART SERVICE robopark.service', { kind: 'service-restart', service: 'robopark.service' }],
     ['Перезагрузить хост', 'REBOOT ROBOPARK', { kind: 'reboot' }],
@@ -641,6 +645,7 @@ describe('SystemPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: buttonLabel }))
     const dialog = screen.getByRole('dialog', { name: 'Подтвердить операцию' })
+    if (expected.kind === 'support-ssh-enable') expect(within(dialog).getByText(/отключите прежний SSH-туннель/)).toBeVisible()
     fireEvent.change(within(dialog).getByLabelText(`Введите ${phrase}`), { target: { value: phrase } })
     fireEvent.change(within(dialog).getByLabelText('Пароль'), { target: { value: 'secret' } })
     fireEvent.change(within(dialog).getByLabelText('Код TOTP или восстановления'), { target: { value: '123456' } })

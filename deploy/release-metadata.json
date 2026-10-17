@@ -67,7 +67,8 @@
     "0.2.3-rc.16",
     "0.2.3-rc.17",
     "0.2.3-rc.18",
-    "0.2.3-rc.19"
+    "0.2.3-rc.19",
+    "0.2.3-rc.20"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -85,5 +86,5 @@
       65536
     ]
   },
-  "update_notes": "TEST Mac startup without a blank screen, cached account continuity, bounded upstream requests and background device registration."
+  "update_notes": "TEST support SSH operations and bounded Mac/terminal reconnect recovery."
 }

@@ -93,6 +93,38 @@ def test_result_projection_preserves_useful_fields_without_raw_host_output():
         ).package_result
         is None
     )
+
+
+def test_support_ssh_result_separates_local_state_from_public_reachability():
+    value = public_result(
+        {
+            "kind": "support-ssh-enable",
+            "state": "succeeded",
+            "detail": {
+                "phase": "enabled",
+                "sshd_enabled": True,
+                "sshd_active": True,
+                "tuna_enabled": True,
+                "tuna_active": True,
+                "loopback_ready": True,
+                "public_reachability": "not_checked",
+                "host_fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyzABCDE12345",
+                "stdout": "must stay private",
+            },
+        }
+    ).model_dump(mode="json")
+
+    assert value["support_ssh_result"] == {
+        "phase": "enabled",
+        "sshd_enabled": True,
+        "sshd_active": True,
+        "tuna_enabled": True,
+        "tuna_active": True,
+        "loopback_ready": True,
+        "public_reachability": "not_checked",
+        "host_fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyzABCDE12345",
+    }
+    assert "must stay private" not in json.dumps(value)
     assert (
         public_result(
             {

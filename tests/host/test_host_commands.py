@@ -70,6 +70,15 @@ class FakeHostEffects:
     def service_restart(self, operation_id, service):
         return self._effect("service_restart", operation_id, service)
 
+    def support_ssh_prepare(self, operation_id):
+        return self._effect("support_ssh_prepare", operation_id)
+
+    def support_ssh_enable(self, operation_id):
+        return self._effect("support_ssh_enable", operation_id)
+
+    def support_ssh_disable(self, operation_id):
+        return self._effect("support_ssh_disable", operation_id)
+
     def backup(self, operation_id, device_uuid):
         return self._effect("backup", operation_id, device_uuid)
 
@@ -181,6 +190,9 @@ def publish_test_capabilities(paths, effects, monkeypatch):
         ({"kind": "package-inspect", "package": "openssl", "confirmation": "ЗАПУСТИТЬ PACKAGE-INSPECT"}, "package_inspect"),
         ({"kind": "package-update", "package": "openssl", "confirmation": "UPDATE PACKAGE openssl"}, "package_update"),
         ({"kind": "service-restart", "service": "robopark.service", "confirmation": "RESTART SERVICE robopark.service"}, "service_restart"),
+        ({"kind": "support-ssh-prepare", "confirmation": "PREPARE SUPPORT SSH"}, "support_ssh_prepare"),
+        ({"kind": "support-ssh-enable", "confirmation": "ENABLE SUPPORT SSH"}, "support_ssh_enable"),
+        ({"kind": "support-ssh-disable", "confirmation": "DISABLE SUPPORT SSH"}, "support_ssh_disable"),
         ({"kind": "reboot", "confirmation": "REBOOT ROBOPARK"}, "reboot"),
         ({"kind": "backup", "device_uuid": _DEVICE_UUID, "confirmation": "BACKUP ROBOPARK"}, "backup"),
         ({"kind": "backup-verify", "backup_id": _BACKUP_UUID, "confirmation": "ЗАПУСТИТЬ BACKUP-VERIFY"}, "backup_verify"),
@@ -728,6 +740,58 @@ def test_safe_production_adapter_declares_exact_fail_closed_kinds():
     assert SafeProductionTypedHostEffects.unsupported_kinds() == {
         OperationKind.OTA_UPDATE,
     }
+
+
+@pytest.mark.parametrize(
+    ("kind", "command", "phase"),
+    [
+        ("support-ssh-prepare", "prepare", "prepared"),
+        ("support-ssh-enable", "enable", "enabled"),
+        ("support-ssh-disable", "disable", "disabled"),
+    ],
+)
+def test_production_support_ssh_uses_fixed_helper_contract(
+    host_paths, kind, command, phase
+):
+    from robopark_host.commands import SafeProductionTypedHostEffects
+    from robopark_host.checks import CommandResult
+
+    detail = {
+        "phase": phase,
+        "sshd_enabled": command != "disable",
+        "sshd_active": command != "disable",
+        "tuna_enabled": command == "enable",
+        "tuna_active": command == "enable",
+        "loopback_ready": command != "disable",
+        "public_reachability": "not_checked",
+        "host_fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyzABCDE12345",
+    }
+
+    class Runner:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, argv, *, timeout, max_output):
+            self.calls.append((list(argv), timeout, max_output))
+            return CommandResult(stdout=json.dumps(detail) + "\n")
+
+    runner = Runner()
+    adapter = SafeProductionTypedHostEffects(host_paths, runner=runner)
+    result = getattr(adapter, kind.replace("-", "_"))(str(uuid4()))
+
+    assert result == detail
+    assert len(runner.calls) == 1
+    argv, timeout, max_output = runner.calls[0]
+    assert argv[:2] == ["/usr/bin/python3", "-I"]
+    expected_tail = (
+        [command, "--json", "--test-transition"]
+        if command == "enable"
+        else [command, "--json"]
+    )
+    assert argv[-len(expected_tail):] == expected_tail
+    assert argv[2].endswith("/deploy/support/ssh_access.py")
+    assert timeout == 90
+    assert max_output == 65536
 
 
 class _ProductionActionRunner:
