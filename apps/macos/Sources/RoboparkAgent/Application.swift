@@ -97,6 +97,8 @@ import AgentCore
         }
         updater.onChange = { [weak self] in self?.render() }
         notifications.onChange = { [weak self] in self?.render() }
+        autostart.onChange = { [weak self] in self?.render() }
+        autostart.refresh()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(wake), name: NSWorkspace.didWakeNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(sleep), name: NSWorkspace.willSleepNotification, object: nil)
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(showWorkspace), name: Notification.Name("ru.robopark.agent.open"), object: nil)
@@ -560,7 +562,7 @@ import AgentCore
             corporateMessage: message,
             corporateCanLogin: ownerBound && ownerLoginConfigured,
             autostartSupported: true,
-            autostartEnabled: autostart.isEnabled(),
+            autostartEnabled: autostart.enabled,
             paused: profile?.paused ?? false,
             legacyWorkspaceAvailable: legacyWorkspaceAvailable,
             updateState: updater.statusState,
@@ -600,7 +602,7 @@ import AgentCore
                 }
                 openEmergencyLogin()
             case .autostart(let enabled):
-                try autostart.setEnabled(enabled)
+                try await autostart.setEnabled(enabled)
             case .pause(let enabled):
                 guard bridge.registration != nil else { return .json(["detail": "device_not_registered"], status: 409) }
                 try bridge.pause(enabled)
@@ -652,7 +654,7 @@ import AgentCore
             "computeCompleted": compute.completed, "computeInputBytes": compute.inputBytes,
             "computeOutputBytes": compute.outputBytes,
             "notificationPermission": notifications.permission, "notificationCount": notifications.unreadCount,
-            "account": accountLabel, "autostart": autostart.isEnabled(),
+            "account": accountLabel, "autostart": autostart.enabled,
             "error": lastError, "busy": working || updater.busy
         ]
         guard let bytes = try? JSONSerialization.data(withJSONObject: object), let json = String(data: bytes, encoding: .utf8) else { return }
@@ -682,7 +684,7 @@ import AgentCore
                 case "emergencyLogin": try bridge.requireTrust(); openEmergencyLogin()
                 case "pause": try bridge.pause(!(bridge.registration?.paused ?? false))
                 case "autostart":
-                    try autostart.setEnabled(body["enabled"] as? Bool ?? true)
+                    try await autostart.setEnabled(body["enabled"] as? Bool ?? true)
                 case "open":
                     showWorkspace()
                 case "openNotifications":
