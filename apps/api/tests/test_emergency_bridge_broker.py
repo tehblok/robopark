@@ -636,13 +636,57 @@ def test_request_admission_bounds_global_rate_and_per_requester_concurrency(monk
     monkeypatch.setattr(time, "monotonic", lambda: now)
     registry = BrokerRegistry(max_connections=100)
 
-    assert all(registry.admit_request(7, now=now) for _ in range(16))
+    assert all(registry.admit_request(7, now=now) for _ in range(60))
+    assert all(registry.admit_request(7, now=now) for _ in range(4))
     assert registry.admit_request(7, now=now) is False
     assert registry.admit_request(8, now=now) is True
-    for _ in range(16):
+    for _ in range(64):
         registry.release_request(7)
     assert registry.admit_request(7, now=now) is True
     assert registry.metrics["rejected"] == 1
+
+
+def test_sixty_requests_from_one_requester_drain_through_two_mac_slots():
+    async def scenario():
+        registry = BrokerRegistry(max_connections=1, max_inflight_per_device=2)
+        channel = _channel("one", 1)
+        channel.capacity = 2
+        registry.replace(channel)
+        peak_inflight = 0
+        completed = 0
+
+        async def request(index: int) -> None:
+            nonlocal completed, peak_inflight
+            assert registry.admit_request(7)
+            try:
+                selected = await registry.wait_for_available(
+                    {channel.device_id},
+                    excluded_device_ids=set(),
+                    excluded_generations=set(),
+                    deadline=time.monotonic() + 5,
+                    wait_through_empty=False,
+                )
+                assert selected is channel
+                assert registry.reserve_queue_slot(channel)
+                registry.release_queue_slot(channel)
+                assert registry.channel_available(channel)
+                job = registry.new_pending(channel, f"VIN-{index}")
+                peak_inflight = max(peak_inflight, channel.inflight)
+                await asyncio.sleep(0)
+                registry.finish(channel, job)
+                job.future.cancel()
+                completed += 1
+            finally:
+                registry.release_request(7)
+
+        await asyncio.gather(*(request(index) for index in range(60)))
+        assert completed == 60
+        assert peak_inflight == 2
+        assert channel.inflight == channel.queued == 0
+        assert registry.pending == {}
+        assert registry._active_requests == {}
+
+    asyncio.run(scenario())
 
 
 def test_corporate_upstream_budget_caps_hundred_unique_dispatches_at_eight(monkeypatch):

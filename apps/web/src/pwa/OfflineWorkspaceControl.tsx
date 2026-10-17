@@ -65,7 +65,7 @@ export function OfflineWorkspaceControl({ user, loadState, prepare }: Props) {
     return () => window.clearTimeout(timer)
   }, [state])
 
-  const prepared = state ? `${count(state.parkCount, 'парк', 'парка', 'парков')} · ${count(state.taskCount, 'задача', 'задачи', 'задач')} · ${count(state.robotCount, 'робот', 'робота', 'роботов')}` : null
+  const prepared = state ? `${count(state.parkCount, 'парк', 'парка', 'парков')} · ${count(state.taskCount, 'задача', 'задачи', 'задач')}` : null
   const stale = state?.state === 'stale' || Boolean(state && clock - state.preparedAt >= OFFLINE_PREPARATION_FRESH_MS)
   return (
     <section aria-label="Офлайн-работа" className="rp-sync-center__offline">

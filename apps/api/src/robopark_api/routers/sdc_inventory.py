@@ -67,7 +67,7 @@ def _service_token(db):
     return token
 
 
-def _server_read(function, db, *args, endpoint, **kwargs):
+def _server_read(function, db, *args, endpoint, wait_for_probe=True, **kwargs):
     """Return (result, availability_error); never hide ACL/not-found failures."""
     try:
         token = _service_token(db)
@@ -78,11 +78,24 @@ def _server_read(function, db, *args, endpoint, **kwargs):
         base_url=sdc_inventory.BASE_URL,
         credential=token,
     )
-    admission = inventory_server_circuit.inventory_server_circuit.allow(circuit_key)
+    admission = inventory_server_circuit.inventory_server_circuit.allow(
+        circuit_key,
+        wait_for_probe=wait_for_probe,
+        wait_timeout=sdc_inventory.PROBE_TIMEOUT_SECONDS + 1,
+    )
     if admission is None:
         return None, HTTPException(503, "sdc_inventory_unavailable")
     try:
-        result = function(token, *args, **kwargs)
+        result = function(
+            token,
+            *args,
+            timeout=(
+                sdc_inventory.PROBE_TIMEOUT_SECONDS
+                if admission.probe
+                else sdc_inventory.DEFAULT_TIMEOUT_SECONDS
+            ),
+            **kwargs,
+        )
     except sdc_inventory.InventoryError as exc:
         if isinstance(exc, sdc_inventory.InventoryAvailabilityError):
             inventory_server_circuit.inventory_server_circuit.unavailable(circuit_key, admission)
@@ -106,10 +119,17 @@ def robot_card(
 ):
     """Учётные факты; fleet — тип флота, port/storage — локация. Не физический осмотр."""
     name = _access(db, user, robot, park_id)
-    result, server_error = _server_read(sdc_inventory.fetch_card, db, name, endpoint="rover_card")
+    gateway_enabled = corporate_gateway_client.enabled(settings)
+    result, server_error = _server_read(
+        sdc_inventory.fetch_card,
+        db,
+        name,
+        endpoint="rover_card",
+        wait_for_probe=True,
+    )
     if result is not None:
         return result
-    if corporate_gateway_client.enabled(settings):
+    if gateway_enabled:
         payload = _gateway_read(
             action="rover_card",
             name=name,
@@ -141,18 +161,20 @@ def robot_installations(
     params = {"offset": offset, "limit": limit}
     if slot is not None:
         params["slot"] = slot
+    gateway_enabled = corporate_gateway_client.enabled(settings)
     result, server_error = _server_read(
         sdc_inventory.fetch_installations,
         db,
         name,
         endpoint="rover_installations",
+        wait_for_probe=True,
         offset=offset,
         limit=limit,
         slot=slot,
     )
     if result is not None:
         return result
-    if corporate_gateway_client.enabled(settings):
+    if gateway_enabled:
         payload = _gateway_read(
             action="rover_installations",
             name=name,

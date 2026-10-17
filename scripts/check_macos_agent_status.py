@@ -44,8 +44,40 @@ let server = object["server"] as! [String: Any]
 check(server["state"] as? String == "connected" && server["lastSuccessAt"] is String,
       "server transport and last success are separate")
 let corporate = object["corporate"] as! [String: Any]
-check(corporate["state"] as? String == "checking", "partially verified services remain checking")
+check(corporate["state"] as? String == "ready", "unverified optional Inventory does not block readiness")
 check(corporate["inventory"] as? String == "unverified", "unknown Inventory readiness is explicit")
+for inventoryState in ["unverified", "unavailable"] {
+    let optionalInventory = DesktopAgentStatus(snapshot: AgentStatusSnapshot(
+        accountState: "signed_in", accountLabel: "Royal", accountRole: "royal", registered: true,
+        serverState: "connected", serverLastSuccessAt: timestamp,
+        ownerLoginConfigured: true, probeConfigured: true,
+        tracker: "ready", inventory: inventoryState, emergency: "ready",
+        corporateChecking: false, corporateMessage: nil,
+        corporateCanLogin: true, autostartSupported: true, autostartEnabled: true,
+        paused: false, legacyWorkspaceAvailable: true,
+        updateState: "idle", currentVersion: "0.2.3-rc.4",
+        availableVersion: nil, updateMessage: nil
+    )).jsonObject["corporate"] as! [String: Any]
+    check(optionalInventory["state"] as? String == "ready",
+          "optional Inventory \(inventoryState) does not block readiness")
+    check(optionalInventory["inventory"] as? String == inventoryState,
+          "optional Inventory \(inventoryState) remains explicit")
+}
+for (trackerState, emergencyState) in [("denied", "ready"), ("ready", "denied")] {
+    let requiredDenial = DesktopAgentStatus(snapshot: AgentStatusSnapshot(
+        accountState: "signed_in", accountLabel: "Royal", accountRole: "royal", registered: true,
+        serverState: "connected", serverLastSuccessAt: timestamp,
+        ownerLoginConfigured: true, probeConfigured: true,
+        tracker: trackerState, inventory: "unverified", emergency: emergencyState,
+        corporateChecking: false, corporateMessage: nil,
+        corporateCanLogin: true, autostartSupported: true, autostartEnabled: true,
+        paused: false, legacyWorkspaceAvailable: true,
+        updateState: "idle", currentVersion: "0.2.3-rc.4",
+        availableVersion: nil, updateMessage: nil
+    )).jsonObject["corporate"] as! [String: Any]
+    check(requiredDenial["state"] as? String == "denied",
+          "Tracker or Emergency denial still blocks readiness")
+}
 check(object["legacyWorkspaceAvailable"] as? Bool == true, "legacy WebKit data availability is explicit")
 let encoded = String(data: try! JSONSerialization.data(withJSONObject: object), encoding: .utf8)!
 for secret in ["cookie", "token", "privateKey", "oauth"] {

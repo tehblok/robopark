@@ -539,7 +539,10 @@ import AgentCore
         else if !accountActive { message = "Войдите в аккаунт Robopark на этом Mac." }
         else if !ownerLoginConfigured { message = "Для владельца Mac не назначен корпоративный логин." }
         else if let corporateLoginMessage { message = corporateLoginMessage }
-        else if [services.tracker, services.inventory, services.emergency].allSatisfy({ $0 == "ready" }) { message = nil }
+        else if DesktopAgentStatus.requiredCorporateServicesReady(
+            tracker: services.tracker,
+            emergency: services.emergency
+        ) { message = nil }
         else { message = "Часть корпоративных сервисов требует входа или повторной проверки." }
         let status = DesktopAgentStatus(snapshot: AgentStatusSnapshot(
             accountState: accountState,

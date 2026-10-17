@@ -68,7 +68,9 @@
     "0.2.3-rc.17",
     "0.2.3-rc.18",
     "0.2.3-rc.19",
-    "0.2.3-rc.20"
+    "0.2.3-rc.20",
+    "0.2.3-rc.21",
+    "0.2.3-rc.22"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -86,5 +88,5 @@
       65536
     ]
   },
-  "update_notes": "TEST support SSH operations and bounded Mac/terminal reconnect recovery."
+  "update_notes": "TEST Mac transport recovery and removal of the unused robots registry panel."
 }

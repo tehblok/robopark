@@ -17,6 +17,8 @@ from robopark_api.services.emergency_client import _ssl_context
 
 BASE_URL = "https://inventory.sdc.yandex-team.ru/api/v1"
 MAX_RESPONSE_BYTES = 1024 * 1024
+DEFAULT_TIMEOUT_SECONDS = 10
+PROBE_TIMEOUT_SECONDS = 3
 _SLOTS = threading.BoundedSemaphore(4)
 _CARD_FIELDS = (
     "name",
@@ -53,14 +55,14 @@ def robot_name(value: str) -> str:
     raise ValueError("invalid_robot_number")
 
 
-def _get(token: str, path: str, params=None):
+def _get(token: str, path: str, params=None, *, timeout=DEFAULT_TIMEOUT_SECONDS):
     if not _SLOTS.acquire(blocking=False):
         raise InventoryAvailabilityError("sdc_inventory_busy")
     try:
         with httpx.Client(
-            timeout=10, follow_redirects=False, trust_env=False, verify=_ssl_context()
+            timeout=timeout, follow_redirects=False, trust_env=False, verify=_ssl_context()
         ) as client:
-            deadline = time.monotonic() + 20
+            deadline = time.monotonic() + timeout
             with client.stream(
                 "GET",
                 BASE_URL + path,
@@ -118,9 +120,9 @@ def _evidence(name):
     }
 
 
-def fetch_card(token, name):
+def fetch_card(token, name, *, timeout=DEFAULT_TIMEOUT_SECONDS):
     name = robot_name(name)
-    payload = _get(token, f"/rovers/{name}/")
+    payload = _get(token, f"/rovers/{name}/", timeout=timeout)
     return project_card(payload, name)
 
 
@@ -135,12 +137,14 @@ def project_card(payload, name):
     }
 
 
-def fetch_installations(token, name, *, offset=0, limit=50, slot=None):
+def fetch_installations(
+    token, name, *, offset=0, limit=50, slot=None, timeout=DEFAULT_TIMEOUT_SECONDS
+):
     name = robot_name(name)
     params = {"rover": name, "limit": limit, "offset": offset}
     if slot:
         params["slot"] = slot
-    payload = _get(token, "/installations/", params)
+    payload = _get(token, "/installations/", params, timeout=timeout)
     return project_installations(payload, name, offset=offset, limit=limit, slot=slot)
 
 

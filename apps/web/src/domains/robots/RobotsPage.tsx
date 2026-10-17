@@ -6,13 +6,12 @@ import { useParkScope } from '../../app/park/parkScope'
 import { Button } from '../../design-system/actions/Button'
 import { PageLayout, Panel } from '../../design-system/layout/PageLayout'
 import { RobotResolver, type RobotResolverApiClient } from './RobotResolver'
-import { RobotRegistryList } from './RobotRegistryList'
 import { checkAccessIdentity } from './robotCheckUrl'
 import { clearRecentRobots, loadRecentRobots, type RecentRobot } from './recentRobots'
 import './robots.css'
 import { RobotQrButton } from './RobotQrButton'
 
-type RobotsPageApiClient = RobotResolverApiClient & Partial<Pick<typeof api, 'robotRegistry'>>
+type RobotsPageApiClient = RobotResolverApiClient
 
 export function RobotsPage({ apiClient = api }: { apiClient?: RobotsPageApiClient }) {
   const { user } = useAuth()
@@ -29,7 +28,7 @@ function RobotsPageOwner({
 }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
-  const { parkId, loading, selectedPark } = useParkScope()
+  const { parkId, selectedPark } = useParkScope()
   const [recent, setRecent] = useState<RecentRobot[]>(() => loadRecentRobots(userId))
   const value = searchParams.get('q') ?? ''
 
@@ -59,8 +58,6 @@ function RobotsPageOwner({
           value={value}
         />
       </Panel>
-
-      <RobotRegistryList apiClient={apiClient} parkId={parkId} scopeLoading={loading} />
 
       <Panel
         actions={(

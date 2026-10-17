@@ -1,7 +1,11 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+
 import httpx
 import pytest
 
 from conftest import login_as
+from robopark_api.routers import sdc_inventory as inventory_router
 from robopark_api.services import (
     corporate_gateway_client,
     corporate_gateway_contract,
@@ -106,6 +110,27 @@ def test_inventory_client_classifies_transport_timeout_as_availability(monkeypat
         sdc_inventory.fetch_card("secret", "a664")
 
 
+def test_inventory_probe_uses_three_second_budget_and_healthy_reads_keep_ten(monkeypatch):
+    timeouts = []
+    real_client = httpx.Client
+
+    def factory(**kwargs):
+        timeouts.append(kwargs["timeout"])
+        return real_client(
+            **kwargs,
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(200, json={"name": "a664"})
+            ),
+        )
+
+    monkeypatch.setattr(sdc_inventory.httpx, "Client", factory)
+
+    sdc_inventory.fetch_card("secret", "a664", timeout=3)
+    sdc_inventory.fetch_card("secret", "a664")
+
+    assert timeouts == [3, 10]
+
+
 def test_card_returns_projected_facts_and_source(client, db_session, seed_admin, monkeypatch):
     login_as(client, seed_admin.username, "secret")
     platform_settings.set_setting(db_session, "tracker_token", "test-token")
@@ -195,6 +220,103 @@ def test_healthy_server_inventory_is_primary_and_does_not_call_mac(
     assert response.json()["robot"]["storage"] == "Server path"
 
 
+def test_server_only_parallel_request_waits_for_healthy_cold_probe(
+    db_session, test_settings, monkeypatch
+):
+    test_settings.robopark_environment = "test"
+    test_settings.emergency_bridge_enabled = False
+    test_settings.mac_corporate_gateway_enabled = False
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "server-token")
+    probe_started = Event()
+    release_probe = Event()
+    calls = []
+
+    def healthy(_token, _name, *, timeout):
+        calls.append(timeout)
+        if len(calls) == 1:
+            probe_started.set()
+            assert release_probe.wait(timeout=1)
+        return {"robot": {"storage": "Server path"}}
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first = workers.submit(
+            inventory_router._server_read,
+            healthy,
+            db_session,
+            "a664",
+            endpoint="rover_card",
+            wait_for_probe=True,
+        )
+        assert probe_started.wait(timeout=1)
+        second = workers.submit(
+            inventory_router._server_read,
+            healthy,
+            db_session,
+            "a664",
+            endpoint="rover_card",
+            wait_for_probe=True,
+        )
+        release_probe.set()
+        outcomes = [first.result(timeout=2), second.result(timeout=2)]
+
+    assert [result[0]["robot"]["storage"] for result in outcomes] == [
+        "Server path",
+        "Server path",
+    ]
+    assert sorted(calls) == [3, 10]
+
+
+def test_gateway_enabled_parallel_request_waits_for_healthy_cold_probe(
+    db_session, seed_admin, test_settings, monkeypatch
+):
+    monkeypatch.setattr(inventory_router, "_access", lambda *_args, **_kwargs: "a664")
+    monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "server-token")
+    monkeypatch.setattr(corporate_gateway_client, "enabled", lambda _settings: True)
+    monkeypatch.setattr(
+        corporate_gateway_client,
+        "read",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Mac fallback")),
+    )
+    probe_started = Event()
+    release_probe = Event()
+    second_started = Event()
+
+    def healthy(_token, _name, *, timeout):
+        if timeout == 3:
+            probe_started.set()
+            assert release_probe.wait(timeout=1)
+        return {"robot": {"storage": "Server path"}}
+
+    monkeypatch.setattr(sdc_inventory, "fetch_card", healthy)
+
+    def request():
+        return inventory_router.robot_card(
+            robot="a664",
+            park_id=None,
+            user=seed_admin,
+            db=db_session,
+            settings=test_settings,
+        )
+
+    def second_request():
+        second_started.set()
+        return request()
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first = workers.submit(request)
+        assert probe_started.wait(timeout=1)
+        second = workers.submit(second_request)
+        assert second_started.wait(timeout=1)
+        assert not second.done()
+        release_probe.set()
+        outcomes = [first.result(timeout=2), second.result(timeout=2)]
+
+    assert [result["robot"]["storage"] for result in outcomes] == [
+        "Server path",
+        "Server path",
+    ]
+
+
 def test_missing_server_token_returns_mac_availability_failure(
     client, seed_admin, test_settings, monkeypatch
 ):
@@ -227,7 +349,7 @@ def test_server_inventory_availability_failure_uses_owner_mac(
     monkeypatch.setattr(
         sdc_inventory,
         "fetch_card",
-        lambda *_args: (_ for _ in ()).throw(
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
             sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
         ),
     )
@@ -261,7 +383,7 @@ def test_repeated_server_inventory_failure_uses_fast_owner_mac_fallback(
     server_calls = []
     mac_calls = []
 
-    def unavailable(*_args):
+    def unavailable(*_args, **_kwargs):
         server_calls.append(True)
         raise sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
 
@@ -300,7 +422,7 @@ def test_inventory_server_recovery_is_probed_once_after_cooldown(
     monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "recovery-token")
     server_calls = []
 
-    def fetch(*_args):
+    def fetch(*_args, **_kwargs):
         server_calls.append(True)
         if len(server_calls) == 1:
             raise sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
@@ -352,7 +474,7 @@ def test_inventory_half_open_auth_refusal_is_not_bypassed_through_mac(
     monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "auth-token")
     server_calls = []
 
-    def fetch(*_args):
+    def fetch(*_args, **_kwargs):
         server_calls.append(True)
         if len(server_calls) == 1:
             raise sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
@@ -400,7 +522,7 @@ def test_inventory_cooldown_isolated_by_endpoint(client, seed_admin, test_settin
     card_calls = []
     installation_calls = []
 
-    def unavailable_card(*_args):
+    def unavailable_card(*_args, **_kwargs):
         card_calls.append(True)
         raise sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
 
@@ -436,7 +558,7 @@ def test_inventory_cooldown_does_not_hide_mac_unavailability(
     monkeypatch.setattr(platform_settings, "get_tracker_token", lambda *_args: "unavailable-token")
     server_calls = []
 
-    def unavailable(*_args):
+    def unavailable(*_args, **_kwargs):
         server_calls.append(True)
         raise sdc_inventory.InventoryAvailabilityError("sdc_inventory_unavailable")
 
@@ -532,7 +654,9 @@ def test_test_gateway_does_not_bypass_server_denial_not_found_or_invalid_respons
     monkeypatch.setattr(
         sdc_inventory,
         "fetch_card",
-        lambda *_args: (_ for _ in ()).throw(sdc_inventory.InventoryError(server_error)),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sdc_inventory.InventoryError(server_error)
+        ),
     )
     monkeypatch.setattr(
         corporate_gateway_client,

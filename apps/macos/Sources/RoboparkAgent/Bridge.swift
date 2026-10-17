@@ -1067,9 +1067,11 @@ import IOKit.ps
             } catch {
                 self.emitLifecycle("job_upstream", "error",
                     code: (error as? NetworkFailure)?.wireCode ?? "network", elapsedSince: jobStarted)
-                self.readyUntil = .distantPast
+                if (error as? NetworkFailure) == .auth {
+                    self.readyUntil = .distantPast
+                    self.upstreamState = "Требуется вход в Emergency"
+                }
                 answer["ok"] = false; answer["error"] = (error as? NetworkFailure)?.wireCode ?? "network"
-                self.upstreamState = "Доступ требует повторной проверки"
             }
             guard !Task.isCancelled, self.generation == jobGeneration else { return }
             do {

@@ -117,6 +117,7 @@ def test_exact_operation_status_is_actor_bound_and_sanitized(
             "backup_result": None,
             "usb_result": None,
             "action_result": None,
+            "support_ssh_result": None,
             "diagnostics_ready": False,
         },
         "progress_percent": None,

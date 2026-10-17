@@ -1131,6 +1131,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
         finally:
             registry.release_request(payload.requester_user_id)
         if result is None:
+            LOG.warning("robot_payload_failed detail=%s attempts=%d", detail, attempts)
             return JSONResponse(
                 status_code=503, content={"detail": detail, "attempts_used": attempts}
             )
@@ -1248,6 +1249,9 @@ def main() -> None:
         workers=1,
         ws_max_size=max(MAX_FRAME_BYTES, COMPUTE_MAX_FRAME_BYTES),
         ws_max_queue=1,
+        # Corporate payloads already use bounded raw_deflate envelopes. Avoid
+        # an additional stateful frame compressor on persistent Mac channels.
+        ws_per_message_deflate=False,
     )
 
 

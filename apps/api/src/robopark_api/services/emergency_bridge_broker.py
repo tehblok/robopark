@@ -130,7 +130,10 @@ class BrokerRegistry:
         self._upstream_refilled_at = time.monotonic()
         self._active_requests: dict[int, int] = {}
         self.max_active_requests = 256
-        self.max_active_per_requester = 16
+        # A batched robot read issues one request per visible robot. Keep one
+        # 60-robot batch admissible while the global bound preserves room for
+        # other requesters.
+        self.max_active_per_requester = 64
         self._capacity_changed = asyncio.Event()
         self._capacity_waiters: list[CapacityWaiter] = []
 

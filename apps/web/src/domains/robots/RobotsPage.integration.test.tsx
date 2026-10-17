@@ -40,7 +40,7 @@ const preparedRegistry: RobotRegistry = {
 
 afterEach(() => vi.restoreAllMocks())
 
-it('shows the prepared robot registry on the robots page while offline and keeps direct search available', async () => {
+it('keeps direct search offline without restoring the removed registry', async () => {
   vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)
   vi.spyOn(deviceResourceCache, 'currentDeviceResourceCache').mockReturnValue({
     get: vi.fn(async () => preparedRegistry),
@@ -74,7 +74,8 @@ it('shows the prepared robot registry on the robots page while offline and keeps
     </MemoryRouter>,
   )
 
-  expect(await screen.findByRole('link', { name: 'Открыть робота 1170' })).toBeVisible()
+  expect(screen.queryByRole('heading', { name: 'Роботы в работе' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('link', { name: 'Открыть робота 1170' })).not.toBeInTheDocument()
   expect(screen.getByLabelText('Номер или VIN робота')).toBeVisible()
   expect(apiClient.robotRegistry).not.toHaveBeenCalled()
 })

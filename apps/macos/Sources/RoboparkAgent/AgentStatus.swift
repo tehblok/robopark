@@ -30,7 +30,7 @@ struct DesktopAgentStatus {
 
     var jsonObject: [String: Any] {
         let corporateState: String
-        let services = [snapshot.tracker, snapshot.inventory, snapshot.emergency]
+        let services = [snapshot.tracker, snapshot.emergency]
         if services.contains("denied") {
             corporateState = "denied"
         } else if services.contains("unavailable") {
@@ -40,7 +40,10 @@ struct DesktopAgentStatus {
         } else if snapshot.corporateChecking || services.contains("checking") || services.contains("unverified") {
             corporateState = "checking"
         } else {
-            corporateState = services.allSatisfy { $0 == "ready" } ? "ready" : "unavailable"
+            corporateState = Self.requiredCorporateServicesReady(
+                tracker: snapshot.tracker,
+                emergency: snapshot.emergency
+            ) ? "ready" : "unavailable"
         }
         return [
             "version": 1,
@@ -81,6 +84,10 @@ struct DesktopAgentStatus {
                 "message": Self.nullable(snapshot.updateMessage),
             ],
         ]
+    }
+
+    static func requiredCorporateServicesReady(tracker: String, emergency: String) -> Bool {
+        [tracker, emergency].allSatisfy { $0 == "ready" }
     }
 
     private static func timestamp(_ value: Date) -> String {

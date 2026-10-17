@@ -19,7 +19,12 @@ let package = Package(name: "BridgeLifecycleChecks", platforms: [.macOS(.v13)], 
 SHIMS = r"""import Foundation
 import CryptoKit
 import AgentCore
-enum NetworkFailure: Error, Equatable { case auth, network, invalid; var wireCode: String { "network" } }
+enum NetworkFailure: Error, Equatable {
+ case auth, network, invalid
+ var wireCode: String {
+  switch self { case .auth: return "auth"; case .network: return "network"; case .invalid: return "invalid" }
+ }
+}
 enum SecureStore {
     static func failureMessage(_ error: Error) -> String { "storage unavailable" }
  static var registration: Registration?; static var data: [String: Data] = [:]; static var signed = false; static var failSave = false
@@ -88,6 +93,8 @@ enum Network {
  static var corporateThrows=false
  static var inventoryStatus = CorporateInventoryStatus.ready
  static var inventoryCalls = 0
+ static var emergencyOutcomes: [NetworkFailure?] = []
+ static var emergencyCalls = 0
  static let session=URLSession(configuration:.ephemeral)
  static func serverTransport() throws -> URLSession { session }
  static func persistentWebSocketTransport() throws -> URLSession { session }
@@ -98,7 +105,12 @@ enum Network {
   let info:[String:Any] = ["signed_profile":["payload":"x","signature":"x"],"environment":"test","instance_id":"d6ed3b43-c41b-4614-833e-c5ec30936ef3","protocol":1]
   return (try JSONSerialization.data(withJSONObject:info), response(200))
  }
- static func emergency(vin:String,cookie:String,timeout:Double=10) async throws -> [String:Any] { throw NetworkFailure.network }
+ static func emergency(vin:String,cookie:String,timeout:Double=10) async throws -> [String:Any] {
+  emergencyCalls += 1
+  let outcome = emergencyOutcomes.isEmpty ? NetworkFailure.network : emergencyOutcomes.removeFirst()
+  if let outcome { throw outcome }
+  return ["vin":vin,"timestamp":Int(Date().timeIntervalSince1970 * 1000),"isOnline":true]
+ }
  static func corporateIdentity(authorization:String,timeout:Double=10) async throws -> (Data,HTTPURLResponse) {
   corporateCalls += 1
   await CorporateIdentityGate.shared.pauseIfNeeded()
@@ -117,7 +129,11 @@ MAIN = r"""import Foundation
 import AgentCore
 var checks=0
 func check(_ v:@autoclosure() throws -> Bool,_ n:String)throws { guard try v() else { fatalError("FAIL: \(n)") }; checks+=1 }
-func reset() async { SecureStore.reset(); Network.infoCalls=0; Network.corporateStatus=200; Network.corporateBody=["login":"owner.login","dismissed":false]; Network.corporateCalls=0; Network.corporateThrows=false; Network.inventoryStatus = .ready; Network.inventoryCalls = 0; await Claims.shared.reset(); await CorporateIdentityGate.shared.reset(); await InventoryGate.shared.reset() }
+func reset() async { SecureStore.reset(); Network.infoCalls=0; Network.corporateStatus=200; Network.corporateBody=["login":"owner.login","dismissed":false]; Network.corporateCalls=0; Network.corporateThrows=false; Network.inventoryStatus = .ready; Network.inventoryCalls = 0; Network.emergencyOutcomes=[]; Network.emergencyCalls=0; await Claims.shared.reset(); await CorporateIdentityGate.shared.reset(); await InventoryGate.shared.reset() }
+func waitFor(_ condition: @escaping () -> Bool) async throws {
+ for _ in 0..<200 { if condition() { return }; try await Task.sleep(nanoseconds:5_000_000) }
+ throw NetworkFailure.network
+}
 func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"https://roboparktest.ru.tuna.am",code:"code",label:"Mac") }
 @main struct Run { static func main() async throws {
  let id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -241,6 +257,28 @@ func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"http
            "a changed server probe invalidates and refreshes Inventory ACL readiness")
  try authenticated.storeVerifiedSession("Session_id=present",login:"owner.login")
  try check(!authenticated.needsCorporateLogin,"verified owner cookie enables corporate services")
+ authenticated.generation="11111111-1111-4111-8111-111111111111"
+ authenticated.readyUntil=Date().addingTimeInterval(120)
+ let jobChannel=Network.session.webSocketTask(with:URL(string:"wss://roboparktest.ru.tuna.am/emergency/bridge/ws")!)
+ func job(_ vin:String,_ attempt:String) -> [String:Any] {
+  ["type":"job","operation":"robot_payload","generation":authenticated.generation,
+   "job_id":UUID().uuidString,"attempt_id":attempt,"vin":vin,"timeout_ms":1_000]
+ }
+ Network.emergencyOutcomes=[.network,.invalid,nil,.auth]
+ try authenticated.acceptJob(job("YASADR00000001001","11111111-1111-4111-8111-111111111101"),channel:jobChannel)
+ try await waitFor { Network.emergencyCalls == 1 && authenticated.jobs.isEmpty }
+ try check(authenticated.readyUntil > Date(),"one robot network failure preserves validated Emergency readiness")
+ try authenticated.acceptJob(job("YASADR00000001002","11111111-1111-4111-8111-111111111102"),channel:jobChannel)
+ try await waitFor { Network.emergencyCalls == 2 && authenticated.jobs.isEmpty }
+ try check(authenticated.readyUntil > Date(),"one invalid robot response preserves validated Emergency readiness")
+ try authenticated.acceptJob(job("YASADR00000001003","11111111-1111-4111-8111-111111111103"),channel:jobChannel)
+ try await waitFor { Network.emergencyCalls == 3 && authenticated.completed == 1 && authenticated.jobs.isEmpty }
+ try check(authenticated.readyUntil > Date() && authenticated.upstreamState == "Корпоративный доступ проверен",
+           "another robot succeeds immediately after a per-robot failure")
+ try authenticated.acceptJob(job("YASADR00000001004","11111111-1111-4111-8111-111111111104"),channel:jobChannel)
+ try await waitFor { Network.emergencyCalls == 4 && authenticated.readyUntil < Date() && authenticated.jobs.isEmpty }
+ try check(authenticated.upstreamState == "Требуется вход в Emergency",
+           "job authentication failure invalidates global Emergency readiness")
  authenticated.registration?.trackerOAuthExpiresAt=nil
  authenticated.registration?.trackerOAuthVerifiedAt=Date()
  try authenticated.persist()
@@ -668,10 +706,19 @@ def main() -> int:
         root = Path(raw)
         (root / "Sources/BridgeLifecycleChecks").mkdir(parents=True)
         shutil.copytree(MACOS / "Sources/AgentCore", root / "Sources/AgentCore")
-        shutil.copy2(
-            MACOS / "Sources/RoboparkAgent/Bridge.swift",
-            root / "Sources/BridgeLifecycleChecks/Bridge.swift",
+        exposed_bridge = bridge_source.replace(
+            "private var readyUntil", "var readyUntil"
+        ).replace(
+            "private var generation", "var generation"
+        ).replace(
+            "private var jobs", "var jobs"
+        ).replace(
+            "private func acceptJob", "func acceptJob"
+        ).replace(
+            "try await self.send(answer, through: channel)",
+            "try Task.checkCancellation(); _ = answer",
         )
+        (root / "Sources/BridgeLifecycleChecks/Bridge.swift").write_text(exposed_bridge)
         (root / "Package.swift").write_text(PACKAGE)
         (root / "Sources/BridgeLifecycleChecks/Shims.swift").write_text(SHIMS)
         (root / "Sources/BridgeLifecycleChecks/main.swift").write_text(MAIN)

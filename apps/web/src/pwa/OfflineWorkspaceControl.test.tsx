@@ -13,7 +13,7 @@ it('prepares every authorized park and reports freshness and bounded counts', as
   render(<OfflineWorkspaceControl user={user} prepare={prepare} loadState={async () => undefined} />)
   fireEvent.click(screen.getByRole('button', { name: 'Подготовить офлайн' }))
   await waitFor(() => expect(prepare).toHaveBeenCalledWith([1, 2], undefined))
-  expect(screen.getByText(/2 парка · 12 задач · 5 роботов/)).toBeVisible()
+  expect(screen.getByText(/2 парка · 12 задач/)).toBeVisible()
   expect(screen.getByText(/Обновлено:/)).toBeVisible()
 })
 
@@ -21,7 +21,7 @@ it('keeps the previous snapshot visible after a reconnect refresh failure', asyn
   const previous = { version: 1 as const, state: 'ready' as const, preparedAt: Date.now() - 60_000, parkCount: 1, taskCount: 4, robotCount: 2, complete: true }
   const prepare = vi.fn(async () => ({ ...previous, state: 'stale' as const }))
   render(<OfflineWorkspaceControl user={user} prepare={prepare} loadState={async () => previous} />)
-  await screen.findByText(/1 парк · 4 задачи · 2 робота/)
+  await screen.findByText(/1 парк · 4 задачи/)
   fireEvent(window, new Event('online'))
   await waitFor(() => expect(prepare).toHaveBeenCalledWith([1, 2], previous))
   expect(screen.getByText(/Сохранённые данные устарели/)).toBeVisible()
