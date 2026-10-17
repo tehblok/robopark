@@ -169,7 +169,7 @@ import IOKit.ps
         try bridge.requireTrust()
         let server = try ServerOrigin(profile.origin)
         emitLifecycle("verify_info", "ok", elapsedSince: verifyStarted)
-        let channel = try Network.serverTransport().webSocketTask(with: server.computeWebSocket)
+        let channel = try Network.persistentWebSocketTransport().webSocketTask(with: server.computeWebSocket)
         channel.maximumMessageSize = 12 * 1024 * 1024
         socket = channel; channel.resume()
         lifecyclePhase = "challenge"

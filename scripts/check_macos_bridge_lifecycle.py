@@ -90,6 +90,7 @@ enum Network {
  static var inventoryCalls = 0
  static let session=URLSession(configuration:.ephemeral)
  static func serverTransport() throws -> URLSession { session }
+ static func persistentWebSocketTransport() throws -> URLSession { session }
  static func request(_ url:URL, method:String="GET", object:[String:Any]?=nil, cookie:String?=nil, limit:Int=131072, timeout:Double=12) async throws -> (Data,HTTPURLResponse) {
   if url.path.hasSuffix("/claim") { return try await Claims.shared.begin(object ?? [:]) }
   infoCalls += 1

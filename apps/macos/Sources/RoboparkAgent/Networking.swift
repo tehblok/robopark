@@ -35,6 +35,8 @@ enum Network {
     static let policy = NetworkPolicy()
     private static let serverTransportLock = NSLock()
     private static var cachedServerTransport: URLSession?
+    private static let persistentWebSocketTransportLock = NSLock()
+    private static var cachedPersistentWebSocketTransport: URLSession?
 
     static func serverTransport() throws -> URLSession {
         serverTransportLock.lock()
@@ -50,6 +52,31 @@ enum Network {
         try TestOriginTransport.shared.configure(config)
         let transport = URLSession(configuration: config, delegate: policy, delegateQueue: nil)
         cachedServerTransport = transport
+        return transport
+    }
+
+    // A CONNECT-backed URLSession resource deadline also expires active WSS writes.
+    // Keep its lifetime independent from bounded HTTP; handshake and heartbeat watchdogs remain the bounds.
+    static func persistentWebSocketConfiguration(
+        _ configuration: URLSessionConfiguration = .ephemeral
+    ) throws -> URLSessionConfiguration {
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.timeoutIntervalForRequest = 12
+        configuration.timeoutIntervalForResource = 7 * 24 * 60 * 60
+        configuration.httpMaximumConnectionsPerHost = 4
+        try TestOriginTransport.shared.configure(configuration)
+        return configuration
+    }
+
+    static func persistentWebSocketTransport() throws -> URLSession {
+        persistentWebSocketTransportLock.lock()
+        defer { persistentWebSocketTransportLock.unlock() }
+        if let cachedPersistentWebSocketTransport { return cachedPersistentWebSocketTransport }
+        let transport = URLSession(configuration: try persistentWebSocketConfiguration(),
+                                   delegate: policy, delegateQueue: nil)
+        cachedPersistentWebSocketTransport = transport
         return transport
     }
 

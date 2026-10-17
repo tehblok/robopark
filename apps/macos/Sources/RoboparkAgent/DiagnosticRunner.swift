@@ -137,7 +137,7 @@ import AgentCore
 
     private func websocketChallenge() async throws {
         let url = URL(string: "wss://\(TestOriginTransport.testHost)/api/emergency/bridge/ws")!
-        let socket = try Network.serverTransport().webSocketTask(with: url)
+        let socket = try Network.persistentWebSocketTransport().webSocketTask(with: url)
         socket.resume()
         defer { socket.cancel(with: .goingAway, reason: nil) }
         let message = try await AsyncDeadline.run(nanoseconds: 8_000_000_000) { try await socket.receive() }

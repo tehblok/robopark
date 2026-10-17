@@ -4,22 +4,31 @@
 from __future__ import annotations
 
 import os
+import base64
+import hashlib
 import shutil
 import socket
+import ssl
+import struct
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "apps/macos/Sources/AgentCore/TestOriginTransport.swift"
+NETWORKING = ROOT / "apps/macos/Sources/RoboparkAgent/Networking.swift"
 PACKAGE = """// swift-tools-version: 5.9
 import PackageDescription
 let package = Package(
     name: "TestOriginTransportChecks",
     platforms: [.macOS(.v13)],
-    targets: [.executableTarget(name: "TestOriginTransportChecks")]
+    targets: [
+        .target(name: "AgentCore"),
+        .executableTarget(name: "TestOriginTransportChecks", dependencies: ["AgentCore"]),
+    ]
 )
 """
 
@@ -361,6 +370,27 @@ private final class StallServer: @unchecked Sendable {
         check((response as? HTTPURLResponse)?.statusCode == 200 && !body.isEmpty,
               "URLSession authenticates to the proxy and relays opaque TLS bytes")
 
+        let persistentConfiguration = URLSessionConfiguration.ephemeral
+        persistentConfiguration.timeoutIntervalForResource = 0.35
+        try transport.configure(persistentConfiguration)
+        _ = try Network.persistentWebSocketConfiguration(persistentConfiguration)
+        let persistentSession = URLSession(configuration: persistentConfiguration,
+                                           delegate: delegate, delegateQueue: nil)
+        defer { persistentSession.invalidateAndCancel() }
+        let webSocket = persistentSession.webSocketTask(with: URL(
+            string: "wss://\(TestOriginTransport.testHost)/ws")!)
+        webSocket.resume()
+        try await Task.sleep(nanoseconds: 700_000_000)
+        try await webSocket.send(.string("still-alive"))
+        let echoed = try await webSocket.receive()
+        if case .string(let value) = echoed {
+            check(value == "still-alive",
+                  "persistent WSS through CONNECT outlives the scaled HTTP resource deadline")
+        } else {
+            check(false, "persistent WSS echo remains a text message")
+        }
+        webSocket.cancel(with: .goingAway, reason: nil)
+
         let eofSocket = socket(AF_INET, SOCK_STREAM, 0)
         guard eofSocket >= 0 else { throw POSIXError(.ECONNREFUSED) }
         var eofAddress = sockaddr_in()
@@ -434,15 +464,113 @@ def make_certificate(folder: Path, name: str, san: str) -> tuple[Path, Path]:
     return key, certificate
 
 
+class TLSFixtureServer:
+    def __init__(self, port: int, certificate: Path, key: Path) -> None:
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", port))
+        self._listener.listen(8)
+        self._listener.settimeout(0.2)
+        self._context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self._context.load_cert_chain(certificate, key)
+        self._stopped = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        self._listener.close()
+        self._thread.join(timeout=3)
+
+    def _serve(self) -> None:
+        while not self._stopped.is_set():
+            try:
+                connection, _ = self._listener.accept()
+            except (OSError, socket.timeout):
+                continue
+            threading.Thread(target=self._handle, args=(connection,), daemon=True).start()
+
+    def _handle(self, raw: socket.socket) -> None:
+        try:
+            with self._context.wrap_socket(raw, server_side=True) as connection:
+                request = b""
+                while b"\r\n\r\n" not in request and len(request) <= 8192:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        return
+                    request += chunk
+                headers = request.decode("latin-1").split("\r\n")
+                key = next((line.split(":", 1)[1].strip() for line in headers
+                            if line.lower().startswith("sec-websocket-key:")), None)
+                if key is None:
+                    body = b"ok"
+                    connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n" + body)
+                    return
+                accept = base64.b64encode(hashlib.sha1(
+                    (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
+                ).digest())
+                connection.sendall(b"HTTP/1.1 101 Switching Protocols\r\n"
+                                   b"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                                   b"Sec-WebSocket-Accept: " + accept + b"\r\n\r\n")
+                while not self._stopped.is_set():
+                    header = self._read_exact(connection, 2)
+                    opcode, length = header[0] & 0x0F, header[1] & 0x7F
+                    if length == 126:
+                        length = struct.unpack("!H", self._read_exact(connection, 2))[0]
+                    elif length == 127:
+                        length = struct.unpack("!Q", self._read_exact(connection, 8))[0]
+                    mask = self._read_exact(connection, 4) if header[1] & 0x80 else b""
+                    payload = self._read_exact(connection, length)
+                    if mask:
+                        payload = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+                    if opcode == 8:
+                        return
+                    connection.sendall(bytes([0x80 | opcode]) + self._frame_length(len(payload)) + payload)
+        except (EOFError, OSError, ssl.SSLError):
+            raw.close()
+
+    @staticmethod
+    def _read_exact(connection: ssl.SSLSocket, length: int) -> bytes:
+        result = b""
+        while len(result) < length:
+            chunk = connection.recv(length - len(result))
+            if not chunk:
+                raise EOFError
+            result += chunk
+        return result
+
+    @staticmethod
+    def _frame_length(length: int) -> bytes:
+        if length < 126:
+            return bytes([length])
+        if length <= 0xFFFF:
+            return bytes([126]) + struct.pack("!H", length)
+        return bytes([127]) + struct.pack("!Q", length)
+
+
 def main() -> int:
-    if not SOURCE.is_file():
-        print(f"FAIL: missing production source {SOURCE}")
+    if not SOURCE.is_file() or not NETWORKING.is_file():
+        print("FAIL: missing production TEST transport sources")
         return 1
     with tempfile.TemporaryDirectory(prefix="robopark-test-origin-") as raw:
         folder = Path(raw)
         source_dir = folder / "Sources/TestOriginTransportChecks"
         source_dir.mkdir(parents=True)
+        agent_core_dir = folder / "Sources/AgentCore"
+        agent_core_dir.mkdir(parents=True)
+        (agent_core_dir / "AgentCore.swift").write_text("public enum AgentCoreMarker {}\n")
         shutil.copy2(SOURCE, source_dir / SOURCE.name)
+        networking = NETWORKING.read_text().split(
+            "    // Corporate services retain their own direct transport", 1
+        )[0] + "}\n"
+        (source_dir / "NetworkingTransport.swift").write_text(networking)
+        (source_dir / "NetworkingShims.swift").write_text(
+            'enum EmergencyTarget { static let host = "emergency.invalid" }\n'
+            'enum CorporateAuthPolicy { static let trackerHost = "tracker.invalid" }\n'
+            'enum CorporateReadPolicy { static let inventoryHost = "inventory.invalid" }\n'
+        )
         (source_dir / "main.swift").write_text(MAIN)
         (folder / "Package.swift").write_text(PACKAGE)
         exact_key, exact_cert = make_certificate(folder, "exact", "roboparktest.ru.tuna.am")
@@ -450,12 +578,9 @@ def main() -> int:
         exact_der = folder / "exact.cert.der"
         wrong_der = folder / "wrong.cert.der"
         exact_port, wrong_port = free_ports(2)
+        exact_server = TLSFixtureServer(exact_port, exact_cert, exact_key)
+        exact_server.start()
         servers = [
-            subprocess.Popen(
-                ["openssl", "s_server", "-quiet", "-www", "-accept", str(exact_port),
-                 "-cert", str(exact_cert), "-key", str(exact_key)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            ),
             subprocess.Popen(
                 ["openssl", "s_server", "-quiet", "-www", "-accept", str(wrong_port),
                  "-cert", str(wrong_cert), "-key", str(wrong_key)],
@@ -484,6 +609,7 @@ def main() -> int:
                 },
             ).returncode
         finally:
+            exact_server.stop()
             for server in servers:
                 server.terminate()
             for server in servers:

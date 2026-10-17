@@ -753,7 +753,7 @@ import IOKit.ps
         registration?.signedProfile = info.signed_profile; registration?.channel = trusted.channel
         try persist()
         state = "Подключение…"; onChange?()
-        let channel = try Network.serverTransport().webSocketTask(with: server.webSocket)
+        let channel = try Network.persistentWebSocketTransport().webSocketTask(with: server.webSocket)
         channel.maximumMessageSize = 2 * 1024 * 1024
         socket = channel; channel.resume()
         lifecyclePhase = "challenge"
