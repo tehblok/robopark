@@ -23,7 +23,7 @@ function tree(resolverClient: RobotResolverApiClient, options: { currentUser?: U
   </MemoryRouter>
 }
 beforeEach(() => { localStorage.clear(); vi.clearAllMocks(); vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true) })
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 it.each(['447', VIN.toLowerCase()])('canonicalizes literal %s, keeps numeric park and valid tab, remembers current success', async reference => {
   const resolver = { emergencyResolve: vi.fn(async () => ({ vin: VIN, sections })) }
   render(tree(resolver, { reference })); await waitFor(() => expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}?park=7&tab=wheels`))
@@ -86,6 +86,26 @@ it('404 offers search while retryable failure exposes request id and retry', asy
   fireEvent.click(screen.getByRole('button', { name: 'Повторить' }))
   await screen.findByRole('heading', { name: 'Не найдено' })
   expect(screen.getByRole('link', { name: 'К поиску роботов' })).toHaveAttribute('href', '/robots')
+})
+it('automatically retries a transient initial resolve after ten seconds', async () => {
+  vi.useFakeTimers()
+  const resolver = {
+    emergencyResolve: vi.fn()
+      .mockRejectedValueOnce(new ApiError(503, 'service_unavailable'))
+      .mockResolvedValue({ vin: VIN, sections }),
+  }
+  render(tree(resolver))
+  await act(async () => undefined)
+  expect(resolver.emergencyResolve).toHaveBeenCalledTimes(1)
+  expect(screen.getByRole('heading', { name: 'Сервис временно недоступен' })).toBeInTheDocument()
+
+  await act(async () => vi.advanceTimersByTimeAsync(9_999))
+  expect(resolver.emergencyResolve).toHaveBeenCalledTimes(1)
+  await act(async () => vi.advanceTimersByTimeAsync(1))
+
+  expect(resolver.emergencyResolve).toHaveBeenCalledTimes(2)
+  expect(screen.queryByRole('heading', { name: 'Сервис временно недоступен' })).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Адрес')).toHaveTextContent(`/robots/${VIN}`)
 })
 it('manual resolve offline is one-shot, not permission to auto-resolve on a later offline event', async () => {
   const connection = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false)

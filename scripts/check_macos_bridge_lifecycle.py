@@ -84,6 +84,23 @@ actor InventoryGate {
  }
  func release(){ blocked=false; releaseWaiter?.resume(); releaseWaiter=nil }
 }
+actor JobResultGate {
+ static let shared=JobResultGate()
+ var blocked=false; var delivered=0
+ var deliveryWaiter:CheckedContinuation<Void,Never>?; var releaseWaiters:[CheckedContinuation<Void,Never>]=[]
+ func reset(){ blocked=false; delivered=0; deliveryWaiter?.resume(); deliveryWaiter=nil; releaseWaiters.forEach{$0.resume()}; releaseWaiters=[] }
+ func block(){ blocked=true; delivered=0 }
+ func waitForDelivery(_ count:Int) async {
+  while delivered < count { await withCheckedContinuation { deliveryWaiter=$0 } }
+ }
+ func send(_ answer:[String:Any]) async throws {
+  delivered += 1
+  deliveryWaiter?.resume(); deliveryWaiter=nil
+  guard blocked else { return }
+  await withCheckedContinuation { releaseWaiters.append($0) }
+ }
+ func release(){ blocked=false; let waiters=releaseWaiters; releaseWaiters=[]; waiters.forEach{$0.resume()} }
+}
 func response(_ status:Int)->HTTPURLResponse { HTTPURLResponse(url:URL(string:"https://roboparktest.ru.tuna.am/api/agent-devices/info")!,statusCode:status,httpVersion:"HTTP/1.1",headerFields:[:])! }
 enum Network {
  static var infoCalls=0
@@ -129,7 +146,7 @@ MAIN = r"""import Foundation
 import AgentCore
 var checks=0
 func check(_ v:@autoclosure() throws -> Bool,_ n:String)throws { guard try v() else { fatalError("FAIL: \(n)") }; checks+=1 }
-func reset() async { SecureStore.reset(); Network.infoCalls=0; Network.corporateStatus=200; Network.corporateBody=["login":"owner.login","dismissed":false]; Network.corporateCalls=0; Network.corporateThrows=false; Network.inventoryStatus = .ready; Network.inventoryCalls = 0; Network.emergencyOutcomes=[]; Network.emergencyCalls=0; await Claims.shared.reset(); await CorporateIdentityGate.shared.reset(); await InventoryGate.shared.reset() }
+func reset() async { SecureStore.reset(); Network.infoCalls=0; Network.corporateStatus=200; Network.corporateBody=["login":"owner.login","dismissed":false]; Network.corporateCalls=0; Network.corporateThrows=false; Network.inventoryStatus = .ready; Network.inventoryCalls = 0; Network.emergencyOutcomes=[]; Network.emergencyCalls=0; await Claims.shared.reset(); await CorporateIdentityGate.shared.reset(); await InventoryGate.shared.reset(); await JobResultGate.shared.reset() }
 func waitFor(_ condition: @escaping () -> Bool) async throws {
  for _ in 0..<200 { if condition() { return }; try await Task.sleep(nanoseconds:5_000_000) }
  throw NetworkFailure.network
@@ -279,6 +296,21 @@ func enroll(_ bridge:Bridge) async throws { try await bridge.enroll(origin:"http
  try await waitFor { Network.emergencyCalls == 4 && authenticated.readyUntil < Date() && authenticated.jobs.isEmpty }
  try check(authenticated.upstreamState == "Требуется вход в Emergency",
            "job authentication failure invalidates global Emergency readiness")
+ authenticated.readyUntil=Date().addingTimeInterval(120)
+ let completedBeforeRollover=authenticated.completed
+ Network.emergencyOutcomes=[NetworkFailure?](repeating:nil,count:9)
+ await JobResultGate.shared.block()
+ for index in 11...18 {
+  let suffix=String(format:"%012d",index)
+  try authenticated.acceptJob(job(String(format:"YASADR%011d",index),"11111111-1111-4111-8111-\(suffix)"),channel:jobChannel)
+ }
+ await JobResultGate.shared.waitForDelivery(8)
+ try authenticated.acceptJob(job("YASADR00000001019","11111111-1111-4111-8111-000000000019"),channel:jobChannel)
+ try await waitFor { Network.emergencyCalls == 13 }
+ await JobResultGate.shared.release()
+ try await waitFor { authenticated.jobs.isEmpty }
+ try check(authenticated.readyUntil > Date() && authenticated.completed == completedBeforeRollover + 9,
+           "eight delivered results with delayed send completion free capacity for the ninth job")
  authenticated.registration?.trackerOAuthExpiresAt=nil
  authenticated.registration?.trackerOAuthVerifiedAt=Date()
  try authenticated.persist()
@@ -716,7 +748,7 @@ def main() -> int:
             "private func acceptJob", "func acceptJob"
         ).replace(
             "try await self.send(answer, through: channel)",
-            "try Task.checkCancellation(); _ = answer",
+            "try await JobResultGate.shared.send(answer)",
         )
         (root / "Sources/BridgeLifecycleChecks/Bridge.swift").write_text(exposed_bridge)
         (root / "Package.swift").write_text(PACKAGE)

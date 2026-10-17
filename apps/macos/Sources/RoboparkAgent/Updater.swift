@@ -2,12 +2,17 @@ import Foundation
 import AgentCore
 
 @MainActor final class Updater {
+    private enum StatusSource { case local, helper }
+
     private struct PublicStatus: Codable {
         let status: String
         let message: String
         let installed_version: String
         let target_version: String
         let checked_at: Int64
+        let updated_at_ms: Int64?
+
+        var orderingTimestamp: Int64 { updated_at_ms ?? checked_at * 1_000 }
     }
 
     let bridge: Bridge
@@ -15,9 +20,17 @@ import AgentCore
     private(set) var busy = false
     private(set) var catalogTarget = ""
     private var lastCheckFailed = false
+    private var lastStatusAt: Int64?
+    private var lastStatusSource: StatusSource?
+    private let statusURL: URL
     var onChange: (() -> Void)?
 
-    init(bridge: Bridge) { self.bridge = bridge }
+    init(bridge: Bridge, statusURL: URL = URL(
+        fileURLWithPath: "/Library/Application Support/RoboparkUpdater/status.json"
+    )) {
+        self.bridge = bridge
+        self.statusURL = statusURL
+    }
     var version: String { Bundle.main.object(forInfoDictionaryKey: "RoboparkReleaseVersion") as? String ?? "development" }
     var statusState: String {
         if busy { return "checking" }
@@ -46,6 +59,8 @@ import AgentCore
                 now: Int64(Date().timeIntervalSince1970), minimumGeneration: minimum,
                 channel: assignment.channel)
             lastCheckFailed = false
+            lastStatusAt = Int64(Date().timeIntervalSince1970 * 1_000)
+            lastStatusSource = .local
             catalogTarget = verified.target.version
             if let registration = bridge.registration,
                registration.origin == origin.url.absoluteString,
@@ -64,6 +79,8 @@ import AgentCore
             }
         } catch {
             lastCheckFailed = true
+            lastStatusAt = Int64(Date().timeIntervalSince1970 * 1_000)
+            lastStatusSource = .local
             message = "Проверка тестового сервера недоступна. Автообновление повторит попытку без изменения установленной версии."
         }
     }
@@ -71,12 +88,20 @@ import AgentCore
     func refreshStatus() { refreshStatus(notify: true) }
 
     private func refreshStatus(notify: Bool) {
-        let url = URL(fileURLWithPath: "/Library/Application Support/RoboparkUpdater/status.json")
         do {
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            let values = try statusURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
             guard values.isRegularFile == true, values.isSymbolicLink != true,
                   let size = values.fileSize, size > 0, size <= 64 * 1024 else { throw AgentError.invalidCatalog }
-            let status = try JSONDecoder().decode(PublicStatus.self, from: Data(contentsOf: url))
+            let status = try JSONDecoder().decode(PublicStatus.self, from: Data(contentsOf: statusURL))
+            if let lastStatusAt,
+               status.orderingTimestamp < lastStatusAt
+                || status.orderingTimestamp == lastStatusAt && lastStatusSource == .local {
+                if notify { onChange?() }
+                return
+            }
+            lastStatusAt = status.orderingTimestamp
+            lastStatusSource = .helper
+            lastCheckFailed = status.status == "failed"
             if status.installed_version != version, !status.installed_version.isEmpty {
                 message = "Установлена версия \(status.installed_version). Перезапустите Robopark, сейчас запущена \(version)."
             } else if !catalogTarget.isEmpty, status.target_version != catalogTarget,
@@ -86,10 +111,18 @@ import AgentCore
                 message = status.message
             }
         } catch {
-            message = "Ожидается первая автоматическая проверка обновлений."
+            if lastStatusAt == nil {
+                message = "Ожидается первая автоматическая проверка обновлений."
+            }
         }
         if notify { onChange?() }
     }
 
-    func reset() { message = "Автообновление ещё не проверялось"; lastCheckFailed = false; onChange?() }
+    func reset() {
+        message = "Автообновление ещё не проверялось"
+        lastCheckFailed = false
+        lastStatusAt = nil
+        lastStatusSource = nil
+        onChange?()
+    }
 }

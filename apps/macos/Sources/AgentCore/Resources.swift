@@ -1,5 +1,14 @@
 import Foundation
 
+public enum EmergencyCapacityPolicy {
+    public static let maximumJobs = 8
+    public static let batteryJobs = 4
+
+    public static func baseCapacity(onACPower: Bool) -> Int {
+        onACPower ? maximumJobs : batteryJobs
+    }
+}
+
 public struct ResourceTelemetry: Equatable {
     public let cpuPercent: Double
     public let memoryPercent: Double
@@ -15,7 +24,8 @@ public struct ResourceTelemetry: Equatable {
         guard ready, !paused, base > 0, activeJobs >= 0,
               thermalState != "serious", thermalState != "critical",
               cpuPercent < 95, memoryPercent < 90 else { return 0 }
-        let thermalLimit = thermalState == "fair" || cpuPercent >= 80 || memoryPercent >= 80 ? 1 : min(8, base)
+        let thermalLimit = thermalState == "fair" || cpuPercent >= 80 || memoryPercent >= 80
+            ? 1 : min(EmergencyCapacityPolicy.maximumJobs, base)
         return thermalLimit
     }
 

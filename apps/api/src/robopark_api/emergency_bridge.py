@@ -52,11 +52,11 @@ class _ControlAuthorityLane:
     closed: bool = False
 
     @classmethod
-    def create(cls) -> _ControlAuthorityLane:
+    def create(
+        cls, *, thread_name_prefix: str = "robopark-emergency-control"
+    ) -> _ControlAuthorityLane:
         return cls(
-            executor=ThreadPoolExecutor(
-                max_workers=4, thread_name_prefix="robopark-emergency-control"
-            ),
+            executor=ThreadPoolExecutor(max_workers=4, thread_name_prefix=thread_name_prefix),
             slots=asyncio.Semaphore(4),
         )
 
@@ -464,6 +464,9 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
     )
     compute_router = create_compute_router(session_factory, settings)
     control_authority_lane = _ControlAuthorityLane.create()
+    result_authority_lane = _ControlAuthorityLane.create(
+        thread_name_prefix="robopark-emergency-result"
+    )
 
     async def probe_scheduler() -> None:
         while True:
@@ -493,9 +496,13 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        nonlocal control_authority_lane
+        nonlocal control_authority_lane, result_authority_lane
         if control_authority_lane.closed:
             control_authority_lane = _ControlAuthorityLane.create()
+        if result_authority_lane.closed:
+            result_authority_lane = _ControlAuthorityLane.create(
+                thread_name_prefix="robopark-emergency-result"
+            )
         compute_router.startup()
         task = asyncio.create_task(probe_scheduler())
         try:
@@ -506,6 +513,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                 await task
             await compute_router.shutdown()
             control_authority_lane.shutdown()
+            result_authority_lane.shutdown()
 
     app = FastAPI(
         title="Robopark Emergency Bridge",
@@ -594,8 +602,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
             max_waiters=384,
         )
 
-    async def bounded_control_authority_call(deadline: float, fn, *args):
-        lane = control_authority_lane
+    async def bounded_lane_authority_call(lane: _ControlAuthorityLane, deadline: float, fn, *args):
         if lane.closed or lane.waiters >= 100 or deadline <= time.monotonic():
             raise TimeoutError("authority_capacity")
         lane.waiters += 1
@@ -628,6 +635,12 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
         lane.slots.release()
         return result
 
+    async def bounded_control_authority_call(deadline: float, fn, *args):
+        return await bounded_lane_authority_call(control_authority_lane, deadline, fn, *args)
+
+    async def bounded_result_authority_call(deadline: float, fn, *args):
+        return await bounded_lane_authority_call(result_authority_lane, deadline, fn, *args)
+
     @app.get("/health")
     async def health() -> dict:
         return {"status": "ok", "enabled": settings.emergency_bridge_enabled}
@@ -651,6 +664,130 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
             }
         )
         channel: Channel | None = None
+        result_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+
+        def fail_result(current_channel: Channel, pending: Any) -> None:
+            if pending.future.done():
+                return
+            if registry.resolve_result(
+                device_id=current_channel.device_id,
+                generation=current_channel.generation,
+                job_id=pending.job_id,
+                attempt_id=pending.attempt_id,
+                result={"ok": False, "error": "network"},
+            ):
+                registry.record_failure(current_channel)
+
+        async def process_result(
+            current_channel: Channel, message: dict[str, Any], pending: Any
+        ) -> None:
+            ok = message.get("ok") is True
+            decoded = _decode_result_payload(message, pending.vin) if ok else None
+            payload_size = decoded[2] if decoded is not None else 0
+            encoded_size = decoded[1] if decoded is not None else 0
+            valid = ok and decoded is not None
+            valid = valid or (not ok and message.get("error") in {"auth", "network", "invalid"})
+            if not valid:
+                LOG.warning(
+                    "Emergency bridge rejected malformed result",
+                    extra={
+                        "device_id": current_channel.device_id,
+                        "vin": pending.vin,
+                        "generation": current_channel.generation,
+                        "job_id": pending.job_id,
+                        "attempt_id": pending.attempt_id,
+                        "outcome": "invalid_payload",
+                    },
+                )
+                return
+            if decoded is not None:
+                message["payload"] = decoded[0]
+                message.pop("payload_base64", None)
+                message.pop("payload_bytes", None)
+                message.pop("encoded_bytes", None)
+                message.pop("encoding", None)
+            try:
+                allowed = pending.requester_user_id is not None and (
+                    await bounded_result_authority_call(
+                        pending.deadline_monotonic or time.monotonic() + 20,
+                        _job_authority_valid,
+                        session_factory,
+                        settings,
+                        current_channel.device_id,
+                        pending.requester_user_id,
+                        pending.vin,
+                    )
+                )
+            except TimeoutError:
+                fail_result(current_channel, pending)
+                return
+            except Exception:
+                LOG.exception(
+                    "Emergency bridge result authority check failed",
+                    extra={
+                        "device_id": current_channel.device_id,
+                        "vin": pending.vin,
+                        "generation": current_channel.generation,
+                        "job_id": pending.job_id,
+                        "attempt_id": pending.attempt_id,
+                    },
+                )
+                fail_result(current_channel, pending)
+                return
+            if not allowed or pending.future.done():
+                return
+            LOG.info(
+                "Emergency bridge delivered result",
+                extra={
+                    "device_id": current_channel.device_id,
+                    "requester_user_id": pending.requester_user_id,
+                    "vin": pending.vin,
+                    "generation": current_channel.generation,
+                    "job_id": pending.job_id,
+                    "attempt_id": pending.attempt_id,
+                    "payload_size": payload_size,
+                    "latency_ms": current_channel.latency_ms,
+                    "outcome": "ok" if ok else str(message.get("error")),
+                },
+            )
+            if not registry.resolve_result(
+                device_id=current_channel.device_id,
+                generation=current_channel.generation,
+                job_id=pending.job_id,
+                attempt_id=pending.attempt_id,
+                result=message,
+            ):
+                return
+            if ok:
+                registry.record_success(
+                    current_channel,
+                    encoded_bytes=encoded_size,
+                    decoded_bytes=payload_size,
+                    duration_seconds=max(0.001, time.monotonic() - pending.started_at),
+                )
+            else:
+                registry.record_failure(current_channel)
+
+        async def process_result_safely(
+            current_channel: Channel, message: dict[str, Any], pending: Any
+        ) -> None:
+            try:
+                await process_result(current_channel, message, pending)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOG.exception(
+                    "Emergency bridge result processing failed",
+                    extra={
+                        "device_id": current_channel.device_id,
+                        "vin": pending.vin,
+                        "generation": current_channel.generation,
+                        "job_id": pending.job_id,
+                        "attempt_id": pending.attempt_id,
+                    },
+                )
+                fail_result(current_channel, pending)
+
         try:
             auth = await asyncio.wait_for(_receive_json(websocket), timeout=10)
             if auth.get("type") != "auth" or not isinstance(auth.get("device_id"), str):
@@ -684,7 +821,7 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                     "generation": channel.generation,
                     "heartbeat_interval_ms": 10_000,
                     "readiness_timeout_ms": 30_000,
-                    "max_inflight": 2,
+                    "max_inflight": 8,
                     "supports": ["raw_deflate", "managed_probes", "heartbeat_ack"],
                     "probe_interval_ms": 60_000,
                     "probe_timeout_ms": 10_000,
@@ -792,80 +929,27 @@ def create_broker_app(session_factory: sessionmaker, settings: Settings) -> Fast
                     )
                     if pending is None:
                         continue
-                    ok = message.get("ok") is True
-                    decoded = _decode_result_payload(message, pending.vin) if ok else None
-                    payload_size = decoded[2] if decoded is not None else 0
-                    encoded_size = decoded[1] if decoded is not None else 0
-                    valid = ok and decoded is not None
-                    valid = valid or (
-                        not ok and message.get("error") in {"auth", "network", "invalid"}
-                    )
-                    if not valid:
-                        LOG.warning(
-                            "Emergency bridge rejected malformed result",
-                            extra={
-                                "device_id": channel.device_id,
-                                "vin": pending.vin,
-                                "generation": channel.generation,
-                                "job_id": pending.job_id,
-                                "attempt_id": pending.attempt_id,
-                                "outcome": "invalid_payload",
-                            },
-                        )
+                    result_key = (pending.job_id, pending.attempt_id)
+                    if result_key in result_tasks:
                         continue
-                    if decoded is not None:
-                        message["payload"] = decoded[0]
-                        message.pop("payload_base64", None)
-                        message.pop("payload_bytes", None)
-                        message.pop("encoded_bytes", None)
-                        message.pop("encoding", None)
-                    if (
-                        pending.requester_user_id is not None
-                        and await bounded_control_authority_call(
-                            pending.deadline_monotonic or time.monotonic() + 20,
-                            _job_authority_valid,
-                            session_factory,
-                            settings,
-                            channel.device_id,
-                            pending.requester_user_id,
-                            pending.vin,
-                        )
-                    ):
-                        LOG.info(
-                            "Emergency bridge delivered result",
-                            extra={
-                                "device_id": channel.device_id,
-                                "requester_user_id": pending.requester_user_id,
-                                "vin": pending.vin,
-                                "generation": channel.generation,
-                                "job_id": pending.job_id,
-                                "attempt_id": pending.attempt_id,
-                                "payload_size": payload_size,
-                                "latency_ms": channel.latency_ms,
-                                "outcome": "ok" if ok else str(message.get("error")),
-                            },
-                        )
-                        registry.resolve_result(
-                            device_id=channel.device_id,
-                            generation=channel.generation,
-                            job_id=pending.job_id,
-                            attempt_id=pending.attempt_id,
-                            result=message,
-                        )
-                        if ok:
-                            registry.record_success(
-                                channel,
-                                encoded_bytes=encoded_size,
-                                decoded_bytes=payload_size,
-                                duration_seconds=max(0.001, time.monotonic() - pending.started_at),
-                            )
-                        else:
-                            registry.record_failure(channel)
+                    if len(result_tasks) >= 8:
+                        fail_result(channel, pending)
+                        continue
+                    task = asyncio.create_task(process_result_safely(channel, message, pending))
+                    result_tasks[result_key] = task
+                    task.add_done_callback(
+                        lambda _task, key=result_key: result_tasks.pop(key, None)
+                    )
         except WebSocketDisconnect:
             pass
         except (TimeoutError, ValueError, InvalidSignature, OverflowError):
             await websocket.close(code=1008)
         finally:
+            tasks = list(result_tasks.values())
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
             if channel is not None:
                 registry.remove(channel)
 

@@ -17,6 +17,7 @@ import { rememberRobot } from './recentRobots'
 import { parseRobotReference } from './robotReference'
 import { loadRelatedRobotWork, type RobotDetailApiClient } from './robotDetailData'
 import { RobotDetailView, type RobotDetailViewProps } from './RobotDetailView'
+import { pollDelayAfterFailure } from './polling'
 
 type FailureHandler = (failure: DomainError) => void
 type Resolved = Awaited<ReturnType<RobotResolverApiClient['emergencyResolve']>>
@@ -69,6 +70,7 @@ function RobotResourceOwner({ apiClient, resolverClient, checkClient, user, refe
   const [retry, setRetry] = useState(0)
   const manual = useRef(false)
   const generation = useRef(0)
+  const resolveFailures = useRef(0)
   const online = useOnlineStatus()
   const { parkId } = useParkScope()
   const canCheck = canAccessRoute(user, 'robot-check')
@@ -85,17 +87,27 @@ function RobotResourceOwner({ apiClient, resolverClient, checkClient, user, refe
     void Promise.resolve().then(() => current() ? resolverClient.emergencyResolve(reference) : undefined).then(value => {
       if (!current() || !value) return
       const normalized = { ...value, vin: value.vin.toUpperCase() }
+      resolveFailures.current = 0
       setResolved(normalized)
       rememberRobot(user.id, { query: reference, vin: normalized.vin })
       notifyResolved.current(normalized)
     }, error => {
       if (!current()) return
       const classified = classifyCheckError(error, user)
+      resolveFailures.current = classified.retryable ? resolveFailures.current + 1 : 0
       if (classified.kind === 'unauthorized' || classified.kind === 'forbidden') onAuthorizationFailure(classified)
       else setFailure(classified)
     })
     return release
   }, [reference, resolverClient, user, canCheck, retry, online, onAuthorizationFailure])
+  useEffect(() => {
+    if (!failure?.retryable || !online || resolved) return
+    const timer = window.setTimeout(() => {
+      setFailure(null)
+      setRetry(value => value + 1)
+    }, pollDelayAfterFailure(resolveFailures.current - 1))
+    return () => window.clearTimeout(timer)
+  }, [failure, online, reference, resolved])
 
   const navigate = useNavigate()
   const location = useLocation()
@@ -108,7 +120,12 @@ function RobotResourceOwner({ apiClient, resolverClient, checkClient, user, refe
     if (canonical && `${location.pathname}${location.search}` !== canonical) navigate(canonical, { replace: true })
   }, [canonical, location.pathname, location.search, navigate])
 
-  const refresh = () => { manual.current = true; setRetry(value => value + 1) }
+  const refresh = () => {
+    resolveFailures.current = 0
+    manual.current = true
+    setFailure(null)
+    setRetry(value => value + 1)
+  }
   const robotReference = resolved?.vin ?? reference
   const workKey = `robot-detail-work:${user.id}:${robotReference}:${checkAccessIdentity(user)}:${parkId}`
   const detail = (snapshot: RobotDetailViewProps['snapshot'], snapshotError: DomainError | null, onRetrySnapshot: () => void, display: RobotDetailViewProps['display'] = 'identity') => display === 'identity' ? <RobotDetailView

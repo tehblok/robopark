@@ -83,7 +83,7 @@ class BrokerRegistry:
         self,
         *,
         max_connections: int = 100,
-        max_inflight_per_device: int = 2,
+        max_inflight_per_device: int = 8,
         readiness_timeout_seconds: float = 30.0,
         cache_ttl_seconds: float = 3.0,
         max_cache_entries: int = 512,

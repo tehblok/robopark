@@ -901,7 +901,7 @@ import IOKit.ps
         let power = powerState
         let resources = resourceTelemetry()
         let ready = registration?.paused == false && !thermallyPaused && Date() < readyUntil
-        let baseCapacity = power == "ac" ? 2 : 1
+        let baseCapacity = EmergencyCapacityPolicy.baseCapacity(onACPower: power == "ac")
         try await send(["type": "heartbeat", "generation": generation,
                         "ready": ready,
                         "latency_ms": latency, "inflight": jobs.count, "active_jobs": jobs.count,
@@ -1032,7 +1032,8 @@ import IOKit.ps
               let id = message["job_id"] as? String, UUID(uuidString: id) != nil,
               let attempt = message["attempt_id"] as? String, UUID(uuidString: attempt) != nil,
               let vin = message["vin"] as? String, let timeout = message["timeout_ms"] as? Int,
-              timeout > 0, timeout <= 20_000, jobs[attempt] == nil, jobs.count < 2 else { throw AgentError.invalidJob }
+              timeout > 0, timeout <= 20_000, jobs[attempt] == nil,
+              jobs.count < EmergencyCapacityPolicy.maximumJobs else { throw AgentError.invalidJob }
         _ = try EmergencyTarget.url(vin: vin)
         try requireTrust()
         let jobGeneration = generation
@@ -1040,7 +1041,9 @@ import IOKit.ps
         jobs[attempt] = Task { [weak self] in
             guard let self else { return }
             let jobStarted = Date()
-            defer { self.jobs.removeValue(forKey: attempt); self.onChange?() }
+            defer {
+                if self.jobs.removeValue(forKey: attempt) != nil { self.onChange?() }
+            }
             var answer: [String: Any] = ["type": "result", "job_id": id, "attempt_id": attempt, "generation": jobGeneration]
             do {
                 guard let profile = self.registration, !profile.paused, !self.thermallyPaused, Date() < self.readyUntil else { throw NetworkFailure.network }
@@ -1074,6 +1077,10 @@ import IOKit.ps
                 answer["ok"] = false; answer["error"] = (error as? NetworkFailure)?.wireCode ?? "network"
             }
             guard !Task.isCancelled, self.generation == jobGeneration else { return }
+            // The upstream slot is complete once its result is ready. The server
+            // may dispatch the replacement as soon as it receives this frame,
+            // before URLSession reports send completion to this task.
+            if self.jobs.removeValue(forKey: attempt) != nil { self.onChange?() }
             do {
                 try await self.send(answer, through: channel)
                 self.emitLifecycle("job_result", "ok", elapsedSince: jobStarted)

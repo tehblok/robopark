@@ -99,6 +99,7 @@ private func writeState(_ state: HelperState) throws {
         "status": state.status, "message": state.message,
         "installed_version": state.installed_version, "target_version": state.target_version,
         "checked_at": state.checked_at,
+        "updated_at_ms": Int64(Date().timeIntervalSince1970 * 1_000),
     ]
     let publicData = try JSONSerialization.data(withJSONObject: publicStatus, options: [.sortedKeys])
     try publicData.write(to: publicURL, options: [.atomic])

@@ -19,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 from starlette.websockets import WebSocketDisconnect
 
 from conftest import role_id_for
+from robopark_api import emergency_bridge as bridge_module
 from robopark_api.config import Settings
 from robopark_api.emergency_bridge import (
     _candidate_device_ids,
@@ -122,6 +123,54 @@ class ReconnectReplySocket(Socket):
             self.registry.replace(replacement)
 
         asyncio.create_task(reconnect())
+
+
+def _bridge_with_device(db_engine, db_session, owner):
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    device = AgentDevice(
+        id=str(uuid4()),
+        owner_user_id=owner.id,
+        label="Mac",
+        public_key_x963=private_key.public_key().public_bytes(
+            Encoding.X962, PublicFormat.UncompressedPoint
+        ),
+        environment="test",
+        instance_id="11111111-1111-1111-1111-111111111111",
+        approved_at=datetime.now(UTC),
+        approved_by_user_id=owner.id,
+    )
+    db_session.add(device)
+    db_session.commit()
+    settings = Settings(
+        _env_file=None,
+        database_url=str(db_engine.url),
+        secret_key="bridge-secret",
+        emergency_bridge_enabled=True,
+        robopark_environment="test",
+        robopark_instance_id="11111111-1111-1111-1111-111111111111",
+    )
+    return (
+        create_broker_app(sessionmaker(bind=db_engine, future=True), settings),
+        device,
+        private_key,
+    )
+
+
+def _authenticate_bridge(ws, device_id, private_key):
+    challenge = ws.receive_json()
+    signed = (
+        f"robopark-bridge-v1\n{challenge['instance_id']}\n"
+        f"{challenge['environment']}\n{challenge['nonce']}"
+    ).encode()
+    ws.send_json(
+        {
+            "type": "auth",
+            "device_id": device_id,
+            "signature": base64.b64encode(
+                private_key.sign(signed, ec.ECDSA(hashes.SHA256()))
+            ).decode(),
+        }
+    )
 
 
 def _channel(
@@ -230,10 +279,17 @@ def test_selector_rejects_critical_or_saturated_resource_hints_and_throttles_ser
         registry.replace(channel)
 
     assert registry.choose({"critical", "saturated-resource", "serious", "cool"}) is cool
-    cool.inflight = 2
+    cool.inflight = 4
     assert registry.choose({"critical", "saturated-resource", "serious", "cool"}) is serious
     serious.inflight = 1
     assert registry.choose({"critical", "saturated-resource", "serious"}) is None
+
+    claimed = _channel("claimed", 1)
+    claimed.capacity = 100
+    assert registry.effective_capacity(claimed) == 8
+    claimed.capacity = 4
+    claimed.power = "battery"
+    assert registry.effective_capacity(claimed) == 4
 
 
 def test_status_projects_bounded_resources_freshness_and_observed_response_speed(monkeypatch):
@@ -1167,7 +1223,7 @@ def test_websocket_authenticates_registered_p256_device(db_engine, db_session, s
         assert ready["type"] == "ready"
         assert ready["owner_user_id"] == seed_admin.id
         assert ready["owner_tracker_login"] == "admin.tracker"
-        assert ready["max_inflight"] == 2
+        assert ready["max_inflight"] == 8
         assert ready["supports"] == ["raw_deflate", "managed_probes", "heartbeat_ack"]
         ws.send_json(
             {
@@ -1264,6 +1320,137 @@ def test_websocket_authenticates_registered_p256_device(db_engine, db_session, s
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_json()
         assert closed.value.code == 1008
+
+
+def test_four_held_result_authority_calls_do_not_block_heartbeat_ack(
+    db_engine, db_session, seed_admin, monkeypatch
+):
+    app, device, private_key = _bridge_with_device(db_engine, db_session, seed_admin)
+    authority_lock = threading.Lock()
+    all_authority_started = threading.Event()
+    release_authority = threading.Event()
+    authority_calls = 0
+
+    def held_authority(*_args):
+        nonlocal authority_calls
+        with authority_lock:
+            authority_calls += 1
+            if authority_calls == 4:
+                all_authority_started.set()
+        assert release_authority.wait(2)
+        return True
+
+    monkeypatch.setattr(bridge_module, "_job_authority_valid", held_authority)
+    with (
+        TestClient(app) as client,
+        client.websocket_connect("/emergency/bridge/ws") as ws,
+        concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        _authenticate_bridge(ws, device.id, private_key)
+        ready = ws.receive_json()
+        ws.send_json(
+            {
+                "type": "heartbeat",
+                "generation": ready["generation"],
+                "ready": True,
+                "capacity": 8,
+                "active_jobs": 0,
+            }
+        )
+        assert ws.receive_json()["type"] == "heartbeat_ack"
+        channel = app.state.registry.channels[device.id]
+
+        async def create_pending_jobs():
+            return [
+                app.state.registry.new_pending(
+                    channel,
+                    f"YASADR{447 + index:011d}",
+                    requester_user_id=seed_admin.id,
+                    deadline_monotonic=time.monotonic() + 5,
+                )
+                for index in range(4)
+            ]
+
+        jobs = client.portal.call(create_pending_jobs)
+        for job in jobs:
+            ws.send_json(
+                {
+                    "type": "result",
+                    "generation": ready["generation"],
+                    "job_id": job.job_id,
+                    "attempt_id": job.attempt_id,
+                    "ok": True,
+                    "payload": {
+                        "vin": job.vin,
+                        "timestamp": int(time.time() * 1000),
+                        "isOnline": True,
+                    },
+                }
+            )
+        assert all_authority_started.wait(1)
+        ws.send_json(
+            {
+                "type": "heartbeat",
+                "generation": ready["generation"],
+                "ready": True,
+                "capacity": 8,
+                "active_jobs": 4,
+            }
+        )
+        heartbeat_ack = pool.submit(ws.receive_json)
+        try:
+            assert heartbeat_ack.result(timeout=0.5)["type"] == "heartbeat_ack"
+        finally:
+            release_authority.set()
+
+
+def test_expired_result_authority_fails_job_without_closing_websocket(
+    db_engine, db_session, seed_admin
+):
+    app, device, private_key = _bridge_with_device(db_engine, db_session, seed_admin)
+    with TestClient(app) as client, client.websocket_connect("/emergency/bridge/ws") as ws:
+        _authenticate_bridge(ws, device.id, private_key)
+        ready = ws.receive_json()
+        channel = app.state.registry.channels[device.id]
+
+        async def create_expired_job():
+            return app.state.registry.new_pending(
+                channel,
+                "YASADR00000000447",
+                requester_user_id=seed_admin.id,
+                deadline_monotonic=time.monotonic() - 0.01,
+            )
+
+        job = client.portal.call(create_expired_job)
+        ws.send_json(
+            {
+                "type": "result",
+                "generation": ready["generation"],
+                "job_id": job.job_id,
+                "attempt_id": job.attempt_id,
+                "ok": True,
+                "payload": {
+                    "vin": job.vin,
+                    "timestamp": int(time.time() * 1000),
+                    "isOnline": True,
+                },
+            }
+        )
+        ws.send_json(
+            {
+                "type": "heartbeat",
+                "generation": ready["generation"],
+                "ready": True,
+                "capacity": 2,
+                "active_jobs": 1,
+            }
+        )
+
+        assert ws.receive_json()["type"] == "heartbeat_ack"
+        deadline = time.monotonic() + 1
+        while not job.future.done() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert job.future.result()["error"] == "network"
 
 
 def test_emergency_websocket_reopens_after_same_app_lifespan_restart(

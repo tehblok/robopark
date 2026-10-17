@@ -70,7 +70,8 @@
     "0.2.3-rc.19",
     "0.2.3-rc.20",
     "0.2.3-rc.21",
-    "0.2.3-rc.22"
+    "0.2.3-rc.22",
+    "0.2.3-rc.23"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -88,5 +89,5 @@
       65536
     ]
   },
-  "update_notes": "TEST Mac transport recovery and removal of the unused robots registry panel."
+  "update_notes": "TEST parallel Mac robot checks, isolated heartbeat processing and automatic recovery."
 }

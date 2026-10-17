@@ -552,7 +552,16 @@ let decodedForeignTarget = try JSONDecoder().decode(ReleaseTarget.self, from: JS
 rejects("automatic update cannot leave fixed origin") { _ = try decodedForeignTarget.fixedArtifactURL(origin: origin) }
 try check(try decodedTarget.fixedArtifactURL(origin: origin).host == "example.com", "automatic update remains on fixed origin")
 let nominal = ResourceTelemetry(cpuPercent: 32, memoryPercent: 41, thermalState: "normal")
-try check(nominal.capacity(base: 2, activeJobs: 0, ready: true, paused: false) == 2, "nominal Mac exposes bounded capacity")
+try check(EmergencyCapacityPolicy.maximumJobs == 8
+          && EmergencyCapacityPolicy.baseCapacity(onACPower: true) == 8
+          && EmergencyCapacityPolicy.baseCapacity(onACPower: false) == 4,
+          "Emergency I/O capacity is centrally bounded for AC and battery power")
+try check(nominal.capacity(base: EmergencyCapacityPolicy.baseCapacity(onACPower: true), activeJobs: 0,
+                           ready: true, paused: false) == 8,
+          "nominal AC Mac exposes eight bounded I/O slots")
+try check(nominal.capacity(base: EmergencyCapacityPolicy.baseCapacity(onACPower: false), activeJobs: 0,
+                           ready: true, paused: false) == 4,
+          "nominal battery Mac exposes four bounded I/O slots")
 try check(nominal.computeCapacity(activeJobs: 0, ready: true, paused: false, lowPower: false) == 1, "compute pool exposes one free-resource slot")
 try check(ApplicationInstallPathPolicy.allowsApplicationsDirectory(owner: 0, group: 80, permissions: 0o775), "standard root:admin 0775 Applications directory is trusted")
 try check(!ApplicationInstallPathPolicy.allowsApplicationsDirectory(owner: 0, group: 0, permissions: 0o775), "group-writable Applications requires the admin group")
@@ -727,18 +736,18 @@ try check(ResourceTelemetry(cpuPercent: 70, memoryPercent: 20, thermalState: "no
 try check(ResourceTelemetry(cpuPercent: 20, memoryPercent: 80, thermalState: "normal").computeCapacity(activeJobs: 0, ready: true, paused: false, lowPower: false) == 0, "compute drains at memory threshold")
 try check(nominal.computeCapacity(activeJobs: 0, ready: true, paused: false, lowPower: true) == 0, "compute drains in low power mode")
 let warm = ResourceTelemetry(cpuPercent: 70, memoryPercent: 65, thermalState: "fair")
-try check(warm.capacity(base: 2, activeJobs: 0, ready: true, paused: false) == 1, "fair thermal state throttles capacity")
+try check(warm.capacity(base: EmergencyCapacityPolicy.maximumJobs, activeJobs: 0, ready: true, paused: false) == 1, "fair thermal state throttles capacity")
 for overloaded in [
     ResourceTelemetry(cpuPercent: 96, memoryPercent: 40, thermalState: "normal"),
     ResourceTelemetry(cpuPercent: 40, memoryPercent: 91, thermalState: "normal"),
     ResourceTelemetry(cpuPercent: 40, memoryPercent: 40, thermalState: "serious"),
 ] {
-    try check(overloaded.capacity(base: 2, activeJobs: 0, ready: true, paused: false) == 0, "saturated Mac leaves scheduling pool")
+    try check(overloaded.capacity(base: EmergencyCapacityPolicy.maximumJobs, activeJobs: 0, ready: true, paused: false) == 0, "saturated Mac leaves scheduling pool")
 }
 let bounded = ResourceTelemetry(cpuPercent: -10, memoryPercent: 400, thermalState: "unknown")
 try check(bounded.cpuPercent == 0 && bounded.memoryPercent == 100 && bounded.thermalState == "normal", "telemetry is bounded before heartbeat")
-try check(nominal.capacity(base: 2, activeJobs: 2, ready: true, paused: false) == 2, "capacity reports total slots while inflight is separate")
-try check(nominal.capacity(base: 2, activeJobs: 0, ready: false, paused: false) == 0, "unready Mac exposes no capacity")
+try check(nominal.capacity(base: EmergencyCapacityPolicy.maximumJobs, activeJobs: 8, ready: true, paused: false) == 8, "capacity reports total slots while inflight is separate")
+try check(nominal.capacity(base: EmergencyCapacityPolicy.maximumJobs, activeJobs: 0, ready: false, paused: false) == 0, "unready Mac exposes no capacity")
 let disabledLaunchdPolicy = """
 disabled services = {
     "ru.robopark.update-helper" => true
