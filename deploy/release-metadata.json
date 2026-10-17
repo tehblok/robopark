@@ -72,7 +72,8 @@
     "0.2.3-rc.21",
     "0.2.3-rc.22",
     "0.2.3-rc.23",
-    "0.2.3-rc.24"
+    "0.2.3-rc.24",
+    "0.2.3-rc.25"
   ],
   "requirements": {
     "python": ">=3.10",
@@ -90,5 +91,5 @@
       65536
     ]
   },
-  "update_notes": "TEST parallel Mac robot checks and retryable recovery after a missing HTTP tunnel."
+  "update_notes": "TEST Mac autostart status no longer blocks the main actor during parallel robot reads."
 }

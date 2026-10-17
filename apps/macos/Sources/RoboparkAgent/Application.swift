@@ -111,7 +111,10 @@ import AgentCore
             Task { @MainActor in await self?.updater.check() }
         }
         updateStatusTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.updater.refreshStatus() }
+            Task { @MainActor in
+                self?.updater.refreshStatus()
+                self?.autostart.refresh()
+            }
         }
         probeTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in

@@ -26,7 +26,7 @@ actor FakeLaunchctl {
         if arguments.first == "disable" { disabled = true }
         if arguments.first == "enable" { disabled = false }
         return arguments.first == "print-disabled" && disabled
-            ? "\"ru.robopark.agent\" => true" : ""
+            ? "\"ru.robopark.agent\" => disabled" : ""
     }
 
     func count(_ command: String) -> Int { calls.filter { $0.first == command }.count }
@@ -34,6 +34,11 @@ actor FakeLaunchctl {
 
 @main struct Checks {
     @MainActor static func main() async throws {
+        for (state, expected) in [("true", false), ("disabled", false), ("false", true), ("enabled", true)] {
+            precondition(AutostartController.parseEnabled("\"ru.robopark.agent\" => " + state) == expected)
+        }
+        precondition(AutostartController.parseEnabled("\"ru.robopark.agent.other\" => disabled") == true)
+        precondition(AutostartController.parseEnabled("\"ru.robopark.agent\" => unknown") == nil)
         let fake = FakeLaunchctl()
         let controller = AutostartController(commandTimeout: 0.2) { arguments, timeout in
             try await fake.run(arguments, timeout: timeout)
@@ -55,6 +60,14 @@ actor FakeLaunchctl {
         precondition(disables == 1, "explicit action executes once")
         precondition(totalRefreshes == 2, "explicit action refreshes cached truth")
         precondition(!controller.enabled, "refresh preserves disabled launchctl state")
+
+        let failedToggle = AutostartController(commandTimeout: 0.2) { arguments, _ in
+            if arguments.first == "disable" { throw NSError(domain: "fixture", code: 110) }
+            return "\"ru.robopark.agent\" => disabled"
+        }
+        do { try await failedToggle.setEnabled(false); fatalError("expected timeout") } catch {}
+        try await Task.sleep(nanoseconds: 20_000_000)
+        precondition(!failedToggle.enabled, "failed mutation must refresh actual launchctl state")
 
         let started = Date()
         do {

@@ -26,22 +26,38 @@ import Foundation
             let output = try? await runner(["print-disabled", "gui/\(getuid())"], commandTimeout)
             guard let self, self.refreshID == id else { return }
             self.refreshID = nil
-            guard self.revision == expectedRevision, let output else { return }
-            self.updateCachedValue(!output.contains("\"\(self.label)\" => true"))
+            guard self.revision == expectedRevision, let output,
+                  let enabled = Self.parseEnabled(output, label: self.label) else { return }
+            self.updateCachedValue(enabled)
         }
     }
 
     func setEnabled(_ enabled: Bool) async throws {
+        revision += 1
+        refreshID = nil
+        defer { refresh() }
         _ = try await runner([enabled ? "enable" : "disable", "gui/\(getuid())/\(label)"], commandTimeout)
         if enabled {
             _ = try? await runner(["bootstrap", "gui/\(getuid())", plist], commandTimeout)
         }
         // Disabling applies to the next login. The current workspace remains
         // alive so an update never destroys unsaved operator work.
-        revision += 1
-        refreshID = nil
         updateCachedValue(enabled)
-        refresh()
+    }
+
+    nonisolated static func parseEnabled(_ output: String, label: String = "ru.robopark.agent") -> Bool? {
+        for line in output.split(whereSeparator: \.isNewline) {
+            let parts = line.components(separatedBy: "=>")
+            guard parts.count == 2,
+                  parts[0].trimmingCharacters(in: .whitespaces) == "\"\(label)\"" else { continue }
+            switch parts[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "disabled": return false
+            case "false", "enabled": return true
+            default: return nil
+            }
+        }
+        // launchctl lists explicit overrides; absence means the default enabled state.
+        return true
     }
 
     private func updateCachedValue(_ value: Bool) {
