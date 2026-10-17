@@ -1061,12 +1061,19 @@ function responseRequestId(response: Response): string | undefined {
 }
 
 async function readErrorDetail(response: Response): Promise<unknown> {
+  let body: unknown
   try {
-    const body = await response.json() as { detail?: unknown }
-    return body.detail ?? null
+    body = await response.json()
   } catch {
+    // A missing tunnel is a transport failure, not an authoritative API 404.
+    const mediaType = response.headers.get('Content-Type')?.split(';', 1)[0]?.trim().toLowerCase()
+    if (response.status === 404 && mediaType === 'text/html') {
+      throw new ApiError(503, null, responseRequestId(response), responseRetryAfter(response))
+    }
     return null
   }
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return null
+  return (body as { detail?: unknown }).detail ?? null
 }
 
 const INVENTORY_INT64_FIELDS = new Set([

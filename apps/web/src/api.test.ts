@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiTimeoutError, api, clearApiValidators } from './api'
 import { systemClient } from './opsApi'
+import { classifyApiError } from './shared/api/classifyApiError'
 
 type ApiCall = () => Promise<unknown>
 
@@ -366,6 +367,46 @@ describe('API transport metadata', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/tracker/issues?sort=oldest&limit=50',
       expect.objectContaining({ headers: {} }))
     window.removeEventListener('robopark:authorization-failure', authorizationFailure)
+  })
+
+  it('normalizes a Tuna HTML 404 into a retryable service unavailable error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      '<html><title>Туннель не найден</title></html>',
+      { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+    )))
+
+    const request = api.emergencyResolve('447')
+    await expect(request).rejects.toMatchObject({
+      status: 503,
+      detail: null,
+    })
+    await request.catch(error => {
+      expect(classifyApiError(error, 'Не удалось найти робота.')).toMatchObject({
+        kind: 'server',
+        retryable: true,
+      })
+    })
+  })
+
+  it('preserves a JSON API 404 as not found', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ detail: 'not_found' }),
+      { status: 404, headers: { 'Content-Type': 'application/json' } },
+    )))
+
+    await expect(api.emergencyResolve('447')).rejects.toMatchObject({
+      status: 404,
+      detail: 'not_found',
+    })
+  })
+
+  it.each([401, 403, 404])('preserves an empty HEAD error with status %s', async status => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status })))
+
+    await expect(api.taskAttachmentAuthorization('/api/tasks/1/attachments/2')).rejects.toMatchObject({
+      status,
+      detail: null,
+    })
   })
 
   it.each(requestIdCases)('copies X-Request-ID into an ApiError for a %s request', async (_label, call) => {

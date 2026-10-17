@@ -247,6 +247,15 @@ struct WorkspaceProfile: Codable {
                 timeout: request.timeoutInterval, limit: 32 * 1024 * 1024)
         } catch { if generation == run { connectionState = "offline" }; throw error }
         guard !Task.isCancelled, generation == run else { throw CancellationError() }
+        let mediaType = response.value(forHTTPHeaderField: "Content-Type")?
+            .split(separator: ";", maxSplits: 1).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // The API's not-found response is JSON. Tuna returns an HTML 404 when
+        // the tunnel itself is absent, which must remain retryable and offline.
+        if response.statusCode == 404, mediaType == "text/html" {
+            connectionState = "offline"
+            throw NetworkFailure.network
+        }
         // Redirects are blocked by NetworkPolicy. Never convert one into a local
         // navigation or forward the native cookie to its Location.
         if (300...399).contains(response.statusCode), response.statusCode != 304 { throw NetworkFailure.invalid }

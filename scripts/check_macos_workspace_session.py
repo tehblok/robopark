@@ -357,6 +357,21 @@ func testTransport() -> URLSession {
         _ = try await legacyOwner.call(path: "/api/health/ready")
         try check(legacyOwner.connectionState == "error", "HTTP failure is not reported as healthy connection")
         try check(legacyOwner.lastSuccessAt == lastHealthyAt, "HTTP 503 does not overwrite the last successful connection timestamp")
+        MockURLProtocol.replies["GET /api/robots/missing?"] = .init(status: 404,
+            headers: ["Content-Type": "application/json"],
+            body: Data("{\"detail\":\"not_found\"}".utf8), delay: 0)
+        let apiMissing = try await legacyOwner.proxy(local("GET", "/api/robots/missing"))
+        try check(apiMissing.status == 404 && legacyOwner.connectionState == "connected",
+                  "JSON API 404 remains an authoritative not-found response")
+        let jsonNotFoundAt = legacyOwner.lastSuccessAt
+        MockURLProtocol.replies["GET /api/robots/tunnel-missing?"] = .init(status: 404,
+            headers: ["Content-Type": "text/html; charset=utf-8"],
+            body: Data("<html><body>Tuna Tunnel not found</body></html>".utf8), delay: 0)
+        let tunnelMissing = try await legacyOwner.proxy(local("GET", "/api/robots/tunnel-missing"))
+        try check(tunnelMissing.status == 503 && legacyOwner.connectionState == "offline",
+                  "HTML reverse-proxy 404 is exposed as retryable transport unavailability")
+        try check(legacyOwner.lastSuccessAt == jsonNotFoundAt,
+                  "HTML reverse-proxy 404 does not refresh the last successful connection timestamp")
 
         // A registered device proves its own key to renew; no password is stored
         // or replayed by this test or the production client.
